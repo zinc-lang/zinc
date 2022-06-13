@@ -2,3 +2,9 @@ Cargo.lock
 target
 scratch
 tuido.json
+
+.zigmod
+zig-cache
+zig-out
+deps.zig
+zigmod.lock
