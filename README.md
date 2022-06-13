@@ -21,7 +21,7 @@ For the items with brackets next to them, that is the main inspiration(s) for it
   - Concepts as the preferred means of dynamic dispatch (c++20)
   - Concepts are effectively the same thing as a trait
   - Strong trait/interface system (rust)
-  - [https://github.com/ldionne/dyno](runtime polymorphism done right)
+  - [runtime polymorphism done right](https://github.com/ldionne/dyno)
 - Strong c interop (zig)
 - Strong IDE support
 
