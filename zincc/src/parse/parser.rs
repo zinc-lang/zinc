@@ -3,9 +3,8 @@ use super::{
     TokenKind, TK,
 };
 
-pub fn parse(tokens: &[TokenKind], source: &str) -> ParseResult {
+pub fn parse(tokens: &[TokenKind]) -> ParseResult {
     let mut parser = Parser {
-        source,
         tokens,
 
         panicking: false,
@@ -22,7 +21,6 @@ pub fn parse(tokens: &[TokenKind], source: &str) -> ParseResult {
 
 /// @Store the `ParseErrorContext` in here, update when changed, and use it to report errors
 struct Parser<'s> {
-    source: &'s str,
     tokens: &'s [TokenKind],
 
     panicking: bool,
@@ -105,7 +103,7 @@ impl Parser<'_> {
                 return true;
             }
         }
-        return false;
+        false
     }
 
     fn eat(&mut self, kind: TK, parent: &mut Node) -> bool {
@@ -466,11 +464,7 @@ impl Parser<'_> {
     }
 
     fn try_parse_expr_precedence(&mut self, prec: Precedence) -> Option<Node> {
-        let mut lhs = if let Some(expr) = self.try_parse_expr_start() {
-            expr
-        } else {
-            return None;
-        };
+        let mut lhs = self.try_parse_expr_start()?;
 
         let init_prec = prec;
         let mut p = self.peek();

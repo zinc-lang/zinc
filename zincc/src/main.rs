@@ -6,7 +6,7 @@ fn main() {
     let source_path = &args[1];
 
     let source = read_file_to_string(source_path)
-        .map(|s| if !s.ends_with("\n") { s + "\n" } else { s })
+        .map(|s| if !s.ends_with('\n') { s + "\n" } else { s })
         .unwrap_or_else(|e| {
             eprintln!("Failed to read file at path '{}', {}", source_path, e);
             std::process::exit(1);
@@ -26,14 +26,14 @@ fn main() {
     });
 
     stopwatch.reset();
-    let parse_res = parse::parse(&lex_res.tokens, &source);
+    let parse_res = parse::parse(&lex_res.tokens);
     let duration_parse = stopwatch.read();
 
     // @Verbose: Printing cst
     println!();
     debug::print_cst(&source, parse_res.cst, &lex_res.tokens, &lex_res.spans, 0);
 
-    if parse_res.errors.len() > 0 {
+    if !parse_res.errors.is_empty() {
         println!();
         for error in parse_res.errors {
             match error {
@@ -97,8 +97,7 @@ impl Stopwatch {
 
     pub fn read(&self) -> std::time::Duration {
         let now = std::time::Instant::now();
-        let diff = now - self.time;
-        diff
+        now - self.time
     }
 
     pub fn reset(&mut self) {

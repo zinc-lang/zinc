@@ -99,9 +99,9 @@ pub fn print_cst(
             }
             cst::Element::Token(tok) => {
                 // let tk = tokens[tok];
-                let tk = *tokens.get(tok).unwrap_or_else(|| &TokenKind::EOF);
+                let tk = *tokens.get(tok).unwrap_or(&TokenKind::EOF);
                 // let range = ranges[tok].clone();
-                let range = ranges.get(tok).unwrap_or_else(|| &(0..0)).clone();
+                let range = ranges.get(tok).unwrap_or(&(0..0)).clone();
                 print_token(source, tk, range);
             }
         }
