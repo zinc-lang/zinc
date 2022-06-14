@@ -1,39 +1,44 @@
-# Zinc
+# Zinc lang
 
-For the following two sections, I attempt to give a rough idea of the direction I plan on taking this.
-For the items with brackets next to them, that is the main inspiration(s) for it, to give a clearer idea of what I'm talking about.
+The zinc programming language.
+
+---
 
 ## Goals / Features
 
 - Compiled
-- Control over allocator(s) (odin/zig)
-- Multi-paradigm
-  - Functional
-  - DOD, Array of struct (AOS), Struct of array (SOA)
-  - OOP (multiple inheritance)
-- Powerful compile-time execution (zig)
-  - Good syntax for this too
-  - Generics
+- Control over allocator(s)
+- Scope local context that is implicitly passed to zinc functions
+- Support constructs to allow for multiple paradigms, such as:
+  - Functional, with currying
+  - DOD, ways to specify SOA or AOS
+  - OOP, with multiple inheritance
+- Powerful compile-time execution
+  - Syntax clearly separate for runtime and compile constructs and operations
+  - Generics / templates
   - Powerful meta-programming
+  - Macros, code generation based on already written code
   - Be transparent about generated code
-  - Attributes
+  - Attributes / annotations, part of the macro system
 - Strongly typed
-  - Concepts as the preferred means of dynamic dispatch (c++20)
-  - Concepts are effectively the same thing as a trait
-  - Strong trait/interface system (rust)
+  - Concepts as the preferred means of dynamic dispatch, think c++20x concepts
+  - Strong trait/interface system, think rust
+  - Concept / trait / interface, all the same thing
   - [runtime polymorphism done right](https://github.com/ldionne/dyno)
-- Strong c interop (zig)
+- Strong c interop
+  - Binding generation from c header source code
 - Strong IDE support
+- Powerful package and project manager
 
-## Things to build (working sub-title)
+## Things I want to make with this (to prove its worth)
 
-- Game Engine (unity) (ECS and DOD)
+- Game Engine
   - A commercial game
-- OOP UI library (flutter)
-  - A file editor (vscode / intellij)
+- OOP UI library, like flutter
+  - A file editor
 - Programming language(s)
-  - Self-hosted
-  - Managed VM language (dart) (c#)
+  - Self-hosted zinc compiler
+  - POC managed VM language
 - POC bare metal OS
 
 ## Democracy
@@ -46,6 +51,6 @@ So we can rework the feature to accommodate both sides, etc.
 
 ## License
 
-This software is distributed under the terms of both the MIT license and Apache license (Version 2.0) unless a portion is specified otherwise.
+This software is distributed under the terms of both the MIT license and Apache license (Version 2.0) unless any portion is specified otherwise.
 
 See `LICENSE-APACHE`, `LICENSE-MIT`, and `COPYRIGHT` for details.
