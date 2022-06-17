@@ -1,17 +1,16 @@
+pub mod ast;
 pub mod parse;
 
 pub mod debug;
+
+pub mod zir_test;
 
 // Could be refactored out
 pub mod llvm;
 pub mod util;
 
-pub mod zir_test;
-
-mod ast;
-
 fn main() {
-    zir_test::zir_test();
+    // zir_test::zir_test();
 
     let args = std::env::args().collect::<Vec<_>>();
     let source_path = &args[1];
