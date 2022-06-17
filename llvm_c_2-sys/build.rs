@@ -3,6 +3,9 @@ extern crate bindgen;
 fn main() {
     println!("cargo:rustc-link-search=../llvm_c_2/build");
     println!("cargo:rustc-link-lib=llvm_c_2");
+    println!("cargo:rustc-link-lib=c++");
+    println!("cargo:rustc-link-lib=LLVM-13");
+
     println!("cargo:rerun-if-changed=src/wrapper.h");
 
     let bindings = bindgen::Builder::default()
