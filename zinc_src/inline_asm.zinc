@@ -1,0 +1,21 @@
+// syntax needed:
+//   decorators
+//   function calls
+//     w/ generic params
+//   tuples
+//   arrays
+
+@inline
+syscall3 fn(nr ssize, p1 ssize, p2 ssize, p3 ssize) ssize {
+    return inline_asm#<volatile, ssize>(
+        "syscall", // asm
+        "rax", // ret
+        [ // inputs: (register, ident within inline asm, value)
+            ("rax", "", nr),
+            ("rdi", "", p1),
+            ("rsi", "", p2),
+            ("rdx", "", p3),
+        ],
+        ["rcx", "r11"], // clobbers
+    );
+}
