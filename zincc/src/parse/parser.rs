@@ -258,8 +258,13 @@ impl Parser<'_> {
         // ident
         self.expect(TK::ident, ParseErrorContext::DeclConst, binding);
 
-        // (':' ty)?
-        if self.eat(TK::punct_colon, binding) {
+        // // (':' ty)?
+        // if self.eat(TK::punct_colon, binding) {
+        //     let mut ty = Node::new(NK::binding_ty);
+        //     self.parse_ty(&mut ty);
+        //     binding.append_node(ty);
+        // }
+        if !self.at(TK::punct_eq) {
             let mut ty = Node::new(NK::binding_ty);
             self.parse_ty(&mut ty);
             binding.append_node(ty);
@@ -345,9 +350,10 @@ impl Parser<'_> {
         if self.eat(TK::brkt_paren_open, &mut proto) {
             while !self.at(TK::brkt_paren_close) {
                 let mut arg = Node::new(NK::func_proto_arg);
-                if self.at(TK::ident) && self.peek_n(1) == TK::punct_colon {
+                if self.at(TK::ident)
+                    && !matches!(self.peek_n(1), TK::punct_comma | TK::brkt_paren_close)
+                {
                     self.expect(TK::ident, ParseErrorContext::DeclFunc, &mut arg);
-                    self.expect(TK::punct_colon, ParseErrorContext::DeclFunc, &mut arg);
                 }
                 self.parse_ty(&mut arg);
                 proto.append_node(arg);
@@ -364,7 +370,7 @@ impl Parser<'_> {
             );
         }
 
-        if self.eat(TK::punct_colon, &mut proto) {
+        if !self.at_set(&[TK::punct_comma, TK::punct_fat_arrow, TK::brkt_brace_open]) {
             let mut ret = Node::new(NK::func_proto_ret);
             self.parse_ty(&mut ret);
             proto.append_node(ret);

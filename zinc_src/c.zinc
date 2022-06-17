@@ -1,11 +1,12 @@
 main fn {}
 foo fn() {}
 
-bar fn(a: sint) {}
-bar2 fn(a: sint, b: uint,) {}
+bar fn(a sint) {}
+bar2 fn(a sint, b uint,) {}
 
-baz fn: void {}
-add fn(sint, sint): sint {}
+baz fn void {}
+add fn(sint, sint) sint {}
+add fn(sint, sint,) sint {}
 
 literals fn {
     1;
@@ -20,7 +21,7 @@ literals fn {
 }
 
 return_naked fn { return; }
-return_value fn: sint { return 1; }
+return_value fn sint { return 1; }
 
 infix_ops fn {
     a = b;
@@ -30,26 +31,26 @@ infix_ops fn {
     a / b;
 }
 
-add_long fn(a: sint, b: sint,): sint {
+add_long fn(a sint, b sint,) sint {
     let ret = a + b;
     return ret;
 }
-add_shorter fn(a: sint, b: sint): sint {
+add_shorter fn(a sint, b sint) sint {
     return a + b;
 }
-add_shortist fn(a: sint, b: sint): sint => a + b;
+add_shortist fn(a sint, b sint) sint => a + b;
 
 let_bindings fn {
-    let a: string = "a";
+    let a string = "a";
     let b = "b";
-    let c: sint = 3;
+    let c sint = 3;
 }
 
 const ONE = 1;
 const NAME = "zinc";
-const THREE: uint = 3;
+const THREE uint = 3;
 
-square fn(a: sint): sint => a * a;
+square fn(a sint) sint => a * a;
 
 blocks fn {
     let outer = "outer";
