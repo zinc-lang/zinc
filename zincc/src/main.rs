@@ -112,7 +112,7 @@ fn get_options() -> Options {
                 .short('v')
                 .value_parser(PossibleValuesParser::new(&["tokens", "cst", "ast"]))
                 .takes_value(true)
-                .action(clap::ArgAction::Set),
+                .action(clap::ArgAction::Append),
         )
         .arg(
             Arg::new("print_times")
