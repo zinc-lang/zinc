@@ -78,12 +78,12 @@ pub fn unescape_string(str: &str) -> String {
 
 pub fn print_cst(
     source: &str,
-    node: cst::Node,
+    node: &cst::Node,
     tokens: &[TokenKind],
     ranges: &[std::ops::Range<u32>],
     indent: usize,
 ) {
-    for child in node.children {
+    for child in node.children.iter() {
         for _ in 0..indent {
             print!("  ");
         }
@@ -95,9 +95,10 @@ pub fn print_cst(
                     node.kind,
                     TerminalColor::Reset
                 );
-                print_cst(source, node, tokens, ranges, indent + 1);
+                print_cst(source, &node, tokens, ranges, indent + 1);
             }
             cst::Element::Token(tok) => {
+                let tok = *tok as usize;
                 // let tk = tokens[tok];
                 let tk = *tokens.get(tok).unwrap_or(&TokenKind::EOF);
                 // let range = ranges[tok].clone();

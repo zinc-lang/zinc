@@ -66,6 +66,7 @@ pub enum ParseErrorContext {
     TopLevel,
     Block,
     DeclFunc,
+    DeclConst,
     Stmt,
     StmtLet,
     StmtReturn,
@@ -165,7 +166,7 @@ impl Parser<'_> {
     fn bump(&mut self, parent: &mut Node) {
         parent
             .children
-            .push(super::cst::Element::Token(self.cursor));
+            .push(super::cst::Element::Token(self.cursor as u32));
         self.cursor += 1;
     }
 }
@@ -251,6 +252,25 @@ impl Parser<'_> {
 
         block
     }
+
+    /// 'let's and 'const's
+    fn parse_binding(&mut self, binding: &mut Node) {
+        // ident
+        self.expect(TK::ident, ParseErrorContext::DeclConst, binding);
+
+        // (':' ty)?
+        if self.eat(TK::punct_colon, binding) {
+            let mut ty = Node::new(NK::binding_ty);
+            self.parse_ty(&mut ty);
+            binding.append_node(ty);
+        }
+
+        // '='
+        self.expect(TK::punct_eq, ParseErrorContext::DeclConst, binding);
+
+        // expr
+        self.parse_stmt_expr(binding);
+    }
 }
 
 /// Parse decl
@@ -272,68 +292,31 @@ impl Parser<'_> {
     }
 
     fn try_parse_decl(&mut self) -> Option<Node> {
-        if self.at(TK::ident) {
-            let p_next = self.peek_n(1);
-            let node = match p_next {
+        let decl = match self.peek() {
+            TK::ident => match self.peek_n(1) {
                 TK::kw_fn => {
                     let mut func = Node::new(NK::decl_func);
                     self.bump(&mut func);
                     self.parse_decl_func(&mut func);
                     func
                 }
-                TK::kw_const => {
-                    let mut konst = Node::new(NK::decl_const);
-                    self.bump(&mut konst); // ident
-                    self.bump(&mut konst); // 'const'
-                    self.parse_stmt_expr(&mut konst);
-                    konst
-                }
                 _ => return None,
-            };
-            Some(node)
-        } else {
-            None
-        }
+            },
+            TK::kw_const => {
+                let mut konst = Node::new(NK::decl_const);
+
+                self.bump(&mut konst); // 'const'
+                self.parse_binding(&mut konst);
+
+                konst
+            }
+            _ => return None,
+        };
+        Some(decl)
     }
 
     fn parse_decl_func(&mut self, func: &mut Node) {
-        assert!(self.at(TK::kw_fn));
-
-        let mut proto = Node::new(NK::func_proto);
-        self.bump(&mut proto); // 'fn'
-
-        if self.eat(TK::brkt_paren_open, &mut proto) {
-            if !self.at(TK::brkt_paren_close) {
-                loop {
-                    if self.at(TK::brkt_paren_close) {
-                        break;
-                    }
-
-                    let mut arg = Node::new(NK::func_proto_arg);
-                    self.expect(TK::ident, ParseErrorContext::DeclFunc, &mut arg);
-                    self.parse_ty(&mut arg);
-                    proto.append_node(arg);
-
-                    if !self.eat(TK::punct_comma, &mut proto) {
-                        break;
-                    }
-                }
-            }
-
-            self.expect(
-                TK::brkt_paren_close,
-                ParseErrorContext::DeclFunc,
-                &mut proto,
-            );
-        }
-
-        if !self.at_set(&[TK::punct_fat_arrow, TK::brkt_brace_open]) {
-            let mut ret = Node::new(NK::func_proto_ret);
-            self.parse_ty(&mut ret);
-            proto.append_node(ret);
-        }
-
-        func.append_node(proto);
+        self.parse_ty_func(func);
 
         let mut body = Node::new(NK::decl_func_body);
 
@@ -352,6 +335,43 @@ impl Parser<'_> {
     fn parse_ty(&mut self, parent: &mut Node) {
         parent.append_node(self.parse_path());
     }
+
+    fn parse_ty_func(&mut self, parent: &mut Node) {
+        assert!(self.at(TK::kw_fn));
+
+        let mut proto = Node::new(NK::func_proto);
+        self.bump(&mut proto); // 'fn'
+
+        if self.eat(TK::brkt_paren_open, &mut proto) {
+            while !self.at(TK::brkt_paren_close) {
+                let mut arg = Node::new(NK::func_proto_arg);
+                if self.at(TK::ident) && self.peek_n(1) == TK::punct_colon {
+                    self.expect(TK::ident, ParseErrorContext::DeclFunc, &mut arg);
+                    self.expect(TK::punct_colon, ParseErrorContext::DeclFunc, &mut arg);
+                }
+                self.parse_ty(&mut arg);
+                proto.append_node(arg);
+
+                if !self.eat(TK::punct_comma, &mut proto) {
+                    break;
+                }
+            }
+
+            self.expect(
+                TK::brkt_paren_close,
+                ParseErrorContext::DeclFunc,
+                &mut proto,
+            );
+        }
+
+        if self.eat(TK::punct_colon, &mut proto) {
+            let mut ret = Node::new(NK::func_proto_ret);
+            self.parse_ty(&mut ret);
+            proto.append_node(ret);
+        }
+
+        parent.append_node(proto);
+    }
 }
 
 /// Parse stmt
@@ -362,32 +382,9 @@ impl Parser<'_> {
                 let mut binding = Node::new(NK::stmt_let);
 
                 // 'let'
-                self.bump(&mut binding);
+                self.bump(&mut binding); // 'let'
 
-                // ident
-                self.expect(TK::ident, ParseErrorContext::StmtLet, &mut binding);
-
-                // ?ty
-                if !self.at(TokenKind::punct_eq) {
-                    self.parse_ty(&mut binding);
-                }
-
-                // '='
-                self.expect(
-                    TokenKind::punct_eq,
-                    ParseErrorContext::StmtLet,
-                    &mut binding,
-                );
-
-                // expr
-                self.parse_expr(&mut binding);
-
-                // ';'
-                self.expect(
-                    TokenKind::punct_semiColon,
-                    ParseErrorContext::StmtLet,
-                    &mut binding,
-                );
+                self.parse_binding(&mut binding);
 
                 parent.append_node(binding);
             }

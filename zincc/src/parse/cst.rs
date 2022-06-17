@@ -1,13 +1,20 @@
 #[derive(Debug, Clone)]
 pub enum Element {
     Node(Node),
-    Token(usize),
+    Token(u32),
 }
 
-#[derive(Debug, Clone)]
+// #[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Node {
     pub kind: NodeKind,
     pub children: Vec<Element>,
+}
+
+impl std::fmt::Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Node").finish()
+    }
 }
 
 impl Node {
@@ -21,9 +28,29 @@ impl Node {
     pub fn append_node(&mut self, node: Node) {
         self.children.push(Element::Node(node));
     }
+
+    pub fn tokens(&self) -> Vec<u32> {
+        self.children
+            .iter()
+            .filter_map(|s| match s {
+                Element::Token(t) => Some(*t),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn nodes<'c>(&'c self) -> Vec<&'c Node> {
+        self.children
+            .iter()
+            .filter_map(|s| match s {
+                Element::Node(n) => Some(n),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 #[repr(u8)]
 pub enum NodeKind {
@@ -33,6 +60,9 @@ pub enum NodeKind {
     path,
     string,
     block,
+
+    /// For let and const
+    binding_ty,
 
     func_proto,
     func_proto_arg,
