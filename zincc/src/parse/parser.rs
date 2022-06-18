@@ -11,6 +11,7 @@ pub fn parse(tokens: &[TokenKind]) -> ParseResult {
         cursor: 0,
 
         errors: Vec::new(),
+        context: ParseContext::TopLevel,
     };
     let cst = parser.parse_top_level();
     ParseResult {
@@ -19,14 +20,16 @@ pub fn parse(tokens: &[TokenKind]) -> ParseResult {
     }
 }
 
-/// @Store the `ParseErrorContext` in here, update when changed, and use it to report errors
+/// @TODO: store the `ParseErrorContext` in here, update when changed, and use it to report errors
 struct Parser<'s> {
     tokens: &'s [TokenKind],
 
     panicking: bool,
-    cursor: usize,
+    cursor: u32,
 
     errors: Vec<ParseError>,
+
+    context: ParseContext,
 }
 
 #[derive(Debug)]
@@ -43,9 +46,9 @@ pub enum ParseError {
 #[derive(Debug)]
 pub struct ParseErrorExpected {
     pub what: ParseErrorExpectedWhat,
-    pub at: usize,
-    pub found: usize,
-    pub context: ParseErrorContext,
+    pub at: u32,
+    pub found: u32,
+    pub context: ParseContext,
 }
 
 #[derive(Debug)]
@@ -62,7 +65,7 @@ pub enum ParseErrorItem {
 }
 
 #[derive(Debug)]
-pub enum ParseErrorContext {
+pub enum ParseContext {
     TopLevel,
     Block,
     DeclFunc,
@@ -83,11 +86,11 @@ impl Parser<'_> {
         self.at(TK::EOF)
     }
 
-    fn peek_n(&self, n: usize) -> TK {
-        if self.cursor + n >= self.tokens.len() {
+    fn peek_n(&self, n: u32) -> TK {
+        if self.cursor + n >= self.tokens.len() as u32 {
             TK::EOF
         } else {
-            self.tokens[self.cursor + n]
+            self.tokens[(self.cursor + n) as usize]
         }
     }
     fn peek(&self) -> TK {
@@ -140,13 +143,13 @@ impl Parser<'_> {
             self.bump(parent);
             self.panicking = false;
         } else {
-            let mut node = Node::new(NK::skipped);
+            let mut node = self.node(NK::skipped);
             self.bump(&mut node);
             parent.append_node(node);
         }
     }
 
-    fn expect(&mut self, what: TK, context: ParseErrorContext, parent: &mut Node) {
+    fn expect(&mut self, what: TK, context: ParseContext, parent: &mut Node) {
         if !self.eat(what, parent) {
             self.report(
                 parent,
@@ -167,17 +170,21 @@ impl Parser<'_> {
         parent.elements.push(super::cst::Element::Token);
         self.cursor += 1;
     }
+
+    fn node(&self, kind: NK) -> Node {
+        Node::new(kind, self.cursor)
+    }
 }
 
 /// Parse
 impl Parser<'_> {
     fn parse_top_level(&mut self) -> Node {
-        let mut root = Node::new(NK::root);
+        let mut root = self.node(NK::root);
 
         while !self.at_end() {
             // let n = self.parse_string();
             // root.append_node(n);
-            self.parse_decl(ParseErrorContext::TopLevel, &mut root);
+            self.parse_decl(ParseContext::TopLevel, &mut root);
         }
 
         self.bump(&mut root);
@@ -190,14 +197,14 @@ impl Parser<'_> {
         //     assert!(self.at_set(&[TK::punct_dblColon, TK::ident]));
         // }
 
-        let mut path = Node::new(NK::path);
+        let mut path = self.node(NK::path);
 
         self.eat(TK::punct_dblColon, &mut path);
-        self.expect(TK::ident, ParseErrorContext::Path, &mut path);
+        self.expect(TK::ident, ParseContext::Path, &mut path);
 
         while self.at(TK::punct_dblColon) {
-            self.expect(TK::punct_dblColon, ParseErrorContext::Path, &mut path);
-            self.expect(TK::ident, ParseErrorContext::Path, &mut path);
+            self.expect(TK::punct_dblColon, ParseContext::Path, &mut path);
+            self.expect(TK::ident, ParseContext::Path, &mut path);
         }
 
         path
@@ -206,7 +213,7 @@ impl Parser<'_> {
     fn parse_string(&mut self) -> Node {
         assert!(self.at(TK::string_open));
 
-        let mut str = Node::new(NK::string);
+        let mut str = self.node(NK::string);
 
         self.bump(&mut str);
         while self.eat_set(
@@ -218,35 +225,35 @@ impl Parser<'_> {
             ],
             &mut str,
         ) {}
-        self.expect(TK::string_close, ParseErrorContext::String, &mut str);
+        self.expect(TK::string_close, ParseContext::String, &mut str);
 
         str
     }
 
     fn parse_literal_int(&mut self) -> Node {
         assert!(self.at_set(&[TK::int_dec, TK::int_bin, TK::int_hex, TK::int_oct]));
-        let mut lit = Node::new(NK::literal_int);
+        let mut lit = self.node(NK::literal_int);
         self.bump(&mut lit);
         lit
     }
 
     fn parse_literal_float(&mut self) -> Node {
         assert!(self.at(TK::float));
-        let mut lit = Node::new(NK::literal_float);
+        let mut lit = self.node(NK::literal_float);
         self.bump(&mut lit);
         lit
     }
 
     fn parse_block(&mut self) -> Node {
-        let mut block = Node::new(NK::block);
+        let mut block = self.node(NK::block);
 
-        self.expect(TK::brkt_brace_open, ParseErrorContext::Block, &mut block);
+        self.expect(TK::brkt_brace_open, ParseContext::Block, &mut block);
 
         while !self.at_set(&[TK::brkt_brace_close, TK::EOF]) {
             self.parse_stmt(&mut block);
         }
 
-        self.expect(TK::brkt_brace_close, ParseErrorContext::Block, &mut block);
+        self.expect(TK::brkt_brace_close, ParseContext::Block, &mut block);
 
         block
     }
@@ -254,7 +261,7 @@ impl Parser<'_> {
     /// 'let's and 'const's
     fn parse_binding(&mut self, binding: &mut Node) {
         // ident
-        self.expect(TK::ident, ParseErrorContext::DeclConst, binding);
+        self.expect(TK::ident, ParseContext::DeclConst, binding);
 
         // // (':' ty)?
         // if self.eat(TK::punct_colon, binding) {
@@ -263,13 +270,13 @@ impl Parser<'_> {
         //     binding.append_node(ty);
         // }
         if !self.at(TK::punct_eq) {
-            let mut ty = Node::new(NK::binding_ty);
+            let mut ty = self.node(NK::binding_ty);
             self.parse_ty(&mut ty);
             binding.append_node(ty);
         }
 
         // '='
-        self.expect(TK::punct_eq, ParseErrorContext::DeclConst, binding);
+        self.expect(TK::punct_eq, ParseContext::DeclConst, binding);
 
         // expr
         self.parse_stmt_expr(binding);
@@ -278,7 +285,7 @@ impl Parser<'_> {
 
 /// Parse decl
 impl Parser<'_> {
-    fn parse_decl(&mut self, context: ParseErrorContext, parent: &mut Node) {
+    fn parse_decl(&mut self, context: ParseContext, parent: &mut Node) {
         if let Some(decl) = self.try_parse_decl() {
             parent.append_node(decl);
         } else {
@@ -298,7 +305,7 @@ impl Parser<'_> {
         let decl = match self.peek() {
             TK::ident => match self.peek_n(1) {
                 TK::kw_fn => {
-                    let mut func = Node::new(NK::decl_func);
+                    let mut func = self.node(NK::decl_func);
                     self.bump(&mut func);
                     self.parse_decl_func(&mut func);
                     func
@@ -306,7 +313,7 @@ impl Parser<'_> {
                 _ => return None,
             },
             TK::kw_const => {
-                let mut konst = Node::new(NK::decl_const);
+                let mut konst = self.node(NK::decl_const);
 
                 self.bump(&mut konst); // 'const'
                 self.parse_binding(&mut konst);
@@ -321,7 +328,7 @@ impl Parser<'_> {
     fn parse_decl_func(&mut self, func: &mut Node) {
         self.parse_ty_func(func);
 
-        let mut body = Node::new(NK::decl_func_body);
+        let mut body = self.node(NK::decl_func_body);
 
         if self.eat(TK::punct_fat_arrow, &mut body) {
             self.parse_stmt_expr(&mut body);
@@ -342,16 +349,16 @@ impl Parser<'_> {
     fn parse_ty_func(&mut self, parent: &mut Node) {
         assert!(self.at(TK::kw_fn));
 
-        let mut proto = Node::new(NK::func_proto);
+        let mut proto = self.node(NK::func_proto);
         self.bump(&mut proto); // 'fn'
 
         if self.eat(TK::brkt_paren_open, &mut proto) {
             while !self.at(TK::brkt_paren_close) {
-                let mut arg = Node::new(NK::func_proto_arg);
+                let mut arg = self.node(NK::func_proto_arg);
                 if self.at(TK::ident)
                     && !matches!(self.peek_n(1), TK::punct_comma | TK::brkt_paren_close)
                 {
-                    self.expect(TK::ident, ParseErrorContext::DeclFunc, &mut arg);
+                    self.expect(TK::ident, ParseContext::DeclFunc, &mut arg);
                 }
                 self.parse_ty(&mut arg);
                 proto.append_node(arg);
@@ -361,15 +368,11 @@ impl Parser<'_> {
                 }
             }
 
-            self.expect(
-                TK::brkt_paren_close,
-                ParseErrorContext::DeclFunc,
-                &mut proto,
-            );
+            self.expect(TK::brkt_paren_close, ParseContext::DeclFunc, &mut proto);
         }
 
         if !self.at_set(&[TK::punct_comma, TK::punct_fat_arrow, TK::brkt_brace_open]) {
-            let mut ret = Node::new(NK::func_proto_ret);
+            let mut ret = self.node(NK::func_proto_ret);
             self.parse_ty(&mut ret);
             proto.append_node(ret);
         }
@@ -383,7 +386,7 @@ impl Parser<'_> {
     fn parse_stmt(&mut self, parent: &mut Node) {
         match self.peek() {
             TK::kw_let => {
-                let mut binding = Node::new(NK::stmt_let);
+                let mut binding = self.node(NK::stmt_let);
 
                 // 'let'
                 self.bump(&mut binding); // 'let'
@@ -407,8 +410,8 @@ impl Parser<'_> {
     fn parse_stmt_expr(&mut self, parent: &mut Node) {
         self.parse_expr(parent);
 
-        if self.tokens[self.cursor - 1] != TK::brkt_brace_close {
-            self.expect(TK::punct_semiColon, ParseErrorContext::Stmt, parent);
+        if self.tokens[(self.cursor - 1) as usize] != TK::brkt_brace_close {
+            self.expect(TK::punct_semiColon, ParseContext::Stmt, parent);
         }
     }
 }
@@ -458,7 +461,7 @@ impl Parser<'_> {
                     what: ParseErrorExpectedWhat::Item(ParseErrorItem::Expr),
                     at: self.cursor,
                     found: self.cursor,
-                    context: ParseErrorContext::ExprStart,
+                    context: ParseContext::ExprStart,
                 }),
             );
         }
@@ -497,7 +500,7 @@ impl Parser<'_> {
             TK::brkt_brace_open => self.parse_block(),
 
             TK::kw_return => {
-                let mut ret = Node::new(NK::expr_return);
+                let mut ret = self.node(NK::expr_return);
                 self.bump(&mut ret); // 'return'
                 if let Some(expr) = self.try_parse_expr() {
                     ret.append_node(expr);
@@ -513,14 +516,14 @@ impl Parser<'_> {
     fn try_parse_expr_infix(&mut self, p: TK, lhs: Node, prec: Precedence) -> Option<Node> {
         let node = match p {
             TK::punct_eq | TK::punct_plus | TK::punct_minus | TK::punct_star | TK::punct_slash => {
-                let mut infix = Node::new(NK::expr_infix);
+                let mut infix = self.node(NK::expr_infix);
 
                 // lhs
                 infix.append_node(lhs);
 
                 // op
                 {
-                    let mut op = Node::new(NK::expr_infix_op);
+                    let mut op = self.node(NK::expr_infix_op);
                     // @TODO: parse multiple operators
                     self.bump(&mut op);
                     infix.append_node(op);
@@ -532,7 +535,7 @@ impl Parser<'_> {
                 infix
             }
             TK::brkt_paren_open => {
-                let mut call = Node::new(NK::expr_call);
+                let mut call = self.node(NK::expr_call);
 
                 // callee
                 call.append_node(lhs);
@@ -548,7 +551,7 @@ impl Parser<'_> {
                     }
                 }
 
-                self.expect(TK::brkt_paren_close, ParseErrorContext::ExprCall, &mut call); // ')'
+                self.expect(TK::brkt_paren_close, ParseContext::ExprCall, &mut call); // ')'
 
                 call
             }

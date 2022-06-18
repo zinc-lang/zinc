@@ -57,10 +57,10 @@ fn main() {
         for error in parse_res.errors {
             match error {
                 parse::ParseError::Expected(err) => {
-                    let at = lex_res.tokens[err.at];
-                    let found = lex_res.tokens[err.found];
+                    let at = lex_res.tokens[err.at as usize];
+                    let found = lex_res.tokens[err.found as usize];
 
-                    let at_range = &lex_res.spans[err.at];
+                    let at_range = &lex_res.spans[err.at as usize];
                     let at_loc = parse::FileLocation::from_offset(at_range.start as usize, &source);
 
                     println!(

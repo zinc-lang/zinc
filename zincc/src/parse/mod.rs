@@ -4,7 +4,7 @@ mod parser;
 
 pub use lexer::{lex, LexResult};
 pub use parser::{
-    parse, ParseError, ParseErrorContext, ParseErrorExpected, ParseErrorExpectedWhat, ParseResult,
+    parse, ParseContext, ParseError, ParseErrorExpected, ParseErrorExpectedWhat, ParseResult,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

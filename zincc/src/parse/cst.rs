@@ -10,6 +10,7 @@ pub struct Node {
     pub kind: NodeKind,
     pub elements: Vec<Element>,
     pub nodes: Vec<Node>,
+    pub token_offset: u32,
 }
 
 impl std::fmt::Debug for Node {
@@ -19,11 +20,12 @@ impl std::fmt::Debug for Node {
 }
 
 impl Node {
-    pub fn new(kind: NodeKind) -> Self {
+    pub fn new(kind: NodeKind, token_offset: u32) -> Self {
         Self {
             kind,
             elements: vec![],
             nodes: vec![],
+            token_offset,
         }
     }
 
