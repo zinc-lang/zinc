@@ -32,7 +32,7 @@ fn main() {
 
     if options.verbose_tokens {
         lex_res.debug_zip().for_each(|(tk, range, _)| {
-            debug::print_token(&source, tk, range);
+            eprintln!("{}", debug::format_token(&source, tk, &range));
         });
         println!();
     }
@@ -42,8 +42,15 @@ fn main() {
     let duration_parse = stopwatch.read();
 
     if options.verbose_cst {
-        debug::print_cst(&source, &parse_res.cst, &lex_res.tokens, &lex_res.spans, 0);
-        println!();
+        debug::print_cst(
+            &mut std::io::stderr(),
+            &source,
+            &lex_res.tokens,
+            &lex_res.spans,
+            &parse_res.cst,
+        )
+        .unwrap();
+        eprintln!();
     }
 
     if !parse_res.errors.is_empty() {

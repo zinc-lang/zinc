@@ -1,5 +1,11 @@
-use crate::parse::{self, cst, TokenKind};
-use std::fmt;
+use crate::{
+    parse::{self, cst, TokenKind},
+    util::AutoIndentingWriter,
+};
+use std::{
+    fmt,
+    io::{self, Write},
+};
 
 #[derive(Debug, Clone, Copy)]
 pub enum TerminalColor {
@@ -46,10 +52,10 @@ impl fmt::Display for TerminalColor {
     }
 }
 
-pub fn print_token(source: &str, tk: parse::TK, range: std::ops::Range<u32>) {
+pub fn format_token(source: &str, tk: parse::TK, range: &std::ops::Range<u32>) -> String {
     let slice = &source[range.start as usize..range.end as usize];
     let slice = unescape_string(slice);
-    println!(
+    format!(
         "{}{:?}{}@{}{:?}{}  {}'{}'{}",
         TerminalColor::CyanDark,
         tk,
@@ -60,7 +66,7 @@ pub fn print_token(source: &str, tk: parse::TK, range: std::ops::Range<u32>) {
         TerminalColor::GreenDark,
         slice,
         TerminalColor::Reset,
-    );
+    )
 }
 
 pub fn unescape_string(str: &str) -> String {
@@ -76,35 +82,61 @@ pub fn unescape_string(str: &str) -> String {
         .collect::<String>()
 }
 
-pub fn print_cst(
+pub fn print_cst<W: Write>(
+    writer: &mut W,
     source: &str,
-    node: &cst::Node,
     tokens: &[TokenKind],
     ranges: &[std::ops::Range<u32>],
-    indent: usize,
-) {
-    for child in node.children.iter() {
-        for _ in 0..indent {
-            print!("  ");
+    node: &cst::Node,
+) -> io::Result<()> {
+    CstPrinter::new(writer, source, tokens, ranges).print(node)
+}
+
+pub struct CstPrinter<'s, W: Write> {
+    f: AutoIndentingWriter<'s, W>,
+    source: &'s str,
+    tokens: &'s [TokenKind],
+    ranges: &'s [std::ops::Range<u32>],
+}
+
+impl<'s, W: Write> CstPrinter<'s, W> {
+    pub fn new(
+        writer: &'s mut W,
+        source: &'s str,
+        tokens: &'s [TokenKind],
+        ranges: &'s [std::ops::Range<u32>],
+    ) -> Self {
+        Self {
+            f: AutoIndentingWriter::new(writer, 2),
+            source,
+            tokens,
+            ranges,
         }
-        match child {
-            cst::Element::Node(node) => {
-                println!(
-                    "{}{:?}{}",
-                    TerminalColor::MagentaDark,
-                    node.kind,
-                    TerminalColor::Reset
-                );
-                print_cst(source, node, tokens, ranges, indent + 1);
-            }
-            cst::Element::Token(tok) => {
-                let tok = *tok as usize;
-                // let tk = tokens[tok];
-                let tk = *tokens.get(tok).unwrap_or(&TokenKind::EOF);
-                // let range = ranges[tok].clone();
-                let range = ranges.get(tok).unwrap_or(&(0..0)).clone();
-                print_token(source, tk, range);
+    }
+
+    pub fn print(&mut self, node: &cst::Node) -> io::Result<()> {
+        for child in node.children.iter() {
+            match child {
+                cst::Element::Token(i) => {
+                    let i = *i as usize;
+                    let tk = *self.tokens.get(i).unwrap_or(&TokenKind::EOF);
+                    let range = self.ranges.get(i).unwrap_or(&(0..0));
+                    writeln!(self.f, "{}", format_token(self.source, tk, range))?;
+                }
+                cst::Element::Node(node) => {
+                    writeln!(
+                        self.f,
+                        "{}{:?}{}",
+                        TerminalColor::MagentaDark,
+                        node.kind,
+                        TerminalColor::Reset
+                    )?;
+                    self.f.push_indent();
+                    self.print(node)?;
+                    self.f.pop_indent();
+                }
             }
         }
+        self.f.flush()
     }
 }
