@@ -91,12 +91,12 @@ pub mod gen {
     use super::*;
     use crate::parse::cst::{self, NodeKind as NK};
 
-    pub fn root<'c>(node: &'c cst::Node) -> Root<'c> {
+    pub fn root(node: &cst::Node) -> Root {
         let decls = node.nodes().iter().map(|s| decl(s)).collect();
         Root { node, decls }
     }
 
-    pub fn decl<'c>(node: &'c cst::Node) -> Decl<'c> {
+    pub fn decl(node: &cst::Node) -> Decl {
         match node.kind {
             NK::decl_func => {
                 let nodes = node.nodes();
@@ -126,14 +126,14 @@ pub mod gen {
     }
 
     /// 'let's and 'const's
-    pub fn binding<'c>(node: &'c cst::Node) -> Binding<'c> {
+    pub fn binding(node: &cst::Node) -> Binding {
         debug_assert!(matches!(node.kind, NK::stmt_let | NK::decl_const));
 
         let tokens = node.tokens();
         let nodes = node.nodes();
 
         debug_assert!(tokens.len() >= 4 && tokens.len() <= 5);
-        debug_assert!(nodes.len() >= 1 && nodes.len() <= 2);
+        debug_assert!(!nodes.is_empty() && nodes.len() <= 2);
 
         let name = Ident(tokens[1]);
 
@@ -144,7 +144,7 @@ pub mod gen {
                 debug_assert_eq!(s.nodes().len(), 1);
                 s.nodes()[0]
             })
-            .map(|s| ty(s));
+            .map(ty);
 
         let expr = expr(nodes.last().unwrap());
 
@@ -156,7 +156,7 @@ pub mod gen {
         }
     }
 
-    pub fn ty<'c>(node: &'c cst::Node) -> Ty<'c> {
+    pub fn ty(node: &cst::Node) -> Ty {
         match node.kind {
             NK::path => Ty::Named(Path { node }),
             NK::func_proto => Ty::Func(func_ty(node)),
@@ -164,7 +164,7 @@ pub mod gen {
         }
     }
 
-    pub fn func_ty<'c>(node: &'c cst::Node) -> TyFunc<'c> {
+    pub fn func_ty(node: &cst::Node) -> TyFunc {
         assert_eq!(node.kind, NK::func_proto);
         let nodes = node.nodes();
 
@@ -191,13 +191,13 @@ pub mod gen {
                 debug_assert_eq!(s.nodes().len(), 1);
                 s.nodes()[0]
             })
-            .map(|s| ty(s))
-            .map(|s| Box::new(s));
+            .map(ty)
+            .map(Box::new);
 
         TyFunc { node, args, ret }
     }
 
-    pub fn expr<'c>(node: &'c cst::Node) -> Expr<'c> {
+    pub fn expr(node: &cst::Node) -> Expr {
         match node.kind {
             NK::path => Expr::Path(Path { node }),
             NK::string => Expr::String(AstString { node }),
@@ -234,7 +234,7 @@ pub mod gen {
         }
     }
 
-    pub fn stmt<'c>(node: &'c cst::Node) -> Stmt<'c> {
+    pub fn stmt(node: &cst::Node) -> Stmt {
         match node.kind {
             NK::stmt_let => Stmt::Let(binding(node)),
 

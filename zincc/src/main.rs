@@ -131,7 +131,7 @@ fn get_options() -> Options {
     let verbose = matches
         .get_many::<String>("verbose")
         .map(|s| s.cloned().collect::<Vec<String>>())
-        .unwrap_or(vec![]);
+        .unwrap_or_default();
 
     let verbose_tokens = verbose.contains(&"tokens".to_string());
     let verbose_cst = verbose.contains(&"cst".to_string());

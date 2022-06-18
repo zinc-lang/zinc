@@ -39,7 +39,7 @@ impl Node {
             .collect()
     }
 
-    pub fn nodes<'c>(&'c self) -> Vec<&'c Node> {
+    pub fn nodes(&self) -> Vec<&Node> {
         self.children
             .iter()
             .filter_map(|s| match s {

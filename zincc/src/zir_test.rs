@@ -104,8 +104,7 @@ mod zir {
                     .funcs
                     .refs()
                     .into_iter()
-                    .map(|s| self.write_func(s))
-                    .collect::<Result<()>>()?;
+                    .try_for_each(|s| self.write_func(s))?;
 
                 self.f.flush()
             }

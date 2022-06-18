@@ -95,7 +95,7 @@ pub fn print_cst(
                     node.kind,
                     TerminalColor::Reset
                 );
-                print_cst(source, &node, tokens, ranges, indent + 1);
+                print_cst(source, node, tokens, ranges, indent + 1);
             }
             cst::Element::Token(tok) => {
                 let tok = *tok as usize;

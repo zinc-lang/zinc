@@ -85,10 +85,10 @@ impl<'a, T: Write> AutoIndentingWriter<'a, T> {
             return;
         } else if self.indent_delta > new_delta {
             assert_eq!(self.indent_delta % new_delta, 0);
-            self.indent_count = self.indent_count * (self.indent_delta / new_delta);
+            self.indent_count *= self.indent_delta / new_delta;
         } else {
             assert_eq!((self.indent_count * self.indent_delta) % new_delta, 0);
-            self.indent_count = self.indent_count / (new_delta / self.indent_delta);
+            self.indent_count /= new_delta / self.indent_delta;
         }
         self.indent_delta = new_delta;
     }
@@ -101,7 +101,7 @@ impl<'a, T: Write> AutoIndentingWriter<'a, T> {
             if !self.disable_write {
                 self.inner.write_all(buf)?;
             }
-            if buf[len - 1] == '\n' as u8 {
+            if buf[len - 1] == b'\n' {
                 self.reset_line();
             }
             Ok(len)
@@ -115,11 +115,9 @@ impl<'a, T: Write> AutoIndentingWriter<'a, T> {
 
     fn apply_indent(&mut self) -> std::io::Result<()> {
         let current_indent = self.get_current_indent();
-        if self.current_line_empty && current_indent > 0 {
-            if !self.disable_write {
-                for _ in 0..current_indent {
-                    self.inner.write(" ".as_bytes())?;
-                }
+        if self.current_line_empty && current_indent > 0 && !self.disable_write {
+            for _ in 0..current_indent {
+                self.inner.write_all(" ".as_bytes())?;
             }
         }
 
@@ -169,7 +167,7 @@ impl<'a, T: Write> AutoIndentingWriter<'a, T> {
     pub fn lock_one_shot_indent(&mut self) -> usize {
         let locked_count = self.indent_one_shot_count;
         self.indent_one_shot_count = 0;
-        return locked_count;
+        locked_count
     }
 
     /// Push an indent that will only be applied on the next line
@@ -199,7 +197,7 @@ impl<'a, T: Write> AutoIndentingWriter<'a, T> {
 
 impl<T: Write> Write for AutoIndentingWriter<'_, T> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if buf.len() == 0 {
+        if buf.is_empty() {
             Ok(0)
         } else {
             self.apply_indent()?;
@@ -223,7 +221,7 @@ pub mod arena {
 
     impl<T> Clone for Ref<T> {
         fn clone(&self) -> Self {
-            Self(self.0.clone(), PhantomData)
+            Self(self.0, PhantomData)
         }
     }
 
