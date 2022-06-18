@@ -1,12 +1,10 @@
-// pub mod ast;
+pub mod debug;
 pub mod parse;
 
-pub mod debug;
-
-pub mod zir_test;
+// pub mod zir_test;
 
 // Could be refactored out
-pub mod llvm;
+// pub mod llvm;
 pub mod util;
 
 fn main() {

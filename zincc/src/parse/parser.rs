@@ -11,7 +11,6 @@ pub fn parse(tokens: &[TokenKind]) -> ParseResult {
         cursor: 0,
 
         errors: Vec::new(),
-        context: ParseContext::TopLevel,
     };
     let cst = parser.parse_top_level();
     ParseResult {
@@ -20,7 +19,6 @@ pub fn parse(tokens: &[TokenKind]) -> ParseResult {
     }
 }
 
-/// @TODO: store the `ParseErrorContext` in here, update when changed, and use it to report errors
 struct Parser<'s> {
     tokens: &'s [TokenKind],
 
@@ -28,8 +26,6 @@ struct Parser<'s> {
     cursor: u32,
 
     errors: Vec<ParseError>,
-
-    context: ParseContext,
 }
 
 #[derive(Debug)]
@@ -182,8 +178,6 @@ impl Parser<'_> {
         let mut root = self.node(NK::root);
 
         while !self.at_end() {
-            // let n = self.parse_string();
-            // root.append_node(n);
             self.parse_decl(ParseContext::TopLevel, &mut root);
         }
 
@@ -193,10 +187,6 @@ impl Parser<'_> {
     }
 
     fn parse_path(&mut self) -> Node {
-        // if !self.panicking {
-        //     assert!(self.at_set(&[TK::punct_dblColon, TK::ident]));
-        // }
-
         let mut path = self.node(NK::path);
 
         self.eat(TK::punct_dblColon, &mut path);
@@ -263,12 +253,7 @@ impl Parser<'_> {
         // ident
         self.expect(TK::ident, ParseContext::DeclConst, binding);
 
-        // // (':' ty)?
-        // if self.eat(TK::punct_colon, binding) {
-        //     let mut ty = Node::new(NK::binding_ty);
-        //     self.parse_ty(&mut ty);
-        //     binding.append_node(ty);
-        // }
+        // ty?
         if !self.at(TK::punct_eq) {
             let mut ty = self.node(NK::binding_ty);
             self.parse_ty(&mut ty);
@@ -478,8 +463,9 @@ impl Parser<'_> {
             if let Some(e) = self.try_parse_expr_infix(p, lhs.clone(), infix_prec) {
                 lhs = e;
             } else {
-                // @FIXME: what exactly is an error condition in this case?
-                return Some(lhs);
+                // @FIXME: Is this ever an error condition?
+                // return Some(lhs);
+                unreachable!();
             }
 
             p = self.peek();
