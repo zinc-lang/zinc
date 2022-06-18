@@ -1,4 +1,4 @@
-pub mod ast;
+// pub mod ast;
 pub mod parse;
 
 pub mod debug;
@@ -76,13 +76,13 @@ fn main() {
     }
 
     stopwatch.reset();
-    let ast = ast::gen::root(&parse_res.cst);
+    // let ast = ast::gen::root(&parse_res.cst);
     let duration_astgen = stopwatch.read();
 
-    if options.verbose_ast {
-        dbg!(&ast);
-        println!();
-    }
+    // if options.verbose_ast {
+    //     dbg!(&ast);
+    //     println!();
+    // }
 
     if options.print_times {
         println!("times:");

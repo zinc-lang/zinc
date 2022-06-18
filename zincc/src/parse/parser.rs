@@ -164,9 +164,7 @@ impl Parser<'_> {
 /// Node ops
 impl Parser<'_> {
     fn bump(&mut self, parent: &mut Node) {
-        parent
-            .children
-            .push(super::cst::Element::Token(self.cursor as u32));
+        parent.elements.push(super::cst::Element::Token);
         self.cursor += 1;
     }
 }

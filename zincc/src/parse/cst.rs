@@ -1,14 +1,15 @@
 #[derive(Debug, Clone)]
 pub enum Element {
-    Node(Node),
-    Token(u32),
+    Token,
+    Node,
 }
 
 // #[derive(Debug, Clone)]
 #[derive(Clone)]
 pub struct Node {
     pub kind: NodeKind,
-    pub children: Vec<Element>,
+    pub elements: Vec<Element>,
+    pub nodes: Vec<Node>,
 }
 
 impl std::fmt::Debug for Node {
@@ -21,33 +22,35 @@ impl Node {
     pub fn new(kind: NodeKind) -> Self {
         Self {
             kind,
-            children: vec![],
+            elements: vec![],
+            nodes: vec![],
         }
     }
 
     pub fn append_node(&mut self, node: Node) {
-        self.children.push(Element::Node(node));
+        self.elements.push(Element::Node);
+        self.nodes.push(node);
     }
 
-    pub fn tokens(&self) -> Vec<u32> {
-        self.children
-            .iter()
-            .filter_map(|s| match s {
-                Element::Token(t) => Some(*t),
-                _ => None,
-            })
-            .collect()
-    }
+    // pub fn tokens(&self) -> Vec<u32> {
+    //     self.children
+    //         .iter()
+    //         .filter_map(|s| match s {
+    //             Element::Token(t) => Some(*t),
+    //             _ => None,
+    //         })
+    //         .collect()
+    // }
 
-    pub fn nodes(&self) -> Vec<&Node> {
-        self.children
-            .iter()
-            .filter_map(|s| match s {
-                Element::Node(n) => Some(n),
-                _ => None,
-            })
-            .collect()
-    }
+    // pub fn nodes(&self) -> Vec<&Node> {
+    //     self.children
+    //         .iter()
+    //         .filter_map(|s| match s {
+    //             Element::Node(n) => Some(n),
+    //             _ => None,
+    //         })
+    //         .collect()
+    // }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

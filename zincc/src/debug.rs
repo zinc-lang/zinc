@@ -97,6 +97,7 @@ pub struct CstPrinter<'s, W: Write> {
     source: &'s str,
     tokens: &'s [TokenKind],
     ranges: &'s [std::ops::Range<u32>],
+    token_count: usize,
 }
 
 impl<'s, W: Write> CstPrinter<'s, W> {
@@ -111,19 +112,23 @@ impl<'s, W: Write> CstPrinter<'s, W> {
             source,
             tokens,
             ranges,
+            token_count: 0,
         }
     }
 
     pub fn print(&mut self, node: &cst::Node) -> io::Result<()> {
-        for child in node.children.iter() {
-            match child {
-                cst::Element::Token(i) => {
-                    let i = *i as usize;
-                    let tk = *self.tokens.get(i).unwrap_or(&TokenKind::EOF);
-                    let range = self.ranges.get(i).unwrap_or(&(0..0));
+        let mut node_count = 0;
+        for elem in node.elements.iter() {
+            match elem {
+                cst::Element::Token => {
+                    let tk = *self.tokens.get(self.token_count).unwrap_or(&TokenKind::EOF);
+                    let range = self.ranges.get(self.token_count).unwrap_or(&(0..0));
+                    self.token_count += 1;
                     writeln!(self.f, "{}", format_token(self.source, tk, range))?;
                 }
-                cst::Element::Node(node) => {
+                cst::Element::Node => {
+                    let node = &node.nodes[node_count];
+                    node_count += 1;
                     writeln!(
                         self.f,
                         "{}{:?}{}",
