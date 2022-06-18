@@ -84,16 +84,18 @@ pub fn unescape_string(str: &str) -> String {
 
 pub fn print_cst<W: Write>(
     writer: &mut W,
+    cst: &cst::Cst,
     source: &str,
     tokens: &[TokenKind],
     ranges: &[std::ops::Range<u32>],
     node: &cst::Node,
 ) -> io::Result<()> {
-    CstPrinter::new(writer, source, tokens, ranges).print(node)
+    CstPrinter::new(writer, cst, source, tokens, ranges).print(node)
 }
 
 pub struct CstPrinter<'s, W: Write> {
     f: AutoIndentingWriter<'s, W>,
+    cst: &'s cst::Cst,
     source: &'s str,
     tokens: &'s [TokenKind],
     ranges: &'s [std::ops::Range<u32>],
@@ -102,12 +104,14 @@ pub struct CstPrinter<'s, W: Write> {
 impl<'s, W: Write> CstPrinter<'s, W> {
     pub fn new(
         writer: &'s mut W,
+        cst: &'s cst::Cst,
         source: &'s str,
         tokens: &'s [TokenKind],
         ranges: &'s [std::ops::Range<u32>],
     ) -> Self {
         Self {
             f: AutoIndentingWriter::new(writer, 2),
+            cst,
             source,
             tokens,
             ranges,
@@ -126,7 +130,8 @@ impl<'s, W: Write> CstPrinter<'s, W> {
                     writeln!(self.f, "{}", format_token(self.source, tk, range))?;
                 }
                 cst::Element::Node => {
-                    let node = &node.nodes[node_count];
+                    let id = node.nodes[node_count];
+                    let node = self.cst.node_map.get(id).unwrap();
                     node_count += 1;
                     writeln!(
                         self.f,

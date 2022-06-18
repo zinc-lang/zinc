@@ -1,5 +1,5 @@
 use super::{
-    cst::{Node, NodeKind as NK},
+    cst::{self, Node, NodeKind as NK},
     TokenKind, TK,
 };
 
@@ -11,10 +11,15 @@ pub fn parse(tokens: &[TokenKind]) -> ParseResult {
         cursor: 0,
 
         errors: Vec::new(),
+
+        node_map: Default::default(),
     };
-    let cst = parser.parse_top_level();
+    let root = parser.parse_top_level();
     ParseResult {
-        cst,
+        cst: cst::Cst {
+            root,
+            node_map: parser.node_map,
+        },
         errors: parser.errors,
     }
 }
@@ -26,11 +31,13 @@ struct Parser<'s> {
     cursor: u32,
 
     errors: Vec<ParseError>,
+
+    node_map: crate::util::index_vec::IndexVec<Node, cst::NodeId>,
 }
 
 #[derive(Debug)]
 pub struct ParseResult {
-    pub cst: Node,
+    pub cst: cst::Cst,
     pub errors: Vec<ParseError>,
 }
 
@@ -125,6 +132,24 @@ impl Parser<'_> {
     }
 }
 
+/// Node ops
+impl Parser<'_> {
+    fn bump(&mut self, parent: &mut Node) {
+        parent.elements.push(super::cst::Element::Token);
+        self.cursor += 1;
+    }
+
+    fn node(&self, kind: NK) -> Node {
+        Node::new(kind, self.cursor)
+    }
+
+    pub fn append_node(&mut self, what: Node, to: &mut Node) {
+        let id = self.node_map.push(what);
+        to.elements.push(cst::Element::Node);
+        to.nodes.push(id);
+    }
+}
+
 /// Error ops
 impl Parser<'_> {
     fn report(&mut self, parent: &mut Node, err: ParseError) {
@@ -141,7 +166,7 @@ impl Parser<'_> {
         } else {
             let mut node = self.node(NK::skipped);
             self.bump(&mut node);
-            parent.append_node(node);
+            self.append_node(node, parent);
         }
     }
 
@@ -157,18 +182,6 @@ impl Parser<'_> {
                 }),
             )
         }
-    }
-}
-
-/// Node ops
-impl Parser<'_> {
-    fn bump(&mut self, parent: &mut Node) {
-        parent.elements.push(super::cst::Element::Token);
-        self.cursor += 1;
-    }
-
-    fn node(&self, kind: NK) -> Node {
-        Node::new(kind, self.cursor)
     }
 }
 
@@ -257,7 +270,7 @@ impl Parser<'_> {
         if !self.at(TK::punct_eq) {
             let mut ty = self.node(NK::binding_ty);
             self.parse_ty(&mut ty);
-            binding.append_node(ty);
+            self.append_node(ty, binding);
         }
 
         // '='
@@ -272,7 +285,7 @@ impl Parser<'_> {
 impl Parser<'_> {
     fn parse_decl(&mut self, context: ParseContext, parent: &mut Node) {
         if let Some(decl) = self.try_parse_decl() {
-            parent.append_node(decl);
+            self.append_node(decl, parent);
         } else {
             self.report(
                 parent,
@@ -318,17 +331,19 @@ impl Parser<'_> {
         if self.eat(TK::punct_fat_arrow, &mut body) {
             self.parse_stmt_expr(&mut body);
         } else {
-            body.append_node(self.parse_block());
+            let block = self.parse_block();
+            self.append_node(block, &mut body);
         }
 
-        func.append_node(body);
+        self.append_node(body, func);
     }
 }
 
 /// Parse ty
 impl Parser<'_> {
     fn parse_ty(&mut self, parent: &mut Node) {
-        parent.append_node(self.parse_path());
+        let path = self.parse_path();
+        self.append_node(path, parent);
     }
 
     fn parse_ty_func(&mut self, parent: &mut Node) {
@@ -346,7 +361,7 @@ impl Parser<'_> {
                     self.expect(TK::ident, ParseContext::DeclFunc, &mut arg);
                 }
                 self.parse_ty(&mut arg);
-                proto.append_node(arg);
+                self.append_node(arg, &mut proto);
 
                 if !self.eat(TK::punct_comma, &mut proto) {
                     break;
@@ -359,10 +374,10 @@ impl Parser<'_> {
         if !self.at_set(&[TK::punct_comma, TK::punct_fat_arrow, TK::brkt_brace_open]) {
             let mut ret = self.node(NK::func_proto_ret);
             self.parse_ty(&mut ret);
-            proto.append_node(ret);
+            self.append_node(ret, &mut proto);
         }
 
-        parent.append_node(proto);
+        self.append_node(proto, parent);
     }
 }
 
@@ -378,11 +393,11 @@ impl Parser<'_> {
 
                 self.parse_binding(&mut binding);
 
-                parent.append_node(binding);
+                self.append_node(binding, parent);
             }
             _ => {
                 if let Some(decl) = self.try_parse_decl() {
-                    parent.append_node(decl);
+                    self.append_node(decl, parent);
                 } else {
                     self.parse_stmt_expr(parent);
                 }
@@ -438,7 +453,7 @@ impl Parser<'_> {
 
     fn parse_expr_precedence(&mut self, prec: Precedence, parent: &mut Node) {
         if let Some(expr) = self.try_parse_expr_precedence(prec) {
-            parent.append_node(expr);
+            self.append_node(expr, parent);
         } else {
             self.report(
                 parent,
@@ -489,7 +504,7 @@ impl Parser<'_> {
                 let mut ret = self.node(NK::expr_return);
                 self.bump(&mut ret); // 'return'
                 if let Some(expr) = self.try_parse_expr() {
-                    ret.append_node(expr);
+                    self.append_node(expr, &mut ret);
                 }
                 ret
             }
@@ -505,14 +520,14 @@ impl Parser<'_> {
                 let mut infix = self.node(NK::expr_infix);
 
                 // lhs
-                infix.append_node(lhs);
+                self.append_node(lhs, &mut infix);
 
                 // op
                 {
                     let mut op = self.node(NK::expr_infix_op);
                     // @TODO: parse multiple operators
                     self.bump(&mut op);
-                    infix.append_node(op);
+                    self.append_node(op, &mut infix);
                 }
 
                 // rhs
@@ -524,7 +539,7 @@ impl Parser<'_> {
                 let mut call = self.node(NK::expr_call);
 
                 // callee
-                call.append_node(lhs);
+                self.append_node(lhs, &mut call);
 
                 self.bump(&mut call); // '('
 

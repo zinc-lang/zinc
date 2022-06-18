@@ -42,10 +42,11 @@ fn main() {
     if options.verbose_cst {
         debug::print_cst(
             &mut std::io::stderr(),
+            &parse_res.cst,
             &source,
             &lex_res.tokens,
             &lex_res.spans,
-            &parse_res.cst,
+            &parse_res.cst.root,
         )
         .unwrap();
         eprintln!();

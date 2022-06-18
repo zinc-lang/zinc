@@ -1,22 +1,36 @@
+use crate::util::index_vec::{self, IndexVec};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeId(usize);
+
+impl index_vec::Idx for NodeId {
+    fn new(idx: usize) -> Self {
+        Self(idx)
+    }
+
+    fn index(self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Debug)]
+pub struct Cst {
+    pub root: Node,
+    pub node_map: IndexVec<Node, NodeId>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Element {
     Token,
     Node,
 }
 
-// #[derive(Debug, Clone)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Node {
     pub kind: NodeKind,
     pub elements: Vec<Element>,
-    pub nodes: Vec<Node>,
+    pub nodes: Vec<NodeId>,
     pub token_offset: u32,
-}
-
-impl std::fmt::Debug for Node {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Node").finish()
-    }
 }
 
 impl Node {
@@ -28,31 +42,6 @@ impl Node {
             token_offset,
         }
     }
-
-    pub fn append_node(&mut self, node: Node) {
-        self.elements.push(Element::Node);
-        self.nodes.push(node);
-    }
-
-    // pub fn tokens(&self) -> Vec<u32> {
-    //     self.children
-    //         .iter()
-    //         .filter_map(|s| match s {
-    //             Element::Token(t) => Some(*t),
-    //             _ => None,
-    //         })
-    //         .collect()
-    // }
-
-    // pub fn nodes(&self) -> Vec<&Node> {
-    //     self.children
-    //         .iter()
-    //         .filter_map(|s| match s {
-    //             Element::Node(n) => Some(n),
-    //             _ => None,
-    //         })
-    //         .collect()
-    // }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
