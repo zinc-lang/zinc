@@ -88,9 +88,8 @@ pub fn print_cst<W: Write>(
     source: &str,
     tokens: &[TokenKind],
     ranges: &[std::ops::Range<u32>],
-    node: &cst::Node,
 ) -> io::Result<()> {
-    CstPrinter::new(writer, cst, source, tokens, ranges).print(node)
+    CstPrinter::new(writer, cst, source, tokens, ranges).print(cst.root())
 }
 
 pub struct CstPrinter<'s, W: Write> {
@@ -119,29 +118,23 @@ impl<'s, W: Write> CstPrinter<'s, W> {
     }
 
     pub fn print(&mut self, node: &cst::Node) -> io::Result<()> {
-        let mut node_count = 0;
-        let mut token_count = node.token_offset as usize;
         for elem in node.elements.iter() {
             match elem {
-                cst::Element::Token => {
-                    let tk = *self.tokens.get(token_count).unwrap_or(&TokenKind::EOF);
-                    let range = self.ranges.get(token_count).unwrap_or(&(0..0));
-                    token_count += 1;
+                cst::Element::Token(i) => {
+                    let tk = *self.tokens.get(*i as usize).unwrap();
+                    let range = self.ranges.get(*i as usize).unwrap();
                     writeln!(self.f, "{}", format_token(self.source, tk, range))?;
                 }
-                cst::Element::Node => {
-                    let id = node.nodes[node_count];
-                    let node = self.cst.node_map.get(id).unwrap();
-                    node_count += 1;
+                cst::Element::Node(n) => {
                     writeln!(
                         self.f,
                         "{}{:?}{}",
                         TerminalColor::MagentaDark,
-                        node.kind,
+                        n.kind,
                         TerminalColor::Reset
                     )?;
                     self.f.push_indent();
-                    self.print(node)?;
+                    self.print(self.cst.get(*n))?;
                     self.f.pop_indent();
                 }
             }

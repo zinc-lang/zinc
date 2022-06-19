@@ -1,0 +1,1 @@
+foo fn(a sint, uint, c bool) bool {}

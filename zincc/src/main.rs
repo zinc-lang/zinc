@@ -46,7 +46,6 @@ fn main() {
             &source,
             &lex_res.tokens,
             &lex_res.spans,
-            &parse_res.cst.root,
         )
         .unwrap();
         eprintln!();
@@ -75,23 +74,21 @@ fn main() {
     }
 
     stopwatch.reset();
-    // let ast = ast::gen::root(&parse_res.cst);
+    let ast = parse::ast::gen::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.spans);
     let duration_astgen = stopwatch.read();
 
-    // if options.verbose_ast {
-    //     dbg!(&ast);
-    //     println!();
-    // }
+    if options.verbose_ast {
+        dbg!(&ast);
+        println!();
+    }
 
     if options.print_times {
         println!("times:");
         println!("  lexing:\t{:?}", duration_lex);
         println!("  parsing:\t{:?}", duration_parse);
         println!("  astgen:\t{:?}", duration_astgen);
-        println!(
-            "  total:\t{:?}",
-            duration_lex + duration_parse + duration_astgen
-        );
+        let total = duration_lex + duration_parse + duration_astgen;
+        println!("  total:\t{:?}", total);
     }
 }
 

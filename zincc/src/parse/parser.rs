@@ -1,5 +1,5 @@
 use super::{
-    cst::{self, Node, NodeKind as NK},
+    cst::{self, NodeKind, NK},
     TokenKind, TK,
 };
 
@@ -15,10 +15,15 @@ pub fn parse(tokens: &[TokenKind]) -> ParseResult {
         node_map: Default::default(),
     };
     let root = parser.parse_top_level();
+    let mut map = parser.node_map;
+    let root = map.push(root.node);
     ParseResult {
         cst: cst::Cst {
-            root,
-            node_map: parser.node_map,
+            root: cst::NodeId {
+                raw: root,
+                kind: NK::root,
+            },
+            map,
         },
         errors: parser.errors,
     }
@@ -32,7 +37,7 @@ struct Parser<'s> {
 
     errors: Vec<ParseError>,
 
-    node_map: crate::util::index_vec::IndexVec<Node, cst::NodeId>,
+    node_map: crate::util::index_vec::IndexVec<cst::Node, cst::RawNodeId>,
 }
 
 #[derive(Debug)]
@@ -83,6 +88,12 @@ pub enum ParseContext {
     Path,
 }
 
+#[derive(Clone)]
+struct PNode {
+    kind: NodeKind,
+    node: cst::Node,
+}
+
 /// Token ops
 impl Parser<'_> {
     fn at_end(&self) -> bool {
@@ -96,6 +107,7 @@ impl Parser<'_> {
             self.tokens[(self.cursor + n) as usize]
         }
     }
+
     fn peek(&self) -> TK {
         self.peek_n(0)
     }
@@ -113,7 +125,7 @@ impl Parser<'_> {
         false
     }
 
-    fn eat(&mut self, kind: TK, parent: &mut Node) -> bool {
+    fn eat(&mut self, kind: TK, parent: &mut PNode) -> bool {
         if self.at(kind) {
             self.bump(parent);
             true
@@ -122,7 +134,7 @@ impl Parser<'_> {
         }
     }
 
-    fn eat_set(&mut self, set: &[TK], parent: &mut Node) -> bool {
+    fn eat_set(&mut self, set: &[TK], parent: &mut PNode) -> bool {
         if self.at_set(set) {
             self.bump(parent);
             true
@@ -134,25 +146,34 @@ impl Parser<'_> {
 
 /// Node ops
 impl Parser<'_> {
-    fn bump(&mut self, parent: &mut Node) {
-        parent.elements.push(super::cst::Element::Token);
+    fn bump(&mut self, parent: &mut PNode) {
+        parent
+            .node
+            .elements
+            .push(super::cst::Element::Token(self.cursor));
         self.cursor += 1;
     }
 
-    fn node(&self, kind: NK) -> Node {
-        Node::new(kind, self.cursor)
+    fn node(&self, kind: NK) -> PNode {
+        PNode {
+            kind,
+            node: cst::Node::new(),
+        }
     }
 
-    pub fn append_node(&mut self, what: Node, to: &mut Node) {
-        let id = self.node_map.push(what);
-        to.elements.push(cst::Element::Node);
-        to.nodes.push(id);
+    pub fn append_node(&mut self, what: PNode, to: &mut PNode) {
+        let id_raw = self.node_map.push(what.node);
+        let id = cst::NodeId {
+            raw: id_raw,
+            kind: what.kind,
+        };
+        to.node.elements.push(cst::Element::Node(id));
     }
 }
 
 /// Error ops
 impl Parser<'_> {
-    fn report(&mut self, parent: &mut Node, err: ParseError) {
+    fn report(&mut self, parent: &mut PNode, err: ParseError) {
         if !self.panicking {
             self.panicking = true;
 
@@ -170,7 +191,7 @@ impl Parser<'_> {
         }
     }
 
-    fn expect(&mut self, what: TK, context: ParseContext, parent: &mut Node) {
+    fn expect(&mut self, what: TK, context: ParseContext, parent: &mut PNode) {
         if !self.eat(what, parent) {
             self.report(
                 parent,
@@ -187,7 +208,7 @@ impl Parser<'_> {
 
 /// Parse
 impl Parser<'_> {
-    fn parse_top_level(&mut self) -> Node {
+    fn parse_top_level(&mut self) -> PNode {
         let mut root = self.node(NK::root);
 
         while !self.at_end() {
@@ -199,7 +220,7 @@ impl Parser<'_> {
         root
     }
 
-    fn parse_path(&mut self) -> Node {
+    fn parse_path(&mut self) -> PNode {
         let mut path = self.node(NK::path);
 
         self.eat(TK::punct_dblColon, &mut path);
@@ -213,7 +234,7 @@ impl Parser<'_> {
         path
     }
 
-    fn parse_string(&mut self) -> Node {
+    fn parse_string(&mut self) -> PNode {
         assert!(self.at(TK::string_open));
 
         let mut str = self.node(NK::string);
@@ -233,21 +254,21 @@ impl Parser<'_> {
         str
     }
 
-    fn parse_literal_int(&mut self) -> Node {
+    fn parse_literal_int(&mut self) -> PNode {
         assert!(self.at_set(&[TK::int_dec, TK::int_bin, TK::int_hex, TK::int_oct]));
         let mut lit = self.node(NK::literal_int);
         self.bump(&mut lit);
         lit
     }
 
-    fn parse_literal_float(&mut self) -> Node {
+    fn parse_literal_float(&mut self) -> PNode {
         assert!(self.at(TK::float));
         let mut lit = self.node(NK::literal_float);
         self.bump(&mut lit);
         lit
     }
 
-    fn parse_block(&mut self) -> Node {
+    fn parse_block(&mut self) -> PNode {
         let mut block = self.node(NK::block);
 
         self.expect(TK::brkt_brace_open, ParseContext::Block, &mut block);
@@ -262,7 +283,7 @@ impl Parser<'_> {
     }
 
     /// 'let's and 'const's
-    fn parse_binding(&mut self, binding: &mut Node) {
+    fn parse_binding(&mut self, binding: &mut PNode) {
         // ident
         self.expect(TK::ident, ParseContext::DeclConst, binding);
 
@@ -283,7 +304,7 @@ impl Parser<'_> {
 
 /// Parse decl
 impl Parser<'_> {
-    fn parse_decl(&mut self, context: ParseContext, parent: &mut Node) {
+    fn parse_decl(&mut self, context: ParseContext, parent: &mut PNode) {
         if let Some(decl) = self.try_parse_decl() {
             self.append_node(decl, parent);
         } else {
@@ -299,7 +320,7 @@ impl Parser<'_> {
         }
     }
 
-    fn try_parse_decl(&mut self) -> Option<Node> {
+    fn try_parse_decl(&mut self) -> Option<PNode> {
         let decl = match self.peek() {
             TK::ident => match self.peek_n(1) {
                 TK::kw_fn => {
@@ -323,7 +344,7 @@ impl Parser<'_> {
         Some(decl)
     }
 
-    fn parse_decl_func(&mut self, func: &mut Node) {
+    fn parse_decl_func(&mut self, func: &mut PNode) {
         self.parse_ty_func(func);
 
         let mut body = self.node(NK::decl_func_body);
@@ -341,12 +362,12 @@ impl Parser<'_> {
 
 /// Parse ty
 impl Parser<'_> {
-    fn parse_ty(&mut self, parent: &mut Node) {
+    fn parse_ty(&mut self, parent: &mut PNode) {
         let path = self.parse_path();
         self.append_node(path, parent);
     }
 
-    fn parse_ty_func(&mut self, parent: &mut Node) {
+    fn parse_ty_func(&mut self, parent: &mut PNode) {
         assert!(self.at(TK::kw_fn));
 
         let mut proto = self.node(NK::func_proto);
@@ -354,7 +375,7 @@ impl Parser<'_> {
 
         if self.eat(TK::brkt_paren_open, &mut proto) {
             while !self.at(TK::brkt_paren_close) {
-                let mut arg = self.node(NK::func_proto_arg);
+                let mut arg = self.node(NK::func_proto_param);
                 if self.at(TK::ident)
                     && !matches!(self.peek_n(1), TK::punct_comma | TK::brkt_paren_close)
                 {
@@ -383,7 +404,7 @@ impl Parser<'_> {
 
 /// Parse stmt
 impl Parser<'_> {
-    fn parse_stmt(&mut self, parent: &mut Node) {
+    fn parse_stmt(&mut self, parent: &mut PNode) {
         match self.peek() {
             TK::kw_let => {
                 let mut binding = self.node(NK::stmt_let);
@@ -407,7 +428,7 @@ impl Parser<'_> {
 
     /// Parse an expression in the context of a statement.
     /// ie. with a semicolon if it does not end with a '}'
-    fn parse_stmt_expr(&mut self, parent: &mut Node) {
+    fn parse_stmt_expr(&mut self, parent: &mut PNode) {
         self.parse_expr(parent);
 
         if self.tokens[(self.cursor - 1) as usize] != TK::brkt_brace_close {
@@ -443,15 +464,15 @@ impl Precedence {
 
 /// Parse expr
 impl Parser<'_> {
-    fn parse_expr(&mut self, parent: &mut Node) {
+    fn parse_expr(&mut self, parent: &mut PNode) {
         self.parse_expr_precedence(Precedence::None, parent);
     }
 
-    fn try_parse_expr(&mut self) -> Option<Node> {
+    fn try_parse_expr(&mut self) -> Option<PNode> {
         self.try_parse_expr_precedence(Precedence::None)
     }
 
-    fn parse_expr_precedence(&mut self, prec: Precedence, parent: &mut Node) {
+    fn parse_expr_precedence(&mut self, prec: Precedence, parent: &mut PNode) {
         if let Some(expr) = self.try_parse_expr_precedence(prec) {
             self.append_node(expr, parent);
         } else {
@@ -467,7 +488,7 @@ impl Parser<'_> {
         }
     }
 
-    fn try_parse_expr_precedence(&mut self, prec: Precedence) -> Option<Node> {
+    fn try_parse_expr_precedence(&mut self, prec: Precedence) -> Option<PNode> {
         let mut lhs = self.try_parse_expr_start()?;
 
         let init_prec = prec;
@@ -490,7 +511,7 @@ impl Parser<'_> {
         Some(lhs)
     }
 
-    fn try_parse_expr_start(&mut self) -> Option<Node> {
+    fn try_parse_expr_start(&mut self) -> Option<PNode> {
         let expr = match self.peek() {
             TK::ident => self.parse_path(),
             TK::string_open => self.parse_string(),
@@ -514,7 +535,7 @@ impl Parser<'_> {
         Some(expr)
     }
 
-    fn try_parse_expr_infix(&mut self, p: TK, lhs: Node, prec: Precedence) -> Option<Node> {
+    fn try_parse_expr_infix(&mut self, p: TK, lhs: PNode, prec: Precedence) -> Option<PNode> {
         let node = match p {
             TK::punct_eq | TK::punct_plus | TK::punct_minus | TK::punct_star | TK::punct_slash => {
                 let mut infix = self.node(NK::expr_infix);

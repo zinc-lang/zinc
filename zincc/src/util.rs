@@ -319,6 +319,7 @@ pub mod index_vec {
     use std::fmt::Debug;
     use std::hash::Hash;
     use std::marker::PhantomData;
+    // use std::ops::Index;
 
     pub trait Idx: 'static + Copy + Eq + Debug + Hash {
         fn new(idx: usize) -> Self;
@@ -361,6 +362,77 @@ pub mod index_vec {
         #[inline]
         pub fn get(&self, index: I) -> Option<&T> {
             self.raw.get(index.index())
+        }
+
+        // pub fn get_vec(&self, vec: &Vec<I>) -> Vec<&T> {
+        //     vec.iter().map(|i| self.get(*i).unwrap()).collect()
+        // }
+    }
+
+    // impl<T, I: Idx> Index<I> for IndexVec<T, I> {
+    //     type Output = T;
+
+    //     fn index(&self, index: I) -> &Self::Output {
+    //         &self.raw[index.index()]
+    //     }
+    // }
+
+    // impl<T, I: Idx> Index<std::ops::Range<I>> for IndexVec<T, I> {
+    //     type Output = [T];
+
+    //     fn index(&self, index: std::ops::Range<I>) -> &Self::Output {
+    //         &self.raw[index.start.index()..index.end.index()]
+    //     }
+    // }
+}
+
+pub mod interning_vec {
+    use std::{marker::PhantomData, num::NonZeroUsize};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Symbol<T: Eq> {
+        raw: NonZeroUsize,
+        _m: PhantomData<T>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct InterningVec<T: Eq> {
+        vec: Vec<T>,
+    }
+
+    impl<T: Eq> Default for InterningVec<T> {
+        fn default() -> Self {
+            Self { vec: Vec::new() }
+        }
+    }
+
+    impl<T: Eq> InterningVec<T> {
+        #[inline]
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        #[inline]
+        pub fn get_or_intern(&mut self, item: T) -> Symbol<T> {
+            let i = self
+                .vec
+                .iter()
+                .position(|it| (*it).eq(&item))
+                .unwrap_or_else(|| {
+                    let i = self.vec.len();
+                    self.vec.push(item);
+                    i
+                });
+
+            Symbol {
+                raw: NonZeroUsize::new(i + 1).unwrap(),
+                _m: PhantomData,
+            }
+        }
+
+        #[inline]
+        pub fn get(&mut self, sym: Symbol<T>) -> Option<&T> {
+            self.vec.get(sym.raw.get() - 1)
         }
     }
 }

@@ -1,9 +1,15 @@
 use crate::util::index_vec::{self, IndexVec};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId(usize);
+#[derive(Debug, Clone, Copy)]
+pub struct NodeId {
+    pub raw: RawNodeId,
+    pub kind: NodeKind,
+}
 
-impl index_vec::Idx for NodeId {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RawNodeId(usize);
+
+impl index_vec::Idx for RawNodeId {
     fn new(idx: usize) -> Self {
         Self(idx)
     }
@@ -15,32 +21,57 @@ impl index_vec::Idx for NodeId {
 
 #[derive(Debug)]
 pub struct Cst {
-    pub root: Node,
-    pub node_map: IndexVec<Node, NodeId>,
+    pub root: NodeId,
+    pub map: IndexVec<Node, RawNodeId>,
+}
+
+impl Cst {
+    pub fn root(&self) -> &Node {
+        self.get(self.root)
+    }
+
+    #[track_caller]
+    pub fn get(&self, id: NodeId) -> &Node {
+        self.map.get(id.raw).unwrap()
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum Element {
-    Token,
-    Node,
+    Token(u32),
+    Node(NodeId),
 }
 
 #[derive(Debug, Clone)]
 pub struct Node {
-    pub kind: NodeKind,
     pub elements: Vec<Element>,
-    pub nodes: Vec<NodeId>,
-    pub token_offset: u32,
 }
 
 impl Node {
-    pub fn new(kind: NodeKind, token_offset: u32) -> Self {
-        Self {
-            kind,
-            elements: vec![],
-            nodes: vec![],
-            token_offset,
-        }
+    pub fn new() -> Self {
+        Self { elements: vec![] }
+    }
+
+    pub fn tokens(&self) -> Vec<u32> {
+        self.elements
+            .iter()
+            .filter_map(|e| match e {
+                Element::Token(i) => Some(i),
+                _ => None,
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn nodes(&self) -> Vec<NodeId> {
+        self.elements
+            .iter()
+            .filter_map(|e| match e {
+                Element::Node(id) => Some(id),
+                _ => None,
+            })
+            .cloned()
+            .collect()
     }
 }
 
@@ -59,7 +90,7 @@ pub enum NodeKind {
     binding_ty,
 
     func_proto,
-    func_proto_arg,
+    func_proto_param,
     func_proto_ret,
 
     decl_func,
@@ -83,3 +114,5 @@ pub enum NodeKind {
     // expr_call_arg,
     expr_return,
 }
+
+pub type NK = NodeKind;
