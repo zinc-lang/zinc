@@ -1,15 +1,9 @@
 pub mod debug;
 pub mod parse;
 
-// pub mod zir_test;
-
-// Could be refactored out
-// pub mod llvm;
 pub mod util;
 
 fn main() {
-    // zir_test::zir_test();
-
     let options = get_options();
 
     assert_eq!(options.files.len(), 1);
