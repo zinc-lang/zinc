@@ -174,7 +174,7 @@ pub mod gen {
         cst: &cst::Cst,
         source: &str,
         tokens: &[TokenKind],
-        ranges: &[std::ops::Range<u32>],
+        ranges: &[std::ops::Range<usize>],
     ) -> AstMap {
         let mut gener = Generator::new(cst, source, tokens, ranges);
         let root = gener.gen_root();
@@ -188,7 +188,7 @@ pub mod gen {
         cst: &'s cst::Cst,
         source: &'s str,
         tokens: &'s [TokenKind],
-        ranges: &'s [std::ops::Range<u32>],
+        ranges: &'s [std::ops::Range<usize>],
 
         strings: InterningIndexVec<String, StrSym>,
     }
@@ -198,7 +198,7 @@ pub mod gen {
             cst: &'s cst::Cst,
             source: &'s str,
             tokens: &'s [TokenKind],
-            ranges: &'s [std::ops::Range<u32>],
+            ranges: &'s [std::ops::Range<usize>],
         ) -> Self {
             Self {
                 cst,

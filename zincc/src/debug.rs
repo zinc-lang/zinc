@@ -52,7 +52,7 @@ impl fmt::Display for TerminalColor {
     }
 }
 
-pub fn format_token(source: &str, tk: parse::TK, range: &std::ops::Range<u32>) -> String {
+pub fn format_token(source: &str, tk: parse::TK, range: &std::ops::Range<usize>) -> String {
     let slice = &source[range.start as usize..range.end as usize];
     let slice = unescape_string(slice);
     format!(
@@ -87,7 +87,7 @@ pub fn print_cst<W: Write>(
     cst: &cst::Cst,
     source: &str,
     tokens: &[TokenKind],
-    ranges: &[std::ops::Range<u32>],
+    ranges: &[std::ops::Range<usize>],
 ) -> io::Result<()> {
     CstPrinter::new(writer, cst, source, tokens, ranges).print(cst.root())
 }
@@ -97,7 +97,7 @@ pub struct CstPrinter<'s, W: Write> {
     cst: &'s cst::Cst,
     source: &'s str,
     tokens: &'s [TokenKind],
-    ranges: &'s [std::ops::Range<u32>],
+    ranges: &'s [std::ops::Range<usize>],
 }
 
 impl<'s, W: Write> CstPrinter<'s, W> {
@@ -106,7 +106,7 @@ impl<'s, W: Write> CstPrinter<'s, W> {
         cst: &'s cst::Cst,
         source: &'s str,
         tokens: &'s [TokenKind],
-        ranges: &'s [std::ops::Range<u32>],
+        ranges: &'s [std::ops::Range<usize>],
     ) -> Self {
         Self {
             f: AutoIndentingWriter::new(writer, 2),

@@ -14,12 +14,12 @@ pub fn lex(source: &str) -> LexResult {
 #[derive(Debug)]
 pub struct LexResult {
     pub tokens: Vec<TK>,
-    pub spans: Vec<Range<u32>>,
+    pub spans: Vec<Range<usize>>,
     pub ws_lens: Vec<u16>,
 }
 
 impl LexResult {
-    pub fn debug_zip(&self) -> Box<dyn std::iter::Iterator<Item = (TK, Range<u32>, u16)>> {
+    pub fn debug_zip(&self) -> Box<dyn std::iter::Iterator<Item = (TK, Range<usize>, u16)>> {
         Box::new(
             self.tokens
                 .clone()
@@ -36,10 +36,10 @@ struct Lexer<'s> {
 
     ws_len: u16,
     tokens: Vec<TK>,
-    spans: Vec<Range<u32>>,
+    spans: Vec<Range<usize>>,
     ws_lens: Vec<u16>,
 
-    span: Range<u32>,
+    span: Range<usize>,
 }
 
 impl<'s> Lexer<'s> {
