@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use crate::util::index_vec::{self, IndexVec};
 
 #[derive(Debug, Clone, Copy)]
@@ -7,15 +9,15 @@ pub struct NodeId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RawNodeId(usize);
+pub struct RawNodeId(NonZeroUsize);
 
 impl index_vec::Idx for RawNodeId {
     fn new(idx: usize) -> Self {
-        Self(idx)
+        Self(NonZeroUsize::new(idx + 1).unwrap())
     }
 
     fn index(self) -> usize {
-        self.0
+        self.0.get() - 1
     }
 }
 
