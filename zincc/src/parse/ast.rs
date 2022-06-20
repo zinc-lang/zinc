@@ -1,15 +1,26 @@
 use super::cst::NodeId;
-use crate::util::interning_vec::{self, InterningVec};
-use std::num::NonZeroU32;
+use crate::util::index_vec::{self, InterningIndexVec};
+use std::num::{NonZeroU32, NonZeroUsize};
 
-type StrSym = interning_vec::Symbol<String>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StrSym(NonZeroUsize);
+
+impl index_vec::Idx for StrSym {
+    fn new(idx: usize) -> Self {
+        Self(NonZeroUsize::new(idx + 1).unwrap())
+    }
+
+    fn index(self) -> usize {
+        self.0.get() - 1
+    }
+}
 
 #[derive(Debug)]
 pub struct TokId(NonZeroU32);
 
 #[derive(Debug)]
 pub struct AstMap {
-    pub strings: InterningVec<String>,
+    pub strings: InterningIndexVec<String, StrSym>,
     pub root: Root,
 }
 
@@ -167,7 +178,7 @@ pub mod gen {
         tokens: &'s [TokenKind],
         ranges: &'s [std::ops::Range<u32>],
 
-        strings: InterningVec<String>,
+        strings: InterningIndexVec<String, StrSym>,
     }
 
     impl<'s> Generator<'s> {
@@ -182,7 +193,7 @@ pub mod gen {
                 source,
                 tokens,
                 ranges,
-                strings: InterningVec::new(),
+                strings: InterningIndexVec::new(),
             }
         }
 

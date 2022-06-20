@@ -210,116 +210,10 @@ impl<T: Write> Write for AutoIndentingWriter<'_, T> {
     }
 }
 
-// pub mod arena {
-//     use std::hash::{Hash, Hasher};
-//     use std::marker::PhantomData;
-//     use std::num::NonZeroU32;
-
-//     // @TODO: Better get/index methods
-
-//     pub struct Ref<T>(NonZeroU32, PhantomData<T>);
-
-//     impl<T> Clone for Ref<T> {
-//         fn clone(&self) -> Self {
-//             Self(self.0, PhantomData)
-//         }
-//     }
-
-//     impl<T> Copy for Ref<T> {}
-
-//     impl<T> std::fmt::Debug for Ref<T> {
-//         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//             write!(f, "Ref<{}>({})", std::any::type_name::<T>(), self.get())
-//         }
-//     }
-
-//     impl<T> Ref<T> {
-//         #[inline]
-//         pub fn get(&self) -> u32 {
-//             self.0.get()
-//         }
-//     }
-
-//     impl<T> PartialEq for Ref<T> {
-//         fn eq(&self, other: &Self) -> bool {
-//             self.0 == other.0
-//         }
-//     }
-
-//     impl<T> Eq for Ref<T> {}
-
-//     #[derive(Debug, Clone, Eq, PartialEq)]
-//     pub struct Arena<T> {
-//         vec: Vec<T>,
-//     }
-
-//     impl<T: Eq> Default for Arena<T> {
-//         fn default() -> Self {
-//             Self::new()
-//         }
-//     }
-
-//     impl<T> Hash for Ref<T> {
-//         fn hash<H: Hasher>(&self, state: &mut H) {
-//             state.write_u32(self.0.get());
-//         }
-//     }
-
-//     impl<T: Eq> Arena<T> {
-//         pub fn new() -> Self {
-//             Self { vec: vec![] }
-//         }
-
-//         pub fn alloc(&mut self, item: T) -> Ref<T> {
-//             let i = self
-//                 .vec
-//                 .iter()
-//                 .position(|it| *it == item)
-//                 .unwrap_or_else(|| {
-//                     let i = self.vec.len();
-//                     self.vec.push(item);
-//                     i
-//                 });
-//             Ref(NonZeroU32::new(i as u32 + 1).unwrap(), PhantomData)
-//         }
-
-//         pub fn alloc_slice(&mut self, items: Box<[T]>) -> Vec<Ref<T>> {
-//             items
-//                 .into_vec()
-//                 .into_iter()
-//                 .map(|s| self.alloc(s))
-//                 .collect()
-//         }
-
-//         pub fn get(&self, r#ref: Ref<T>) -> Option<&T> {
-//             self.vec.get(r#ref.0.get() as usize - 1)
-//         }
-
-//         pub fn get_mut(&mut self, r#ref: Ref<T>) -> Option<&mut T> {
-//             self.vec.get_mut(r#ref.0.get() as usize - 1)
-//         }
-
-//         pub fn refs(&self) -> Vec<Ref<T>> {
-//             (0..self.vec.len())
-//                 .map(|i| Ref(NonZeroU32::new(i as u32 + 1).unwrap(), PhantomData))
-//                 .collect()
-//         }
-
-//         pub fn iter(&self) -> std::slice::Iter<'_, T> {
-//             self.vec.iter()
-//         }
-
-//         pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
-//             self.vec.iter_mut()
-//         }
-//     }
-// }
-
 pub mod index_vec {
     use std::fmt::Debug;
     use std::hash::Hash;
     use std::marker::PhantomData;
-    // use std::ops::Index;
 
     pub trait Idx: 'static + Copy + Eq + Debug + Hash {
         fn new(idx: usize) -> Self;
@@ -363,76 +257,52 @@ pub mod index_vec {
         pub fn get(&self, index: I) -> Option<&T> {
             self.raw.get(index.index())
         }
-
-        // pub fn get_vec(&self, vec: &Vec<I>) -> Vec<&T> {
-        //     vec.iter().map(|i| self.get(*i).unwrap()).collect()
-        // }
-    }
-
-    // impl<T, I: Idx> Index<I> for IndexVec<T, I> {
-    //     type Output = T;
-
-    //     fn index(&self, index: I) -> &Self::Output {
-    //         &self.raw[index.index()]
-    //     }
-    // }
-
-    // impl<T, I: Idx> Index<std::ops::Range<I>> for IndexVec<T, I> {
-    //     type Output = [T];
-
-    //     fn index(&self, index: std::ops::Range<I>) -> &Self::Output {
-    //         &self.raw[index.start.index()..index.end.index()]
-    //     }
-    // }
-}
-
-pub mod interning_vec {
-    use std::{marker::PhantomData, num::NonZeroUsize};
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct Symbol<T: Eq> {
-        raw: NonZeroUsize,
-        _m: PhantomData<T>,
     }
 
     #[derive(Debug, Clone)]
-    pub struct InterningVec<T: Eq> {
-        vec: Vec<T>,
+    #[non_exhaustive]
+    pub struct InterningIndexVec<T: Eq, I: Idx> {
+        pub raw: IndexVec<T, I>,
     }
 
-    impl<T: Eq> Default for InterningVec<T> {
+    impl<T: Eq, I: Idx> Default for InterningIndexVec<T, I> {
         fn default() -> Self {
-            Self { vec: Vec::new() }
+            Self {
+                raw: Default::default(),
+            }
         }
     }
 
-    impl<T: Eq> InterningVec<T> {
+    impl<T: Eq, I: Idx> InterningIndexVec<T, I> {
         #[inline]
         pub fn new() -> Self {
             Self::default()
         }
 
         #[inline]
-        pub fn get_or_intern(&mut self, item: T) -> Symbol<T> {
-            let i = self
-                .vec
-                .iter()
-                .position(|it| (*it).eq(&item))
-                .unwrap_or_else(|| {
-                    let i = self.vec.len();
-                    self.vec.push(item);
-                    i
-                });
-
-            Symbol {
-                raw: NonZeroUsize::new(i + 1).unwrap(),
-                _m: PhantomData,
-            }
+        pub fn from_raw(raw: IndexVec<T, I>) -> Self {
+            Self { raw }
         }
 
         #[inline]
-        pub fn get(&mut self, sym: Symbol<T>) -> Option<&T> {
-            self.vec.get(sym.raw.get() - 1)
+        pub fn get_or_intern(&mut self, t: T) -> I {
+            self.raw
+                .raw
+                .iter()
+                .position(|it| it == &t)
+                .map(|i| I::new(i))
+                .unwrap_or_else(|| self.intern(t))
+        }
+
+        #[inline]
+        pub fn intern(&mut self, t: T) -> I {
+            debug_assert!(self.raw.raw.iter().find(|&it| *it == t).is_none());
+            self.raw.push(t)
+        }
+
+        #[inline]
+        pub fn get(&self, index: I) -> Option<&T> {
+            self.raw.get(index)
         }
     }
 }
