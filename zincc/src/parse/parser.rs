@@ -33,7 +33,7 @@ struct Parser<'s> {
     tokens: &'s [TokenKind],
 
     panicking: bool,
-    cursor: u32,
+    cursor: usize,
 
     errors: Vec<ParseError>,
 
@@ -54,8 +54,8 @@ pub enum ParseError {
 #[derive(Debug)]
 pub struct ParseErrorExpected {
     pub what: ParseErrorExpectedWhat,
-    pub at: u32,
-    pub found: u32,
+    pub at: usize,
+    pub found: usize,
     pub context: ParseContext,
 }
 
@@ -100,8 +100,8 @@ impl Parser<'_> {
         self.at(TK::EOF)
     }
 
-    fn peek_n(&self, n: u32) -> TK {
-        if self.cursor + n >= self.tokens.len() as u32 {
+    fn peek_n(&self, n: usize) -> TK {
+        if self.cursor + n >= self.tokens.len() {
             TK::EOF
         } else {
             self.tokens[(self.cursor + n) as usize]

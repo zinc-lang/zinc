@@ -1,11 +1,22 @@
-use std::num::NonZeroUsize;
+use std::{fmt, num::NonZeroUsize};
 
 use crate::util::index_vec::{self, IndexVec};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct NodeId {
-    pub raw: RawNodeId,
     pub kind: NodeKind,
+    pub raw: RawNodeId,
+}
+
+impl fmt::Debug for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "NodeId({:?}, {})",
+            self.kind,
+            index_vec::Idx::index(self.raw)
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,7 +51,7 @@ impl Cst {
 
 #[derive(Debug, Clone)]
 pub enum Element {
-    Token(u32),
+    Token(usize),
     Node(NodeId),
 }
 
@@ -54,7 +65,7 @@ impl Node {
         Self { elements: vec![] }
     }
 
-    pub fn tokens(&self) -> Vec<u32> {
+    pub fn tokens(&self) -> Vec<usize> {
         self.elements
             .iter()
             .filter_map(|e| match e {

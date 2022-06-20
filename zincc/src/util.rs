@@ -211,19 +211,27 @@ impl<T: Write> Write for AutoIndentingWriter<'_, T> {
 }
 
 pub mod index_vec {
-    use std::fmt::Debug;
+    use std::fmt::{self, Debug};
     use std::hash::Hash;
     use std::marker::PhantomData;
 
-    pub trait Idx: 'static + Copy + Eq + Debug + Hash {
+    pub trait Idx: 'static + Copy + Eq + Hash {
         fn new(idx: usize) -> Self;
         fn index(self) -> usize;
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Clone)]
     pub struct IndexVec<T, I: Idx> {
         pub raw: Vec<T>,
         _m: PhantomData<I>,
+    }
+
+    impl<T: Debug, I: Idx> fmt::Debug for IndexVec<T, I> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_map()
+                .entries(self.raw.iter().enumerate().map(|(k, v)| (k, v)))
+                .finish()
+        }
     }
 
     impl<T, I: Idx> Default for IndexVec<T, I> {
@@ -259,10 +267,16 @@ pub mod index_vec {
         }
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Clone)]
     #[non_exhaustive]
     pub struct InterningIndexVec<T: Eq, I: Idx> {
         pub raw: IndexVec<T, I>,
+    }
+
+    impl<T: Eq + Debug, I: Idx> fmt::Debug for InterningIndexVec<T, I> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            fmt::Debug::fmt(&self.raw, f)
+        }
     }
 
     impl<T: Eq, I: Idx> Default for InterningIndexVec<T, I> {

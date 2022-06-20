@@ -1,8 +1,8 @@
 use super::cst::NodeId;
 use crate::util::index_vec::{self, InterningIndexVec};
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::{fmt, num::NonZeroUsize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StrSym(NonZeroUsize);
 
 impl index_vec::Idx for StrSym {
@@ -15,8 +15,20 @@ impl index_vec::Idx for StrSym {
     }
 }
 
-#[derive(Debug)]
-pub struct TokId(NonZeroU32);
+impl fmt::Debug for StrSym {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "StrSym({})", index_vec::Idx::index(self.clone()))
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct TokId(NonZeroUsize);
+
+impl fmt::Debug for TokId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TokId({})", self.0.get() - 1)
+    }
+}
 
 #[derive(Debug)]
 pub struct AstMap {
@@ -197,8 +209,8 @@ pub mod gen {
             }
         }
 
-        fn gen_ident(&mut self, i: u32) -> Ident {
-            let tok = TokId(NonZeroU32::new(i + 1).unwrap());
+        fn gen_ident(&mut self, i: usize) -> Ident {
+            let tok = TokId(NonZeroUsize::new(i + 1).unwrap());
             let range = &self.ranges[i as usize];
             let str = &self.source[range.start as usize..range.end as usize];
             let sym = self.strings.get_or_intern(str.to_string());
