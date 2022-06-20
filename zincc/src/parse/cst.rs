@@ -112,6 +112,8 @@ pub enum NodeKind {
     decl_const,
 
     stmt_let,
+    stmt_expr,
+    stmt_decl,
 
     literal_int,
     literal_float,

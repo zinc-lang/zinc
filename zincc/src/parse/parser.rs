@@ -418,9 +418,13 @@ impl Parser<'_> {
             }
             _ => {
                 if let Some(decl) = self.try_parse_decl() {
-                    self.append_node(decl, parent);
+                    let mut stmt = self.node(NK::stmt_decl);
+                    self.append_node(decl, &mut stmt);
+                    self.append_node(stmt, parent);
                 } else {
-                    self.parse_stmt_expr(parent);
+                    let mut stmt = self.node(NK::stmt_expr);
+                    self.parse_stmt_expr(&mut stmt);
+                    self.append_node(stmt, parent);
                 }
             }
         }
