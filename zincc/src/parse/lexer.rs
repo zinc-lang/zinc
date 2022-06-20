@@ -287,6 +287,7 @@ impl Lexer<'_> {
                     '+' | '-' => assert_ne!(self.advance(), '\0'),
                     _ => todo!("report error; malformed float literal"),
                 }
+                self.lex_while_condition(is_char::number_mid);
             }
         }
 
