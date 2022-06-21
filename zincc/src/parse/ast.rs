@@ -110,16 +110,7 @@ pub struct DeclFunc {
 #[derive(Debug)]
 pub enum Ty {
     Named(Path),
-    Int(TyInt),
     Func(TyFunc),
-}
-
-#[derive(Debug)]
-pub enum TyInt {
-    Sint,
-    Uint,
-    UintPtr,
-    // @TODO: Arbitrary sizes
 }
 
 #[derive(Debug)]
@@ -212,6 +203,19 @@ pub mod gen {
                 ranges,
                 strings: InterningIndexVec::new(),
             }
+        }
+
+        fn gen_root(&mut self) -> Root {
+            let id = self.cst.root;
+            let decls = self
+                .cst
+                .get(id)
+                .nodes()
+                .iter()
+                .map(|&id| self.gen_decl(id))
+                .collect();
+
+            Root { id, decls }
         }
 
         fn gen_ident(&mut self, i: usize) -> Ident {
@@ -321,17 +325,30 @@ pub mod gen {
             Block { id, stmts }
         }
 
-        fn gen_root(&mut self) -> Root {
-            let id = self.cst.root;
-            let decls = self
-                .cst
-                .get(id)
-                .nodes()
-                .iter()
-                .map(|&id| self.gen_decl(id))
-                .collect();
+        fn gen_binding(&mut self, id: NodeId) -> Binding {
+            debug_assert!(matches!(id.kind, NK::stmt_let | NK::decl_const));
+            let node = self.cst.get(id);
+            let tokens = node.tokens();
 
-            Root { id, decls }
+            debug_assert_eq!(tokens.len(), 4);
+            debug_assert!(matches!(self.tokens[tokens[0]], TK::kw_let | TK::kw_const));
+            debug_assert_eq!(self.tokens[tokens[1]], TK::ident);
+            debug_assert_eq!(self.tokens[tokens[2]], TK::punct_eq);
+            debug_assert_eq!(self.tokens[tokens[3]], TK::punct_semiColon);
+
+            let name = self.gen_ident(tokens[1]);
+
+            let nodes = node.nodes();
+            debug_assert!(nodes.len() >= 1 && nodes.len() <= 2);
+            let ty = if nodes[0].kind == NK::binding_ty {
+                Some(self.gen_ty(self.cst.get(nodes[0]).nodes()[0]))
+            } else {
+                None
+            };
+
+            let expr = Box::new(self.gen_expr(*nodes.last().unwrap()));
+
+            Binding { id, name, ty, expr }
         }
 
         fn gen_decl(&mut self, id: NodeId) -> Decl {
@@ -458,32 +475,6 @@ pub mod gen {
 
                 _ => unreachable!(),
             }
-        }
-
-        fn gen_binding(&mut self, id: NodeId) -> Binding {
-            debug_assert!(matches!(id.kind, NK::stmt_let | NK::decl_const));
-            let node = self.cst.get(id);
-            let tokens = node.tokens();
-
-            debug_assert_eq!(tokens.len(), 4);
-            debug_assert!(matches!(self.tokens[tokens[0]], TK::kw_let | TK::kw_const));
-            debug_assert_eq!(self.tokens[tokens[1]], TK::ident);
-            debug_assert_eq!(self.tokens[tokens[2]], TK::punct_eq);
-            debug_assert_eq!(self.tokens[tokens[3]], TK::punct_semiColon);
-
-            let name = self.gen_ident(tokens[1]);
-
-            let nodes = node.nodes();
-            debug_assert!(nodes.len() >= 1 && nodes.len() <= 2);
-            let ty = if nodes[0].kind == NK::binding_ty {
-                Some(self.gen_ty(self.cst.get(nodes[0]).nodes()[0]))
-            } else {
-                None
-            };
-
-            let expr = Box::new(self.gen_expr(*nodes.last().unwrap()));
-
-            Binding { id, name, ty, expr }
         }
     }
 }
