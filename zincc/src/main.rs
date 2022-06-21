@@ -26,7 +26,7 @@ fn main() {
         lex_res.debug_zip().for_each(|(tk, range, _)| {
             eprintln!("{}", debug::format_token(&source, tk, &range));
         });
-        println!();
+        eprintln!();
     }
 
     stopwatch.reset();
@@ -55,7 +55,7 @@ fn main() {
                     let at_range = &lex_res.spans[err.at as usize];
                     let at_loc = parse::FileLocation::from_offset(at_range.start as usize, &source);
 
-                    println!(
+                    eprintln!(
                         "error: expected '{:?}' at '{:?}' in '{:?}', but found '{:?}'  @[{}:{}]",
                         err.what, at, err.context, found, at_loc.line, at_loc.column
                     );
@@ -63,7 +63,7 @@ fn main() {
             }
         }
 
-        println!("\nAborting due to errors");
+        eprintln!("\nAborting due to errors");
         std::process::exit(1);
     }
 
@@ -72,8 +72,7 @@ fn main() {
     let duration_astgen = stopwatch.read();
 
     if options.verbose_ast {
-        dbg!(&ast);
-        println!();
+        eprintln!("{:#?}\n", ast);
     }
 
     if options.print_times {
