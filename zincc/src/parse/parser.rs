@@ -37,7 +37,7 @@ struct Parser<'s> {
 
     errors: Vec<ParseError>,
 
-    node_map: crate::util::index_vec::IndexVec<cst::Node, cst::RawNodeId>,
+    node_map: crate::util::index::IndexVec<cst::Node, cst::RawNodeId>,
 }
 
 #[derive(Debug)]

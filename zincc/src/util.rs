@@ -210,7 +210,7 @@ impl<T: Write> Write for AutoIndentingWriter<'_, T> {
     }
 }
 
-pub mod index_vec {
+pub mod index {
     use std::fmt::{self, Debug};
     use std::hash::Hash;
     use std::marker::PhantomData;

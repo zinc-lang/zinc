@@ -1,6 +1,6 @@
 use std::{fmt, num::NonZeroUsize};
 
-use crate::util::index_vec::{self, IndexVec};
+use crate::util::index::{self, IndexVec};
 
 #[derive(Clone, Copy)]
 pub struct NodeId {
@@ -14,7 +14,7 @@ impl fmt::Debug for NodeId {
             f,
             "NodeId({:?}, {})",
             self.kind,
-            index_vec::Idx::index(self.raw)
+            index::Idx::index(self.raw)
         )
     }
 }
@@ -22,7 +22,7 @@ impl fmt::Debug for NodeId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RawNodeId(NonZeroUsize);
 
-impl index_vec::Idx for RawNodeId {
+impl index::Idx for RawNodeId {
     fn new(idx: usize) -> Self {
         Self(NonZeroUsize::new(idx + 1).unwrap())
     }
