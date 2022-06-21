@@ -57,7 +57,79 @@ impl<'s> Lexer<'s> {
 
 impl Lexer<'_> {
     fn do_lex(&mut self) {
-        while self.next() {}
+        'lex_loop: loop {
+            let ch = self.advance();
+
+            match ch {
+                ' ' | '\n' | '\t' | '\r' => {
+                    self.inc_ws();
+                    while matches!(self.peek(), ' ' | '\n' | '\t' | '\r') {
+                        assert_ne!(self.advance(), '\0');
+                        self.inc_ws();
+                    }
+                }
+
+                '(' => self.tok(TK::brkt_paren_open),
+                ')' => self.tok(TK::brkt_paren_close),
+                '{' => self.tok(TK::brkt_brace_open),
+                '}' => self.tok(TK::brkt_brace_close),
+                '[' => self.tok(TK::brkt_square_open),
+                ']' => self.tok(TK::brkt_square_close),
+
+                ':' => self.tok_if_match(':', TK::punct_dblColon, TK::punct_colon),
+                ';' => self.tok(TK::punct_semiColon),
+                ',' => self.tok(TK::punct_comma),
+
+                '=' => self.tok_if_match('>', TK::punct_fat_arrow, TK::punct_eq),
+                '+' => self.tok(TK::punct_plus),
+                '-' => self.tok(TK::punct_minus),
+                '*' => self.tok(TK::punct_star),
+
+                '/' => {
+                    if self.match_next('/') {
+                        self.inc_ws();
+                        self.inc_ws(); // '//'
+                        while !matches!(self.peek(), '\n' | '\0') {
+                            assert_ne!(self.advance(), '\0');
+                            self.inc_ws();
+                        }
+                    } else {
+                        self.tok(TK::punct_slash)
+                    }
+                }
+
+                '"' => self.lex_string(),
+
+                '\0' => break 'lex_loop,
+
+                _ => {
+                    if ch == '0' {
+                        match self.peek() {
+                            'x' => {
+                                self.lex_number_generic(TK::int_hex, is_char::number_hex);
+                                continue 'lex_loop;
+                            }
+                            'b' => {
+                                self.lex_number_generic(TK::int_bin, is_char::number_binary);
+                                continue 'lex_loop;
+                            }
+                            'o' => {
+                                self.lex_number_generic(TK::int_oct, is_char::number_octal);
+                                continue 'lex_loop;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    match ch {
+                        _ if is_char::number_start(ch) => self.lex_number(),
+                        _ if is_char::ident_start(ch) => self.lex_ident(),
+                        _ => todo!("report error; unknown char"),
+                    }
+                }
+            }
+        }
+
         self.span.end -= 1;
         self.tok(TK::EOF);
     }
@@ -100,18 +172,22 @@ impl Lexer<'_> {
             .unwrap_or('\0')
     }
 
+    #[inline]
     fn peek(&self) -> char {
         self.peek_raw(0)
     }
 
+    #[inline]
     fn peek_next(&self) -> char {
         self.peek_raw(1)
     }
 
+    #[inline]
     fn at(&self, ch: char) -> bool {
         self.peek() == ch
     }
 
+    #[inline]
     fn match_next(&mut self, expect: char) -> bool {
         let cond = self.at(expect);
         if cond {
@@ -129,91 +205,13 @@ impl Lexer<'_> {
         }
     }
 
-    fn next(&mut self) -> bool {
-        // let ch = match self.advance() {
-        //     '\0' => return false,
-        //     c => c,
-        // };
-        let ch = self.advance();
-
-        match ch {
-            ' ' | '\n' | '\t' | '\r' => {
-                self.inc_ws();
-                while matches!(self.peek(), ' ' | '\n' | '\t' | '\r') {
-                    assert_ne!(self.advance(), '\0');
-                    self.inc_ws();
-                }
-            }
-
-            '(' => self.tok(TK::brkt_paren_open),
-            ')' => self.tok(TK::brkt_paren_close),
-            '{' => self.tok(TK::brkt_brace_open),
-            '}' => self.tok(TK::brkt_brace_close),
-            '[' => self.tok(TK::brkt_square_open),
-            ']' => self.tok(TK::brkt_square_close),
-
-            ':' => self.tok_if_match(':', TK::punct_dblColon, TK::punct_colon),
-            ';' => self.tok(TK::punct_semiColon),
-            ',' => self.tok(TK::punct_comma),
-
-            '=' => self.tok_if_match('>', TK::punct_fat_arrow, TK::punct_eq),
-            '+' => self.tok(TK::punct_plus),
-            '-' => self.tok(TK::punct_minus),
-            '*' => self.tok(TK::punct_star),
-
-            '/' => {
-                if self.match_next('/') {
-                    self.inc_ws();
-                    self.inc_ws(); // '//'
-                    while !matches!(self.peek(), '\n' | '\0') {
-                        assert_ne!(self.advance(), '\0');
-                        self.inc_ws();
-                    }
-                } else {
-                    self.tok(TK::punct_slash)
-                }
-            }
-
-            '"' => self.lex_string(),
-
-            '\0' => return false,
-
-            _ => {
-                if ch == '0' {
-                    match self.peek() {
-                        'x' => {
-                            self.lex_number_generic(TK::int_hex, is_char::number_hex);
-                            return true;
-                        }
-                        'b' => {
-                            self.lex_number_generic(TK::int_bin, is_char::number_binary);
-                            return true;
-                        }
-                        'o' => {
-                            self.lex_number_generic(TK::int_oct, is_char::number_octal);
-                            return true;
-                        }
-                        _ => {}
-                    }
-                }
-
-                match ch {
-                    _ if is_char::number_start(ch) => self.lex_number(),
-                    _ if is_char::ident_start(ch) => self.lex_ident(),
-                    _ => todo!("report error; unknown char"),
-                }
-            }
-        }
-
-        true
-    }
-
     #[inline]
     fn inc_ws(&mut self) {
         self.ws_len += 1;
         self.span.start += 1;
     }
 
+    #[inline]
     fn lex_number_generic(&mut self, kind: TK, condition: fn(char) -> bool) {
         assert_ne!(self.advance(), '\0');
         self.lex_while_condition(condition);
