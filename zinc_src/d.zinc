@@ -1,1 +1,27 @@
-foo fn(a sint, uint, c bool) bool {}
+foo fn(a sint, uint, c bool) bool {
+    bar fn {}
+
+    some::path;
+    "Coo";
+    1;
+    42;
+    0xA;
+    0o14;
+    0b1001_1011;
+
+    1.412;
+    1.3E+4;
+    1.3E-4;
+
+    return;
+    return 123;
+
+    1 + 2;
+    a + c;
+
+    let a = 2;
+    const a = 2;
+
+    let b sint = 2;
+    const b sint = 2;
+}

@@ -55,14 +55,14 @@ pub enum Element {
     Node(NodeId),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Node {
     pub elements: Vec<Element>,
 }
 
 impl Node {
     pub fn new() -> Self {
-        Self { elements: vec![] }
+        Self::default()
     }
 
     pub fn tokens(&self) -> Vec<usize> {

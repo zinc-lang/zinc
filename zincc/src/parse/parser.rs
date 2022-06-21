@@ -104,7 +104,7 @@ impl Parser<'_> {
         if self.cursor + n >= self.tokens.len() {
             TK::EOF
         } else {
-            self.tokens[(self.cursor + n) as usize]
+            self.tokens[self.cursor + n]
         }
     }
 
@@ -435,7 +435,7 @@ impl Parser<'_> {
     fn parse_stmt_expr(&mut self, parent: &mut PNode) {
         self.parse_expr(parent);
 
-        if self.tokens[(self.cursor - 1) as usize] != TK::brkt_brace_close {
+        if self.tokens[self.cursor - 1] != TK::brkt_brace_close {
             self.expect(TK::punct_semiColon, ParseContext::Stmt, parent);
         }
     }

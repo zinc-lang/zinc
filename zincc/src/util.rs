@@ -310,7 +310,8 @@ pub mod index_vec {
 
         #[inline]
         pub fn intern(&mut self, t: T) -> I {
-            debug_assert!(self.raw.raw.iter().find(|&it| *it == t).is_none());
+            // Make sure that is not already in the vec
+            debug_assert!(!self.raw.raw.iter().any(|it| it == &t));
             self.raw.push(t)
         }
 

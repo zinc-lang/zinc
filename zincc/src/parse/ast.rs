@@ -17,12 +17,18 @@ impl index_vec::Idx for StrSym {
 
 impl fmt::Debug for StrSym {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "StrSym({})", index_vec::Idx::index(self.clone()))
+        write!(f, "StrSym({})", index_vec::Idx::index(*self))
     }
 }
 
 #[derive(Clone, Copy)]
 pub struct TokId(NonZeroUsize);
+
+impl TokId {
+    pub fn new(i: usize) -> Self {
+        Self(NonZeroUsize::new(i + 1).unwrap())
+    }
+}
 
 impl fmt::Debug for TokId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -45,7 +51,7 @@ pub struct Integer {
 #[derive(Debug)]
 pub struct Float {
     pub tok: TokId,
-    pub int: f64,
+    pub float: f64,
 }
 
 #[derive(Debug)]
@@ -136,10 +142,9 @@ pub enum Expr {
     Integer(Integer),
     Float(Float),
     Path(Path),
+    Block(Block),
     Infix(ExprInfix),
     Ret(ExprRet),
-
-    None,
 }
 
 #[derive(Debug)]
@@ -210,11 +215,36 @@ pub mod gen {
         }
 
         fn gen_ident(&mut self, i: usize) -> Ident {
-            let tok = TokId(NonZeroUsize::new(i + 1).unwrap());
+            debug_assert_eq!(self.tokens[i], TK::ident);
+            let tok = TokId::new(i);
             let range = &self.ranges[i as usize];
             let str = &self.source[range.start as usize..range.end as usize];
             let sym = self.strings.get_or_intern(str.to_string());
             Ident { tok, sym }
+        }
+
+        fn gen_string(&mut self, id: NodeId) -> AstString {
+            debug_assert_eq!(id.kind, NK::string);
+
+            let node = self.cst.get(id);
+            debug_assert_eq!(node.nodes().len(), 0);
+
+            let str = node.tokens()[1..][..1]
+                .iter()
+                .map(|&i| (i, self.tokens[i]))
+                .map(|(i, tk)| match tk {
+                    TokenKind::string_literal => &self.source[self.ranges[i].clone()],
+                    TokenKind::esc_char => todo!(),
+                    TokenKind::esc_asciicode => todo!(),
+                    TokenKind::esc_unicode => todo!(),
+                    TokenKind::string_open | TokenKind::string_close => unreachable!(),
+                    _ => unreachable!(),
+                })
+                .collect();
+
+            let sym = self.strings.get_or_intern(str);
+
+            AstString { id, sym }
         }
 
         fn gen_path(&mut self, id: NodeId) -> Path {
@@ -237,10 +267,69 @@ pub mod gen {
             Path { id, segments }
         }
 
+        fn gen_int(&mut self, id: NodeId) -> Integer {
+            let node = self.cst.get(id);
+            debug_assert_eq!(node.nodes().len(), 0);
+            debug_assert_eq!(node.tokens().len(), 1);
+
+            let tk_i = node.tokens()[0];
+            let tk = self.tokens[tk_i];
+
+            let slice = &self.source[self.ranges[tk_i].clone()];
+            let str = slice.replace('_', "");
+
+            let int = match tk {
+                TokenKind::int_dec => str.parse::<u64>(),
+                TokenKind::int_hex => u64::from_str_radix(&str[2..], 16),
+                TokenKind::int_oct => u64::from_str_radix(&str[2..], 8),
+                TokenKind::int_bin => u64::from_str_radix(&str[2..], 2),
+                _ => unreachable!(),
+            }
+            .unwrap();
+
+            let tok = TokId::new(tk_i);
+
+            Integer { tok, int }
+        }
+
+        fn gen_float(&mut self, id: NodeId) -> Float {
+            let node = self.cst.get(id);
+            debug_assert_eq!(node.nodes().len(), 0);
+            debug_assert_eq!(node.tokens().len(), 1);
+
+            let tk_i = node.tokens()[0];
+            debug_assert_eq!(self.tokens[tk_i], TK::float);
+
+            let slice = &self.source[self.ranges[tk_i].clone()];
+            let str = slice.replace('_', "");
+
+            let float = str.parse::<f64>().unwrap();
+
+            let tok = TokId::new(tk_i);
+
+            Float { tok, float }
+        }
+
+        fn gen_block(&mut self, id: NodeId) -> Block {
+            let stmts = self
+                .cst
+                .get(id)
+                .nodes()
+                .iter()
+                .map(|&id| self.gen_stmt(id))
+                .collect();
+            Block { id, stmts }
+        }
+
         fn gen_root(&mut self) -> Root {
             let id = self.cst.root;
-            let node = self.cst.get(id);
-            let decls = node.nodes().iter().map(|&id| self.gen_decl(id)).collect();
+            let decls = self
+                .cst
+                .get(id)
+                .nodes()
+                .iter()
+                .map(|&id| self.gen_decl(id))
+                .collect();
 
             Root { id, decls }
         }
@@ -248,7 +337,7 @@ pub mod gen {
         fn gen_decl(&mut self, id: NodeId) -> Decl {
             match id.kind {
                 NK::decl_func => Decl::Func(self.gen_decl_func(id)),
-                NK::decl_const => todo!(),
+                NK::decl_const => Decl::Const(self.gen_binding(id)),
                 _ => unreachable!(),
             }
         }
@@ -307,8 +396,94 @@ pub mod gen {
             TyFunc { id, params, ret }
         }
 
-        fn gen_expr(&mut self, _id: NodeId) -> Expr {
-            Expr::None
+        fn gen_expr(&mut self, id: NodeId) -> Expr {
+            match id.kind {
+                NK::path => Expr::Path(self.gen_path(id)),
+                NK::string => Expr::String(self.gen_string(id)),
+                NK::block => Expr::Block(self.gen_block(id)),
+                NK::literal_int => Expr::Integer(self.gen_int(id)),
+                NK::literal_float => Expr::Float(self.gen_float(id)),
+                NK::expr_infix => Expr::Infix(self.gen_expr_infix(id)),
+                NK::expr_unit => todo!(),
+                NK::expr_grouping => todo!(),
+                NK::expr_tuple => todo!(),
+                NK::expr_call => todo!(),
+                NK::expr_return => Expr::Ret(self.gen_expr_ret(id)),
+                _ => unreachable!(),
+            }
+        }
+
+        fn gen_expr_ret(&mut self, id: NodeId) -> ExprRet {
+            debug_assert_eq!(id.kind, NK::expr_return);
+            let nodes = self.cst.get(id).nodes();
+
+            let value = if !nodes.is_empty() {
+                debug_assert_eq!(nodes.len(), 1);
+                let v = self.gen_expr(nodes[0]);
+                Some(Box::new(v))
+            } else {
+                None
+            };
+
+            ExprRet { id, value }
+        }
+
+        fn gen_expr_infix(&mut self, id: NodeId) -> ExprInfix {
+            debug_assert_eq!(id.kind, NK::expr_infix);
+            let nodes = self.cst.get(id).nodes();
+
+            assert_eq!(nodes.len(), 3);
+
+            let lhs = Box::new(self.gen_expr(nodes[0]));
+            let rhs = Box::new(self.gen_expr(nodes[2]));
+
+            debug_assert_eq!(nodes[1].kind, NK::expr_infix_op);
+            let op = self
+                .cst
+                .get(nodes[1])
+                .tokens()
+                .iter()
+                .cloned()
+                .map(TokId::new)
+                .collect();
+
+            ExprInfix { id, op, lhs, rhs }
+        }
+
+        fn gen_stmt(&mut self, id: NodeId) -> Stmt {
+            match id.kind {
+                NK::stmt_let => Stmt::Let(self.gen_binding(id)),
+                NK::stmt_expr => Stmt::Expr(self.gen_expr(self.cst.get(id).nodes()[0])),
+                NK::stmt_decl => Stmt::Decl(self.gen_decl(self.cst.get(id).nodes()[0])),
+
+                _ => unreachable!(),
+            }
+        }
+
+        fn gen_binding(&mut self, id: NodeId) -> Binding {
+            debug_assert!(matches!(id.kind, NK::stmt_let | NK::decl_const));
+            let node = self.cst.get(id);
+            let tokens = node.tokens();
+
+            debug_assert_eq!(tokens.len(), 4);
+            debug_assert!(matches!(self.tokens[tokens[0]], TK::kw_let | TK::kw_const));
+            debug_assert_eq!(self.tokens[tokens[1]], TK::ident);
+            debug_assert_eq!(self.tokens[tokens[2]], TK::punct_eq);
+            debug_assert_eq!(self.tokens[tokens[3]], TK::punct_semiColon);
+
+            let name = self.gen_ident(tokens[1]);
+
+            let nodes = node.nodes();
+            debug_assert!(nodes.len() >= 1 && nodes.len() <= 2);
+            let ty = if nodes[0].kind == NK::binding_ty {
+                Some(self.gen_ty(self.cst.get(nodes[0]).nodes()[0]))
+            } else {
+                None
+            };
+
+            let expr = Box::new(self.gen_expr(*nodes.last().unwrap()));
+
+            Binding { id, name, ty, expr }
         }
     }
 }
