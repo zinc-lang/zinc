@@ -339,7 +339,7 @@ pub mod gen {
             let name = self.gen_ident(tokens[1]);
 
             let nodes = node.nodes();
-            debug_assert!(nodes.len() >= 1 && nodes.len() <= 2);
+            debug_assert!(!nodes.is_empty() && nodes.len() <= 2);
             let ty = if nodes[0].kind == NK::binding_ty {
                 Some(self.gen_ty(self.cst.get(nodes[0]).nodes()[0]))
             } else {
