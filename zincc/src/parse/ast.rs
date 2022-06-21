@@ -1,11 +1,11 @@
 use super::cst::NodeId;
-use crate::util::index_vec::{self, InterningIndexVec};
+use crate::util::index::{self, InterningIndexVec};
 use std::{fmt, num::NonZeroUsize};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StrSym(NonZeroUsize);
 
-impl index_vec::Idx for StrSym {
+impl index::Idx for StrSym {
     fn new(idx: usize) -> Self {
         Self(NonZeroUsize::new(idx + 1).unwrap())
     }
@@ -17,7 +17,7 @@ impl index_vec::Idx for StrSym {
 
 impl fmt::Debug for StrSym {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "StrSym({})", index_vec::Idx::index(*self))
+        write!(f, "StrSym({})", index::Idx::index(*self))
     }
 }
 
