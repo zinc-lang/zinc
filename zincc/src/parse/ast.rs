@@ -135,6 +135,7 @@ pub enum Expr {
     Path(Path),
     Block(Block),
     Infix(ExprInfix),
+    Call(ExprCall),
     Ret(ExprRet),
 }
 
@@ -144,6 +145,13 @@ pub struct ExprInfix {
     pub op: Vec<TokId>,
     pub lhs: Box<Expr>,
     pub rhs: Box<Expr>,
+}
+
+#[derive(Debug)]
+pub struct ExprCall {
+    pub id: NodeId,
+    pub callee: Box<Expr>,
+    pub args: Vec<Expr>,
 }
 
 #[derive(Debug)]
@@ -424,25 +432,10 @@ pub mod gen {
                 NK::expr_unit => todo!(),
                 NK::expr_grouping => todo!(),
                 NK::expr_tuple => todo!(),
-                NK::expr_call => todo!(),
+                NK::expr_call => Expr::Call(self.gen_expr_call(id)),
                 NK::expr_return => Expr::Ret(self.gen_expr_ret(id)),
                 _ => unreachable!(),
             }
-        }
-
-        fn gen_expr_ret(&mut self, id: NodeId) -> ExprRet {
-            debug_assert_eq!(id.kind, NK::expr_return);
-            let nodes = self.cst.get(id).nodes();
-
-            let value = if !nodes.is_empty() {
-                debug_assert_eq!(nodes.len(), 1);
-                let v = self.gen_expr(nodes[0]);
-                Some(Box::new(v))
-            } else {
-                None
-            };
-
-            ExprRet { id, value }
         }
 
         fn gen_expr_infix(&mut self, id: NodeId) -> ExprInfix {
@@ -465,6 +458,31 @@ pub mod gen {
                 .collect();
 
             ExprInfix { id, op, lhs, rhs }
+        }
+
+        fn gen_expr_call(&mut self, id: NodeId) -> ExprCall {
+            debug_assert_eq!(id.kind, NK::expr_call);
+            let nodes = self.cst.get(id).nodes();
+
+            let callee = Box::new(self.gen_expr(nodes[0]));
+            let args = nodes[1..].iter().map(|&id| self.gen_expr(id)).collect();
+
+            ExprCall { id, callee, args }
+        }
+
+        fn gen_expr_ret(&mut self, id: NodeId) -> ExprRet {
+            debug_assert_eq!(id.kind, NK::expr_return);
+            let nodes = self.cst.get(id).nodes();
+
+            let value = if !nodes.is_empty() {
+                debug_assert_eq!(nodes.len(), 1);
+                let v = self.gen_expr(nodes[0]);
+                Some(Box::new(v))
+            } else {
+                None
+            };
+
+            ExprRet { id, value }
         }
 
         fn gen_stmt(&mut self, id: NodeId) -> Stmt {

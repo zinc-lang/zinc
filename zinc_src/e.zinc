@@ -1,0 +1,9 @@
+main fn {
+    let a = 2;
+    let b = 3;
+    let c = add(a, b);
+}
+
+add fn(a sint, b sint) sint {
+    return a + b;
+}
