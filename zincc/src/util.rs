@@ -265,6 +265,15 @@ pub mod index {
         pub fn get(&self, index: I) -> Option<&T> {
             self.raw.get(index.index())
         }
+
+        #[inline]
+        pub fn indices(&self) -> Vec<I> {
+            self.raw
+                .iter()
+                .enumerate()
+                .map(|(idx, _)| I::new(idx))
+                .collect()
+        }
     }
 
     #[derive(Clone)]
