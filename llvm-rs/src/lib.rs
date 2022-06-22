@@ -1,11 +1,13 @@
 pub extern crate llvm_c_2_sys;
 
+mod constant;
 mod ir_builder;
 mod ty;
 mod value;
+mod verifier;
 
 pub use llvm_c_2_sys as c;
-pub use {ir_builder::*, ty::*, value::*};
+pub use {constant::*, ir_builder::*, ty::*, value::*, verifier::*};
 
 use std::ptr::null_mut;
 

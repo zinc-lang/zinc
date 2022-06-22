@@ -30,6 +30,13 @@ impl From<Function> for Value {
     }
 }
 
+impl From<Constant> for Value {
+    fn from(k: Constant) -> Self {
+        let ptr = unsafe { k.as_ptr() as c::llvm_ValueRef };
+        Self { ptr }
+    }
+}
+
 impl_from_as_ptr!(Value, c::llvm_ValueRef);
 
 impl Value {
