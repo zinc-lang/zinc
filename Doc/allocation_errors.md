@@ -3,7 +3,7 @@ author: Ketan Reynolds
 date: 2022/06/13
 ---
 
-# Allocation Errors considered harmful (to programmers)
+# Allocation errors considered harmful (to programmers)
 
 Yes, I hate myself as mush as you do for that title.
 
@@ -12,7 +12,7 @@ Yes, I hate myself as mush as you do for that title.
 I believe strong default are **very** important.
 I do not think forcing programmers to handle allocation errors is a strong default.
 It forces code that would otherwise never need to manage those errors manage them.
-This ends up creating large swaths of code that would never be erroneousness in the first place.
+This ends up creating large swaths of code that would never be erroneous in the first place.
 When most programmers are not going to do anything with the fact that an allocation error has occurred, and just crash.
 Resulting in zero difference in behaviour to the end user.
 
