@@ -1,3 +1,5 @@
+//! ZIR - Zinc-IR
+
 use crate::{
     parse::ast::StrSym,
     util::index::{self, IndexVec, InterningIndexVec},

@@ -1,5 +1,5 @@
-foo fn(a sint, uint, c bool) bool {
-    bar fn {}
+fn foo(a: sint, uint, c: bool): bool {
+    fn bar() {}
 
     some::path;
     "Coo";
@@ -22,6 +22,6 @@ foo fn(a sint, uint, c bool) bool {
     let a = 2;
     const a = 2;
 
-    let b sint = 2;
-    const b sint = 2;
+    let b: sint = 2;
+    const b: sint = 2;
 }

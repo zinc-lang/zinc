@@ -6,7 +6,7 @@ pub mod util;
 pub mod zir;
 
 fn main() {
-    zir::test::do_test();
+    // zir::test::do_test();
 
     let options = get_options();
 

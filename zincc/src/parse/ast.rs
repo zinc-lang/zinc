@@ -338,11 +338,8 @@ pub mod gen {
             let node = self.cst.get(id);
             let tokens = node.tokens();
 
-            debug_assert_eq!(tokens.len(), 4);
             debug_assert!(matches!(self.tokens[tokens[0]], TK::kw_let | TK::kw_const));
             debug_assert_eq!(self.tokens[tokens[1]], TK::ident);
-            debug_assert_eq!(self.tokens[tokens[2]], TK::punct_eq);
-            debug_assert_eq!(self.tokens[tokens[3]], TK::punct_semiColon);
 
             let name = self.gen_ident(tokens[1]);
 
@@ -373,7 +370,8 @@ pub mod gen {
             let node = self.cst.get(id);
             debug_assert_eq!(node.nodes().len(), 2);
 
-            let name = self.gen_ident(node.tokens()[0]);
+            debug_assert_eq!(*self.tokens.get(node.tokens()[0]).unwrap(), TK::kw_fn);
+            let name = self.gen_ident(node.tokens()[1]);
 
             let proto = node.nodes()[0];
             let body = node.nodes()[1];

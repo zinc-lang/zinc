@@ -70,9 +70,10 @@ pub enum ParseErrorExpectedWhat {
 pub enum ParseErrorItem {
     Decl,
     Expr,
+    Ty,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum ParseContext {
     TopLevel,
     Block,
@@ -86,6 +87,8 @@ pub enum ParseContext {
     ExprCall,
     String,
     Path,
+    TyFunc,
+    Ty,
 }
 
 #[derive(Clone)]
@@ -287,17 +290,15 @@ impl Parser<'_> {
         // ident
         self.expect(TK::ident, ParseContext::DeclConst, binding);
 
-        // ty?
-        if !self.at(TK::punct_eq) {
+        // ( ':' ty )?
+        if self.eat(TK::punct_colon, binding) {
             let mut ty = self.node(NK::binding_ty);
             self.parse_ty(&mut ty);
             self.append_node(ty, binding);
         }
 
-        // '='
+        // '=' expr
         self.expect(TK::punct_eq, ParseContext::DeclConst, binding);
-
-        // expr
         self.parse_stmt_expr(binding);
     }
 }
@@ -322,15 +323,27 @@ impl Parser<'_> {
 
     fn try_parse_decl(&mut self) -> Option<PNode> {
         let decl = match self.peek() {
-            TK::ident => match self.peek_n(1) {
-                TK::kw_fn => {
-                    let mut func = self.node(NK::decl_func);
-                    self.bump(&mut func);
-                    self.parse_decl_func(&mut func);
-                    func
+            TK::kw_fn => {
+                let mut func = self.node(NK::decl_func);
+                self.bump(&mut func); // kw_fn
+                self.bump(&mut func); // ident
+
+                let mut proto = self.node(NK::func_proto);
+                self.parse_func_params_ret(ParseContext::DeclFunc, &mut proto);
+                self.append_node(proto, &mut func);
+
+                let mut body = self.node(NK::decl_func_body);
+
+                if self.eat(TK::punct_fat_arrow, &mut body) {
+                    self.parse_stmt_expr(&mut body);
+                } else {
+                    let block = self.parse_block();
+                    self.append_node(block, &mut body);
                 }
-                _ => return None,
-            },
+
+                self.append_node(body, &mut func);
+                func
+            }
             TK::kw_const => {
                 let mut konst = self.node(NK::decl_const);
 
@@ -343,28 +356,53 @@ impl Parser<'_> {
         };
         Some(decl)
     }
-
-    fn parse_decl_func(&mut self, func: &mut PNode) {
-        self.parse_ty_func(func);
-
-        let mut body = self.node(NK::decl_func_body);
-
-        if self.eat(TK::punct_fat_arrow, &mut body) {
-            self.parse_stmt_expr(&mut body);
-        } else {
-            let block = self.parse_block();
-            self.append_node(block, &mut body);
-        }
-
-        self.append_node(body, func);
-    }
 }
 
 /// Parse ty
 impl Parser<'_> {
     fn parse_ty(&mut self, parent: &mut PNode) {
-        let path = self.parse_path();
-        self.append_node(path, parent);
+        match self.peek() {
+            TK::ident | TK::punct_dblColon => {
+                let path = self.parse_path();
+                self.append_node(path, parent);
+            }
+            TK::kw_fn => self.parse_ty_func(parent),
+            _ => self.report(
+                parent,
+                ParseError::Expected(ParseErrorExpected {
+                    what: ParseErrorExpectedWhat::Item(ParseErrorItem::Ty),
+                    at: self.cursor,
+                    found: self.cursor,
+                    context: ParseContext::Ty,
+                }),
+            ),
+        }
+    }
+
+    fn parse_func_params_ret(&mut self, ctx: ParseContext, parent: &mut PNode) {
+        self.expect(TK::brkt_paren_open, ctx, parent);
+        while !self.at(TK::brkt_paren_close) {
+            let mut param = self.node(NK::func_proto_param);
+
+            if self.at(TK::ident) && self.peek_n(1) == TK::punct_colon {
+                self.expect(TK::ident, ctx, &mut param);
+                self.expect(TK::punct_colon, ctx, &mut param);
+            }
+
+            self.parse_ty(&mut param);
+            self.append_node(param, parent);
+
+            if !self.eat(TK::punct_comma, parent) {
+                break;
+            }
+        }
+        self.expect(TK::brkt_paren_close, ctx, parent);
+
+        if self.eat(TK::punct_colon, parent) {
+            let mut ret = self.node(NK::func_proto_ret);
+            self.parse_ty(&mut ret);
+            self.append_node(ret, parent);
+        }
     }
 
     fn parse_ty_func(&mut self, parent: &mut PNode) {
@@ -373,30 +411,7 @@ impl Parser<'_> {
         let mut proto = self.node(NK::func_proto);
         self.bump(&mut proto); // 'fn'
 
-        if self.eat(TK::brkt_paren_open, &mut proto) {
-            while !self.at(TK::brkt_paren_close) {
-                let mut arg = self.node(NK::func_proto_param);
-                if self.at(TK::ident)
-                    && !matches!(self.peek_n(1), TK::punct_comma | TK::brkt_paren_close)
-                {
-                    self.expect(TK::ident, ParseContext::DeclFunc, &mut arg);
-                }
-                self.parse_ty(&mut arg);
-                self.append_node(arg, &mut proto);
-
-                if !self.eat(TK::punct_comma, &mut proto) {
-                    break;
-                }
-            }
-
-            self.expect(TK::brkt_paren_close, ParseContext::DeclFunc, &mut proto);
-        }
-
-        if !self.at_set(&[TK::punct_comma, TK::punct_fat_arrow, TK::brkt_brace_open]) {
-            let mut ret = self.node(NK::func_proto_ret);
-            self.parse_ty(&mut ret);
-            self.append_node(ret, &mut proto);
-        }
+        self.parse_func_params_ret(ParseContext::TyFunc, &mut proto);
 
         self.append_node(proto, parent);
     }

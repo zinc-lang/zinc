@@ -1,6 +1,8 @@
-use std::{fmt, num::NonZeroUsize};
+//! CST - Concrete Syntax Tree
+//! Adds nothing more than structure to the existing tokens
 
 use crate::util::index::{self, IndexVec};
+use std::{fmt, num::NonZeroUsize};
 
 #[derive(Clone, Copy)]
 pub struct NodeId {
