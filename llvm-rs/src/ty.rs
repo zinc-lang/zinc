@@ -90,6 +90,10 @@ impl Type {
     pub fn get_type_id(&self) -> TypeID {
         unsafe { std::mem::transmute(c::llvm_Type_getTypeID(self.ptr)) }
     }
+
+    pub fn dump(&self) {
+        unsafe { c::llvm_Type_dump(self.ptr) };
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
