@@ -267,6 +267,11 @@ pub mod index {
         }
 
         #[inline]
+        pub fn get_mut(&mut self, index: I) -> Option<&mut T> {
+            self.raw.get_mut(index.index())
+        }
+
+        #[inline]
         pub fn indices(&self) -> Vec<I> {
             self.raw
                 .iter()
