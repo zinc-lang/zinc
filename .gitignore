@@ -2,3 +2,5 @@ Cargo.lock
 target
 scratch
 tuido.json
+cmake-build-debug
+.idea
