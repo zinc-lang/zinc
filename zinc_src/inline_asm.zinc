@@ -1,16 +1,37 @@
 // syntax needed:
 //   decorators
+//   named params
 //   function calls
 //     w/ generic params
 //   tuples
-//   arrays
+//   array
+
+// []T = { ptr: *T, len: usize }
+@unique
+typealias str = []u8; // utf-8
+
+@comptime
+inline_asm fn<T>(
+    { volatile = false },
+    /// The inline asm to execute
+    asm_string str,
+    /// (return register, ident in asm string)
+    return_register (str, str),
+    /// inputs: (register, ident in asm string, value)
+    inputs [](str, str, anytype),
+    /// values that are not preserved in the execution of the syscall
+    clobers: []str,
+) T {
+    // compiler implemented
+}
 
 @inline
 syscall3 fn(nr ssize, p1 ssize, p2 ssize, p3 ssize) ssize {
-    return inline_asm#<.volatile, ssize>(
+    return inline_asm#<ssize>(
+        .{ volatile = true },
         "syscall", // asm
-        "rax", // ret
-        [ // inputs: (register, ident within inline asm, value)
+        ("rax", ""),
+        [ // inputs: (register, ident in asm string, value)
             ("rax", "", nr),
             ("rdi", "", p1),
             ("rsi", "", p2),
@@ -19,3 +40,45 @@ syscall3 fn(nr ssize, p1 ssize, p2 ssize, p3 ssize) ssize {
         ["rcx", "r11"], // clobbers
     );
 }
+
+write fn(fd usize, bytes []u8) usize {
+    syscall3(1, fd, bytes.ptr as usize, bytes.len) as usize
+}
+
+// =-=-=-=-=-=-=-=-=-=-=-=-=
+//  Idea 2
+// =-=-=-=-=-=-=-=-=-=-=-=-=
+
+fn syscall3(nr: sintptr, p1: sintptr, p2: sintptr, p3: sintptr): sintptr {
+    return inline_asm#<.{
+        result_type = ~sintptr,
+        volatile = true,
+        outputs = [("rax", "")],
+        inputs = [
+            ("rax", ""),
+            ("rdi", ""),
+            ("rsi", ""),
+            ("rdx", ""),
+        ],
+        clobbers = ["rcx", "r11"],
+        asm = "syscall"
+    }>(nr, p1, p2, p3).0;
+}
+
+fn add_asm(a: sintptr, b: sintptr): sintptr {
+    return inline_asm#<.{
+        result_type = ~sintptr,
+        outputs = [("rax", "dst")],
+        inputs = [("rax", "dst"), ("rdi", "src")],
+        asm = "add [dst], [src]", // add rax, rdi, where rax = a, and rdi = b
+    }>(a, b).0;
+}
+
+extern "Builtin" fn inline_asm<{
+    result_type: typeliteral,
+    volatile: bool = false,
+    outputs: [](register: str, name: str) = [],
+    inputs: [](register: str, name: str) = [],
+    clobbers: []str = [],
+    asm: str,
+}>(inputs...): (outputs...);
