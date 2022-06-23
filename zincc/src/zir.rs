@@ -1,5 +1,5 @@
 use crate::{
-    parse::{ast::StrSym, cst::NodeId},
+    parse::ast::StrSym,
     util::index::{self, IndexVec, InterningIndexVec},
 };
 
@@ -24,13 +24,43 @@ impl Context {
             .get(id.local)
             .unwrap()
     }
+
+    pub fn get_inst_ty(&self, id: InstId) -> &TyId {
+        self.blocks
+            .get(id.parent)
+            .unwrap()
+            .inst_tys
+            .get(id.local)
+            .unwrap()
+    }
+
+    pub fn new_block(&mut self, label: StrSym, func: FuncId) -> BlockId {
+        let blk = self.blocks.push(Block {
+            label,
+            func,
+            insts: Default::default(),
+            inst_tys: Default::default(),
+        });
+        self.funcs.get_mut(func).unwrap().blocks.push(blk);
+        blk
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Func {
     name: StrSym,
-    blocks: Vec<BlockId>,
     ty: TyId,
+    blocks: Vec<BlockId>,
+}
+
+impl Func {
+    pub fn new(name: StrSym, ty: TyId) -> Self {
+        Self {
+            name,
+            ty,
+            blocks: vec![],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,6 +79,7 @@ impl index::Idx for FuncId {
 #[derive(Debug)]
 pub struct Block {
     label: StrSym,
+    func: FuncId,
 
     insts: IndexVec<Inst, BlockLocalInstId>,
     // inst_nodes: Vec<NodeId>,
@@ -151,26 +182,124 @@ impl index::Idx for TyId {
     }
 }
 
+pub struct InstBuilder<'ctx> {
+    ctx: &'ctx mut Context,
+    blk: BlockId,
+}
+
+impl<'ctx> InstBuilder<'ctx> {
+    pub fn new(ctx: &'ctx mut Context, blk: BlockId) -> Self {
+        Self { ctx, blk }
+    }
+
+    pub fn set_target(&mut self, blk: BlockId) {
+        self.blk = blk;
+    }
+
+    fn get_blk_mut(&mut self) -> &mut Block {
+        self.ctx.blocks.get_mut(self.blk).unwrap()
+    }
+
+    fn mk_inst_id(&self, local: BlockLocalInstId) -> InstId {
+        InstId {
+            parent: self.blk,
+            local,
+        }
+    }
+
+    pub fn build_arg(&mut self, n: u8) -> InstId {
+        let blk = self.get_blk_mut();
+        let func = blk.func;
+        let func_ty = self.ctx.funcs.get(func).unwrap().ty;
+        let func_param_ty = *match self.ctx.tys.get(func_ty).unwrap() {
+            Ty::Func(TyFunc { params, .. }) => params.get(n as usize).unwrap(),
+            _ => panic!("Not a function type"),
+        };
+
+        let blk = self.get_blk_mut();
+
+        let local = blk.insts.push(Inst::Arg(n));
+        blk.inst_tys.push(func_param_ty);
+
+        self.mk_inst_id(local)
+    }
+
+    pub fn build_ret_void(&mut self) -> InstId {
+        let ty_void = self.ctx.tys.get_or_intern(Ty::Void);
+        let blk = self.get_blk_mut();
+
+        let local = blk.insts.push(Inst::RetVoid);
+        blk.inst_tys.push(ty_void);
+
+        self.mk_inst_id(local)
+    }
+
+    pub fn build_ret(&mut self, id: InstId) -> InstId {
+        let ty = *self.ctx.get_inst_ty(id);
+        let blk = self.get_blk_mut();
+
+        let local = blk.insts.push(Inst::Ret(id));
+        blk.inst_tys.push(ty);
+
+        self.mk_inst_id(local)
+    }
+
+    pub fn build_add(&mut self, lhs: InstId, rhs: InstId) -> InstId {
+        let lhs_ty = *self.ctx.get_inst_ty(lhs);
+        let rhs_ty = *self.ctx.get_inst_ty(rhs);
+        assert_eq!(lhs_ty, rhs_ty);
+
+        let blk = self.get_blk_mut();
+
+        let local = blk.insts.push(Inst::Add(lhs, rhs));
+        blk.inst_tys.push(lhs_ty);
+
+        self.mk_inst_id(local)
+    }
+
+    pub fn build_const(&mut self, ty: TyId, value: ConstantValue) -> InstId {
+        let blk = self.get_blk_mut();
+
+        let local = blk.insts.push(Inst::Constant(value));
+        blk.inst_tys.push(ty);
+
+        self.mk_inst_id(local)
+    }
+}
+
 pub mod codegen {
     use std::collections::HashMap;
 
     use crate::zir;
     use llvm;
 
-    pub fn codegen(ctx: &zir::Context) -> (llvm::Context, llvm::Module, Vec<llvm::Function>) {
+    pub fn codegen(
+        ctx: &zir::Context,
+    ) -> (
+        llvm::Context,
+        llvm::Module,
+        Vec<llvm::Function>,
+        Vec<llvm::BasicBlock>,
+    ) {
         let mut codegen = CodeGen::new(ctx);
         codegen.codegen();
-        (codegen.llvm_ctx, codegen.llvm_mod, codegen.llvm_funcs)
+        (
+            codegen.llvm_ctx,
+            codegen.llvm_mod,
+            codegen.llvm_funcs,
+            codegen.llvm_blocks,
+        )
     }
 
     pub struct CodeGen<'ctx> {
         ctx: &'ctx zir::Context,
         llvm_ctx: llvm::Context,
         llvm_mod: llvm::Module,
-        llvm_builder: llvm::IRBuilder,
-
+        // llvm_builder: llvm::IRBuilder,
+        //
         llvm_tys: HashMap<zir::TyId, llvm::Type>,
         llvm_funcs: Vec<llvm::Function>,
+        llvm_blocks: Vec<llvm::BasicBlock>,
     }
 
     impl<'ctx> CodeGen<'ctx> {
@@ -179,11 +308,12 @@ pub mod codegen {
             Self {
                 ctx,
                 llvm_mod: llvm::Module::new("MainModule", Some(&llvm_ctx)),
-                llvm_builder: llvm::IRBuilder::new(&llvm_ctx),
+                // llvm_builder: llvm::IRBuilder::new(&llvm_ctx),
                 llvm_ctx,
 
                 llvm_tys: Default::default(),
                 llvm_funcs: Default::default(),
+                llvm_blocks: Default::default(),
             }
         }
 
@@ -229,11 +359,11 @@ pub mod codegen {
         }
 
         fn gen_func(&mut self, func: &zir::Func) {
-            let ty: llvm::FunctionType = self.get_llvm_type(func.ty).try_into().unwrap();
+            let func_ty = self.get_llvm_type(func.ty).try_into().unwrap();
             let name = self.ctx.strings.get(func.name).unwrap();
 
             let llvm_func = llvm::Function::new(
-                &ty,
+                &func_ty,
                 llvm::LinkageType::ExternalLinkage,
                 0,
                 name,
@@ -241,6 +371,8 @@ pub mod codegen {
             );
 
             let mut values_map: HashMap<zir::InstId, llvm::Value> = Default::default();
+
+            let mut builder = llvm::IRBuilder::new(&self.llvm_ctx);
 
             // for blk_id in func.blocks
             func.blocks.iter().for_each(|&blk_id| {
@@ -252,7 +384,7 @@ pub mod codegen {
                     &llvm_func,
                     None,
                 );
-                self.llvm_builder.set_insertion_point(&llvm_blk);
+                builder.set_insertion_point(&llvm_blk);
 
                 // for local_inst in blk.insts
                 blk.insts.indices().iter().for_each(|&local_inst| {
@@ -273,17 +405,17 @@ pub mod codegen {
                         zir::Inst::Add(lhs, rhs) => {
                             let lhs = values_map.get(lhs).unwrap();
                             let rhs = values_map.get(rhs).unwrap();
-                            self.llvm_builder.create_add(lhs, rhs, "tmpadd")
+                            builder.create_add(lhs, rhs, "tmpadd")
                         }
 
                         zir::Inst::Call(_, _) => todo!(),
 
                         zir::Inst::Ret(id) => {
                             let val = values_map.get(id).unwrap();
-                            self.llvm_builder.create_ret(Some(val))
+                            builder.create_ret(Some(val))
                         }
 
-                        zir::Inst::RetVoid => self.llvm_builder.create_ret_void(),
+                        zir::Inst::RetVoid => builder.create_ret_void(),
                     };
 
                     values_map.insert(
@@ -294,13 +426,13 @@ pub mod codegen {
                         value,
                     );
                 });
+
+                self.llvm_blocks.push(llvm_blk);
             });
 
-            // llvm::verify_function(&llvm_func, &mut unsafe { std::fs::File::from_raw_fd(1) });
             self.llvm_funcs.push(llvm_func);
         }
     }
-    // use std::os::unix::prelude::FromRawFd;
 }
 
 pub mod print {
@@ -328,7 +460,7 @@ pub mod print {
         pub fn dump(&mut self) -> io::Result<()> {
             for func in self.ctx.funcs.raw.iter() {
                 let name = self.ctx.strings.get(func.name).unwrap();
-                write!(self.f, "{:?} ", name)?;
+                write!(self.f, "\n{:?} :: ", name)?;
                 self.write_ty(func.ty)?;
 
                 writeln!(self.f, " {{")?;
@@ -347,14 +479,16 @@ pub mod print {
 
                     for local_inst in blk.insts.indices() {
                         let inst = blk.insts.get(local_inst).unwrap();
+
+                        write!(self.f, "%{} : ", local_inst.0)?;
                         let ty = blk.inst_tys.get(local_inst).unwrap();
-                        write!(self.f, "%{} = ", local_inst.0)?;
+                        self.write_ty(*ty)?;
+                        write!(self.f, " = ")?;
+
                         match inst {
-                            zir::Inst::Arg(_) => todo!(),
+                            zir::Inst::Arg(n) => write!(self.f, "arg {}", n)?,
                             zir::Inst::Constant(val) => {
                                 write!(self.f, "const ",)?;
-                                self.write_ty(*ty)?;
-                                write!(self.f, " ",)?;
                                 match val {
                                     zir::ConstantValue::Integer(int) => write!(self.f, "{}", int)?,
                                     zir::ConstantValue::String(str) => write!(self.f, "{:?}", str)?,
@@ -362,19 +496,21 @@ pub mod print {
                                 }
                             }
                             zir::Inst::Add(lhs, rhs) => {
-                                write!(self.f, "add ")?;
-                                self.write_ty(*ty)?;
-                                write!(self.f, " {} {}", lhs, rhs)?;
+                                write!(self.f, "add {}, {}", lhs, rhs)?;
                             }
                             zir::Inst::Call(_, _) => todo!(),
-                            zir::Inst::Ret(_) => todo!(),
+                            zir::Inst::Ret(id) => {
+                                write!(self.f, "ret {}", id)?;
+                            }
                             zir::Inst::RetVoid => write!(self.f, "ret void")?,
                         }
+
+                        writeln!(self.f)?;
                     }
                 }
 
                 self.f.pop_indent();
-                writeln!(self.f, "\n}}")?;
+                writeln!(self.f, "}}")?;
             }
 
             self.f.flush()
@@ -389,14 +525,18 @@ pub mod print {
                     self.f,
                     "s{}",
                     match ty_int.size {
-                        zir::TyIntSize::PtrSized => "int_size".to_string(),
+                        zir::TyIntSize::PtrSized => "intptr".to_string(),
                         zir::TyIntSize::BitSized(n) => format!("{}", n),
                     }
                 )?,
                 zir::Ty::Func(func) => {
                     write!(self.f, "fn(")?;
-                    for ty_id in func.params.iter() {
+                    for (i, ty_id) in func.params.iter().enumerate() {
                         self.write_ty(*ty_id)?;
+
+                        if i != func.params.len() - 1 {
+                            write!(self.f, ", ")?;
+                        }
                     }
                     write!(self.f, ") -> ")?;
                     self.write_ty(func.ret)?;
@@ -409,31 +549,69 @@ pub mod print {
 }
 
 pub mod test {
-    use crate::{util::index::IndexVec, zir};
-    use std::os::unix::prelude::FromRawFd;
+    use crate::zir;
 
     pub fn do_test() {
         let mut ctx = zir::Context::new();
 
-        let ty_void = ctx.tys.get_or_intern(zir::Ty::Void);
+        // let ty_void = ctx.tys.get_or_intern(zir::Ty::Void);
+        let ty_sintptr = ctx.tys.get_or_intern(zir::Ty::Int(zir::TyInt {
+            signed: true,
+            size: zir::TyIntSize::PtrSized,
+        }));
 
-        let _id = ctx.funcs.push(zir::Func {
-            name: ctx.strings.get_or_intern("foo".to_string()),
-            ty: ctx.tys.get_or_intern(zir::Ty::Func(zir::TyFunc {
-                params: vec![],
-                ret: ty_void,
-            })),
-            blocks: vec![ctx.blocks.push(zir::Block {
-                label: ctx.strings.get_or_intern("entry".to_string()),
-                insts: IndexVec::from_raw(vec![zir::Inst::RetVoid]),
-                inst_tys: IndexVec::from_raw(vec![ty_void]),
-            })],
-        });
+        {
+            let func_id = ctx.funcs.push(zir::Func::new(
+                ctx.strings.get_or_intern("three".to_string()),
+                ctx.tys.get_or_intern(zir::Ty::Func(zir::TyFunc {
+                    params: vec![],
+                    ret: ty_sintptr,
+                })),
+            ));
 
+            let blk_name = ctx.strings.get_or_intern("entry".to_string());
+            let blk = ctx.new_block(blk_name, func_id);
+
+            {
+                let mut builder = zir::InstBuilder::new(&mut ctx, blk);
+                let k1 = builder.build_const(ty_sintptr, zir::ConstantValue::Integer(1));
+                let k2 = builder.build_const(ty_sintptr, zir::ConstantValue::Integer(2));
+                let res = builder.build_add(k1, k2);
+                builder.build_ret(res);
+            }
+        }
+
+        {
+            let func_id = ctx.funcs.push(zir::Func::new(
+                ctx.strings.get_or_intern("sum".to_string()),
+                ctx.tys.get_or_intern(zir::Ty::Func(zir::TyFunc {
+                    params: vec![ty_sintptr, ty_sintptr, ty_sintptr],
+                    ret: ty_sintptr,
+                })),
+            ));
+
+            let blk_name = ctx.strings.get_or_intern("".to_string());
+            let blk = ctx.new_block(blk_name, func_id);
+
+            {
+                let mut builder = zir::InstBuilder::new(&mut ctx, blk);
+                let arg0 = builder.build_arg(0);
+                let arg1 = builder.build_arg(1);
+                let arg2 = builder.build_arg(2);
+                let add0 = builder.build_add(arg0, arg1);
+                let add1 = builder.build_add(add0, arg2);
+                builder.build_ret(add1);
+            }
+        }
+
+        eprintln!("\n=-=-=  ZIR Dump  =-=-=");
         zir::print::dump(&ctx, &mut std::io::stderr()).unwrap();
+        // dbg!(&ctx);
 
-        let (_llvm_ctx, llvm_mod, _llvm_funcs) = zir::codegen::codegen(&ctx);
+        let (_llvm_ctx, llvm_mod, _llvm_funcs, _llvm_blocks) = zir::codegen::codegen(&ctx);
+        use std::os::unix::prelude::FromRawFd;
         llvm::verify_module(&llvm_mod, &mut unsafe { std::fs::File::from_raw_fd(1) });
+        eprintln!("\n=-=-=  LLVM Dump  =-=-=");
         llvm_mod.dump();
         std::process::exit(0);
     }
