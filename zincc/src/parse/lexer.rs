@@ -294,7 +294,7 @@ impl Lexer<'_> {
             // fn
             b'f' => match slice[1] {
                 b'a' => self.check_kw(slice, 2, "lse".as_bytes(), TK::kw_false),
-                b'n' => self.check_kw(slice, 2, &[], TK::kw_fn), // @Speed
+                b'n' if slice.len() == 2 => TK::kw_fn,
                 _ => TK::ident,
             },
 
