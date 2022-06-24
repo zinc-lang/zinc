@@ -94,37 +94,60 @@ impl Node {
 #[allow(non_camel_case_types)]
 #[repr(u8)]
 pub enum NodeKind {
+    /// Only one of these should exist
+    /// `decl*`
     root,
+    /// When the parser is 'panicking' skipped tokens are put under this.
     skipped,
 
-    path,
-    string,
-    block,
-
-    /// For let and const
-    binding_ty,
-
-    func_proto,
-    func_proto_param,
-    func_proto_ret,
-
-    decl_func,
-    decl_func_body,
-
-    decl_const,
-
-    stmt_let,
-    stmt_expr,
-    stmt_decl,
-
+    /// Since all tokens need to be given a node parent, int and float literals have these nodes.
     literal_int,
     literal_float,
 
+    /// `'::'? ident ( '::' ident )*`
+    path,
+    /// '"' ( char | '\' char | '\u' '{' 4xHexNumber '}' | '\x' 2xHexNumber )* '"'
+    string,
+    /// `'{' stmt* '}'`
+    block,
+
+    /// A 'let' or 'const' may or may not have this depending on if the user has written a type.
+    /// `( ':' ty )?`
+    binding_ty,
+
+    /// The 'fn' is present in all cases except for function declarations, in which case it is before the name of the function.
+    /// `'fn'? '(' param ( ',' param )* ','? ')' ret`
+    func_proto,
+    /// `( ident ':' )? ty`
+    func_proto_param,
+    /// `( ':' ty )?`
+    func_proto_ret,
+
+    /// `'fn' ident proto body`
+    decl_func,
+    /// `( block | '=>' expr ';' )`
+    decl_func_body,
+
+    /// `'const' ident binding_ty '=' expr ';'`
+    decl_const,
+
+    /// `'let' ident binding_ty '=' expr ';'`
+    stmt_let,
+    /// `expr ';'`
+    stmt_expr,
+    /// decl
+    stmt_decl,
+
+    /// `expr op expr`
     expr_infix,
+    /// `punct*`
     expr_infix_op,
 
+    /// `'()'`
     expr_unit,
+    /// `'(' expr ')'`
     expr_grouping,
+    /// `'(' expr ( ',' expr )* ','? ')'`
     expr_tuple,
 
     /// 'false'
@@ -132,8 +155,10 @@ pub enum NodeKind {
     /// 'true'
     expr_true,
 
+    /// `expr tuple`
     expr_call,
     // expr_call_arg,
+    /// `'return' expr`
     expr_return,
 
     /// `'[]' ty`
