@@ -6,15 +6,13 @@ pub mod util;
 pub mod zir;
 
 fn main() {
-    // zir::test::do_test();
-
     let options = get_options();
 
     assert_eq!(options.files.len(), 1);
     let source_path = &options.files[0];
 
     let source = util::read_file_to_string(source_path)
-        .map(|s| if !s.ends_with('\n') { s + "\n" } else { s })
+        .map(|s| s + "\n\0")
         .unwrap_or_else(|e| {
             eprintln!("Failed to read file at path '{}', {}", source_path, e);
             std::process::exit(1);
@@ -79,6 +77,10 @@ fn main() {
         eprintln!("{:#?}\n", ast);
     }
 
+    if options.verbose_zir {
+        zir::test::do_test();
+    }
+
     if options.print_times {
         println!("times:");
         println!("  lexing:\t{:?}", duration_lex);
@@ -96,6 +98,7 @@ pub struct Options {
     verbose_tokens: bool,
     verbose_cst: bool,
     verbose_ast: bool,
+    verbose_zir: bool,
 
     print_times: bool,
 }
@@ -110,7 +113,7 @@ fn get_options() -> Options {
             Arg::new("verbose")
                 .long("verbose")
                 .short('v')
-                .value_parser(PossibleValuesParser::new(&["tokens", "cst", "ast"]))
+                .value_parser(PossibleValuesParser::new(&["tokens", "cst", "ast", "zir"]))
                 .takes_value(true)
                 .action(clap::ArgAction::Append),
         )
@@ -122,20 +125,17 @@ fn get_options() -> Options {
         )
         .get_matches();
 
-    let files = matches
-        .get_many::<String>("FILES")
-        .unwrap()
-        .cloned()
-        .collect();
+    let files = matches.get_many("FILES").unwrap().cloned().collect();
 
     let verbose = matches
         .get_many::<String>("verbose")
-        .map(|s| s.cloned().collect::<Vec<String>>())
+        .map(|s| s.cloned().collect::<Vec<_>>())
         .unwrap_or_default();
 
     let verbose_tokens = verbose.contains(&"tokens".to_string());
     let verbose_cst = verbose.contains(&"cst".to_string());
     let verbose_ast = verbose.contains(&"ast".to_string());
+    let verbose_zir = verbose.contains(&"zir".to_string());
 
     let print_times = matches.contains_id("print_times");
 
@@ -144,6 +144,7 @@ fn get_options() -> Options {
         verbose_tokens,
         verbose_cst,
         verbose_ast,
+        verbose_zir,
         print_times,
     }
 }

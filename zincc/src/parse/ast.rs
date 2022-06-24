@@ -1,17 +1,17 @@
 use super::cst::NodeId;
 use crate::util::index::{self, InterningIndexVec};
-use std::{fmt, num::NonZeroUsize};
+use std::{fmt, num::NonZeroU32};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StrSym(NonZeroUsize);
+pub struct StrSym(NonZeroU32);
 
 impl index::Idx for StrSym {
     fn new(idx: usize) -> Self {
-        Self(NonZeroUsize::new(idx + 1).unwrap())
+        Self(NonZeroU32::new((idx + 1).try_into().unwrap()).unwrap())
     }
 
     fn index(self) -> usize {
-        self.0.get() - 1
+        (self.0.get() - 1) as usize
     }
 }
 
@@ -22,11 +22,11 @@ impl fmt::Debug for StrSym {
 }
 
 #[derive(Clone, Copy)]
-pub struct TokId(NonZeroUsize);
+pub struct TokId(NonZeroU32);
 
 impl TokId {
     pub fn new(i: usize) -> Self {
-        Self(NonZeroUsize::new(i + 1).unwrap())
+        Self(NonZeroU32::new((i + 1).try_into().unwrap()).unwrap())
     }
 }
 

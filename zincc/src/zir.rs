@@ -65,19 +65,6 @@ impl Func {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FuncId(u32);
-
-impl index::Idx for FuncId {
-    fn new(idx: usize) -> Self {
-        Self(idx.try_into().unwrap())
-    }
-
-    fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
 #[derive(Debug)]
 pub struct Block {
     label: StrSym,
@@ -88,45 +75,6 @@ pub struct Block {
     inst_tys: IndexVec<TyId, BlockLocalInstId>,
     // ty_nodes: Vec<NodeId>,
     // names: Vec<Option<String>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BlockId(u32);
-
-impl index::Idx for BlockId {
-    fn new(idx: usize) -> Self {
-        Self(idx.try_into().unwrap())
-    }
-
-    fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-/// Reference to block, and an inst local to that block
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InstId {
-    parent: BlockId,
-    local: BlockLocalInstId,
-}
-
-impl std::fmt::Display for InstId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "%{}.{}", self.parent.0, self.local.0)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BlockLocalInstId(u32);
-
-impl index::Idx for BlockLocalInstId {
-    fn new(idx: usize) -> Self {
-        Self(idx.try_into().unwrap())
-    }
-
-    fn index(self) -> usize {
-        self.0 as usize
-    }
 }
 
 #[derive(Debug)]
@@ -184,6 +132,59 @@ impl index::Idx for TyId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FuncId(u32);
+
+impl index::Idx for FuncId {
+    fn new(idx: usize) -> Self {
+        Self(idx.try_into().unwrap())
+    }
+
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// Reference to block, and an inst local to that block
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InstId {
+    parent: BlockId,
+    local: BlockLocalInstId,
+}
+
+impl std::fmt::Display for InstId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "%{}.{}", self.parent.0, self.local.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockId(u32);
+
+impl index::Idx for BlockId {
+    fn new(idx: usize) -> Self {
+        Self(idx.try_into().unwrap())
+    }
+
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockLocalInstId(u32);
+
+impl index::Idx for BlockLocalInstId {
+    fn new(idx: usize) -> Self {
+        Self(idx.try_into().unwrap())
+    }
+
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+#[derive(Debug)]
 pub struct InstBuilder<'ctx> {
     ctx: &'ctx mut Context,
     blk: BlockId,
@@ -540,7 +541,7 @@ pub mod print {
                             write!(self.f, ", ")?;
                         }
                     }
-                    write!(self.f, ") -> ")?;
+                    write!(self.f, "): ")?;
                     self.write_ty(func.ret)?;
                 }
             }
@@ -613,7 +614,7 @@ pub mod test {
         let (_llvm_ctx, llvm_mod, _llvm_funcs, _llvm_blocks) = zir::codegen::codegen(&ctx);
         use std::os::unix::prelude::FromRawFd;
         llvm::verify_module(&llvm_mod, &mut unsafe { std::fs::File::from_raw_fd(1) });
-        eprintln!("\n=-=-=  LLVM Dump  =-=-=");
+        eprintln!("\n=-=-=  LLVM Module Dump  =-=-=");
         llvm_mod.dump();
         std::process::exit(0);
     }

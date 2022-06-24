@@ -2,12 +2,12 @@
 //! Adds nothing more than structure to the existing tokens
 
 use crate::util::index::{self, IndexVec};
-use std::{fmt, num::NonZeroUsize};
+use std::{fmt, num::NonZeroU32};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId {
-    pub kind: NodeKind,
-    pub raw: RawNodeId,
+    pub kind: NodeKind, // u8
+    pub raw: RawNodeId, // NonZeroU32
 }
 
 impl fmt::Debug for NodeId {
@@ -22,15 +22,15 @@ impl fmt::Debug for NodeId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RawNodeId(NonZeroUsize);
+pub struct RawNodeId(NonZeroU32);
 
 impl index::Idx for RawNodeId {
     fn new(idx: usize) -> Self {
-        Self(NonZeroUsize::new(idx + 1).unwrap())
+        Self(NonZeroU32::new((idx + 1).try_into().unwrap()).unwrap())
     }
 
     fn index(self) -> usize {
-        self.0.get() - 1
+        (self.0.get() - 1) as usize
     }
 }
 
@@ -90,7 +90,7 @@ impl Node {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(non_camel_case_types)]
 #[repr(u8)]
 pub enum NodeKind {
