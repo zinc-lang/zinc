@@ -33,6 +33,7 @@ pub enum TokenKind {
     punct_slash, // /
 
     punct_fat_arrow, // =>
+    punct_question,  // ?
 
     ident,
 

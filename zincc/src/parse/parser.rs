@@ -89,6 +89,7 @@ pub enum ParseContext {
     Path,
     TyFunc,
     Ty,
+    TySlice,
 }
 
 #[derive(Clone)]
@@ -164,7 +165,7 @@ impl Parser<'_> {
         }
     }
 
-    pub fn append_node(&mut self, what: PNode, to: &mut PNode) {
+    fn append_node(&mut self, what: PNode, to: &mut PNode) {
         let id_raw = self.node_map.push(what.node);
         let id = cst::NodeId {
             raw: id_raw,
@@ -365,6 +366,19 @@ impl Parser<'_> {
             TK::ident | TK::punct_dblColon => {
                 let path = self.parse_path();
                 self.append_node(path, parent);
+            }
+            TK::brkt_square_open => {
+                let mut slice_ty = self.node(NK::ty_slice);
+                self.bump(&mut slice_ty); // '['
+                self.expect(TK::brkt_square_close, ParseContext::TySlice, &mut slice_ty); // ']'
+                self.parse_ty(&mut slice_ty); // ty
+                self.append_node(slice_ty, parent);
+            }
+            TK::punct_question => {
+                let mut nullable_ty = self.node(NK::ty_nullable);
+                self.bump(&mut nullable_ty); // '?'
+                self.parse_ty(&mut nullable_ty); // ty
+                self.append_node(nullable_ty, parent);
             }
             TK::kw_fn => self.parse_ty_func(parent),
             _ => self.report(

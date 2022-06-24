@@ -111,6 +111,8 @@ pub struct DeclFunc {
 pub enum Ty {
     Named(Path),
     Func(TyFunc),
+    Slice(NodeId, Box<Ty>),
+    Nullable(NodeId, Box<Ty>),
 }
 
 #[derive(Debug)]
@@ -389,6 +391,10 @@ pub mod gen {
             match id.kind {
                 NK::path => Ty::Named(self.gen_path(id)),
                 NK::func_proto => Ty::Func(self.gen_decl_proto(id)),
+                NK::ty_slice => Ty::Slice(id, Box::new(self.gen_ty(self.cst.get(id).nodes()[0]))),
+                NK::ty_nullable => {
+                    Ty::Nullable(id, Box::new(self.gen_ty(self.cst.get(id).nodes()[0])))
+                }
                 _ => unreachable!(),
             }
         }

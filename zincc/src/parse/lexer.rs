@@ -85,6 +85,8 @@ impl Lexer<'_> {
                 b'-' => self.tok(TK::punct_minus),
                 b'*' => self.tok(TK::punct_star),
 
+                b'?' => self.tok(TK::punct_question),
+
                 b'/' => {
                     if self.match_next(b'/') {
                         self.inc_ws();
