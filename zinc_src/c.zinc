@@ -62,4 +62,6 @@ fn blocks() {
 }
 
 fn asdf(a: []char, b: ?bool) {
+    true;
+    false;
 }

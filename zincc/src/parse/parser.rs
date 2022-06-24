@@ -173,6 +173,12 @@ impl Parser<'_> {
         };
         to.node.elements.push(cst::Element::Node(id));
     }
+
+    fn node_bump(&mut self, nk: NK) -> PNode {
+        let mut n = self.node(nk);
+        self.bump(&mut n);
+        n
+    }
 }
 
 /// Error ops
@@ -551,6 +557,9 @@ impl Parser<'_> {
 
             TK::int_dec | TK::int_hex | TK::int_bin | TK::int_oct => self.parse_literal_int(),
             TK::float => self.parse_literal_float(),
+
+            TK::kw_false => self.node_bump(NK::expr_false),
+            TK::kw_true => self.node_bump(NK::expr_true),
 
             TK::brkt_brace_open => self.parse_block(),
 

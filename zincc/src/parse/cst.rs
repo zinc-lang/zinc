@@ -127,6 +127,11 @@ pub enum NodeKind {
     expr_grouping,
     expr_tuple,
 
+    /// 'false'
+    expr_false,
+    /// 'true'
+    expr_true,
+
     expr_call,
     // expr_call_arg,
     expr_return,

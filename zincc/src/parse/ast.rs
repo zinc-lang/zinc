@@ -139,6 +139,8 @@ pub enum Expr {
     Infix(ExprInfix),
     Call(ExprCall),
     Ret(ExprRet),
+    True(TokId),
+    False(TokId),
 }
 
 #[derive(Debug)]
@@ -438,6 +440,8 @@ pub mod gen {
                 NK::expr_tuple => todo!(),
                 NK::expr_call => Expr::Call(self.gen_expr_call(id)),
                 NK::expr_return => Expr::Ret(self.gen_expr_ret(id)),
+                NK::expr_true => Expr::True(TokId::new(self.cst.get(id).tokens()[0])),
+                NK::expr_false => Expr::False(TokId::new(self.cst.get(id).tokens()[0])),
                 _ => unreachable!(),
             }
         }
