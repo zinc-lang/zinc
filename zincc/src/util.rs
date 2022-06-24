@@ -36,7 +36,6 @@ pub fn read_file_to_string<P: AsRef<std::path::Path>>(path: P) -> std::io::Resul
     Ok(str)
 }
 
-// @TODO: Allow to specify the indentation character
 pub struct AutoIndentingWriter<'a, T: Write> {
     inner: &'a mut T,
 

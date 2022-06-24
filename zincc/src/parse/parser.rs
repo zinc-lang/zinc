@@ -538,7 +538,9 @@ impl Parser<'_> {
             if let Some(e) = self.try_parse_expr_infix(p, lhs.clone(), infix_prec) {
                 lhs = e;
             } else {
-                // @FIXME: Is this ever an error condition?
+                // @FIXME:...
+                //  Is this an error condition?
+                //  Is it even reachable?
                 // return Some(lhs);
                 unreachable!();
             }
