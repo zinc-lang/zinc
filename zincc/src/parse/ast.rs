@@ -1,25 +1,8 @@
 use super::cst::NodeId;
-use crate::util::index::{self, InterningIndexVec};
+use crate::util::index::{self, IndexVec, InterningIndexVec};
 use std::{fmt, num::NonZeroU32};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StrSym(NonZeroU32);
-
-impl index::Idx for StrSym {
-    fn new(idx: usize) -> Self {
-        Self(NonZeroU32::new((idx + 1).try_into().unwrap()).unwrap())
-    }
-
-    fn index(self) -> usize {
-        (self.0.get() - 1) as usize
-    }
-}
-
-impl fmt::Debug for StrSym {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "StrSym({})", index::Idx::index(*self))
-    }
-}
+pub type StrSym = index::NonZeroU32IdxRef<String>;
 
 #[derive(Clone, Copy)]
 pub struct TokId(NonZeroU32);
@@ -39,7 +22,10 @@ impl fmt::Debug for TokId {
 #[derive(Debug)]
 pub struct AstMap {
     pub strings: InterningIndexVec<String, StrSym>,
-    pub root: Root,
+    pub decls: IndexVec<Decl, DeclId>,
+    pub tys: IndexVec<Ty, TyId>,
+    pub stmts: IndexVec<Stmt, StmtId>,
+    pub exprs: IndexVec<Expr, ExprId>,
 }
 
 #[derive(Debug)]
@@ -75,7 +61,7 @@ pub struct Path {
 #[derive(Debug)]
 pub struct Block {
     pub id: NodeId,
-    pub stmts: Vec<Stmt>,
+    pub stmts: Vec<StmtId>,
 }
 
 #[derive(Debug)]
@@ -83,15 +69,17 @@ pub struct Binding {
     pub id: NodeId,
     // pub mutable: bool,
     pub name: Ident,
-    pub ty: Option<Ty>,
-    pub expr: Box<Expr>,
+    pub ty: Option<TyId>,
+    pub expr: ExprId,
 }
 
 #[derive(Debug)]
 pub struct Root {
     pub id: NodeId,
-    pub decls: Vec<Decl>,
+    pub decls: Vec<DeclId>,
 }
+
+pub type DeclId = index::U32IdxRef<Decl>;
 
 #[derive(Debug)]
 pub enum Decl {
@@ -103,31 +91,35 @@ pub enum Decl {
 pub struct DeclFunc {
     pub id: NodeId,
     pub name: Ident,
-    pub ty: TyFunc,
-    pub body: Expr,
+    pub ty: TyId, // TyFunc
+    pub body: ExprId,
 }
+
+pub type TyId = index::U32IdxRef<Ty>;
 
 #[derive(Debug)]
 pub enum Ty {
     Named(Path),
     Func(TyFunc),
-    Slice(NodeId, Box<Ty>),
-    Nullable(NodeId, Box<Ty>),
+    Slice(NodeId, TyId),
+    Nullable(NodeId, TyId),
 }
 
 #[derive(Debug)]
 pub struct TyFunc {
     pub id: NodeId,
     pub params: Vec<Param>,
-    pub ret: Option<Box<Ty>>,
+    pub ret: Option<TyId>,
 }
 
 #[derive(Debug)]
 pub struct Param {
     pub id: NodeId,
     pub ident: Option<Ident>,
-    pub ty: Ty,
+    pub ty: TyId,
 }
+
+pub type ExprId = index::U32IdxRef<Expr>;
 
 #[derive(Debug)]
 pub enum Expr {
@@ -147,28 +139,30 @@ pub enum Expr {
 pub struct ExprInfix {
     pub id: NodeId,
     pub op: Vec<TokId>,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: ExprId,
+    pub rhs: ExprId,
 }
 
 #[derive(Debug)]
 pub struct ExprCall {
     pub id: NodeId,
-    pub callee: Box<Expr>,
-    pub args: Vec<Expr>,
+    pub callee: ExprId,
+    pub args: Vec<ExprId>,
 }
 
 #[derive(Debug)]
 pub struct ExprRet {
     pub id: NodeId,
-    pub value: Option<Box<Expr>>,
+    pub value: Option<ExprId>,
 }
+
+pub type StmtId = index::U32IdxRef<Stmt>;
 
 #[derive(Debug)]
 pub enum Stmt {
     Let(Binding),
-    Expr(Expr),
-    Decl(Decl),
+    Expr(ExprId),
+    Decl(DeclId),
 }
 
 pub mod gen {
@@ -183,25 +177,22 @@ pub mod gen {
         source: &str,
         tokens: &[TokenKind],
         ranges: &[std::ops::Range<usize>],
-    ) -> AstMap {
-        let mut gener = Generator::new(cst, source, tokens, ranges);
-        let root = gener.gen_root();
-        AstMap {
-            strings: gener.strings,
-            root,
-        }
+    ) -> (AstMap, Root) {
+        let mut gen = AstGen::new(cst, source, tokens, ranges);
+        let root = gen.gen_root();
+        (gen.map, root)
     }
 
-    pub struct Generator<'s> {
+    pub struct AstGen<'s> {
         cst: &'s cst::Cst,
         source: &'s str,
         tokens: &'s [TokenKind],
         ranges: &'s [std::ops::Range<usize>],
 
-        strings: InterningIndexVec<String, StrSym>,
+        map: AstMap,
     }
 
-    impl<'s> Generator<'s> {
+    impl<'s> AstGen<'s> {
         fn new(
             cst: &'s cst::Cst,
             source: &'s str,
@@ -213,7 +204,13 @@ pub mod gen {
                 source,
                 tokens,
                 ranges,
-                strings: InterningIndexVec::new(),
+                map: AstMap {
+                    strings: Default::default(),
+                    decls: Default::default(),
+                    tys: Default::default(),
+                    stmts: Default::default(),
+                    exprs: Default::default(),
+                },
             }
         }
 
@@ -235,7 +232,7 @@ pub mod gen {
             let tok = TokId::new(i);
             let range = &self.ranges[i as usize];
             let str = &self.source[range.start as usize..range.end as usize];
-            let sym = self.strings.get_or_intern(str.to_string());
+            let sym = self.map.strings.get_or_intern(str.to_string());
             Ident { tok, sym }
         }
 
@@ -258,7 +255,7 @@ pub mod gen {
                 })
                 .collect();
 
-            let sym = self.strings.get_or_intern(str);
+            let sym = self.map.strings.get_or_intern(str);
 
             AstString { id, sym }
         }
@@ -277,7 +274,7 @@ pub mod gen {
                 })
                 .map(|i| &self.ranges[i as usize])
                 .map(|range| &self.source[range.start as usize..range.end as usize])
-                .map(|str| self.strings.get_or_intern(str.to_string()))
+                .map(|str| self.map.strings.get_or_intern(str.to_string()))
                 .collect();
 
             Path { id, segments }
@@ -355,17 +352,18 @@ pub mod gen {
                 None
             };
 
-            let expr = Box::new(self.gen_expr(*nodes.last().unwrap()));
+            let expr = self.gen_expr(*nodes.last().unwrap());
 
             Binding { id, name, ty, expr }
         }
 
-        fn gen_decl(&mut self, id: NodeId) -> Decl {
-            match id.kind {
+        fn gen_decl(&mut self, id: NodeId) -> DeclId {
+            let decl = match id.kind {
                 NK::decl_func => Decl::Func(self.gen_decl_func(id)),
                 NK::decl_const => Decl::Const(self.gen_binding(id)),
                 _ => unreachable!(),
-            }
+            };
+            self.map.decls.push(decl)
         }
 
         fn gen_decl_func(&mut self, id: NodeId) -> DeclFunc {
@@ -384,21 +382,21 @@ pub mod gen {
             debug_assert_eq!(body.kind, NK::decl_func_body);
 
             let ty = self.gen_decl_proto(proto);
+            let ty = self.map.tys.push(Ty::Func(ty));
             let body = self.gen_expr(self.cst.get(body).nodes()[0]);
 
             DeclFunc { id, ty, name, body }
         }
 
-        fn gen_ty(&mut self, id: NodeId) -> Ty {
-            match id.kind {
+        fn gen_ty(&mut self, id: NodeId) -> TyId {
+            let ty = match id.kind {
                 NK::path => Ty::Named(self.gen_path(id)),
                 NK::func_proto => Ty::Func(self.gen_decl_proto(id)),
-                NK::ty_slice => Ty::Slice(id, Box::new(self.gen_ty(self.cst.get(id).nodes()[0]))),
-                NK::ty_nullable => {
-                    Ty::Nullable(id, Box::new(self.gen_ty(self.cst.get(id).nodes()[0])))
-                }
+                NK::ty_slice => Ty::Slice(id, self.gen_ty(self.cst.get(id).nodes()[0])),
+                NK::ty_nullable => Ty::Nullable(id, self.gen_ty(self.cst.get(id).nodes()[0])),
                 _ => unreachable!(),
-            }
+            };
+            self.map.tys.push(ty)
         }
 
         fn gen_decl_proto(&mut self, id: NodeId) -> TyFunc {
@@ -422,13 +420,13 @@ pub mod gen {
                 .iter()
                 .find(|id| id.kind == NK::func_proto_ret)
                 .map(|&id| self.cst.get(id).nodes()[0])
-                .map(|id| Box::new(self.gen_ty(id)));
+                .map(|id| self.gen_ty(id));
 
             TyFunc { id, params, ret }
         }
 
-        fn gen_expr(&mut self, id: NodeId) -> Expr {
-            match id.kind {
+        fn gen_expr(&mut self, id: NodeId) -> ExprId {
+            let expr = match id.kind {
                 NK::path => Expr::Path(self.gen_path(id)),
                 NK::string => Expr::String(self.gen_string(id)),
                 NK::block => Expr::Block(self.gen_block(id)),
@@ -443,7 +441,8 @@ pub mod gen {
                 NK::expr_true => Expr::True(TokId::new(self.cst.get(id).tokens()[0])),
                 NK::expr_false => Expr::False(TokId::new(self.cst.get(id).tokens()[0])),
                 _ => unreachable!(),
-            }
+            };
+            self.map.exprs.push(expr)
         }
 
         fn gen_expr_infix(&mut self, id: NodeId) -> ExprInfix {
@@ -452,8 +451,8 @@ pub mod gen {
 
             assert_eq!(nodes.len(), 3);
 
-            let lhs = Box::new(self.gen_expr(nodes[0]));
-            let rhs = Box::new(self.gen_expr(nodes[2]));
+            let lhs = self.gen_expr(nodes[0]);
+            let rhs = self.gen_expr(nodes[2]);
 
             debug_assert_eq!(nodes[1].kind, NK::expr_infix_op);
             let op = self
@@ -472,7 +471,7 @@ pub mod gen {
             debug_assert_eq!(id.kind, NK::expr_call);
             let nodes = self.cst.get(id).nodes();
 
-            let callee = Box::new(self.gen_expr(nodes[0]));
+            let callee = self.gen_expr(nodes[0]);
             let args = nodes[1..].iter().map(|&id| self.gen_expr(id)).collect();
 
             ExprCall { id, callee, args }
@@ -484,8 +483,7 @@ pub mod gen {
 
             let value = if !nodes.is_empty() {
                 debug_assert_eq!(nodes.len(), 1);
-                let v = self.gen_expr(nodes[0]);
-                Some(Box::new(v))
+                Some(self.gen_expr(nodes[0]))
             } else {
                 None
             };
@@ -493,14 +491,15 @@ pub mod gen {
             ExprRet { id, value }
         }
 
-        fn gen_stmt(&mut self, id: NodeId) -> Stmt {
-            match id.kind {
+        fn gen_stmt(&mut self, id: NodeId) -> StmtId {
+            let stmt = match id.kind {
                 NK::stmt_let => Stmt::Let(self.gen_binding(id)),
                 NK::stmt_expr => Stmt::Expr(self.gen_expr(self.cst.get(id).nodes()[0])),
                 NK::stmt_decl => Stmt::Decl(self.gen_decl(self.cst.get(id).nodes()[0])),
 
                 _ => unreachable!(),
-            }
+            };
+            self.map.stmts.push(stmt)
         }
     }
 }
