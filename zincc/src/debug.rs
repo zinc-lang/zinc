@@ -91,7 +91,7 @@ pub fn unescape_string(str: &str) -> String {
         .collect::<String>()
 }
 
-pub fn print_cst<W: Write>(
+pub fn write_cst<W: Write>(
     writer: &mut W,
     cst: &cst::Cst,
     source: &str,
@@ -99,10 +99,10 @@ pub fn print_cst<W: Write>(
     ranges: &[std::ops::Range<usize>],
     use_color: bool,
 ) -> io::Result<()> {
-    CstPrinter::new(writer, cst, source, tokens, ranges, use_color).print(cst.root())
+    CstWriter::new(writer, cst, source, tokens, ranges, use_color).print(cst.root())
 }
 
-pub struct CstPrinter<'s, W: Write> {
+pub struct CstWriter<'s, W: Write> {
     f: AutoIndentingWriter<'s, W>,
     cst: &'s cst::Cst,
     source: &'s str,
@@ -111,7 +111,7 @@ pub struct CstPrinter<'s, W: Write> {
     use_color: bool,
 }
 
-impl<'s, W: Write> CstPrinter<'s, W> {
+impl<'s, W: Write> CstWriter<'s, W> {
     pub fn new(
         writer: &'s mut W,
         cst: &'s cst::Cst,

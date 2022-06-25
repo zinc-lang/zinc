@@ -36,7 +36,7 @@ fn main() {
     let duration_parse = stopwatch.read();
 
     if options.verbose_cst {
-        debug::print_cst(
+        debug::write_cst(
             &mut std::io::stderr(),
             &parse_res.cst,
             &source,
