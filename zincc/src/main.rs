@@ -26,7 +26,7 @@ fn main() {
 
     if options.verbose_tokens {
         lex_res.debug_zip().for_each(|(tk, range, _)| {
-            eprintln!("{}", debug::format_token(&source, tk, &range));
+            eprintln!("{}", debug::format_token(&source, tk, &range, true));
         });
         eprintln!();
     }
@@ -42,6 +42,7 @@ fn main() {
             &source,
             &lex_res.tokens,
             &lex_res.spans,
+            true,
         )
         .unwrap();
         eprintln!();

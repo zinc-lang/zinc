@@ -52,21 +52,30 @@ impl fmt::Display for TerminalColor {
     }
 }
 
-pub fn format_token(source: &str, tk: parse::TK, range: &std::ops::Range<usize>) -> String {
+pub fn format_token(
+    source: &str,
+    tk: parse::TK,
+    range: &std::ops::Range<usize>,
+    use_color: bool,
+) -> String {
     let slice = &source[range.start as usize..range.end as usize];
     let slice = unescape_string(slice);
-    format!(
-        "{}{:?}{}@{}{:?}{}  {}'{}'{}",
-        TerminalColor::CyanDark,
-        tk,
-        TerminalColor::Reset,
-        TerminalColor::WhiteLight,
-        range,
-        TerminalColor::Reset,
-        TerminalColor::GreenDark,
-        slice,
-        TerminalColor::Reset,
-    )
+    if use_color {
+        format!(
+            "{}{:?}{}@{}{:?}{}  {}'{}'{}",
+            TerminalColor::CyanDark,
+            tk,
+            TerminalColor::Reset,
+            TerminalColor::WhiteLight,
+            range,
+            TerminalColor::Reset,
+            TerminalColor::GreenDark,
+            slice,
+            TerminalColor::Reset,
+        )
+    } else {
+        format!("{:?}@{:?}  '{}'", tk, range, slice)
+    }
 }
 
 pub fn unescape_string(str: &str) -> String {
@@ -88,8 +97,9 @@ pub fn print_cst<W: Write>(
     source: &str,
     tokens: &[TokenKind],
     ranges: &[std::ops::Range<usize>],
+    use_color: bool,
 ) -> io::Result<()> {
-    CstPrinter::new(writer, cst, source, tokens, ranges).print(cst.root())
+    CstPrinter::new(writer, cst, source, tokens, ranges, use_color).print(cst.root())
 }
 
 pub struct CstPrinter<'s, W: Write> {
@@ -98,6 +108,7 @@ pub struct CstPrinter<'s, W: Write> {
     source: &'s str,
     tokens: &'s [TokenKind],
     ranges: &'s [std::ops::Range<usize>],
+    use_color: bool,
 }
 
 impl<'s, W: Write> CstPrinter<'s, W> {
@@ -107,6 +118,7 @@ impl<'s, W: Write> CstPrinter<'s, W> {
         source: &'s str,
         tokens: &'s [TokenKind],
         ranges: &'s [std::ops::Range<usize>],
+        use_color: bool,
     ) -> Self {
         Self {
             f: AutoIndentingWriter::new(writer, 2),
@@ -114,6 +126,7 @@ impl<'s, W: Write> CstPrinter<'s, W> {
             source,
             tokens,
             ranges,
+            use_color,
         }
     }
 
@@ -123,16 +136,24 @@ impl<'s, W: Write> CstPrinter<'s, W> {
                 cst::Element::Token(i) => {
                     let tk = *self.tokens.get(*i as usize).unwrap();
                     let range = self.ranges.get(*i as usize).unwrap();
-                    writeln!(self.f, "{}", format_token(self.source, tk, range))?;
-                }
-                cst::Element::Node(n) => {
                     writeln!(
                         self.f,
-                        "{}{:?}{}",
-                        TerminalColor::MagentaDark,
-                        n.kind,
-                        TerminalColor::Reset
+                        "{}",
+                        format_token(self.source, tk, range, self.use_color)
                     )?;
+                }
+                cst::Element::Node(n) => {
+                    if self.use_color {
+                        writeln!(
+                            self.f,
+                            "{}{:?}{}",
+                            TerminalColor::MagentaDark,
+                            n.kind,
+                            TerminalColor::Reset
+                        )?;
+                    } else {
+                        writeln!(self.f, "{:?}", n.kind)?;
+                    }
                     self.f.push_indent();
                     self.print(self.cst.get(*n))?;
                     self.f.pop_indent();
