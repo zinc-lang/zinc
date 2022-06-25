@@ -2,7 +2,7 @@
 //! Adds nothing more than structure to the existing tokens
 
 use crate::util::index::{self, IndexVec};
-use std::{fmt, num::NonZeroU32};
+use std::fmt;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId {
@@ -21,18 +21,7 @@ impl fmt::Debug for NodeId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RawNodeId(NonZeroU32);
-
-impl index::Idx for RawNodeId {
-    fn new(idx: usize) -> Self {
-        Self(NonZeroU32::new((idx + 1).try_into().unwrap()).unwrap())
-    }
-
-    fn index(self) -> usize {
-        (self.0.get() - 1) as usize
-    }
-}
+pub type RawNodeId = index::NonZeroU32IdxRef<Node>;
 
 #[derive(Debug)]
 pub struct Cst {

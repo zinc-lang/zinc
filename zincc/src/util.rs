@@ -210,9 +210,84 @@ impl<T: Write> Write for AutoIndentingWriter<'_, T> {
 }
 
 pub mod index {
+    use std::any::type_name;
     use std::fmt::{self, Debug};
     use std::hash::Hash;
     use std::marker::PhantomData;
+    use std::num::{NonZeroU32, NonZeroUsize};
+
+    macro_rules! impl_idx {
+        ($name:ident, $inner_ty:ty, $blk_new:expr, $blk_get:expr) => {
+            pub struct $name<T: 'static> {
+                idx: $inner_ty,
+                _marker: PhantomData<T>,
+            }
+
+            impl<T: 'static> Debug for $name<T> {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    write!(f, "UsizeIdxRef<{}>({})", type_name::<T>(), self.idx)
+                }
+            }
+
+            impl<T: 'static> Clone for $name<T> {
+                fn clone(&self) -> Self {
+                    Self {
+                        idx: self.idx,
+                        _marker: PhantomData,
+                    }
+                }
+            }
+
+            impl<T: 'static> Copy for $name<T> {}
+
+            impl<T: 'static> PartialEq for $name<T> {
+                fn eq(&self, other: &Self) -> bool {
+                    self.idx == other.idx
+                }
+            }
+
+            impl<T: 'static> Eq for $name<T> {}
+
+            impl<T: 'static> Hash for $name<T> {
+                fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                    self.idx.hash(state);
+                }
+            }
+
+            impl<T: 'static> Idx for $name<T> {
+                fn new(idx: usize) -> Self {
+                    Self {
+                        idx: $blk_new(idx),
+                        _marker: PhantomData,
+                    }
+                }
+
+                fn index(self) -> usize {
+                    $blk_get(self)
+                }
+            }
+        };
+    }
+
+    impl_idx!(UsizeIdxRef, usize, |x| { x }, |s: UsizeIdxRef<_>| { s.idx });
+    impl_idx!(
+        NonZeroUsizeIdxRef,
+        NonZeroUsize,
+        |x| { NonZeroUsize::new(x + 1).unwrap() },
+        |s: NonZeroUsizeIdxRef<_>| { s.idx.get() - 1 }
+    );
+    impl_idx!(
+        U32IdxRef,
+        u32,
+        |x: usize| { x.try_into().unwrap() },
+        |s: U32IdxRef<_>| { s.idx as usize }
+    );
+    impl_idx!(
+        NonZeroU32IdxRef,
+        NonZeroU32,
+        |x: usize| { NonZeroU32::new(x as u32 + 1).unwrap() },
+        |s: NonZeroU32IdxRef<_>| { s.idx.get() as usize - 1 }
+    );
 
     pub trait Idx: 'static + Copy + Eq + Hash {
         fn new(idx: usize) -> Self;
