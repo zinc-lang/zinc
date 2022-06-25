@@ -1,27 +1,10 @@
 use super::cst::NodeId;
-use crate::util::index::{self, IndexVec, InterningIndexVec};
-use std::{fmt, num::NonZeroU32};
+use crate::util::index::{self, IndexVec};
 
-pub type StrSym = index::NonZeroU32IdxRef<String>;
-
-#[derive(Clone, Copy)]
-pub struct TokId(NonZeroU32);
-
-impl TokId {
-    pub fn new(i: usize) -> Self {
-        Self(NonZeroU32::new((i + 1).try_into().unwrap()).unwrap())
-    }
-}
-
-impl fmt::Debug for TokId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TokId({})", self.0.get() - 1)
-    }
-}
+pub type TokenIndex = usize;
 
 #[derive(Debug)]
 pub struct AstMap {
-    pub strings: InterningIndexVec<String, StrSym>,
     pub decls: IndexVec<Decl, DeclId>,
     pub tys: IndexVec<Ty, TyId>,
     pub stmts: IndexVec<Stmt, StmtId>,
@@ -30,32 +13,30 @@ pub struct AstMap {
 
 #[derive(Debug)]
 pub struct Integer {
-    pub tok: TokId,
+    pub tok: TokenIndex,
     pub int: u64,
 }
 
 #[derive(Debug)]
 pub struct Float {
-    pub tok: TokId,
+    pub tok: TokenIndex,
     pub float: f64,
 }
 
 #[derive(Debug)]
 pub struct Ident {
-    pub tok: TokId,
-    pub sym: StrSym,
+    pub tok: TokenIndex,
 }
 
 #[derive(Debug)]
 pub struct AstString {
     pub id: NodeId,
-    pub sym: StrSym,
 }
 
 #[derive(Debug)]
 pub struct Path {
     pub id: NodeId,
-    pub segments: Vec<StrSym>,
+    pub segments: Vec<TokenIndex>,
 }
 
 #[derive(Debug)]
@@ -131,14 +112,14 @@ pub enum Expr {
     Infix(ExprInfix),
     Call(ExprCall),
     Ret(ExprRet),
-    True(TokId),
-    False(TokId),
+    True(TokenIndex),
+    False(TokenIndex),
 }
 
 #[derive(Debug)]
 pub struct ExprInfix {
     pub id: NodeId,
-    pub op: Vec<TokId>,
+    pub op: Vec<TokenIndex>,
     pub lhs: ExprId,
     pub rhs: ExprId,
 }
@@ -205,7 +186,7 @@ pub mod gen {
                 tokens,
                 ranges,
                 map: AstMap {
-                    strings: Default::default(),
+                    // strings: Default::default(),
                     decls: Default::default(),
                     tys: Default::default(),
                     stmts: Default::default(),
@@ -228,12 +209,8 @@ pub mod gen {
         }
 
         fn gen_ident(&mut self, i: usize) -> Ident {
-            debug_assert_eq!(self.tokens[i], TK::ident);
-            let tok = TokId::new(i);
-            let range = &self.ranges[i as usize];
-            let str = &self.source[range.start as usize..range.end as usize];
-            let sym = self.map.strings.get_or_intern(str.to_string());
-            Ident { tok, sym }
+            assert_eq!(self.tokens[i], TK::ident);
+            Ident { tok: i }
         }
 
         fn gen_string(&mut self, id: NodeId) -> AstString {
@@ -242,22 +219,7 @@ pub mod gen {
             let node = self.cst.get(id);
             debug_assert_eq!(node.nodes().len(), 0);
 
-            let str = node.tokens()[1..][..1]
-                .iter()
-                .map(|&i| (i, self.tokens[i]))
-                .map(|(i, tk)| match tk {
-                    TokenKind::string_literal => &self.source[self.ranges[i].clone()],
-                    TokenKind::esc_char => todo!(),
-                    TokenKind::esc_asciicode => todo!(),
-                    TokenKind::esc_unicode => todo!(),
-                    TokenKind::string_open | TokenKind::string_close => unreachable!(),
-                    _ => unreachable!(),
-                })
-                .collect();
-
-            let sym = self.map.strings.get_or_intern(str);
-
-            AstString { id, sym }
+            AstString { id }
         }
 
         fn gen_path(&mut self, id: NodeId) -> Path {
@@ -272,9 +234,6 @@ pub mod gen {
                         None
                     }
                 })
-                .map(|i| &self.ranges[i as usize])
-                .map(|range| &self.source[range.start as usize..range.end as usize])
-                .map(|str| self.map.strings.get_or_intern(str.to_string()))
                 .collect();
 
             Path { id, segments }
@@ -300,9 +259,7 @@ pub mod gen {
             }
             .unwrap();
 
-            let tok = TokId::new(tk_i);
-
-            Integer { tok, int }
+            Integer { tok: tk_i, int }
         }
 
         fn gen_float(&mut self, id: NodeId) -> Float {
@@ -318,9 +275,7 @@ pub mod gen {
 
             let float = str.parse::<f64>().unwrap();
 
-            let tok = TokId::new(tk_i);
-
-            Float { tok, float }
+            Float { tok: tk_i, float }
         }
 
         fn gen_block(&mut self, id: NodeId) -> Block {
@@ -438,8 +393,8 @@ pub mod gen {
                 NK::expr_tuple => todo!(),
                 NK::expr_call => Expr::Call(self.gen_expr_call(id)),
                 NK::expr_return => Expr::Ret(self.gen_expr_ret(id)),
-                NK::expr_true => Expr::True(TokId::new(self.cst.get(id).tokens()[0])),
-                NK::expr_false => Expr::False(TokId::new(self.cst.get(id).tokens()[0])),
+                NK::expr_true => Expr::True(self.cst.get(id).tokens()[0]),
+                NK::expr_false => Expr::False(self.cst.get(id).tokens()[0]),
                 _ => unreachable!(),
             };
             self.map.exprs.push(expr)
@@ -455,14 +410,7 @@ pub mod gen {
             let rhs = self.gen_expr(nodes[2]);
 
             debug_assert_eq!(nodes[1].kind, NK::expr_infix_op);
-            let op = self
-                .cst
-                .get(nodes[1])
-                .tokens()
-                .iter()
-                .cloned()
-                .map(TokId::new)
-                .collect();
+            let op = self.cst.get(nodes[1]).tokens().iter().cloned().collect();
 
             ExprInfix { id, op, lhs, rhs }
         }
