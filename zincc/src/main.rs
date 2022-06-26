@@ -5,6 +5,8 @@ pub mod util;
 
 pub mod zir;
 
+pub mod ast;
+
 fn main() {
     let options = get_options();
 
@@ -71,7 +73,7 @@ fn main() {
     }
 
     stopwatch.reset();
-    let ast = parse::ast::gen::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.spans);
+    let ast = ast::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.spans);
     let duration_astgen = stopwatch.read();
 
     if options.verbose_ast {

@@ -268,6 +268,7 @@ pub mod index {
             }
         };
     }
+    pub(crate) use impl_idx;
 
     impl_idx!(UsizeIdxRef, usize, |x| { x }, |s: UsizeIdxRef<_>| { s.idx });
     impl_idx!(

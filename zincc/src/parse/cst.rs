@@ -21,6 +21,12 @@ impl fmt::Debug for NodeId {
     }
 }
 
+impl Into<RawNodeId> for NodeId {
+    fn into(self) -> RawNodeId {
+        self.raw
+    }
+}
+
 pub type RawNodeId = index::NonZeroU32IdxRef<Node>;
 
 #[derive(Debug)]
@@ -31,12 +37,12 @@ pub struct Cst {
 
 impl Cst {
     pub fn root(&self) -> &Node {
-        self.get(self.root)
+        self.get(self.root.raw)
     }
 
     #[track_caller]
-    pub fn get(&self, id: NodeId) -> &Node {
-        self.map.get(id.raw).unwrap()
+    pub fn get(&self, raw: impl Into<RawNodeId>) -> &Node {
+        self.map.get(raw.into()).unwrap()
     }
 }
 

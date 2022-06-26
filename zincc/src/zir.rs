@@ -1,9 +1,8 @@
 //! ZIR - Zinc-IR
 
-use crate::{
-    parse::ast::StrSym,
-    util::index::{self, IndexVec, InterningIndexVec},
-};
+use crate::util::index::{self, IndexVec, InterningIndexVec};
+
+pub type StrSym = index::NonZeroU32IdxRef<String>;
 
 #[derive(Debug, Default)]
 pub struct Context {
