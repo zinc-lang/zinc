@@ -143,14 +143,13 @@ impl Lexer<'_> {
     }
 
     fn tok(&mut self, kind: TK) {
-        self.tokens.push(kind);
-        self.ws_lens.push(self.ws_len);
-
         let range = self.span.start..self.span.end;
-        self.spans.push(range);
-
         self.ws_len = 0;
         self.span.start = self.span.end;
+
+        self.tokens.push(kind);
+        self.ws_lens.push(self.ws_len);
+        self.spans.push(range);
     }
 
     #[must_use]
@@ -159,6 +158,7 @@ impl Lexer<'_> {
         self.ascii[self.span.end - 1]
     }
 
+    #[inline]
     fn peek_raw(&self, n: usize) -> u8 {
         self.ascii[self.span.end + n]
     }
@@ -187,6 +187,7 @@ impl Lexer<'_> {
         cond
     }
 
+    #[inline]
     fn tok_if_match(&mut self, expect: u8, r#if: TK, r#else: TK) {
         let m = self.match_next(expect);
         if m {
