@@ -1,6 +1,10 @@
+<div align="center">
+
 # Zinc lang
 
 The zinc programming language.
+
+</div>
 
 ---
 
