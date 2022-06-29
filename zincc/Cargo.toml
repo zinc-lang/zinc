@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 clap = "3.2"
 
-#fnv = "1.0"
-
 llvm = { path = "../llvm-rs" }
+
+# @TODO: Use this for integer key bassed hash maps
+#fnv = "1.0"
