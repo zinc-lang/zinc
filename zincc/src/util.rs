@@ -1,30 +1,54 @@
 use std::io::Write;
 
-#[derive(Debug)]
-pub struct Stopwatch {
-    time: std::time::Instant,
-}
+pub mod time {
+    #[derive(Debug)]
+    pub struct Stopwatch {
+        time: std::time::Instant,
+    }
 
-impl Stopwatch {
-    pub fn start() -> Stopwatch {
-        Stopwatch {
-            time: std::time::Instant::now(),
+    impl Default for Stopwatch {
+        fn default() -> Self {
+            Self::new()
         }
     }
 
-    pub fn read(&self) -> std::time::Duration {
-        let now = std::time::Instant::now();
-        now - self.time
-    }
+    impl Stopwatch {
+        #[inline]
+        pub fn new() -> Self {
+            Self::start()
+        }
 
-    pub fn reset(&mut self) {
-        self.time = std::time::Instant::now();
-    }
+        #[inline]
+        pub fn start() -> Self {
+            Self {
+                time: std::time::Instant::now(),
+            }
+        }
 
-    pub fn lap(&mut self) -> std::time::Duration {
-        let time = self.read();
-        self.reset();
-        time
+        #[inline(always)]
+        pub fn read(&self) -> std::time::Duration {
+            let now = std::time::Instant::now();
+            now - self.time
+        }
+
+        #[inline(always)]
+        pub fn reset(&mut self) {
+            self.time = std::time::Instant::now();
+        }
+
+        #[inline(always)]
+        pub fn lap(&mut self) -> std::time::Duration {
+            let time = self.read();
+            self.reset();
+            time
+        }
+
+        #[inline(always)]
+        pub fn spanned<T>(&mut self, f: impl FnOnce() -> T) -> (T, std::time::Duration) {
+            self.reset();
+            let result = f();
+            (result, self.read())
+        }
     }
 }
 
@@ -388,13 +412,25 @@ pub mod index {
         }
 
         #[inline]
-        pub fn get_or_intern(&mut self, t: T) -> I {
+        pub fn is_interned(&mut self, t: &T) -> bool {
+            self.raw.raw.iter().any(|it| it == t)
+        }
+
+        pub fn get_from_value(&self, t: &T) -> Option<I> {
             self.raw
                 .raw
                 .iter()
-                .position(|it| it == &t)
+                .position(|it| it == t)
                 .map(|i| I::new(i))
-                .unwrap_or_else(|| self.intern(t))
+        }
+
+        pub unsafe fn get_from_value_unchecked(&self, t: &T) -> I {
+            self.get_from_value(t).unwrap_unchecked()
+        }
+
+        #[inline]
+        pub fn get_or_intern(&mut self, t: T) -> I {
+            self.get_from_value(&t).unwrap_or_else(|| self.intern(t))
         }
 
         #[inline]
@@ -407,6 +443,29 @@ pub mod index {
         #[inline]
         pub fn get(&self, index: I) -> Option<&T> {
             self.raw.get(index)
+        }
+    }
+
+    pub type StringSymbol = NonZeroU32IdxRef<String>;
+
+    /// Small type specialization to allow checking if a string is interned from just a `&str` without having to first turn it into a `String`
+    pub type StringInterningVec = InterningIndexVec<String, StringSymbol>;
+
+    impl StringInterningVec {
+        pub fn is_str_interned(&self, str: &str) -> bool {
+            self.raw.raw.iter().any(|it| it == str)
+        }
+
+        pub fn get_from_str_value(&self, str: &str) -> Option<StringSymbol> {
+            self.raw
+                .raw
+                .iter()
+                .position(|it| it == str)
+                .map(|i| StringSymbol::new(i))
+        }
+
+        pub unsafe fn get_from_str_value_unchecked(&self, str: &str) -> StringSymbol {
+            self.get_from_str_value(str).unwrap_unchecked()
         }
     }
 }

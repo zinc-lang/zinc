@@ -1,12 +1,10 @@
 //! ZIR - Zinc-IR
 
-use crate::util::index::{self, IndexVec, InterningIndexVec};
-
-pub type StrSym = index::NonZeroU32IdxRef<String>;
+use crate::util::index::{self, IndexVec, InterningIndexVec, StringInterningVec, StringSymbol};
 
 #[derive(Debug, Default)]
 pub struct Context {
-    strings: InterningIndexVec<String, StrSym>,
+    strings: StringInterningVec,
     tys: InterningIndexVec<Ty, TyId>,
     blocks: IndexVec<Block, BlockId>,
     funcs: IndexVec<Func, FuncId>,
@@ -35,7 +33,7 @@ impl Context {
             .unwrap()
     }
 
-    pub fn new_block(&mut self, label: StrSym, func: FuncId) -> BlockId {
+    pub fn new_block(&mut self, label: StringSymbol, func: FuncId) -> BlockId {
         let blk = self.blocks.push(Block {
             label,
             func,
@@ -49,13 +47,13 @@ impl Context {
 
 #[derive(Debug, Clone)]
 pub struct Func {
-    name: StrSym,
+    name: StringSymbol,
     ty: TyId,
     blocks: Vec<BlockId>,
 }
 
 impl Func {
-    pub fn new(name: StrSym, ty: TyId) -> Self {
+    pub fn new(name: StringSymbol, ty: TyId) -> Self {
         Self {
             name,
             ty,
@@ -66,7 +64,7 @@ impl Func {
 
 #[derive(Debug)]
 pub struct Block {
-    label: StrSym,
+    label: StringSymbol,
     func: FuncId,
 
     insts: IndexVec<Inst, BlockLocalInstId>,
@@ -89,7 +87,7 @@ pub enum Inst {
 #[derive(Debug)]
 pub enum ConstantValue {
     Integer(u64),
-    String(StrSym),
+    String(StringSymbol),
     Func(FuncId),
 }
 
@@ -553,7 +551,7 @@ pub mod print {
 pub mod test {
     use crate::zir;
 
-    pub fn do_test() {
+    pub fn create_test_funcs() -> zir::Context {
         let mut ctx = zir::Context::new();
 
         // let ty_void = ctx.tys.get_or_intern(zir::Ty::Void);
@@ -606,15 +604,6 @@ pub mod test {
             }
         }
 
-        eprintln!("\n=-=-=  ZIR Dump  =-=-=");
-        zir::print::dump(&ctx, &mut std::io::stderr()).unwrap();
-        // dbg!(&ctx);
-
-        let (_llvm_ctx, llvm_mod, _llvm_funcs, _llvm_blocks) = zir::codegen::codegen(&ctx);
-        use std::os::unix::prelude::FromRawFd;
-        llvm::verify_module(&llvm_mod, &mut unsafe { std::fs::File::from_raw_fd(1) });
-        eprintln!("\n=-=-=  LLVM Module Dump  =-=-=");
-        llvm_mod.dump();
-        std::process::exit(0);
+        ctx
     }
 }

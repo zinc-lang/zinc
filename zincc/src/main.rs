@@ -1,14 +1,12 @@
 pub mod debug;
-pub mod parse;
-
 pub mod util;
 
+pub mod ast;
+pub mod parse;
 pub mod zir;
 
-pub mod ast;
-
 fn main() {
-    let options = get_options();
+    let options = Options::get();
 
     assert_eq!(options.files.len(), 1);
     let source_path = &options.files[0];
@@ -20,24 +18,20 @@ fn main() {
             std::process::exit(1);
         });
 
-    let mut stopwatch = util::Stopwatch::start();
+    let mut timer = Timer::new();
 
-    stopwatch.reset();
-    let lex_res = parse::lex(&source);
-    let duration_lex = stopwatch.read();
+    let lex_res = timer.spanned("lexing", || parse::lex(&source));
 
-    if options.verbose_tokens {
+    if options.dump_tokens {
         lex_res.debug_zip().for_each(|(tk, range, _)| {
             eprintln!("{}", debug::format_token(&source, tk, &range, true));
         });
         eprintln!();
     }
 
-    stopwatch.reset();
-    let parse_res = parse::parse(&lex_res.tokens);
-    let duration_parse = stopwatch.read();
+    let parse_res = timer.spanned("parsing", || parse::parse(&lex_res.tokens));
 
-    if options.verbose_cst {
+    if options.dump_cst {
         debug::write_cst(
             &mut std::io::stderr(),
             &parse_res.cst,
@@ -72,25 +66,71 @@ fn main() {
         std::process::exit(1);
     }
 
-    stopwatch.reset();
-    let ast = ast::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.spans);
-    let duration_astgen = stopwatch.read();
+    let ast = timer.spanned("astgen", || {
+        ast::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.spans)
+    });
 
-    if options.verbose_ast {
+    if options.dump_ast {
         eprintln!("{:#?}\n", ast);
     }
 
-    if options.verbose_zir {
-        zir::test::do_test();
+    // @TODO: Actually consume something derived from the input source
+    let zir = timer.spanned("zirgen", || zir::test::create_test_funcs());
+
+    if options.dump_zir {
+        eprint!("\n=-=-=  ZIR Dump  =-=-=");
+        zir::print::dump(&zir, &mut std::io::stderr()).unwrap();
+    }
+
+    let (_llvm_ctx, llvm_mod, _llvm_funcs, _llvm_blocks) =
+        timer.spanned("codegen", || zir::codegen::codegen(&zir));
+
+    // @FIXME: exits at this call, for whatever reason
+    // llvm::verify_module(&llvm_mod, &mut unsafe {
+    //     <std::fs::File as std::os::unix::prelude::FromRawFd>::from_raw_fd(1)
+    // });
+
+    if options.dump_llvm {
+        eprintln!("\n=-=-=  LLVM Module Dump  =-=-=");
+        llvm_mod.dump();
     }
 
     if options.print_times {
+        timer.print();
+    }
+}
+
+#[derive(Debug, Default)]
+struct Timer {
+    map: Vec<(&'static str, std::time::Duration)>,
+    stopwatch: util::Stopwatch,
+}
+
+impl Timer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn spanned<T>(&mut self, name: &'static str, f: impl FnOnce() -> T) -> T {
+        let (res, duration) = self.stopwatch.spanned(f);
+        self.map.push((name, duration));
+        res
+    }
+
+    pub fn print(&self) {
+        let total = self
+            .map
+            .iter()
+            .map(|(_, dur)| dur)
+            .sum::<std::time::Duration>();
+
+        let mut map = self.map.clone();
+        map.push(("total", total));
+
         println!("times:");
-        println!("  lexing:\t{:?}", duration_lex);
-        println!("  parsing:\t{:?}", duration_parse);
-        println!("  astgen:\t{:?}", duration_astgen);
-        let total = duration_lex + duration_parse + duration_astgen;
-        println!("  total:\t{:?}", total);
+        for (name, duration) in map.iter() {
+            println!("  {:>8}: {:?}", name, duration);
+        }
     }
 }
 
@@ -98,56 +138,70 @@ fn main() {
 pub struct Options {
     files: Vec<String>,
 
-    verbose_tokens: bool,
-    verbose_cst: bool,
-    verbose_ast: bool,
-    verbose_zir: bool,
+    dump_tokens: bool,
+    dump_cst: bool,
+    dump_ast: bool,
+    dump_zir: bool,
+    dump_llvm: bool,
 
     print_times: bool,
 }
 
-fn get_options() -> Options {
-    use clap::builder::PossibleValuesParser;
-    use clap::Arg;
+impl Options {
+    pub fn get() -> Self {
+        use clap::builder::PossibleValuesParser;
+        use clap::Arg;
 
-    let matches = clap::Command::new("zincc")
-        .arg(Arg::new("FILES").required(true).multiple_values(true))
-        .arg(
-            Arg::new("verbose")
-                .long("verbose")
-                .short('v')
-                .value_parser(PossibleValuesParser::new(&["tokens", "cst", "ast", "zir"]))
-                .takes_value(true)
-                .action(clap::ArgAction::Append),
-        )
-        .arg(
-            Arg::new("print_times")
-                .long("print_times")
-                .short('T')
-                .help("Print how long processes took"),
-        )
-        .get_matches();
+        let matches = clap::Command::new("zincc")
+            .arg(Arg::new("FILES").required(true).multiple_values(true))
+            .arg(
+                Arg::new("dump")
+                    .long("dump")
+                    .short('D')
+                    .takes_value(true)
+                    .value_parser(PossibleValuesParser::new(&[
+                        "tokens", "cst", "ast", "zir", "llvm",
+                    ]))
+                    .action(clap::ArgAction::Append),
+            )
+            .arg(
+                Arg::new("print_times")
+                    .long("print-times")
+                    .short('T')
+                    .help("Print how long processes took"),
+            )
+            .get_matches();
 
-    let files = matches.get_many("FILES").unwrap().cloned().collect();
+        let files = matches.get_many("FILES").unwrap().cloned().collect();
 
-    let verbose = matches
-        .get_many::<String>("verbose")
-        .map(|s| s.cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
+        let print_times = matches.contains_id("print_times");
 
-    let verbose_tokens = verbose.contains(&"tokens".to_string());
-    let verbose_cst = verbose.contains(&"cst".to_string());
-    let verbose_ast = verbose.contains(&"ast".to_string());
-    let verbose_zir = verbose.contains(&"zir".to_string());
+        fn get_list<'a>(matches: &'a clap::ArgMatches, id: &str) -> Vec<&'a str> {
+            matches
+                .get_many::<String>(id)
+                .unwrap_or_default()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+        }
 
-    let print_times = matches.contains_id("print_times");
+        let dump = get_list(&matches, "dump");
 
-    Options {
-        files,
-        verbose_tokens,
-        verbose_cst,
-        verbose_ast,
-        verbose_zir,
-        print_times,
+        let dump_tokens = dump.contains(&&"tokens");
+        let dump_cst = dump.contains(&&"cst");
+        let dump_ast = dump.contains(&&"ast");
+        let dump_zir = dump.contains(&&"zir");
+        let dump_llvm = dump.contains(&&"llvm");
+
+        Self {
+            files,
+
+            dump_tokens,
+            dump_cst,
+            dump_ast,
+            dump_zir,
+            dump_llvm,
+
+            print_times,
+        }
     }
 }
