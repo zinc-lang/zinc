@@ -266,56 +266,29 @@ pub mod time {
 }
 
 pub mod index {
-    use std::any::type_name;
     use std::fmt::{self, Debug};
     use std::hash::Hash;
     use std::marker::PhantomData;
-    use std::num::{NonZeroU32, NonZeroUsize};
 
-    macro_rules! impl_idx {
+    macro_rules! define_idx {
         ($name:ident, $inner_ty:ty, $blk_new:expr, $blk_get:expr) => {
-            pub struct $name<T: 'static> {
-                idx: $inner_ty,
-                _marker: PhantomData<T>,
-            }
+            #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+            pub struct $name($inner_ty);
 
-            impl<T: 'static> Debug for $name<T> {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                    write!(f, "UsizeIdxRef<{}>({})", type_name::<T>(), self.idx)
+            impl std::fmt::Debug for $name {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(
+                        f,
+                        "{}({})",
+                        stringify!($name),
+                        crate::util::index::Idx::index(*self)
+                    )
                 }
             }
 
-            impl<T: 'static> Clone for $name<T> {
-                fn clone(&self) -> Self {
-                    Self {
-                        idx: self.idx,
-                        _marker: PhantomData,
-                    }
-                }
-            }
-
-            impl<T: 'static> Copy for $name<T> {}
-
-            impl<T: 'static> PartialEq for $name<T> {
-                fn eq(&self, other: &Self) -> bool {
-                    self.idx == other.idx
-                }
-            }
-
-            impl<T: 'static> Eq for $name<T> {}
-
-            impl<T: 'static> Hash for $name<T> {
-                fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-                    self.idx.hash(state);
-                }
-            }
-
-            impl<T: 'static> Idx for $name<T> {
+            impl crate::util::index::Idx for $name {
                 fn new(idx: usize) -> Self {
-                    Self {
-                        idx: $blk_new(idx),
-                        _marker: PhantomData,
-                    }
+                    Self($blk_new(idx))
                 }
 
                 fn index(self) -> usize {
@@ -324,27 +297,50 @@ pub mod index {
             }
         };
     }
-    pub(crate) use impl_idx;
+    pub(crate) use define_idx;
 
-    impl_idx!(UsizeIdxRef, usize, |x| { x }, |s: UsizeIdxRef<_>| { s.idx });
-    impl_idx!(
-        NonZeroUsizeIdxRef,
-        NonZeroUsize,
-        |x| { NonZeroUsize::new(x + 1).unwrap() },
-        |s: NonZeroUsizeIdxRef<_>| { s.idx.get() - 1 }
-    );
-    impl_idx!(
-        U32IdxRef,
-        u32,
-        |x: usize| { x.try_into().unwrap() },
-        |s: U32IdxRef<_>| { s.idx as usize }
-    );
-    impl_idx!(
-        NonZeroU32IdxRef,
-        NonZeroU32,
-        |x: usize| { NonZeroU32::new(x as u32 + 1).unwrap() },
-        |s: NonZeroU32IdxRef<_>| { s.idx.get() as usize - 1 }
-    );
+    macro_rules! define_usize_idx {
+        ($name:ident) => {
+            $crate::util::index::define_idx!($name, usize, |x| { x }, |s: $name| { s.0 });
+        };
+    }
+    pub(crate) use define_usize_idx;
+
+    // macro_rules! define_non_zero_usize_idx {
+    //     ($name:ident) => {
+    //         $crate::util::index::define_idx!(
+    //             $name,
+    //             std::num::NonZeroUsize,
+    //             |x| { std::num::NonZeroUsize::new(x + 1).unwrap() },
+    //             |s: $name| { s.0.get() - 1 }
+    //         );
+    //     };
+    // }
+    // pub(crate) use define_non_zero_usize_idx;
+
+    macro_rules! define_u32_idx {
+        ($name:ident) => {
+            $crate::util::index::define_idx!(
+                $name,
+                u32,
+                |x: usize| { x.try_into().unwrap() },
+                |s: $name| { s.0 as usize }
+            );
+        };
+    }
+    pub(crate) use define_u32_idx;
+
+    macro_rules! define_non_zero_u32_idx {
+        ($name:ident) => {
+            $crate::util::index::define_idx!(
+                $name,
+                std::num::NonZeroU32,
+                |x: usize| { std::num::NonZeroU32::new(x as u32 + 1).unwrap() },
+                |s: $name| { s.0.get() as usize - 1 }
+            );
+        };
+    }
+    pub(crate) use define_non_zero_u32_idx;
 
     pub trait Idx: 'static + Copy + Eq + Hash {
         fn new(idx: usize) -> Self;
@@ -478,7 +474,7 @@ pub mod index {
         }
     }
 
-    pub type StringSymbol = NonZeroU32IdxRef<String>;
+    define_non_zero_u32_idx!(StringSymbol);
 
     /// Small type specialization to allow checking if a string is interned from just a `&str` without having to first turn it into a `String`
     pub type StringInterningVec = InterningIndexVec<String, StringSymbol>;

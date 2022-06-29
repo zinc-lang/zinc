@@ -6,6 +6,11 @@ pub type TokenIndex = usize;
 
 pub use gen::gen;
 
+index::define_u32_idx!(DeclId);
+index::define_u32_idx!(StmtId);
+index::define_non_zero_u32_idx!(TyId);
+index::define_non_zero_u32_idx!(ExprId);
+
 #[derive(Debug)]
 pub struct AstMap {
     pub decls: IndexVec<Decl, DeclId>,
@@ -19,8 +24,6 @@ pub struct Root {
     pub cst: CstId,
     pub decls: Vec<DeclId>,
 }
-
-pub type DeclId = index::U32IdxRef<Decl>;
 
 #[derive(Debug)]
 pub struct Decl {
@@ -40,8 +43,6 @@ pub struct DeclFunc {
     pub ty: TyId,
     pub body: ExprId,
 }
-
-pub type TyId = index::NonZeroU32IdxRef<Ty>;
 
 #[derive(Debug)]
 pub struct Ty {
@@ -69,8 +70,6 @@ pub struct FuncParam {
     pub name: Option<TokenIndex>,
     pub ty: TyId,
 }
-
-pub type ExprId = index::NonZeroU32IdxRef<Expr>;
 
 #[derive(Debug)]
 pub struct Expr {
@@ -118,8 +117,6 @@ pub struct ExprCall {
     pub callee: ExprId,
     pub args: Vec<ExprId>,
 }
-
-pub type StmtId = index::U32IdxRef<Stmt>;
 
 #[derive(Debug)]
 pub struct Stmt {

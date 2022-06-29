@@ -27,7 +27,7 @@ impl From<NodeId> for RawNodeId {
     }
 }
 
-pub type RawNodeId = index::NonZeroU32IdxRef<Node>;
+index::define_non_zero_u32_idx!(RawNodeId);
 
 #[derive(Debug)]
 pub struct Cst {
