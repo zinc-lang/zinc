@@ -1,57 +1,5 @@
 use std::io::Write;
 
-pub mod time {
-    #[derive(Debug)]
-    pub struct Stopwatch {
-        time: std::time::Instant,
-    }
-
-    impl Default for Stopwatch {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    impl Stopwatch {
-        #[inline]
-        pub fn new() -> Self {
-            Self::start()
-        }
-
-        #[inline]
-        pub fn start() -> Self {
-            Self {
-                time: std::time::Instant::now(),
-            }
-        }
-
-        #[inline(always)]
-        pub fn read(&self) -> std::time::Duration {
-            let now = std::time::Instant::now();
-            now - self.time
-        }
-
-        #[inline(always)]
-        pub fn reset(&mut self) {
-            self.time = std::time::Instant::now();
-        }
-
-        #[inline(always)]
-        pub fn lap(&mut self) -> std::time::Duration {
-            let time = self.read();
-            self.reset();
-            time
-        }
-
-        #[inline(always)]
-        pub fn spanned<T>(&mut self, f: impl FnOnce() -> T) -> (T, std::time::Duration) {
-            self.reset();
-            let result = f();
-            (result, self.read())
-        }
-    }
-}
-
 pub fn read_file_to_string<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<String> {
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
@@ -230,6 +178,90 @@ impl<T: Write> Write for AutoIndentingWriter<'_, T> {
 
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()
+    }
+}
+
+pub mod time {
+    use std::time::{Duration, Instant};
+
+    #[derive(Debug)]
+    pub struct Stopwatch {
+        time: Instant,
+    }
+
+    impl Default for Stopwatch {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl Stopwatch {
+        #[inline]
+        pub fn new() -> Self {
+            Self::start()
+        }
+
+        #[inline]
+        pub fn start() -> Self {
+            Self {
+                time: Instant::now(),
+            }
+        }
+
+        #[inline(always)]
+        pub fn read(&self) -> Duration {
+            let now = Instant::now();
+            now - self.time
+        }
+
+        #[inline(always)]
+        pub fn reset(&mut self) {
+            self.time = Instant::now();
+        }
+
+        #[inline(always)]
+        pub fn lap(&mut self) -> Duration {
+            let time = self.read();
+            self.reset();
+            time
+        }
+
+        #[inline(always)]
+        pub fn spanned<T>(&mut self, f: impl FnOnce() -> T) -> (T, Duration) {
+            self.reset();
+            let result = f();
+            (result, self.read())
+        }
+    }
+
+    #[derive(Debug, Default)]
+    pub struct Timer {
+        map: Vec<(&'static str, Duration)>,
+        stopwatch: Stopwatch,
+    }
+
+    impl Timer {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn spanned<T>(&mut self, name: &'static str, f: impl FnOnce() -> T) -> T {
+            let (res, duration) = self.stopwatch.spanned(f);
+            self.map.push((name, duration));
+            res
+        }
+
+        pub fn print(&self) {
+            let total = self.map.iter().map(|(_, dur)| dur).sum::<Duration>();
+
+            let mut map = self.map.clone();
+            map.push(("total", total));
+
+            println!("times:");
+            for (name, duration) in map.iter() {
+                println!("  {:>8}: {:?}", name, duration);
+            }
+        }
     }
 }
 

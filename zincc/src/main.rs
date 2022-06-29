@@ -18,7 +18,7 @@ fn main() {
             std::process::exit(1);
         });
 
-    let mut timer = Timer::new();
+    let mut timer = util::time::Timer::new();
 
     let lex_res = timer.spanned("lexing", || parse::lex(&source));
 
@@ -74,6 +74,10 @@ fn main() {
         eprintln!("{:#?}\n", ast);
     }
 
+    let _ = timer.spanned("hirgen", || {
+        // hir::gen()
+    });
+
     // @TODO: Actually consume something derived from the input source
     let zir = timer.spanned("zirgen", || zir::test::create_test_funcs());
 
@@ -97,40 +101,6 @@ fn main() {
 
     if options.print_times {
         timer.print();
-    }
-}
-
-#[derive(Debug, Default)]
-struct Timer {
-    map: Vec<(&'static str, std::time::Duration)>,
-    stopwatch: util::Stopwatch,
-}
-
-impl Timer {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn spanned<T>(&mut self, name: &'static str, f: impl FnOnce() -> T) -> T {
-        let (res, duration) = self.stopwatch.spanned(f);
-        self.map.push((name, duration));
-        res
-    }
-
-    pub fn print(&self) {
-        let total = self
-            .map
-            .iter()
-            .map(|(_, dur)| dur)
-            .sum::<std::time::Duration>();
-
-        let mut map = self.map.clone();
-        map.push(("total", total));
-
-        println!("times:");
-        for (name, duration) in map.iter() {
-            println!("  {:>8}: {:?}", name, duration);
-        }
     }
 }
 
