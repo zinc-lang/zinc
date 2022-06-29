@@ -14,9 +14,11 @@ The zinc programming language.
 - Control over allocator(s)
 - Scope local context that is implicitly passed to zinc functions
 - Support constructs to allow for multiple paradigms, such as:
-  - Functional, with currying
-  - DOD, ways to specify SOA or AOS
-  - OOP, with multiple inheritance
+  - Procedural
+  - Declarative 
+  - Functional
+  - Data oriented, with ways to specify SOA or AOS
+  - OOP, with multiple inheritance (the diamond problem is as hard as people think it is, and yes c++'s solution works, but is stupid)
 - Powerful compile-time execution
   - Syntax clearly separate for runtime and compile constructs and operations
   - Generics / templates
@@ -25,14 +27,20 @@ The zinc programming language.
   - Be transparent about generated code
   - Attributes / annotations, part of the macro system
 - Strongly typed
-  - Concepts as the preferred means of dynamic dispatch, think c++20x concepts
+  - Concepts as the preferred means of dynamic dispatch, think c++20's concepts
   - Strong trait/interface system, think rust
-  - Concept / trait / interface, all the same thing
+  - Concept / trait / interface, effectively all the same thing
   - [runtime polymorphism done right](https://github.com/ldionne/dyno)
 - Strong c interop
   - Binding generation from c header source code
 - Strong IDE support
 - Powerful package and project manager
+
+## Contributing
+
+Feel free to open any and all pull requests.
+I don't think there's much that can be done on its own at the moment, I'm still in the middle of trying to create the first vertical slice.
+Unless you want to help with name-resolution and type-checking. Those are the only two parts that have yet to be implemented.
 
 ## Things I want to make with this (to prove its worth)
 
