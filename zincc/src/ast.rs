@@ -141,6 +141,7 @@ pub struct Binding {
     pub expr: ExprId,
 }
 
+/// invariant: !segments.is_empty()
 #[derive(Debug)]
 pub struct Path {
     pub cst: CstId,
@@ -417,7 +418,8 @@ pub mod gen {
                     TK::punct_dblColon => ast::PathSegment::Sep,
                     _ => todo!("More path segment types"),
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            assert!(!segments.is_empty());
 
             ast::Path {
                 cst: id.raw,
