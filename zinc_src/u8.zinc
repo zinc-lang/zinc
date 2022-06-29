@@ -1,0 +1,8 @@
+fn main() {
+    u8(3); // 6
+}
+
+fn u8(u8: u8): u8 {
+    let u8 = u8 + u8;
+    return u8;
+}
