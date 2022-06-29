@@ -21,9 +21,9 @@ impl fmt::Debug for NodeId {
     }
 }
 
-impl Into<RawNodeId> for NodeId {
-    fn into(self) -> RawNodeId {
-        self.raw
+impl From<NodeId> for RawNodeId {
+    fn from(id: NodeId) -> Self {
+        id.raw
     }
 }
 
