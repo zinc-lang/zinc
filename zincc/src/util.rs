@@ -12,7 +12,7 @@ pub struct AutoIndentingWriter<'a, T: Write> {
     inner: &'a mut T,
 
     /// If true, the writer will not write any bytes to the inner writer.
-    /// It will however will still track the indentation level.
+    /// It will however still track the indentation level.
     pub disable_write: bool,
 
     indent_delta: usize,
@@ -393,6 +393,13 @@ pub mod index {
             self.raw.get(index.index())
         }
 
+        /// # Safety
+        /// UB if it is not a valid index.
+        #[inline]
+        pub unsafe fn get_unchecked(&self, index: I) -> &T {
+            self.get(index).unwrap_unchecked()
+        }
+
         #[inline]
         pub fn get_mut(&mut self, index: I) -> Option<&mut T> {
             self.raw.get_mut(index.index())
@@ -444,6 +451,7 @@ pub mod index {
             self.raw.raw.iter().any(|it| it == t)
         }
 
+        #[inline]
         pub fn get_from_value(&self, t: &T) -> Option<I> {
             self.raw
                 .raw
@@ -452,6 +460,9 @@ pub mod index {
                 .map(|i| I::new(i))
         }
 
+        /// # Safety
+        /// UB if it has not been interned.
+        #[inline]
         pub unsafe fn get_from_value_unchecked(&self, t: &T) -> I {
             self.get_from_value(t).unwrap_unchecked()
         }
@@ -476,7 +487,8 @@ pub mod index {
 
     define_non_zero_u32_idx!(StringSymbol);
 
-    /// Small type specialization to allow checking if a string is interned from just a `&str` without having to first turn it into a `String`
+    /// Small type specialization to allow checking if a string is interned from just a `&str`
+    /// without having to first turn it into a `String`
     pub type StringInterningVec = InterningIndexVec<String, StringSymbol>;
 
     impl StringInterningVec {
@@ -489,9 +501,13 @@ pub mod index {
                 .raw
                 .iter()
                 .position(|it| it == str)
-                .map(|i| StringSymbol::new(i))
+                .map(StringSymbol::new)
         }
 
+        /// # Safety
+        /// Same as [`InterningVec`]'s `get_from_value_unchecked`
+        ///
+        /// [`InterningVec`]: ./struct.InterningVec.html
         pub unsafe fn get_from_str_value_unchecked(&self, str: &str) -> StringSymbol {
             self.get_from_str_value(str).unwrap_unchecked()
         }
