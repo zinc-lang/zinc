@@ -9,6 +9,7 @@ edition = "2021"
 clap = "3.2"
 
 llvm = { path = "../llvm-rs" }
+smallvec = "1.9"
 
 # @TODO: Use this for integer key bassed hash maps
 #fnv = "1.0"

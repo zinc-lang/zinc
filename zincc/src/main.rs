@@ -2,6 +2,7 @@ pub mod debug;
 pub mod util;
 
 pub mod ast;
+pub mod hir;
 pub mod parse;
 pub mod zir;
 
@@ -19,10 +20,11 @@ fn main() {
         });
 
     let mut timer = util::time::Timer::new();
+    let stderr = &mut std::io::stderr();
 
     let lex_res = timer.spanned("lexing", || parse::lex(&source));
 
-    if options.dump_tokens {
+    if options.dumps.contains(&"tokens".to_string()) {
         lex_res.debug_zip().for_each(|(tk, range, _)| {
             eprintln!("{}", debug::format_token(&source, tk, &range, true));
         });
@@ -31,9 +33,9 @@ fn main() {
 
     let parse_res = timer.spanned("parsing", || parse::parse(&lex_res.tokens));
 
-    if options.dump_cst {
+    if options.dumps.contains(&"cst".to_string()) {
         debug::write_cst(
-            &mut std::io::stderr(),
+            stderr,
             &parse_res.cst,
             &source,
             &lex_res.tokens,
@@ -66,24 +68,32 @@ fn main() {
         std::process::exit(1);
     }
 
-    let ast = timer.spanned("astgen", || {
+    let (ast_map, ast_root) = timer.spanned("astgen", || {
         ast::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.spans)
     });
 
-    if options.dump_ast {
-        eprintln!("{:#?}\n", ast);
+    if options.dumps.contains(&"ast".to_string()) {
+        eprintln!("{:#?}\n", ast_map);
     }
 
-    let _ = timer.spanned("hirgen", || {
-        // hir::gen()
+    let (interned_strings, hir_scope_descs) = timer.spanned("hir stage1", || {
+        let sd = hir::gen::SharedData::new(&source, &lex_res.spans, &ast_map);
+        let scopes = hir::gen::stage1(&sd, &ast_root);
+
+        (sd.strings.into_inner(), scopes)
     });
 
-    // @TODO: Actually consume something derived from the input source
-    let zir = timer.spanned("zirgen", || zir::test::create_test_funcs());
+    if options.dumps.contains(&"hir".to_string()) {
+        eprintln!("strings: {:#?}", interned_strings);
+        eprintln!("scope descs: {:#?}\n", hir_scope_descs);
+    }
 
-    if options.dump_zir {
+    // @TODO: Actually consume something derived from the input source
+    let zir = timer.spanned("zirgen", zir::test::create_test_funcs);
+
+    if options.dumps.contains(&"zir".to_string()) {
         eprint!("\n=-=-=  ZIR Dump  =-=-=");
-        zir::print::dump(&zir, &mut std::io::stderr()).unwrap();
+        zir::print::dump(&zir, stderr).unwrap();
     }
 
     let (_llvm_ctx, llvm_mod, _llvm_funcs, _llvm_blocks) =
@@ -94,51 +104,45 @@ fn main() {
     //     <std::fs::File as std::os::unix::prelude::FromRawFd>::from_raw_fd(1)
     // });
 
-    if options.dump_llvm {
+    if options.dumps.contains(&"llvm".to_string()) {
         eprintln!("\n=-=-=  LLVM Module Dump  =-=-=");
         llvm_mod.dump();
     }
 
     if options.print_times {
-        timer.print();
+        eprintln!("Times:");
+        timer.write("  ", stderr).unwrap();
     }
 }
 
 #[derive(Debug)]
 pub struct Options {
     files: Vec<String>,
-
-    dump_tokens: bool,
-    dump_cst: bool,
-    dump_ast: bool,
-    dump_zir: bool,
-    dump_llvm: bool,
-
     print_times: bool,
+    dumps: Vec<String>,
 }
 
 impl Options {
     pub fn get() -> Self {
-        use clap::builder::PossibleValuesParser;
-        use clap::Arg;
+        use clap::{builder::PossibleValuesParser, Arg, ArgAction, Command};
 
-        let matches = clap::Command::new("zincc")
+        let matches = Command::new("zincc")
             .arg(Arg::new("FILES").required(true).multiple_values(true))
+            .arg(
+                Arg::new("print_times")
+                    .long("print-times")
+                    .short('T')
+                    .help("Print how long processes took"),
+            )
             .arg(
                 Arg::new("dump")
                     .long("dump")
                     .short('D')
                     .takes_value(true)
                     .value_parser(PossibleValuesParser::new(&[
-                        "tokens", "cst", "ast", "zir", "llvm",
+                        "tokens", "cst", "ast", "zir", "llvm", "hir",
                     ]))
-                    .action(clap::ArgAction::Append),
-            )
-            .arg(
-                Arg::new("print_times")
-                    .long("print-times")
-                    .short('T')
-                    .help("Print how long processes took"),
+                    .action(ArgAction::Append),
             )
             .get_matches();
 
@@ -146,31 +150,15 @@ impl Options {
 
         let print_times = matches.contains_id("print_times");
 
-        fn get_list<'a>(matches: &'a clap::ArgMatches, id: &str) -> Vec<&'a str> {
-            matches
-                .get_many::<String>(id)
-                .unwrap_or_default()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-        }
-
-        let dump = get_list(&matches, "dump");
-
-        let dump_tokens = dump.contains(&"tokens");
-        let dump_cst = dump.contains(&"cst");
-        let dump_ast = dump.contains(&"ast");
-        let dump_zir = dump.contains(&"zir");
-        let dump_llvm = dump.contains(&"llvm");
+        let dumps = matches
+            .get_many::<String>("dump")
+            .unwrap_or_default()
+            .cloned()
+            .collect();
 
         Self {
             files,
-
-            dump_tokens,
-            dump_cst,
-            dump_ast,
-            dump_zir,
-            dump_llvm,
-
+            dumps,
             print_times,
         }
     }

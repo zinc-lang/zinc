@@ -4,7 +4,8 @@ pub fn read_file_to_string<P: AsRef<std::path::Path>>(path: P) -> std::io::Resul
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
     let mut str = String::new();
-    file.read_to_string(&mut str)?;
+    let len = file.read_to_string(&mut str)?;
+    assert_eq!(len, str.len());
     Ok(str)
 }
 
@@ -251,16 +252,23 @@ pub mod time {
             res
         }
 
-        pub fn print(&self) {
+        pub fn write(
+            &self,
+            padding: &str,
+            writer: &mut impl std::io::Write,
+        ) -> std::io::Result<()> {
             let total = self.map.iter().map(|(_, dur)| dur).sum::<Duration>();
 
             let mut map = self.map.clone();
             map.push(("total", total));
 
-            println!("times:");
+            let align = map.iter().map(|(str, _)| str.len()).max().unwrap();
+
             for (name, duration) in map.iter() {
-                println!("  {:>8}: {:?}", name, duration);
+                writeln!(writer, "{padding}{name:>align$}: {duration:?}")?;
             }
+
+            Ok(())
         }
     }
 }
