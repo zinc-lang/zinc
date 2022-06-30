@@ -418,7 +418,7 @@ pub mod index {
     #[derive(Clone)]
     #[non_exhaustive]
     pub struct InterningIndexVec<T: Eq, I: Idx> {
-        pub raw: IndexVec<T, I>,
+        raw: IndexVec<T, I>,
     }
 
     impl<T: Eq + Debug, I: Idx> fmt::Debug for InterningIndexVec<T, I> {
@@ -439,6 +439,10 @@ pub mod index {
         #[inline]
         pub fn new() -> Self {
             Self::default()
+        }
+
+        pub fn raw(&self) -> &IndexVec<T, I> {
+            &self.raw
         }
 
         #[inline]
