@@ -444,7 +444,6 @@ impl Parser<'_> {
             TK::kw_let => {
                 let mut binding = self.node(NK::stmt_let);
 
-                // 'let'
                 self.bump(&mut binding); // 'let'
 
                 self.parse_binding(&mut binding);
@@ -485,7 +484,7 @@ enum Precedence {
     // LogicalAnd,
     Sum,
     Product,
-    // Prefix,
+    // Suffix, // ? ! .
     Call,
 }
 
