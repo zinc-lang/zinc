@@ -156,11 +156,11 @@ impl Options {
 
         let dump = get_list(&matches, "dump");
 
-        let dump_tokens = dump.contains(&&"tokens");
-        let dump_cst = dump.contains(&&"cst");
-        let dump_ast = dump.contains(&&"ast");
-        let dump_zir = dump.contains(&&"zir");
-        let dump_llvm = dump.contains(&&"llvm");
+        let dump_tokens = dump.contains(&"tokens");
+        let dump_cst = dump.contains(&"cst");
+        let dump_ast = dump.contains(&"ast");
+        let dump_zir = dump.contains(&"zir");
+        let dump_llvm = dump.contains(&"llvm");
 
         Self {
             files,
