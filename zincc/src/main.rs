@@ -2,7 +2,7 @@ pub mod debug;
 pub mod util;
 
 pub mod ast;
-pub mod hir;
+pub mod name_resolver;
 pub mod parse;
 pub mod zir;
 
@@ -76,14 +76,14 @@ fn main() {
         eprintln!("{:#?}\n", ast_map);
     }
 
-    let (interned_strings, hir_scope_descs) = timer.spanned("hir stage1", || {
-        let sd = hir::gen::SharedData::new(&source, &lex_res.spans, &ast_map);
-        let scopes = hir::gen::stage1(&sd, &ast_root);
+    let (interned_strings, hir_scope_descs) = timer.spanned("nr stage1", || {
+        let sd = name_resolver::SharedData::new(&source, &lex_res.spans, &ast_map);
+        let scopes = name_resolver::stage1(&sd, &ast_root);
 
         (sd.strings.into_inner(), scopes)
     });
 
-    if options.dumps.contains(&"hir".to_string()) {
+    if options.dumps.contains(&"nr".to_string()) {
         eprintln!("strings: {:#?}", interned_strings);
         eprintln!("scope descs: {:#?}\n", hir_scope_descs);
     }
@@ -140,7 +140,7 @@ impl Options {
                     .short('D')
                     .takes_value(true)
                     .value_parser(PossibleValuesParser::new(&[
-                        "tokens", "cst", "ast", "zir", "llvm", "hir",
+                        "tokens", "cst", "ast", "nr", "zir", "llvm",
                     ]))
                     .action(ArgAction::Append),
             )
