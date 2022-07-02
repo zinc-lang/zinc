@@ -4,11 +4,7 @@ use std::ops::Range;
 pub fn lex(source: &str) -> LexResult {
     let mut lexer = Lexer::new(source);
     lexer.do_lex();
-    LexResult {
-        tokens: lexer.tokens,
-        spans: lexer.spans,
-        ws_lens: lexer.ws_lens,
-    }
+    lexer.out
 }
 
 #[derive(Debug)]
@@ -16,6 +12,7 @@ pub struct LexResult {
     pub tokens: Vec<TK>,
     pub spans: Vec<Range<usize>>,
     pub ws_lens: Vec<u16>,
+    pub errors: Vec<LexError>,
 }
 
 impl LexResult {
@@ -31,15 +28,28 @@ impl LexResult {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct LexError {
+    pub kind: LexErrorKind,
+    pub offset: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum LexErrorKind {
+    UnrecognizedChar,
+    // UnexpectedEOF,
+    ExpectedHexCharInAsciiEscape,
+    ExpectedPlusOrMinusAfterEInFloatLiteral,
+    ExpectedBraceInUnicodeEsc,
+    ExpectedHexCharInUnicodeEsc,
+    UnterminatedString,
+}
+
 struct Lexer<'s> {
     ascii: &'s [u8],
-
-    ws_len: u16,
-    tokens: Vec<TK>,
-    spans: Vec<Range<usize>>,
-    ws_lens: Vec<u16>,
-
     span: Range<usize>,
+    ws_len: u16,
+    out: LexResult,
 }
 
 impl<'s> Lexer<'s> {
@@ -47,10 +57,13 @@ impl<'s> Lexer<'s> {
         Self {
             ascii: source.as_bytes(),
             ws_len: 0,
-            tokens: vec![],
-            spans: vec![],
-            ws_lens: vec![],
             span: 0..0,
+            out: LexResult {
+                tokens: vec![],
+                spans: vec![],
+                ws_lens: vec![],
+                errors: vec![],
+            },
         }
     }
 }
@@ -88,7 +101,7 @@ impl Lexer<'_> {
                 b'?' => self.tok(TK::punct_question),
 
                 b'/' => {
-                    if self.match_next(b'/') {
+                    if self.eat(b'/') {
                         self.inc_ws();
                         self.inc_ws(); // '//'
                         while !matches!(self.peek(), b'\n' | b'\0') {
@@ -126,13 +139,10 @@ impl Lexer<'_> {
                     match ch {
                         _ if is_char::number_start(ch) => self.lex_number(),
                         _ if is_char::ident_start(ch) => self.lex_ident(),
-                        _ => todo!(
-                            "report error; unknown char {:?}",
-                            crate::parse::FileLocation::from_offset(
-                                self.span.end,
-                                &String::from_utf8(self.ascii.to_vec()).unwrap(),
-                            )
-                        ),
+                        _ => {
+                            self.report_error(LexErrorKind::UnrecognizedChar);
+                            self.tok(TK::err);
+                        }
                     }
                 }
             }
@@ -147,12 +157,20 @@ impl Lexer<'_> {
         self.ws_len = 0;
         self.span.start = self.span.end;
 
-        self.tokens.push(kind);
-        self.ws_lens.push(self.ws_len);
-        self.spans.push(range);
+        self.out.tokens.push(kind);
+        self.out.ws_lens.push(self.ws_len);
+        self.out.spans.push(range);
+    }
+
+    fn report_error(&mut self, kind: LexErrorKind) {
+        self.out.errors.push(LexError {
+            kind,
+            offset: self.span.end,
+        });
     }
 
     #[must_use]
+    #[inline]
     fn advance(&mut self) -> u8 {
         self.span.end += 1;
         self.ascii[self.span.end - 1]
@@ -179,7 +197,7 @@ impl Lexer<'_> {
     }
 
     #[inline]
-    fn match_next(&mut self, expect: u8) -> bool {
+    fn eat(&mut self, expect: u8) -> bool {
         let cond = self.at(expect);
         if cond {
             let _ = self.advance();
@@ -189,7 +207,7 @@ impl Lexer<'_> {
 
     #[inline]
     fn tok_if_match(&mut self, expect: u8, r#if: TK, r#else: TK) {
-        let m = self.match_next(expect);
+        let m = self.eat(expect);
         if m {
             self.tok(r#if);
         } else {
@@ -237,7 +255,9 @@ impl Lexer<'_> {
         if self.span.start != self.span.end {
             self.tok(TK::string_literal);
         }
-        assert_eq!(self.advance(), b'\"');
+        if !self.eat(b'\"') {
+            self.report_error(LexErrorKind::UnterminatedString);
+        }
 
         self.tok(TK::string_close);
     }
@@ -247,7 +267,7 @@ impl Lexer<'_> {
             b'x' => {
                 let mut lex_char = || {
                     if !is_char::number_hex(self.advance()) {
-                        todo!("report error; non hex char as ascii escape")
+                        self.report_error(LexErrorKind::ExpectedHexCharInAsciiEscape);
                     }
                 };
                 lex_char();
@@ -255,8 +275,36 @@ impl Lexer<'_> {
 
                 TK::esc_asciicode
             }
-            b'u' => todo!("unicode escape lexing"),
-            b'\0' => todo!("report error; eof when expecting escape"),
+            b'u' => {
+                if self.advance() != b'{' {
+                    self.report_error(LexErrorKind::ExpectedBraceInUnicodeEsc);
+                }
+
+                let mut count = 0;
+                loop {
+                    let p = self.peek();
+                    if p == b'}' || p == b' ' {
+                        break;
+                    }
+
+                    count += 1;
+
+                    if !is_char::number_hex(self.advance()) {
+                        self.report_error(LexErrorKind::ExpectedHexCharInUnicodeEsc);
+                        break;
+                    }
+
+                    if count > 6 || p == b'\0' {
+                        break;
+                    }
+                }
+
+                if !self.eat(b'}') {
+                    self.report_error(LexErrorKind::ExpectedBraceInUnicodeEsc);
+                }
+
+                TK::esc_unicode
+            }
             _ => TK::esc_char,
         };
         self.tok(kind);
@@ -272,10 +320,10 @@ impl Lexer<'_> {
             assert_ne!(self.advance(), b'\0');
 
             self.lex_while_condition(is_char::number_mid);
-            if self.match_next(b'E') {
+            if self.eat(b'E') {
                 match self.peek() {
                     b'+' | b'-' => assert_ne!(self.advance(), b'\0'),
-                    _ => todo!("report error; malformed float literal"),
+                    _ => self.report_error(LexErrorKind::ExpectedPlusOrMinusAfterEInFloatLiteral),
                 }
                 self.lex_while_condition(is_char::number_mid);
             }

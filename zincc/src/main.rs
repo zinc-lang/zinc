@@ -31,6 +31,16 @@ fn main() {
         eprintln!();
     }
 
+    if !lex_res.errors.is_empty() {
+        for err in lex_res.errors {
+            let loc = parse::FileLocation::from_offset(&source, err.offset);
+            eprintln!("error: {:?}  @[{}:{}]", err.kind, loc.line, loc.column);
+        }
+
+        eprintln!("\nAborting due to errors");
+        std::process::exit(1);
+    }
+
     let parse_res = timer.spanned("parsing", || parse::parse(&lex_res.tokens));
 
     if options.dumps.contains(&"cst".to_string()) {
@@ -54,7 +64,7 @@ fn main() {
                     let found = lex_res.tokens[err.found as usize];
 
                     let at_range = &lex_res.spans[err.at as usize];
-                    let at_loc = parse::FileLocation::from_offset(at_range.start as usize, &source);
+                    let at_loc = parse::FileLocation::from_offset(&source, at_range.start as usize);
 
                     eprintln!(
                         "error: expected '{:?}' at '{:?}' in '{:?}', but found '{:?}'  @[{}:{}]",

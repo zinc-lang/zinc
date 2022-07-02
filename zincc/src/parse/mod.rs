@@ -12,6 +12,7 @@ pub use parser::{
 #[repr(u8)]
 pub enum TokenKind {
     EOF,
+    err,
 
     brkt_paren_open,   // (
     brkt_paren_close,  // )
@@ -68,7 +69,7 @@ pub struct FileLocation {
 }
 
 impl FileLocation {
-    pub fn from_offset(offset: usize, str: &str) -> Self {
+    pub fn from_offset(str: &str, offset: usize) -> Self {
         let mut line: usize = 1;
         let mut column: usize = 1;
         for (i, ch) in str.chars().into_iter().enumerate() {
@@ -86,7 +87,7 @@ impl FileLocation {
         Self { line, column }
     }
 
-    pub fn from_range(range: std::ops::Range<usize>, str: &str) -> std::ops::Range<FileLocation> {
-        FileLocation::from_offset(range.start, str)..FileLocation::from_offset(range.end, str)
+    pub fn from_range(str: &str, range: std::ops::Range<usize>) -> std::ops::Range<FileLocation> {
+        FileLocation::from_offset(str, range.start)..FileLocation::from_offset(str, range.end)
     }
 }
