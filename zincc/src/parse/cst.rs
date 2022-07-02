@@ -89,7 +89,7 @@ impl Node {
 #[allow(non_camel_case_types)]
 #[repr(u8)]
 pub enum NodeKind {
-    /// Only one of these should exist
+    /// Only one of these should exist, for a source file
     /// `decl*`
     root,
     /// When the parser is 'panicking' skipped tokens are put under this.

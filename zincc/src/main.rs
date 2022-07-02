@@ -34,6 +34,7 @@ fn main() {
     if !lex_res.errors.is_empty() {
         for err in lex_res.errors {
             let loc = parse::FileLocation::from_offset(&source, err.offset);
+            // @TODO: Better error formatting
             eprintln!("error: {:?}  @[{}:{}]", err.kind, loc.line, loc.column);
         }
 
@@ -66,6 +67,7 @@ fn main() {
                     let at_range = &lex_res.spans[err.at as usize];
                     let at_loc = parse::FileLocation::from_offset(&source, at_range.start as usize);
 
+                    // @TODO: Better error formatting
                     eprintln!(
                         "error: expected '{:?}' at '{:?}' in '{:?}', but found '{:?}'  @[{}:{}]",
                         err.what, at, err.context, found, at_loc.line, at_loc.column
@@ -87,7 +89,7 @@ fn main() {
         eprintln!("{:#?}\n", ast_map);
     }
 
-    let (hir_sd, hir_scopes, hir_td) = timer.spanned("nameres", || {
+    let (nr_sd, nr_scopes, nr_td) = timer.spanned("nameres", || {
         let sd = nameres::SharedData::new(&source, &lex_res.spans, &ast_map, &ast_root);
         let mut scopes = nameres::stage1(&sd);
 
@@ -98,9 +100,9 @@ fn main() {
     });
 
     if options.dumps.contains(&"nameres".to_string()) {
-        eprintln!("strings: {:#?}", hir_sd.strings);
-        eprintln!("scopes: {:#?}", hir_scopes);
-        eprintln!("type data: {:#?}\n", hir_td);
+        eprintln!("strings: {:#?}", nr_sd.strings);
+        eprintln!("scopes: {:#?}", nr_scopes);
+        eprintln!("type data: {:#?}\n", nr_td);
     }
 
     // let _ = timer.spanned("typing", || {});
