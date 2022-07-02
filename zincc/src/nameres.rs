@@ -3,7 +3,7 @@ use std::{cell::RefCell, collections::HashMap};
 
 use crate::{
     ast,
-    util::index::{self, IndexVec, StringInterningVec, StringSymbol},
+    util::index::{self, IndexVec, InterningIndexVec, StringInterningVec, StringSymbol},
 };
 
 #[derive(Debug)]
@@ -11,6 +11,7 @@ pub struct SharedData<'s> {
     pub source: &'s str,
     pub ranges: &'s [std::ops::Range<usize>],
     pub ast: &'s ast::AstMap,
+    pub ast_root: &'s ast::Root,
     pub strings: RefCell<StringInterningVec>,
 }
 
@@ -19,11 +20,13 @@ impl<'s> SharedData<'s> {
         source: &'s str,
         ranges: &'s [std::ops::Range<usize>],
         ast: &'s ast::AstMap,
+        root: &'s ast::Root,
     ) -> Self {
         Self {
             source,
             ranges,
             ast,
+            ast_root: root,
             strings: StringInterningVec::new().into(),
         }
     }
@@ -48,10 +51,45 @@ impl<'s> SharedData<'s> {
     }
 }
 
-pub fn stage1<'s>(sd: &'s SharedData<'s>, root: &ast::Root) -> IndexVec<ScopeDesc, ScopeDescId> {
+#[derive(Debug)]
+pub struct TypeData {
+    interned_utys: RefCell<InterningIndexVec<UTy, UTyId>>,
+    tys: RefCell<IndexVec<Ty, TyId>>,
+    void_ty: TyId,
+}
+
+impl TypeData {
+    pub fn new() -> Self {
+        let mut interned_utys = InterningIndexVec::new();
+        let mut tys = IndexVec::new();
+        let void_uty = interned_utys.intern(UTy::Res(TyPathResoution::PrimTy(PrimTy::Void)));
+        let void_ty = tys.push(Ty {
+            ast: None,
+            id: void_uty,
+        });
+
+        Self {
+            interned_utys: RefCell::new(interned_utys),
+            tys: RefCell::new(tys),
+            void_ty,
+        }
+    }
+}
+
+pub fn stage1<'s>(sd: &'s SharedData<'s>) -> IndexVec<ScopeDesc, ScopeDescId> {
     let mut gen = stage1::Stage1Gen::<'s>::new(sd);
-    gen.seed(root);
+    gen.seed();
+    assert!(gen.scopes.raw.get(0).unwrap().kind == ScopeKind::Root);
     gen.scopes
+}
+
+pub fn stage2<'s>(
+    sd: &'s SharedData<'s>,
+    td: &'s TypeData,
+    scopes: &'s mut IndexVec<ScopeDesc, ScopeDescId>,
+) {
+    let mut gen = stage2::Stage2::<'s>::new(sd, td, scopes);
+    gen.do_resolution();
 }
 
 mod stage1 {
@@ -71,10 +109,10 @@ mod stage1 {
             }
         }
 
-        pub fn seed(&mut self, root: &ast::Root) {
+        pub fn seed(&mut self) {
             let root_scope = self.scopes.push(ScopeDesc::new(ScopeKind::Root, None));
 
-            root.decls.iter().for_each(|decl| {
+            self.sd.ast_root.decls.iter().for_each(|decl| {
                 self.seed_decl(*decl, root_scope);
             });
         }
@@ -137,15 +175,76 @@ mod stage1 {
     }
 }
 
-pub mod stage2 {
+mod stage2 {
     use super::*;
 
-    pub struct Stage2<'s> {
-        sd: &'s mut SharedData<'s>,
+    pub(crate) struct Stage2<'s> {
+        sd: &'s SharedData<'s>,
+        td: &'s TypeData,
+        scopes: RefCell<&'s mut IndexVec<ScopeDesc, ScopeDescId>>,
     }
 
     impl<'s> Stage2<'s> {
-        fn resolve_ty_path(&mut self, path: &ast::Path) -> TyPathResoution {
+        pub(crate) fn new(
+            sd: &'s SharedData<'s>,
+            td: &'s TypeData,
+            scopes: &'s mut IndexVec<ScopeDesc, ScopeDescId>,
+        ) -> Self {
+            Self {
+                sd,
+                td,
+                scopes: RefCell::new(scopes),
+            }
+        }
+
+        pub(crate) fn do_resolution(&mut self) {
+            let mut scopes = self.scopes.borrow_mut();
+            let root_scope = scopes.raw.get_mut(0).unwrap();
+
+            self.sd.ast_root.decls.iter().for_each(|decl| {
+                let kind = &self.sd.ast.decls.get(*decl).unwrap().kind;
+                match kind {
+                    ast::DeclKind::Func(func) => {
+                        let sym = self.sd.get_tok_sym(func.name);
+                        let decl_desc = root_scope.decls.get_mut(&sym).unwrap();
+                        assert_eq!(decl_desc.id, *decl);
+                        let _func_desc = decl_desc.kind.as_func().unwrap();
+
+                        let _ty = self.get_ty(func.ty);
+                        // func_desc.ty = Some(ty);
+                    }
+                    ast::DeclKind::Const(_) => todo!(),
+                }
+            });
+        }
+
+        fn get_ty(&self, ty_id: ast::TyId) -> TyId {
+            let ty = &self.sd.ast.tys.get(ty_id).unwrap().kind;
+            let uty = match ty {
+                ast::TyKind::Path(path) => UTy::Res(self.resolve_ty_path(path)),
+                ast::TyKind::Func(ty) => UTy::Func {
+                    args: ty
+                        .params
+                        .iter()
+                        .map(|param| self.get_ty(param.ty))
+                        .collect(),
+                    ret: ty.ret.map_or(self.td.void_ty, |ret| self.get_ty(ret)),
+                },
+                ast::TyKind::Slice(ty) => UTy::Slice(self.get_ty(*ty)),
+                ast::TyKind::Nullable(ty) => UTy::Nullable(self.get_ty(*ty)),
+            };
+
+            let mut interned_utys = self.td.interned_utys.borrow_mut();
+            let id = interned_utys.get_or_intern(uty);
+
+            let mut tys = self.td.tys.borrow_mut();
+            tys.push(Ty {
+                ast: Some(ty_id),
+                id,
+            })
+        }
+
+        fn resolve_ty_path(&self, path: &ast::Path) -> TyPathResoution {
             if path.segments.len() == 1 {
                 if let Some(ast::PathSegment::Ident(idx)) = path.segments.get(0) {
                     fn chk_int_num(str: &str) -> bool {
@@ -182,7 +281,7 @@ pub mod stage2 {
     }
 }
 
-index::define_usize_idx!(ScopeDescId);
+index::define_u32_idx!(ScopeDescId);
 
 /// A Description of a Scope.
 #[derive(Debug)]
@@ -224,6 +323,16 @@ pub struct DeclDesc {
 pub enum DeclDescKind {
     Func(DeclFuncDesc),
     // @TODO: Add more
+    Temp,
+}
+
+impl DeclDescKind {
+    pub fn as_func(&self) -> Option<&DeclFuncDesc> {
+        match self {
+            Self::Func(v) => Some(v),
+            _ => None,
+        }
+    }
 }
 
 /// A description of a function declaration.
@@ -232,13 +341,13 @@ pub struct DeclFuncDesc {
     // @TODO: Overloads, types
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TyPathResoution {
     PrimTy(PrimTy),
     // @TODO: Add more
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrimTy {
     Sint(IntSize),
     Uint(IntSize),
@@ -248,9 +357,32 @@ pub enum PrimTy {
 }
 
 /// 1 byte
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntSize {
     Unspecified,
     PtrSized,
     BitSized(u8),
+}
+
+index::define_u32_idx!(TyId);
+
+/// A type holding a reference to the ast, and the unique type
+#[derive(Debug)]
+pub struct Ty {
+    pub ast: Option<ast::TyId>,
+    pub id: UTyId,
+}
+
+index::define_u32_idx!(UTyId);
+
+/// A unique type, if two `UTypeId`s are equal, they represent the same type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UTy {
+    Res(TyPathResoution),
+    Func {
+        args: SmallVec<[TyId; 4]>,
+        ret: TyId,
+    },
+    Slice(TyId),
+    Nullable(TyId),
 }

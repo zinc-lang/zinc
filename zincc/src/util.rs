@@ -307,12 +307,12 @@ pub mod index {
     }
     pub(crate) use define_idx;
 
-    macro_rules! define_usize_idx {
-        ($name:ident) => {
-            $crate::util::index::define_idx!($name, usize, |x| { x }, |s: $name| { s.0 });
-        };
-    }
-    pub(crate) use define_usize_idx;
+    // macro_rules! define_usize_idx {
+    //     ($name:ident) => {
+    //         $crate::util::index::define_idx!($name, usize, |x| { x }, |s: $name| { s.0 });
+    //     };
+    // }
+    // pub(crate) use define_usize_idx;
 
     // macro_rules! define_non_zero_usize_idx {
     //     ($name:ident) => {

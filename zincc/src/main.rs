@@ -2,7 +2,7 @@ pub mod debug;
 pub mod util;
 
 pub mod ast;
-pub mod name_resolver;
+pub mod nameres;
 pub mod parse;
 pub mod zir;
 
@@ -83,20 +83,27 @@ fn main() {
     });
 
     if options.dumps.contains(&"ast".to_string()) {
+        eprintln!("ast_root: {:#?}", ast_root);
         eprintln!("{:#?}\n", ast_map);
     }
 
-    let (interned_strings, hir_scope_descs) = timer.spanned("nr stage1", || {
-        let sd = name_resolver::SharedData::new(&source, &lex_res.spans, &ast_map);
-        let scopes = name_resolver::stage1(&sd, &ast_root);
+    let (hir_sd, hir_scopes, hir_td) = timer.spanned("nameres", || {
+        let sd = nameres::SharedData::new(&source, &lex_res.spans, &ast_map, &ast_root);
+        let mut scopes = nameres::stage1(&sd);
 
-        (sd.strings.into_inner(), scopes)
+        let td = nameres::TypeData::new();
+        nameres::stage2(&sd, &td, &mut scopes);
+
+        (sd, scopes, td)
     });
 
-    if options.dumps.contains(&"nr".to_string()) {
-        eprintln!("strings: {:#?}", interned_strings);
-        eprintln!("scope descs: {:#?}\n", hir_scope_descs);
+    if options.dumps.contains(&"nameres".to_string()) {
+        eprintln!("strings: {:#?}", hir_sd.strings);
+        eprintln!("scopes: {:#?}", hir_scopes);
+        eprintln!("type data: {:#?}\n", hir_td);
     }
+
+    // let _ = timer.spanned("typing", || {});
 
     // @TODO: Actually consume something derived from the input source
     let zir = timer.spanned("zirgen", zir::test::create_test_funcs);
@@ -104,6 +111,7 @@ fn main() {
     if options.dumps.contains(&"zir".to_string()) {
         eprint!("\n=-=-=  ZIR Dump  =-=-=");
         zir::print::dump(&zir, stderr).unwrap();
+        eprintln!();
     }
 
     let (_llvm_ctx, llvm_mod, _llvm_funcs, _llvm_blocks) =
@@ -117,6 +125,7 @@ fn main() {
     if options.dumps.contains(&"llvm".to_string()) {
         eprintln!("\n=-=-=  LLVM Module Dump  =-=-=");
         llvm_mod.dump();
+        eprintln!();
     }
 
     if options.print_times {
@@ -150,7 +159,7 @@ impl Options {
                     .short('D')
                     .takes_value(true)
                     .value_parser(PossibleValuesParser::new(&[
-                        "tokens", "cst", "ast", "nr", "zir", "llvm",
+                        "tokens", "cst", "ast", "nameres", "zir", "llvm",
                     ]))
                     .action(ArgAction::Append),
             )
