@@ -5,6 +5,7 @@ pub type CstId = crate::parse::cst::RawNodeId;
 pub type TokenIndex = usize;
 
 pub use gen::gen;
+use smallvec::SmallVec;
 
 index::define_u32_idx!(DeclId);
 index::define_u32_idx!(StmtId);
@@ -60,7 +61,8 @@ pub enum TyKind {
 
 #[derive(Debug)]
 pub struct TyFunc {
-    pub params: Vec<FuncParam>,
+    // @FIXME: Optimize size based on real usage data
+    pub params: SmallVec<[FuncParam; 4]>,
     pub ret: Option<TyId>,
 }
 
@@ -115,7 +117,8 @@ pub enum ExprInfixOp {
 #[derive(Debug)]
 pub struct ExprCall {
     pub callee: ExprId,
-    pub args: Vec<ExprId>,
+    // @FIXME: Optimize size based on real usage data
+    pub args: SmallVec<[ExprId; 4]>,
 }
 
 #[derive(Debug)]
@@ -142,7 +145,8 @@ pub struct Binding {
 #[derive(Debug)]
 pub struct Path {
     pub cst: CstId,
-    pub segments: Vec<PathSegment>,
+    // @FIXME: Optimize size based on real usage data
+    pub segments: SmallVec<[PathSegment; 4]>,
 }
 
 #[derive(Debug)]
@@ -165,6 +169,8 @@ pub struct Block {
 }
 
 pub mod gen {
+    use smallvec::SmallVec;
+
     use crate::{
         ast::{self, AstMap},
         parse::{
@@ -415,7 +421,7 @@ pub mod gen {
                     TK::punct_dblColon => ast::PathSegment::Sep,
                     _ => todo!("More path segment types"),
                 })
-                .collect::<Vec<_>>();
+                .collect::<SmallVec<_>>();
             assert!(!segments.is_empty());
 
             ast::Path {
