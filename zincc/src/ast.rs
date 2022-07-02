@@ -1,6 +1,6 @@
 use crate::util::index::{self, IndexVec};
 
-pub type CstId = crate::parse::cst::RawNodeId;
+pub type CstId = crate::parse::cst::NodeId;
 // @TODO: Use a non zero variant
 pub type TokenIndex = usize;
 
@@ -174,7 +174,7 @@ pub mod gen {
     use crate::{
         ast::{self, AstMap},
         parse::{
-            cst::{self, NodeId, NK},
+            cst::{self, NamedNodeId, NK},
             TokenKind, TK,
         },
     };
@@ -233,7 +233,7 @@ pub mod gen {
             ast::Root { cst, decls }
         }
 
-        fn gen_decl(&mut self, id: NodeId) -> ast::DeclId {
+        fn gen_decl(&mut self, id: NamedNodeId) -> ast::DeclId {
             let kind = match id.kind {
                 NK::decl_func => ast::DeclKind::Func(self.gen_decl_func(id)),
                 NK::decl_const => ast::DeclKind::Const(self.gen_binding(id)),
@@ -242,7 +242,7 @@ pub mod gen {
             self.map.decls.push(ast::Decl { cst: id.raw, kind })
         }
 
-        fn gen_decl_func(&mut self, id: NodeId) -> ast::DeclFunc {
+        fn gen_decl_func(&mut self, id: NamedNodeId) -> ast::DeclFunc {
             debug_assert_eq!(id.kind, NK::decl_func);
 
             let node = self.cst.get(id);
@@ -267,7 +267,7 @@ pub mod gen {
             ast::DeclFunc { ty, name, body }
         }
 
-        fn gen_binding(&mut self, id: NodeId) -> ast::Binding {
+        fn gen_binding(&mut self, id: NamedNodeId) -> ast::Binding {
             debug_assert!(matches!(id.kind, NK::stmt_let | NK::decl_const));
             let node = self.cst.get(id);
             let tokens = node.tokens();
@@ -290,7 +290,7 @@ pub mod gen {
             ast::Binding { name, ty, expr }
         }
 
-        fn gen_ty(&mut self, id: NodeId) -> ast::TyId {
+        fn gen_ty(&mut self, id: NamedNodeId) -> ast::TyId {
             let kind = match id.kind {
                 NK::path => ast::TyKind::Path(self.gen_path(id)),
                 NK::func_proto => ast::TyKind::Func(self.gen_ty_func(id)),
@@ -301,7 +301,7 @@ pub mod gen {
             self.map.tys.push(ast::Ty { cst: id.raw, kind })
         }
 
-        fn gen_ty_func(&mut self, id: NodeId) -> ast::TyFunc {
+        fn gen_ty_func(&mut self, id: NamedNodeId) -> ast::TyFunc {
             debug_assert_eq!(id.kind, NK::func_proto);
             let node = self.cst.get(id);
 
@@ -331,7 +331,7 @@ pub mod gen {
             ast::TyFunc { params, ret }
         }
 
-        fn gen_expr(&mut self, id: NodeId) -> ast::ExprId {
+        fn gen_expr(&mut self, id: NamedNodeId) -> ast::ExprId {
             let kind = match id.kind {
                 NK::path => ast::ExprKind::Path(self.gen_path(id)),
                 NK::block => ast::ExprKind::Block(self.gen_block(id)),
@@ -355,7 +355,7 @@ pub mod gen {
             self.map.exprs.push(ast::Expr { cst: id.raw, kind })
         }
 
-        fn gen_expr_infix(&mut self, id: NodeId) -> ast::ExprInfix {
+        fn gen_expr_infix(&mut self, id: NamedNodeId) -> ast::ExprInfix {
             debug_assert_eq!(id.kind, NK::expr_infix);
             let nodes = self.cst.get(id).nodes();
 
@@ -379,7 +379,7 @@ pub mod gen {
             ast::ExprInfix { lhs, rhs, op }
         }
 
-        fn gen_expr_call(&mut self, id: NodeId) -> ast::ExprCall {
+        fn gen_expr_call(&mut self, id: NamedNodeId) -> ast::ExprCall {
             debug_assert_eq!(id.kind, NK::expr_call);
             let nodes = self.cst.get(id).nodes();
 
@@ -389,7 +389,7 @@ pub mod gen {
             ast::ExprCall { callee, args }
         }
 
-        fn gen_expr_return(&mut self, id: NodeId) -> Option<ast::ExprId> {
+        fn gen_expr_return(&mut self, id: NamedNodeId) -> Option<ast::ExprId> {
             debug_assert_eq!(id.kind, NK::expr_return);
             let nodes = self.cst.get(id).nodes();
 
@@ -401,7 +401,7 @@ pub mod gen {
             }
         }
 
-        fn gen_stmt(&mut self, id: NodeId) -> ast::StmtId {
+        fn gen_stmt(&mut self, id: NamedNodeId) -> ast::StmtId {
             let kind = match id.kind {
                 NK::stmt_let => ast::StmtKind::Let(self.gen_binding(id)),
                 NK::stmt_expr => ast::StmtKind::Expr(self.gen_expr(self.cst.get(id).nodes()[0])),
@@ -411,7 +411,7 @@ pub mod gen {
             self.map.stmts.push(ast::Stmt { cst: id.raw, kind })
         }
 
-        fn gen_path(&mut self, id: NodeId) -> ast::Path {
+        fn gen_path(&mut self, id: NamedNodeId) -> ast::Path {
             let node = self.cst.get(id);
             let segments = node
                 .tokens()
@@ -430,7 +430,7 @@ pub mod gen {
             }
         }
 
-        fn gen_string(&mut self, id: NodeId) -> ast::AstString {
+        fn gen_string(&mut self, id: NamedNodeId) -> ast::AstString {
             debug_assert_eq!(id.kind, NK::string);
             let node = self.cst.get(id);
             debug_assert_eq!(node.nodes().len(), 0);
@@ -451,7 +451,7 @@ pub mod gen {
             ast::AstString { cst: id.raw, baked }
         }
 
-        fn gen_block(&mut self, id: NodeId) -> ast::Block {
+        fn gen_block(&mut self, id: NamedNodeId) -> ast::Block {
             let stmts = self
                 .cst
                 .get(id)
@@ -462,7 +462,7 @@ pub mod gen {
             ast::Block { cst: id.raw, stmts }
         }
 
-        fn gen_int(&mut self, id: NodeId) -> u64 {
+        fn gen_int(&mut self, id: NamedNodeId) -> u64 {
             let node = self.cst.get(id);
             debug_assert_eq!(node.nodes().len(), 0);
             debug_assert_eq!(node.tokens().len(), 1);
@@ -483,7 +483,7 @@ pub mod gen {
             .unwrap()
         }
 
-        fn gen_float(&mut self, id: NodeId) -> f64 {
+        fn gen_float(&mut self, id: NamedNodeId) -> f64 {
             let node = self.cst.get(id);
             debug_assert_eq!(node.nodes().len(), 0);
             debug_assert_eq!(node.tokens().len(), 1);

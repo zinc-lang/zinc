@@ -19,7 +19,7 @@ pub fn parse(tokens: &[TokenKind]) -> ParseResult {
     let root = map.push(root.node);
     ParseResult {
         cst: cst::Cst {
-            root: cst::NodeId {
+            root: cst::NamedNodeId {
                 raw: root,
                 kind: NK::root,
             },
@@ -37,7 +37,7 @@ struct Parser<'s> {
 
     errors: Vec<ParseError>,
 
-    node_map: crate::util::index::IndexVec<cst::Node, cst::RawNodeId>,
+    node_map: crate::util::index::IndexVec<cst::Node, cst::NodeId>,
 }
 
 #[derive(Debug)]
@@ -167,7 +167,7 @@ impl Parser<'_> {
 
     fn append_node(&mut self, what: PNode, to: &mut PNode) {
         let id_raw = self.node_map.push(what.node);
-        let id = cst::NodeId {
+        let id = cst::NamedNodeId {
             raw: id_raw,
             kind: what.kind,
         };

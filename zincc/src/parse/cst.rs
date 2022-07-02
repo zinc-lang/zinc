@@ -5,12 +5,12 @@ use crate::util::index::{self, IndexVec};
 use std::fmt;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId {
+pub struct NamedNodeId {
     pub kind: NodeKind, // u8
-    pub raw: RawNodeId, // NonZeroU32
+    pub raw: NodeId,    // NonZeroU32
 }
 
-impl fmt::Debug for NodeId {
+impl fmt::Debug for NamedNodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -21,18 +21,18 @@ impl fmt::Debug for NodeId {
     }
 }
 
-impl From<NodeId> for RawNodeId {
-    fn from(id: NodeId) -> Self {
+impl From<NamedNodeId> for NodeId {
+    fn from(id: NamedNodeId) -> Self {
         id.raw
     }
 }
 
-index::define_non_zero_u32_idx!(RawNodeId);
+index::define_non_zero_u32_idx!(NodeId);
 
 #[derive(Debug)]
 pub struct Cst {
-    pub root: NodeId,
-    pub map: IndexVec<Node, RawNodeId>,
+    pub root: NamedNodeId,
+    pub map: IndexVec<Node, NodeId>,
 }
 
 impl Cst {
@@ -41,7 +41,7 @@ impl Cst {
     }
 
     #[track_caller]
-    pub fn get(&self, raw: impl Into<RawNodeId>) -> &Node {
+    pub fn get(&self, raw: impl Into<NodeId>) -> &Node {
         self.map.get(raw.into()).unwrap()
     }
 }
@@ -49,7 +49,7 @@ impl Cst {
 #[derive(Debug, Clone)]
 pub enum Element {
     Token(usize),
-    Node(NodeId),
+    Node(NamedNodeId),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -73,7 +73,7 @@ impl Node {
             .collect()
     }
 
-    pub fn nodes(&self) -> Vec<NodeId> {
+    pub fn nodes(&self) -> Vec<NamedNodeId> {
         self.elements
             .iter()
             .filter_map(|e| match e {
