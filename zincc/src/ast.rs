@@ -480,7 +480,8 @@ pub mod gen {
                 TokenKind::int_bin => u64::from_str_radix(&str[2..], 2),
                 _ => unreachable!(),
             }
-            .unwrap()
+            // If this fails the lexer failed to report the error
+            .expect("internal lexing error")
         }
 
         fn gen_float(&mut self, id: NamedNodeId) -> f64 {
@@ -494,7 +495,8 @@ pub mod gen {
             let slice = &self.source[self.ranges[tk_i].clone()];
             let str = slice.replace('_', "");
 
-            str.parse().unwrap()
+            // If this fails the lexer failed to report the error
+            str.parse().expect("internal lexing error")
         }
     }
 }
