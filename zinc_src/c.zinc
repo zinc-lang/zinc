@@ -65,3 +65,9 @@ fn asdf(a: []char, b: ?bool) {
     true;
     false;
 }
+
+fn precedence() {
+    a + b * c;
+    a * b + c;
+    // (a + b) * c;
+}
