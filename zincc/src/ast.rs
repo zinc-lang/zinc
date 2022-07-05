@@ -447,12 +447,35 @@ pub mod gen {
             let node = self.cst.get(id);
             debug_assert_eq!(node.nodes().len(), 0);
 
-            let baked = node.tokens()[1..][..1]
+            let len = node.tokens().len();
+            let baked = node.tokens()[1..len - 1]
                 .iter()
-                .map(|&i| (i, self.tokens[i.get()]))
-                .map(|(i, tk)| match tk {
-                    TokenKind::string_literal => &self.source[self.ranges[i.get()].clone()],
-                    TokenKind::esc_char => todo!(),
+                .map(|&i| {
+                    (
+                        self.tokens[i.get()],
+                        &self.source[self.ranges[i.get()].clone()],
+                    )
+                })
+                .map(|(tk, slice)| match tk {
+                    TokenKind::string_literal => slice.to_string(),
+                    TokenKind::esc_char => {
+                        assert!(slice.len() == 2);
+                        let mut chars = slice.chars();
+                        assert!(chars.next().unwrap() == '\\');
+                        match chars.next().unwrap() {
+                            'n' => '\n',
+                            'r' => '\r',
+                            't' => '\t',
+                            '\\' => '\\',
+                            '\"' => '"',
+                            '\'' => '\'',
+                            '$' => '$',
+                            _ => todo!(
+                                "Move escape char parsing to lexer, where we can report errors",
+                            ),
+                        }
+                        .to_string()
+                    }
                     TokenKind::esc_asciicode => todo!(),
                     TokenKind::esc_unicode => todo!(),
                     TokenKind::string_open | TokenKind::string_close => unreachable!(),
