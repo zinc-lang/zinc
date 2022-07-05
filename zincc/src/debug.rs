@@ -134,8 +134,8 @@ impl<'s, W: Write> CstWriter<'s, W> {
         for elem in node.elements.iter() {
             match elem {
                 cst::Element::Token(i) => {
-                    let tk = *self.tokens.get(*i as usize).unwrap();
-                    let range = self.ranges.get(*i as usize).unwrap();
+                    let tk = *self.tokens.get(i.get()).unwrap();
+                    let range = self.ranges.get(i.get()).unwrap();
                     writeln!(
                         self.f,
                         "{}",

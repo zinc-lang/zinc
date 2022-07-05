@@ -1,8 +1,7 @@
+use crate::parse::cst::TokenIndex;
 use crate::util::index::{self, IndexVec};
 
 pub type CstId = crate::parse::cst::NodeId;
-// @TODO: Use a non zero variant
-pub type TokenIndex = usize;
 
 pub use gen::gen;
 use smallvec::SmallVec;
@@ -57,6 +56,16 @@ pub enum TyKind {
     Func(TyFunc),
     Slice(TyId),
     Nullable(TyId),
+}
+
+impl TyKind {
+    pub fn as_func(&self) -> Option<&TyFunc> {
+        if let Self::Func(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -248,7 +257,7 @@ pub mod gen {
             let node = self.cst.get(id);
             debug_assert_eq!(node.nodes().len(), 2);
 
-            debug_assert_eq!(*self.tokens.get(node.tokens()[0]).unwrap(), TK::kw_fn);
+            debug_assert_eq!(*self.tokens.get(node.tokens()[0].get()).unwrap(), TK::kw_fn);
             let name = node.tokens()[1];
 
             let proto = node.nodes()[0];
@@ -272,8 +281,11 @@ pub mod gen {
             let node = self.cst.get(id);
             let tokens = node.tokens();
 
-            debug_assert!(matches!(self.tokens[tokens[0]], TK::kw_let | TK::kw_const));
-            debug_assert_eq!(self.tokens[tokens[1]], TK::ident);
+            debug_assert!(matches!(
+                self.tokens[tokens[0].get()],
+                TK::kw_let | TK::kw_const
+            ));
+            debug_assert_eq!(self.tokens[tokens[1].get()], TK::ident);
 
             let name = tokens[1];
 
@@ -367,7 +379,7 @@ pub mod gen {
             debug_assert_eq!(nodes[1].kind, NK::expr_infix_op);
             let op_tokens = self.cst.get(nodes[1]).tokens();
             assert_eq!(op_tokens.len(), 1, "TODO: More infix operator types");
-            let op = match self.tokens[op_tokens[0]] {
+            let op = match self.tokens[op_tokens[0].get()] {
                 TK::punct_eq => ast::ExprInfixOp::Equal,
                 TK::punct_plus => ast::ExprInfixOp::Add,
                 TK::punct_minus => ast::ExprInfixOp::Sub,
@@ -416,7 +428,7 @@ pub mod gen {
             let segments = node
                 .tokens()
                 .iter()
-                .map(|&i| match self.tokens[i] {
+                .map(|&i| match self.tokens[i.get()] {
                     TK::ident => ast::PathSegment::Ident(i),
                     TK::punct_dblColon => ast::PathSegment::Sep,
                     _ => todo!("More path segment types"),
@@ -437,9 +449,9 @@ pub mod gen {
 
             let baked = node.tokens()[1..][..1]
                 .iter()
-                .map(|&i| (i, self.tokens[i]))
+                .map(|&i| (i, self.tokens[i.get()]))
                 .map(|(i, tk)| match tk {
-                    TokenKind::string_literal => &self.source[self.ranges[i].clone()],
+                    TokenKind::string_literal => &self.source[self.ranges[i.get()].clone()],
                     TokenKind::esc_char => todo!(),
                     TokenKind::esc_asciicode => todo!(),
                     TokenKind::esc_unicode => todo!(),
@@ -468,9 +480,9 @@ pub mod gen {
             debug_assert_eq!(node.tokens().len(), 1);
 
             let tk_i = node.tokens()[0];
-            let tk = self.tokens[tk_i];
+            let tk = self.tokens[tk_i.get()];
 
-            let slice = &self.source[self.ranges[tk_i].clone()];
+            let slice = &self.source[self.ranges[tk_i.get()].clone()];
             let str = slice.replace('_', "");
 
             match tk {
@@ -490,9 +502,9 @@ pub mod gen {
             debug_assert_eq!(node.tokens().len(), 1);
 
             let tk_i = node.tokens()[0];
-            debug_assert_eq!(self.tokens[tk_i], TK::float);
+            debug_assert_eq!(self.tokens[tk_i.get()], TK::float);
 
-            let slice = &self.source[self.ranges[tk_i].clone()];
+            let slice = &self.source[self.ranges[tk_i.get()].clone()];
             let str = slice.replace('_', "");
 
             // If this fails the lexer failed to report the error

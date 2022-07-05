@@ -154,7 +154,7 @@ impl Parser<'_> {
         parent
             .node
             .elements
-            .push(super::cst::Element::Token(self.cursor));
+            .push(cst::Element::Token(cst::TokenIndex::new(self.cursor)));
         self.cursor += 1;
     }
 

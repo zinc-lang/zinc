@@ -2,7 +2,7 @@
 //! Adds nothing more than structure to the existing tokens
 
 use crate::util::index::{self, IndexVec};
-use std::fmt;
+use std::{fmt, num::NonZeroUsize};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NamedNodeId {
@@ -48,7 +48,7 @@ impl Cst {
 
 #[derive(Debug, Clone)]
 pub enum Element {
-    Token(usize),
+    Token(TokenIndex),
     Node(NamedNodeId),
 }
 
@@ -62,7 +62,7 @@ impl Node {
         Self::default()
     }
 
-    pub fn tokens(&self) -> Vec<usize> {
+    pub fn tokens(&self) -> Vec<TokenIndex> {
         self.elements
             .iter()
             .filter_map(|e| match e {
@@ -82,6 +82,21 @@ impl Node {
             })
             .cloned()
             .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TokenIndex(NonZeroUsize);
+
+impl TokenIndex {
+    #[inline(always)]
+    pub fn new(idx: usize) -> Self {
+        TokenIndex(NonZeroUsize::new(idx + 1).unwrap())
+    }
+
+    #[inline(always)]
+    pub fn get(self) -> usize {
+        self.0.get() - 1
     }
 }
 
