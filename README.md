@@ -55,9 +55,7 @@ The zinc programming language.
   
 ## Contributing
 
-Feel free to open any and all pull requests.
-I don't think there's much that can be done on its own at the moment, I'm still in the middle of trying to create the first vertical slice.
-Unless you want to help with name-resolution, type-checking or maybe even code generation.
+Feel free to open any pull request, I'm open to any contributions.
 
 ## License
 
