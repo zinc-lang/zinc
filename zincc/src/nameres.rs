@@ -230,11 +230,15 @@ mod stage2 {
         scope_kind_map: &'s BiHashMap<ScopeKind, ScopeDescId>,
         current_scope: ScopeDescId,
 
+        args: Vec<FuncArgId>,
+        locals: Vec<LocalId>,
+        locals_bread_crumbs: Vec<u32>,
+
         pub(crate) map: Map,
     }
 
     impl<'s> Stage2<'s> {
-        pub(crate) fn new(
+        pub(super) fn new(
             sd: &'s SharedData<'s>,
             td: &'s TypeData,
             scopes: &'s IndexVec<ScopeDesc, ScopeDescId>,
@@ -246,6 +250,9 @@ mod stage2 {
                 scopes,
                 scope_kind_map,
                 current_scope: *scopes.indices().get(0).unwrap(),
+                args: Default::default(),
+                locals: Default::default(),
+                locals_bread_crumbs: Default::default(),
                 map: Default::default(),
             }
         }
@@ -259,8 +266,12 @@ mod stage2 {
         fn resolve_decl(&mut self, decl_id: ast::DeclId) -> DeclDescId {
             let scope = self.scopes.get(self.current_scope).unwrap();
 
+            let old_args = std::mem::take(&mut self.args);
+            let old_locals = std::mem::take(&mut self.locals);
+            let old_locals_crumbs = std::mem::take(&mut self.locals_bread_crumbs);
+
             let kind = &self.sd.ast.decls.get(decl_id).unwrap().kind;
-            match kind {
+            let ret = match kind {
                 ast::DeclKind::Func(func) => {
                     let sym = self.sd.get_tok_sym(func.name);
                     let decl_desc_id = *scope.decls_name_map.get(&sym).unwrap();
@@ -268,17 +279,48 @@ mod stage2 {
                     assert_eq!(decl_desc.ast_id, decl_id);
                     assert_eq!(decl_desc.tag, DeclDescTag::Func);
 
-                    // @TODO: Assert that ty is a func ty
                     let ty = self.get_ty(func.ty);
 
+                    debug_assert!(
+                        {
+                            let tys = self.td.tys.borrow();
+                            let utys = self.td.interned_utys.borrow();
+                            utys.get(tys.get(ty).unwrap().id).unwrap().is_func()
+                        },
+                        "internal compiler error; function does not have function type"
+                    );
+
+                    // setup args
+                    match &self.sd.ast.tys.get(func.ty).unwrap().kind {
+                        ast::TyKind::Func(ast::TyFunc { params, .. }) => {
+                            params.iter().for_each(|param| {
+                                if let Some(name) = param.name {
+                                    let name = self.sd.get_tok_sym(name);
+                                    let ty = self.get_ty(param.ty);
+                                    let id = self.map.func_args.push(FuncArg { name, ty });
+                                    self.args.push(id);
+                                }
+                            })
+                        }
+                        _ => unreachable!(),
+                    }
+
                     let body = self.resolve_expr(func.body);
+                    self.args.clear();
 
                     let func = DeclFunc { ty, body };
                     self.map.decls.insert(decl_desc_id, DeclKind::Func(func));
+
                     decl_desc_id
                 }
                 ast::DeclKind::Const(_) => todo!(),
-            }
+            };
+
+            self.args = old_args;
+            self.locals = old_locals;
+            self.locals_bread_crumbs = old_locals_crumbs;
+
+            ret
         }
 
         fn resolve_expr(&mut self, expr_id: ast::ExprId) -> ExprId {
@@ -298,13 +340,26 @@ mod stage2 {
                     let old_scope = self.current_scope;
                     self.current_scope = *blk_scope;
 
+                    self.push_locals_scope();
+
                     let stmts = blk
                         .stmts
                         .iter()
                         .map(|stmt_id| {
                             let stmt = self.sd.ast.stmts.get(*stmt_id).unwrap();
                             let kind = match stmt.kind {
-                                ast::StmtKind::Let(_) => todo!(),
+                                ast::StmtKind::Let(ref l) => {
+                                    let name = self.sd.get_tok_sym(l.name);
+                                    let expr = self.resolve_expr(l.expr);
+                                    let local_id = self.map.locals.push(Local {
+                                        scope: self.current_scope,
+                                        name,
+                                        expr,
+                                        ty: l.ty.map(|id| self.get_ty(id)),
+                                    });
+                                    self.locals.push(local_id);
+                                    StmtKind::Let(local_id)
+                                }
                                 ast::StmtKind::Expr(id) => StmtKind::Expr(self.resolve_expr(id)),
                                 ast::StmtKind::Decl(id) => StmtKind::Decl(self.resolve_decl(id)),
                             };
@@ -314,6 +369,8 @@ mod stage2 {
                             })
                         })
                         .collect();
+
+                    self.pop_locals_scope();
 
                     self.current_scope = old_scope;
                     let block_id = self.map.blocks.push(Block {
@@ -383,17 +440,35 @@ mod stage2 {
         fn resolve_expr_path(&self, path: &ast::Path) -> ExprPathResolution {
             // let scope = self.scopes.get(self.current_scope).unwrap();
 
-            assert!(path.segments.len() == 1);
+            // @TODO: Resolve paths longer that one element
+            assert!(path.segments.len() == 1, "todo!");
             for segment in path.segments.iter() {
                 match segment {
                     ast::PathSegment::Sep => {}
                     ast::PathSegment::Ident(idx) => {
                         let sym = self.sd.get_tok_sym(*idx);
 
-                        // @TODO: Look though locals
+                        if let Some(local) = self
+                            .locals
+                            .iter()
+                            .rev()
+                            .find(|&&id| self.map.locals.get(id).unwrap().name == sym)
+                            .map(|&id| ExprPathResolution::Local(id))
+                        {
+                            return local;
+                        }
+
+                        if let Some(arg) = self
+                            .args
+                            .iter()
+                            .find(|&&id| self.map.func_args.get(id).unwrap().name == sym)
+                            .map(|&id| ExprPathResolution::Arg(id))
+                        {
+                            return arg;
+                        }
 
                         return ExprPathResolution::Decl(
-                            self.search_for_decl_bubbling_up_in_scope(self.current_scope, sym),
+                            self.search_for_decl_in_scope_looking_up(self.current_scope, sym),
                         );
                     }
                 }
@@ -402,24 +477,30 @@ mod stage2 {
             unreachable!()
         }
 
-        fn search_for_decl_bubbling_up_in_scope(
+        fn search_for_decl_in_scope_looking_up(
             &self,
             scope_id: ScopeDescId,
             sym: StringSymbol,
         ) -> DeclDescId {
             let scope = self.scopes.get(scope_id).unwrap();
 
-            if let Some(id) = scope.decls_name_map.get(&sym) {
-                *id
-            } else if let Some(parent) = scope.parent {
-                let kind = self.scope_kind_map.get_by_right(&scope_id).unwrap();
-                if !kind.is_module() {
-                    self.search_for_decl_bubbling_up_in_scope(parent, sym)
-                } else {
-                    todo!()
+            match scope.decls_name_map.get(&sym) {
+                Some(id) => *id,
+                None if scope.parent.is_some() && {
+                    let kind = self.scope_kind_map.get_by_right(&scope_id).unwrap();
+                    !kind.is_module()
+                } =>
+                {
+                    let parent = scope.parent.unwrap();
+                    self.search_for_decl_in_scope_looking_up(parent, sym)
                 }
-            } else {
-                todo!()
+                None => {
+                    let strings = self.sd.strings.borrow();
+                    todo!(
+                        "could not find value `{}` in scope",
+                        strings.get(sym).unwrap()
+                    );
+                }
             }
         }
 
@@ -457,6 +538,15 @@ mod stage2 {
                 todo!()
             }
         }
+
+        fn push_locals_scope(&mut self) {
+            self.locals_bread_crumbs.push(self.locals.len() as u32)
+        }
+
+        fn pop_locals_scope(&mut self) {
+            self.locals
+                .truncate(self.locals_bread_crumbs.pop().unwrap() as usize)
+        }
     }
 }
 
@@ -467,6 +557,8 @@ pub struct Map {
     stmts: IndexVec<Stmt, StmtId>,
     blocks: IndexVec<Block, BlockId>,
     block_scope_map: FnvHashMap<ScopeDescId, BlockId>,
+    locals: IndexVec<Local, LocalId>,
+    func_args: IndexVec<FuncArg, FuncArgId>,
 }
 
 index::define_u32_idx!(ScopeDescId);
@@ -584,10 +676,18 @@ pub enum UTy {
     Nullable(TyId),
 }
 
+impl UTy {
+    #[must_use]
+    pub fn is_func(&self) -> bool {
+        matches!(self, Self::Func { .. })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ExprPathResolution {
     Decl(DeclDescId),
-    // @TODO: Add more
+    Local(LocalId),
+    Arg(FuncArgId),
 }
 
 index::define_non_zero_u32_idx!(ExprId);
@@ -648,7 +748,25 @@ pub struct Stmt {
 
 #[derive(Debug)]
 pub enum StmtKind {
-    // @TODO: Let
+    Let(LocalId),
     Expr(ExprId),
     Decl(DeclDescId),
+}
+
+index::define_non_zero_u32_idx!(LocalId);
+
+#[derive(Debug)]
+pub struct Local {
+    pub scope: ScopeDescId,
+    pub name: StringSymbol,
+    pub expr: ExprId,
+    pub ty: Option<TyId>,
+}
+
+index::define_non_zero_u32_idx!(FuncArgId);
+
+#[derive(Debug)]
+pub struct FuncArg {
+    pub name: StringSymbol,
+    pub ty: TyId,
 }
