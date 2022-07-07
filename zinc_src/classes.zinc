@@ -1,0 +1,55 @@
+class Foo {
+    str: string;
+
+    Self(self.string) {
+        .{ string }
+    }
+}
+
+class Baz {
+    b: bool;
+}
+
+class Bar : Foo, Baz {
+    int: sint,
+
+    Self(self.int) {
+        .{
+            Foo = .("bar"),
+            Baz = .{ b = false },
+            int,
+        }
+    }
+}
+
+//
+
+class Foo {}
+
+class Bar : Foo {}
+
+fn takes_foo_by_value(foo: Foo) {}
+
+fn takes_foo_by_reference(foo: &Foo) {}
+
+fn main() {
+    let bar = Bar{};
+
+    // This function expects an argument of `Foo` by value,
+    // and as such could not possibly take bar instead.
+    takes_foo_by_value(bar);
+    // error: expected type `Foo` but got `Bar`
+    // = Try:
+    //     take_foo_value(bar.Foo)
+
+    // This is allowed.
+    // It will perform a partial move of the `Foo` stored
+    // wihin `bar` into the function.
+    // It is not possible to upcast a value taken by value to a derived class.
+    // One can only downcast to an inheritied type.
+    takes_foo_by_value(bar.Foo);
+
+    // As [`Foo`] is taken by reference in this case it is perfecly valid
+    // to upcast to a derived class, granted that said sublass was passed down.
+    take_foo_by_reference(&bar);
+}
