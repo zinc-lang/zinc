@@ -70,7 +70,7 @@ impl TyKind {
 
 #[derive(Debug)]
 pub struct TyFunc {
-    // @FIXME: Optimize size based on real usage data
+    // @FIXME: Optimize size based on real usage metrics
     pub params: SmallVec<[FuncParam; 4]>,
     pub ret: Option<TyId>,
 }
@@ -88,7 +88,7 @@ pub struct Expr {
     pub kind: ExprKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExprKind {
     Path(Path),
     Block(Block),
@@ -98,7 +98,7 @@ pub enum ExprKind {
     Return(Option<ExprId>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExprLiteral {
     String(AstString),
     Integer(u64),
@@ -106,14 +106,14 @@ pub enum ExprLiteral {
     Bool(bool),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExprInfix {
     pub lhs: ExprId,
     pub rhs: ExprId,
     pub op: ExprInfixOp,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExprInfixOp {
     Equal,
     Add,
@@ -123,10 +123,10 @@ pub enum ExprInfixOp {
     // @TODO: Add more
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExprCall {
     pub callee: ExprId,
-    // @FIXME: Optimize size based on real usage data
+    // @FIXME: Optimize size based on real usage metrics
     pub args: SmallVec<[ExprId; 4]>,
 }
 
@@ -150,28 +150,28 @@ pub struct Binding {
     pub expr: ExprId,
 }
 
-/// invariant: !segments.is_empty()
-#[derive(Debug)]
+/// invariant: `!segments.is_empty()`
+#[derive(Debug, Clone)]
 pub struct Path {
     pub cst: CstId,
-    // @FIXME: Optimize size based on real usage data
+    // @FIXME: Optimize size based on real usage metrics
     pub segments: SmallVec<[PathSegment; 4]>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PathSegment {
     Sep,
     Ident(TokenIndex),
     // @TODO: Add more
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AstString {
     pub cst: CstId,
     pub baked: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Block {
     pub cst: CstId,
     pub stmts: Vec<StmtId>,
