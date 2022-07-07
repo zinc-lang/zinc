@@ -150,7 +150,16 @@ pub struct Binding {
     pub expr: ExprId,
 }
 
-/// invariant: `!segments.is_empty()`
+/// invariants:
+/// ```rust
+/// # let segments: Vec<Segment> = vec![];
+/// #
+/// !segments.is_empty();
+///
+/// if segments.first().unwrap() == PathSegment::Sep {
+///     segments.len() >= 2;
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct Path {
     pub cst: CstId,
@@ -162,7 +171,7 @@ pub struct Path {
 pub enum PathSegment {
     Sep,
     Ident(TokenIndex),
-    // @TODO: Add more
+    // @TODO: Add more, self, Self, etc.
 }
 
 #[derive(Debug, Clone)]
