@@ -1,20 +1,22 @@
 fn main() {
-    let a = 2;
-    let b = three();
-    add(a, b);
+    three();
+
+    // let a = 2;
+    // let b = three();
+    // add(a, b);
 }
 
 fn three(): sint {
     return 1 + 2;
 }
 
-fn add(a: sint, b: sint): sint {
-    return a + b;
-}
+// fn add(a: sint, b: sint): sint {
+//     return a + b;
+// }
 
-fn sum(a: sint, b: sint, c: sint): sint {
-    return a + b + c;
-}
+// fn sum(a: sint, b: sint, c: sint): sint {
+//     return a + b + c;
+// }
 
 // fn foo() {
 //     fn bar() {}

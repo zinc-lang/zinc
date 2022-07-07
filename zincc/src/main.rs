@@ -91,20 +91,21 @@ fn main() {
         eprintln!("{:#?}\n", ast_map);
     }
 
-    let (nr_sd, nr_scopes, nr_td) = timer.spanned("nameres", || {
+    let (nr_sd, nr_scopes, nr_td, nr_map) = timer.spanned("nameres", || {
         let sd = nameres::SharedData::new(&source, &lex_res.spans, &ast_map, &ast_root);
-        let mut scopes = nameres::stage1(&sd);
+        let (scopes, scope_kind_map) = nameres::stage1(&sd);
 
         let td = nameres::TypeData::new();
-        nameres::stage2(&sd, &td, &mut scopes);
+        let map = nameres::stage2(&sd, &td, &scopes, &scope_kind_map);
 
-        (sd, scopes, td)
+        (sd, scopes, td, map)
     });
 
     if options.dumps.contains(&"nameres".to_string()) {
         eprintln!("strings: {:#?}", nr_sd.strings);
         eprintln!("scopes: {:#?}", nr_scopes);
-        eprintln!("type data: {:#?}\n", nr_td);
+        eprintln!("type data: {:#?}", nr_td);
+        eprintln!("nap: {:#?}\n", nr_map);
     }
 
     // let _ = timer.spanned("typing", || {});

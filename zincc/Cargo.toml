@@ -11,5 +11,5 @@ clap = "3.2"
 llvm = { path = "../llvm-rs" }
 smallvec = { version = "1.9", features = ["union"] }
 
-# @TODO: Use this for integer key bassed hash maps
-#fnv = "1.0"
+fnv = "1.0"
+bimap = "0.6"
