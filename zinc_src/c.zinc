@@ -70,4 +70,7 @@ fn precedence() {
     a + b * c;
     a * b + c;
     // (a + b) * c;
+
+    a + b + c;
+    a - b - c;
 }
