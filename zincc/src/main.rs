@@ -6,6 +6,8 @@ pub mod nameres;
 pub mod parse;
 pub mod zir;
 
+// @TODO: Write tests, for everything
+
 fn main() {
     let options = Options::get();
 
