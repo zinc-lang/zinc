@@ -564,6 +564,8 @@ impl Parser<'_> {
 
             TK::brkt_brace_open => self.parse_block(),
 
+            TK::brkt_paren_open => todo!("parse paren exprs"),
+
             TK::kw_return => {
                 let mut ret = self.node(NK::expr_return);
                 self.bump(&mut ret); // 'return'
