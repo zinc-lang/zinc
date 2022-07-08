@@ -4,6 +4,7 @@ pub mod util;
 pub mod ast;
 pub mod nameres;
 pub mod parse;
+pub mod typer;
 pub mod zir;
 
 // @TODO: Write tests, for everything
