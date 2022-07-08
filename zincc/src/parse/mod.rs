@@ -7,6 +7,11 @@ pub use parser::{
     parse, ParseContext, ParseError, ParseErrorExpected, ParseErrorExpectedWhat, ParseResult,
 };
 
+/// A token represents a piece of source code with semantic meaning.
+/// Such as `brkt` being a prefix for all bracket tokens: `(){}[]`.
+/// Or `punct` for punctuation tokens: `,;:` etc.
+/// Or `kw` for keyword tokens: `fn let if` etc.
+/// Or tokens which follow a rule, such as `ident`, `float` or  the `int_*`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 #[repr(u8)]
@@ -43,9 +48,9 @@ pub enum TokenKind {
     int_oct, // 0o
     int_bin, // 0b
 
-    string_open,
-    string_literal,
-    string_close,
+    string_open,    // "
+    string_literal, // any normal text which has not been escaped
+    string_close,   // "
 
     esc_char,      // \<X>
     esc_asciicode, // \x<XX>
@@ -62,6 +67,8 @@ pub enum TokenKind {
 
 pub type TK = TokenKind;
 
+/// A structure representing a location in a file as a line and column,
+/// instead of an offset from a file.
 #[derive(Debug, Clone, Copy)]
 pub struct FileLocation {
     pub line: usize,
