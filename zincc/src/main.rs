@@ -7,6 +7,7 @@ pub mod parse;
 pub mod zir;
 
 // @TODO: Write tests, for everything
+// @TODO: Write documentation, for everything
 
 fn main() {
     let options = Options::get();
@@ -14,6 +15,7 @@ fn main() {
     assert_eq!(options.files.len(), 1);
     let source_path = &options.files[0];
 
+    // Read file to string
     let source = util::read_file_to_string(source_path)
         .map(|s| s + "\n\0")
         .unwrap_or_else(|e| {
@@ -24,15 +26,18 @@ fn main() {
     let mut timer = util::time::Timer::new();
     let stderr = &mut std::io::stderr();
 
+    // Lex the source
     let lex_res = timer.spanned("lexing", || parse::lex(&source));
 
     if options.dumps.contains(&"tokens".to_string()) {
+        // Print tokens
         lex_res.debug_zip().for_each(|(tk, range, _)| {
             eprintln!("{}", debug::format_token(&source, tk, &range, true));
         });
         eprintln!();
     }
 
+    // Print errors and exit if there are any
     if !lex_res.errors.is_empty() {
         for err in lex_res.errors {
             let loc = parse::FileLocation::from_offset(&source, err.offset).unwrap();
@@ -44,9 +49,11 @@ fn main() {
         std::process::exit(1);
     }
 
+    // Parse the tokens
     let parse_res = timer.spanned("parsing", || parse::parse(&lex_res.tokens));
 
     if options.dumps.contains(&"cst".to_string()) {
+        // Print cst
         debug::write_cst(
             stderr,
             &parse_res.cst,
@@ -59,6 +66,7 @@ fn main() {
         eprintln!();
     }
 
+    // Print errors and exit if there are any
     if !parse_res.errors.is_empty() {
         for error in parse_res.errors {
             match error {
@@ -83,12 +91,13 @@ fn main() {
         std::process::exit(1);
     }
 
-    let (ast_map, ast_root) = timer.spanned("astgen", || {
+    // Generate the ast
+    let ast_map = timer.spanned("astgen", || {
         ast::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.spans)
     });
 
     if options.dumps.contains(&"ast".to_string()) {
-        eprintln!("ast_root: {:#?}", ast_root);
+        // Print the ast
         eprintln!("{:#?}\n", ast_map);
     }
 
@@ -102,7 +111,7 @@ fn main() {
         eprintln!("{:#?}", nr_res);
     }
 
-    // let _ = timer.spanned("typing", || {});
+    let _ = timer.spanned("typing", || {});
 
     // @TODO: Actually consume something derived from the input source
     let zir = timer.spanned("zirgen", zir::test::create_test_funcs);
