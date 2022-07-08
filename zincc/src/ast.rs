@@ -486,26 +486,22 @@ pub mod gen {
                 })
                 .map(|(tk, slice)| match tk {
                     TokenKind::string_literal => slice.to_string(),
-                    TokenKind::esc_char => {
-                        assert!(slice.len() == 2);
-                        let mut chars = slice.chars();
-                        assert!(chars.next().unwrap() == '\\');
-                        match chars.next().unwrap() {
-                            'n' => '\n',
-                            'r' => '\r',
-                            't' => '\t',
-                            '\\' => '\\',
-                            '\"' => '"',
-                            '\'' => '\'',
-                            '$' => '$',
-                            _ => todo!(
-                                "Move escape char parsing to lexer, where we can report errors",
-                            ),
-                        }
-                        .to_string()
+                    TokenKind::esc_asciicode => {
+                        let code = slice[1..].parse::<u8>().unwrap();
+                        String::from_utf8(vec![code]).unwrap()
                     }
-                    TokenKind::esc_asciicode => todo!(),
-                    TokenKind::esc_unicode => todo!(),
+                    TokenKind::esc_unicode => {
+                        let code = slice[1..].parse::<u32>().unwrap();
+                        char::from_u32(code).unwrap().to_string()
+                    }
+                    TokenKind::esc_char_newline => "\n".to_string(),
+                    TokenKind::esc_char_return => "\r".to_string(),
+                    TokenKind::esc_char_tab => "\t".to_string(),
+                    TokenKind::esc_char_backslash => "\\".to_string(),
+                    TokenKind::esc_char_doublequote => "\"".to_string(),
+                    TokenKind::esc_char_singlequote => "'".to_string(),
+                    TokenKind::esc_char_other => slice.chars().nth(1).unwrap().to_string(),
+
                     TokenKind::string_open | TokenKind::string_close => unreachable!(),
                     _ => unreachable!(),
                 })

@@ -264,6 +264,12 @@ impl Lexer<'_> {
 
     fn lex_escape(&mut self) {
         let kind = match self.advance() {
+            b'n' => TK::esc_char_newline,
+            b'r' => TK::esc_char_return,
+            b't' => TK::esc_char_tab,
+            b'\\' => TK::esc_char_backslash,
+            b'\"' => TK::esc_char_doublequote,
+            b'\'' => TK::esc_char_singlequote,
             b'x' => {
                 let mut lex_char = || {
                     if !is_char::number_hex(self.advance()) {
@@ -305,7 +311,7 @@ impl Lexer<'_> {
 
                 TK::esc_unicode
             }
-            _ => TK::esc_char,
+            _ => TK::esc_char_other,
         };
         self.tok(kind);
     }

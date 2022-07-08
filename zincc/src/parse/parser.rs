@@ -253,9 +253,17 @@ impl Parser<'_> {
         while self.eat_set(
             &[
                 TK::string_literal,
-                TK::esc_char,
                 TK::esc_asciicode,
                 TK::esc_unicode,
+                TK::esc_asciicode,
+                TK::esc_unicode,
+                TK::esc_char_newline,
+                TK::esc_char_return,
+                TK::esc_char_tab,
+                TK::esc_char_backslash,
+                TK::esc_char_doublequote,
+                TK::esc_char_singlequote,
+                TK::esc_char_other,
             ],
             &mut str,
         ) {}

@@ -52,9 +52,15 @@ pub enum TokenKind {
     string_literal, // any normal text which has not been escaped
     string_close,   // "
 
-    esc_char,      // \<X>
-    esc_asciicode, // \x<XX>
-    esc_unicode,   // \u{XXXX}
+    esc_asciicode,        // \xNN
+    esc_unicode,          // \u{NNNN}
+    esc_char_newline,     // \n
+    esc_char_return,      // \r
+    esc_char_tab,         // \t
+    esc_char_backslash,   // \\
+    esc_char_doublequote, // \"
+    esc_char_singlequote, // \'
+    esc_char_other,       // \{anything that is not above}
 
     kw_const,
     kw_false,
