@@ -35,7 +35,7 @@ fn main() {
 
     if !lex_res.errors.is_empty() {
         for err in lex_res.errors {
-            let loc = parse::FileLocation::from_offset(&source, err.offset);
+            let loc = parse::FileLocation::from_offset(&source, err.offset).unwrap();
             // @TODO: Better error formatting
             eprintln!("error: {:?}  @[{}:{}]", err.kind, loc.line, loc.column);
         }
@@ -67,7 +67,8 @@ fn main() {
                     let found = lex_res.tokens[err.found as usize];
 
                     let at_range = &lex_res.spans[err.at as usize];
-                    let at_loc = parse::FileLocation::from_offset(&source, at_range.start as usize);
+                    let at_loc =
+                        parse::FileLocation::from_offset(&source, at_range.start as usize).unwrap();
 
                     // @TODO: Better error formatting
                     eprintln!(

@@ -76,7 +76,12 @@ pub struct FileLocation {
 }
 
 impl FileLocation {
-    pub fn from_offset(str: &str, offset: usize) -> Self {
+    /// Calculate a [`FileLocation`] from a [`&str`] and an `offset`.
+    pub fn from_offset(str: &str, offset: usize) -> Option<Self> {
+        if offset > str.len() {
+            return None;
+        }
+
         let mut line: usize = 1;
         let mut column: usize = 1;
         for (i, ch) in str.chars().into_iter().enumerate() {
@@ -91,10 +96,18 @@ impl FileLocation {
                 break;
             }
         }
-        Self { line, column }
+
+        Some(Self { line, column })
     }
 
-    pub fn from_range(str: &str, range: std::ops::Range<usize>) -> std::ops::Range<FileLocation> {
-        FileLocation::from_offset(str, range.start)..FileLocation::from_offset(str, range.end)
+    /// Calculate a [`FileLocation`] range from a [`&str`] and an `offset` range.
+    pub fn from_range(
+        str: &str,
+        range: std::ops::Range<usize>,
+    ) -> Option<std::ops::Range<FileLocation>> {
+        Some(
+            FileLocation::from_offset(str, range.start)?
+                ..FileLocation::from_offset(str, range.end)?,
+        )
     }
 }
