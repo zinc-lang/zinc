@@ -13,6 +13,7 @@ index::define_non_zero_u32_idx!(ExprId);
 
 #[derive(Debug)]
 pub struct AstMap {
+    pub root: Root,
     pub decls: IndexVec<Decl, DeclId>,
     pub tys: IndexVec<Ty, TyId>,
     pub stmts: IndexVec<Stmt, StmtId>,
@@ -23,6 +24,15 @@ pub struct AstMap {
 pub struct Root {
     pub cst: CstId,
     pub decls: Vec<DeclId>,
+}
+
+impl Root {
+    fn nil() -> Self {
+        Self {
+            cst: <crate::parse::cst::NodeId as index::Idx>::new(0),
+            decls: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -174,6 +184,13 @@ pub enum PathSegment {
     // @TODO: Add more, self, Self, etc.
 }
 
+impl PathSegment {
+    #[must_use]
+    pub fn is_sep(&self) -> bool {
+        matches!(self, Self::Sep)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AstString {
     pub cst: CstId,
@@ -202,10 +219,11 @@ pub mod gen {
         source: &str,
         tokens: &[TokenKind],
         ranges: &[std::ops::Range<usize>],
-    ) -> (AstMap, ast::Root) {
+    ) -> AstMap {
         let mut gen = AstGen::new(cst, source, tokens, ranges);
         let root = gen.gen_root();
-        (gen.map, root)
+        gen.map.root = root;
+        gen.map
     }
 
     struct AstGen<'s> {
@@ -230,6 +248,7 @@ pub mod gen {
                 tokens,
                 ranges,
                 map: AstMap {
+                    root: ast::Root::nil(),
                     decls: Default::default(),
                     tys: Default::default(),
                     stmts: Default::default(),

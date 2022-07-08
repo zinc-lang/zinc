@@ -1,3 +1,14 @@
+//! The name resolver, split into stage 1 and stage 2.
+//! Stage 1 seeds all declarations, so that we know that they exist and so that their order does not matter.
+//! Next in stage 2 we actually resolve the bodies of the declarations, such as the expression(s) of a function.
+//! Or the types in a type declaration.
+//!
+//! ## Side note:
+//!
+//! @FIXME:...
+//! This module is kind of a mess, we really need to clean it up.
+//! Some organization is needed. And possibly some restructuring.
+
 use bimap::BiHashMap;
 use fnv::FnvHashMap;
 use smallvec::SmallVec;
@@ -8,6 +19,16 @@ use crate::{
     parse::cst::TokenIndex,
     util::index::{self, IndexVec, InterningIndexVec, StringInterningVec, StringSymbol},
 };
+
+pub fn resolve(
+    source: &str,
+    spans: &[std::ops::Range<usize>],
+    ast_map: &ast::AstMap,
+) -> NameResolutionResult {
+    let sd = SharedData::new(source, spans, ast_map);
+    let (scopes, scope_kind_map) = stage1(&sd);
+    stage2(sd, scopes, scope_kind_map)
+}
 
 pub fn stage1<'s>(
     sd: &'s SharedData<'s>,
@@ -20,15 +41,35 @@ pub fn stage1<'s>(
     (stage.scopes, stage.scope_kind_map)
 }
 
-pub fn stage2<'s>(
-    sd: &'s SharedData<'s>,
-    td: &'s TypeData,
-    scopes: &'s IndexVec<ScopeDesc, ScopeDescId>,
-    scope_kind_map: &'s BiHashMap<ScopeKind, ScopeDescId>,
-) -> Map {
-    let mut stage = stage2::Stage2::<'s>::new(sd, td, scopes, scope_kind_map);
-    stage.do_resolution();
-    stage.map
+pub fn stage2(
+    sd: SharedData,
+    scopes: IndexVec<ScopeDesc, ScopeDescId>,
+    scope_kinds_map: BiHashMap<ScopeKind, ScopeDescId>,
+) -> NameResolutionResult {
+    let td = TypeData::new();
+
+    let map = {
+        let mut stage = stage2::Stage2::new(&sd, &td, &scopes, &scope_kinds_map);
+        stage.do_resolution();
+        stage.map
+    };
+
+    NameResolutionResult {
+        scopes,
+        scope_kinds_map,
+        strings: sd.strings.into_inner(),
+        td,
+        map,
+    }
+}
+
+#[derive(Debug)]
+pub struct NameResolutionResult {
+    pub scopes: IndexVec<ScopeDesc, ScopeDescId>,
+    pub scope_kinds_map: BiHashMap<ScopeKind, ScopeDescId>,
+    pub strings: StringInterningVec,
+    pub td: TypeData,
+    pub map: Map,
 }
 
 #[derive(Debug)]
@@ -36,7 +77,6 @@ pub struct SharedData<'s> {
     pub source: &'s str,
     pub ranges: &'s [std::ops::Range<usize>],
     pub ast: &'s ast::AstMap,
-    pub ast_root: &'s ast::Root,
     pub strings: RefCell<StringInterningVec>,
 }
 
@@ -45,13 +85,11 @@ impl<'s> SharedData<'s> {
         source: &'s str,
         ranges: &'s [std::ops::Range<usize>],
         ast: &'s ast::AstMap,
-        root: &'s ast::Root,
     ) -> Self {
         Self {
             source,
             ranges,
             ast,
-            ast_root: root,
             strings: StringInterningVec::new().into(),
         }
     }
@@ -89,37 +127,6 @@ impl<'s> SharedData<'s> {
     }
 }
 
-#[derive(Debug)]
-pub struct TypeData {
-    interned_utys: RefCell<InterningIndexVec<UTy, UTyId>>,
-    tys: RefCell<IndexVec<Ty, TyId>>,
-    void_ty: TyId,
-}
-
-impl Default for TypeData {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TypeData {
-    pub fn new() -> Self {
-        let mut interned_utys = InterningIndexVec::new();
-        let mut tys = IndexVec::new();
-        let void_uty = interned_utys.intern(UTy::Res(TyPathResolution::PrimTy(PrimTy::Void)));
-        let void_ty = tys.push(Ty {
-            ast: None,
-            id: void_uty,
-        });
-
-        Self {
-            interned_utys: RefCell::new(interned_utys),
-            tys: RefCell::new(tys),
-            void_ty,
-        }
-    }
-}
-
 mod stage1 {
     use bimap::BiHashMap;
 
@@ -144,7 +151,7 @@ mod stage1 {
         pub fn seed(&mut self) {
             let root_scope = self.scopes.push(ScopeDesc::new(None));
 
-            self.sd.ast_root.decls.iter().for_each(|decl| {
+            self.sd.ast.root.decls.iter().for_each(|decl| {
                 self.seed_decl(*decl, root_scope);
             });
         }
@@ -230,7 +237,14 @@ mod stage2 {
         scope_kind_map: &'s BiHashMap<ScopeKind, ScopeDescId>,
         current_scope: ScopeDescId,
 
+        /// Before resolving the body of a function we set this up to the function's args.
+        /// Then clear it after.
         args: Vec<FuncArgId>,
+
+        /// The way this works is whenever we encounter a local, we add it to this list.
+        /// When we go into a new scope, we push the length of `locals` to `locals_bread_crumbs`
+        /// so that when we leave the scope, we can truncate `locals` to what it was before.
+        /// This system allows for shadowing, as we search though the list in the reverse order.
         locals: Vec<LocalId>,
         locals_bread_crumbs: Vec<u32>,
 
@@ -258,7 +272,7 @@ mod stage2 {
         }
 
         pub(super) fn do_resolution(&mut self) {
-            self.sd.ast_root.decls.iter().cloned().for_each(|decl_id| {
+            self.sd.ast.root.decls.iter().cloned().for_each(|decl_id| {
                 self.resolve_decl(decl_id);
             });
         }
@@ -291,6 +305,7 @@ mod stage2 {
                     );
 
                     // setup args
+                    assert!(self.args.is_empty());
                     match &self.sd.ast.tys.get(func.ty).unwrap().kind {
                         ast::TyKind::Func(ast::TyFunc { params, .. }) => {
                             params.iter().for_each(|param| {
@@ -438,13 +453,15 @@ mod stage2 {
         }
 
         fn resolve_expr_path(&self, path: &ast::Path) -> ExprPathResolution {
-            // let scope = self.scopes.get(self.current_scope).unwrap();
-
             // @TODO: Resolve paths longer that one element
             assert!(path.segments.len() == 1, "todo!");
-            for segment in path.segments.iter() {
-                match segment {
-                    ast::PathSegment::Sep => {}
+
+            let res = path
+                .segments
+                .iter()
+                .filter(|&e| !e.is_sep())
+                .map(|segment| match segment {
+                    ast::PathSegment::Sep => unreachable!(),
                     ast::PathSegment::Ident(idx) => {
                         let sym = self.sd.get_tok_sym(*idx);
 
@@ -455,26 +472,25 @@ mod stage2 {
                             .find(|&&id| self.map.locals.get(id).unwrap().name == sym)
                             .map(|&id| ExprPathResolution::Local(id))
                         {
-                            return local;
-                        }
-
-                        if let Some(arg) = self
+                            local
+                        } else if let Some(arg) = self
                             .args
                             .iter()
                             .find(|&&id| self.map.func_args.get(id).unwrap().name == sym)
                             .map(|&id| ExprPathResolution::Arg(id))
                         {
-                            return arg;
+                            arg
+                        } else {
+                            ExprPathResolution::Decl(
+                                self.search_for_decl_in_scope_looking_up(self.current_scope, sym),
+                            )
                         }
-
-                        return ExprPathResolution::Decl(
-                            self.search_for_decl_in_scope_looking_up(self.current_scope, sym),
-                        );
                     }
-                }
-            }
+                })
+                .collect::<Vec<_>>();
 
-            unreachable!()
+            assert!(res.len() == 1, "todo!");
+            res.get(0).unwrap().clone()
         }
 
         fn search_for_decl_in_scope_looking_up(
@@ -540,7 +556,8 @@ mod stage2 {
         }
 
         fn push_locals_scope(&mut self) {
-            self.locals_bread_crumbs.push(self.locals.len() as u32)
+            self.locals_bread_crumbs
+                .push(self.locals.len().try_into().unwrap());
         }
 
         fn pop_locals_scope(&mut self) {
@@ -559,6 +576,37 @@ pub struct Map {
     block_scope_map: FnvHashMap<ScopeDescId, BlockId>,
     locals: IndexVec<Local, LocalId>,
     func_args: IndexVec<FuncArg, FuncArgId>,
+}
+
+#[derive(Debug)]
+pub struct TypeData {
+    interned_utys: RefCell<InterningIndexVec<UTy, UTyId>>,
+    tys: RefCell<IndexVec<Ty, TyId>>,
+    void_ty: TyId,
+}
+
+impl Default for TypeData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TypeData {
+    pub fn new() -> Self {
+        let mut interned_utys = InterningIndexVec::new();
+        let mut tys = IndexVec::new();
+        let void_uty = interned_utys.intern(UTy::Res(TyPathResolution::PrimTy(PrimTy::Void)));
+        let void_ty = tys.push(Ty {
+            ast: None,
+            id: void_uty,
+        });
+
+        Self {
+            interned_utys: RefCell::new(interned_utys),
+            tys: RefCell::new(tys),
+            void_ty,
+        }
+    }
 }
 
 index::define_u32_idx!(ScopeDescId);
