@@ -20,7 +20,7 @@ What is the type of x below?
 
 $$\vdash x : ?$$
 
-To find out we need a _typing environment_, represented as $\Gamma$. Think of $\Gamma$ as a look up function into the environment given an identifier.
+To find out we need a _typing environment_, represented as $\Gamma$ (Gamma). Think of $\Gamma$ as a look up function into the environment given an identifier.
 
 We declare that $\textbf{x}$ is of type $t$:
 
@@ -128,16 +128,17 @@ e2
 
 We type-check this in the order that the program executes:
 
-* We get the type if $e_{1}$, lets say $t_{1}$
-* We then _extend_ extend the environment $\Gamma$ with the new mapping $x : t_{1}$
-* We use this extended environment (which we write as $\Gamma, x : t_{1}$) to type-check the code following; type-check $e_{2}$ and give it type $t_{2}$
+* Get the type of $e_{1}$, lets say $t_{1}$
+* Then _extend_ the environment $\Gamma$ with the new mapping $x : t_{1}$
+* Use this extended environment (which we write as $\Gamma, x : t$) to type-check the leading code
+* Type-check $e_{2}$ to give it type $t_{2}$
 
 The whole rule thus looks like:
 
 $$
 \frac{
     \Gamma \vdash e_{1} : t_{1} \quad
-    \Gamma, x : t_{1} \vdash e_{2} : t_{2}
+    \Gamma, e_{1} : t_{1} \vdash e_{2} : t_{2}
 }{
     \Gamma \vdash \textbf{let} \ x = e_{1}; e_{2} : t_{2}
 }
