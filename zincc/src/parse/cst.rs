@@ -4,6 +4,7 @@
 use crate::util::index::{self, IndexVec};
 use std::{fmt, num::NonZeroUsize};
 
+// @FIXME: This might be better implemented as a map of `NodeId`s to their kinds within the `Cst` struct. Best to look into performance implications first.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NamedNodeId {
     pub kind: NodeKind, // u8
