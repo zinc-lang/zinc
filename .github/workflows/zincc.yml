@@ -18,8 +18,8 @@ jobs:
     - name: Install Deno
       uses: denoland/setup-deno@v1.1.0
 
-    - name: Install Clang
-      uses: egor-tensin/setup-clang@v1
+    - name: Install Clang & LLVM
+      run: sudo apt-get install -y clang llvm
 
     - name: Install Ninja
       run: sudo apt-get install -y ninja-build
