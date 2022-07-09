@@ -111,14 +111,15 @@ impl FileLocation {
         Some(Self { line, column })
     }
 
-    // /// Calculate a [`FileLocation`] range from a [`&str`] and an `offset` range.
-    // pub fn from_range(
-    //     str: &str,
-    //     range: std::ops::Range<usize>,
-    // ) -> Option<std::ops::Range<FileLocation>> {
-    //     Some(
-    //         FileLocation::from_offset(str, range.start)?
-    //             ..FileLocation::from_offset(str, range.end)?,
-    //     )
-    // }
+    /// Calculate a [`FileLocation`] range from a [`&str`] and an `offset` range.
+    #[allow(unused)] // @FIXME: Remove this attribute when we do actually use this.
+    pub fn from_range(
+        str: &str,
+        range: std::ops::Range<usize>,
+    ) -> Option<std::ops::Range<FileLocation>> {
+        Some(
+            FileLocation::from_offset(str, range.start)?
+                ..FileLocation::from_offset(str, range.end)?,
+        )
+    }
 }
