@@ -148,7 +148,7 @@ impl Lexer<'_> {
                         }
                     }
 
-                    match ch {
+                    match () {
                         _ if is_char::number_start(ch) => self.lex_number(),
                         _ if is_char::ident_start(ch) => self.lex_ident(),
                         _ => {
@@ -166,11 +166,11 @@ impl Lexer<'_> {
 
     fn tok(&mut self, kind: TK) {
         let range = self.span.start..self.span.end;
-        self.ws_len = 0;
         self.span.start = self.span.end;
 
         self.out.tokens.push(kind);
         self.out.ws_lens.push(self.ws_len);
+        self.ws_len = 0;
         self.out.ranges.push(range);
     }
 
