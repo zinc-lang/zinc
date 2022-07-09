@@ -22,7 +22,7 @@ jobs:
       uses: egor-tensin/setup-clang@v1
 
     - name: Install Ninja
-      run: sudo apt-get install -y ninja
+      run: sudo apt-get install -y ninja-build
 
     - name: Checkout
       uses: actions/checkout@v3
