@@ -68,16 +68,6 @@ pub enum TyKind {
     Nullable(TyId),
 }
 
-impl TyKind {
-    pub fn as_func(&self) -> Option<&TyFunc> {
-        if let Self::Func(v) = self {
-            Some(v)
-        } else {
-            None
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct TyFunc {
     // @FIXME: Optimize size based on real usage metrics
