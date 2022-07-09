@@ -1,7 +1,12 @@
 use super::TK;
 use std::ops::Range;
 
+/// Given a `source` [`&str`] produce a [`LexResult`].
+///
+/// ## Asserts
+/// `debug_assert!(source.ends_with("\n\0"))`
 pub fn lex(source: &str) -> LexResult {
+    debug_assert!(source.ends_with("\n\0"));
     let mut lexer = Lexer::new(source);
     lexer.do_lex();
     lexer.out
@@ -93,18 +98,21 @@ impl Lexer<'_> {
                 b';' => self.tok(TK::punct_semiColon),
                 b',' => self.tok(TK::punct_comma),
 
-                b'=' => self.tok_if_match(b'>', TK::punct_fat_arrow, TK::punct_eq),
                 b'+' => self.tok(TK::punct_plus),
                 b'-' => self.tok(TK::punct_minus),
                 b'*' => self.tok(TK::punct_star),
 
                 b'?' => self.tok(TK::punct_question),
+                b'!' => self.tok(TK::punct_bang),
+                b'&' => self.tok(TK::punct_amp),
+
+                b'=' => self.tok_if_match(b'>', TK::punct_fat_arrow, TK::punct_eq),
 
                 b'/' => {
                     if self.eat(b'/') {
                         self.inc_ws();
                         self.inc_ws(); // '//'
-                        while !matches!(self.peek(), b'\n' | b'\0') {
+                        while self.peek() != b'\n' {
                             assert_ne!(self.advance(), b'\0');
                             self.inc_ws();
                         }
@@ -344,28 +352,34 @@ impl Lexer<'_> {
         let slice = &self.ascii[self.span.clone()];
 
         let kind = match slice[0] {
+            // and
+            b'a' => self.check_kw(slice, 1, b"nd", TK::kw_and),
+
             // const
-            b'c' => self.check_kw(slice, 1, "onst".as_bytes(), TK::kw_const),
+            b'c' => self.check_kw(slice, 1, b"onst", TK::kw_const),
 
             // false
             // fn
             b'f' => match slice[1] {
-                b'a' => self.check_kw(slice, 2, "lse".as_bytes(), TK::kw_false),
+                b'a' => self.check_kw(slice, 2, b"lse", TK::kw_false),
                 b'n' if slice.len() == 2 => TK::kw_fn,
                 _ => TK::ident,
             },
 
             // let
-            b'l' => self.check_kw(slice, 1, "et".as_bytes(), TK::kw_let),
+            b'l' => self.check_kw(slice, 1, b"et", TK::kw_let),
 
             // mut
-            b'm' => self.check_kw(slice, 1, "ut".as_bytes(), TK::kw_mut),
+            b'm' => self.check_kw(slice, 1, b"ut", TK::kw_mut),
+
+            // or
+            b'o' => self.check_kw(slice, 1, b"r", TK::kw_or),
 
             // return
-            b'r' => self.check_kw(slice, 1, "eturn".as_bytes(), TK::kw_return),
+            b'r' => self.check_kw(slice, 1, b"eturn", TK::kw_return),
 
             // true
-            b't' => self.check_kw(slice, 1, "rue".as_bytes(), TK::kw_true),
+            b't' => self.check_kw(slice, 1, b"rue", TK::kw_true),
 
             _ => TK::ident,
         };

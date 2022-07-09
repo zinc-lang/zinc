@@ -37,8 +37,11 @@ pub enum TokenKind {
     punct_star,  // *
     punct_slash, // /
 
+    punct_question, // ?
+    punct_bang,     // !
+    punct_amp,      // &
+
     punct_fat_arrow, // =>
-    punct_question,  // ?
 
     ident,
 
@@ -62,11 +65,13 @@ pub enum TokenKind {
     esc_char_singlequote, // \'
     esc_char_other,       // \{anything that is not above}
 
+    kw_and,
     kw_const,
     kw_false,
     kw_fn,
     kw_let,
     kw_mut,
+    kw_or,
     kw_return,
     kw_true,
 }

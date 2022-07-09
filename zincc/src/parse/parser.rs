@@ -488,8 +488,8 @@ impl Parser<'_> {
 enum Precedence {
     None = 0,
     Assignment,
-    // LogicalOr,
-    // LogicalAnd,
+    LogicalOr,
+    LogicalAnd,
     Sum,
     Product,
     // Suffix, // ? ! .
@@ -500,6 +500,8 @@ impl Precedence {
     fn of(kind: TK) -> Self {
         match kind {
             TK::punct_eq => Self::Assignment,
+            TK::kw_or => Self::LogicalOr,
+            TK::kw_and => Self::LogicalAnd,
             TK::punct_plus | TK::punct_minus => Self::Sum,
             TK::punct_star | TK::punct_slash => Self::Product,
             TK::brkt_paren_open => Self::Call,
