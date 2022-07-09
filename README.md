@@ -44,6 +44,47 @@ The zinc programming language.
 - Powerful package and project manager
 - Powerful async, also much like rust
 
+## Building
+
+### Dependencies:
+
+- llvm-13
+- clang
+- ninja
+- deno
+
+### Cloning
+
+``` sh
+$ git clone https://github.com/tealsnow/zinc.git
+$ cd zinc
+$ git submodules update --init
+```
+
+### Building `llvm_c_2`
+
+This only need to be done once
+
+``` sh
+$ cd llvm_c_2
+$ ./rnn.ts build
+$ cd ../
+```
+
+### Building `zincc`
+
+``` sh
+$ cd zincc
+$ cargo build
+```
+
+### Running `zincc` on some source code
+
+``` sh
+# within zincc/
+$ cargo r -- -T ../zinc_src/<pick a file>
+```
+
 ## Things I want to make with this
 
 - Programming language(s)
