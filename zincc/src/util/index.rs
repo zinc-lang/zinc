@@ -1,3 +1,5 @@
+//! Utility structures for dealing with storing objects and creating indices to them.
+
 use std::fmt::{self, Debug};
 use std::hash::Hash;
 use std::marker::PhantomData;
