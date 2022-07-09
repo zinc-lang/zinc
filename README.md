@@ -4,9 +4,9 @@
 
 The zinc programming language.
 
-</div>
+![zincc](https://github.com/tealsnow/zinc/actions/workflows/zincc.yml/badge.svg)
 
-![zincc](https://github.com/tealsnow/zinc/actions/workflows/rust.yml/badge.svg)
+</div>
 
 ---
 
