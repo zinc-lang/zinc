@@ -134,12 +134,14 @@ fn main() {
     let (_llvm_ctx, llvm_mod, _llvm_funcs, _llvm_blocks) =
         timer.spanned("codegen", || zir::codegen::codegen(&zir));
 
-    // @FIXME: exits at this call, for whatever reason
-    // llvm::verify_module(&llvm_mod, &mut unsafe {
-    //     <std::fs::File as std::os::unix::prelude::FromRawFd>::from_raw_fd(1)
-    // });
+    timer.spanned("llvm verify", || {
+        use std::os::unix::prelude::{FromRawFd, IntoRawFd};
 
-    if options.dumps.contains(&"llvm".to_string()) {
+        let mut fd = unsafe { std::fs::File::from_raw_fd(1) };
+        llvm::verify_module(&llvm_mod, &mut fd);
+        let _ = fd.into_raw_fd();
+    });
+
         eprintln!("\n=-=-=  LLVM Module Dump  =-=-=");
         llvm_mod.dump();
         eprintln!();
