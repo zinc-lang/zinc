@@ -35,7 +35,7 @@ fn main() {
 
     if options.dumps.contains(&DumpOption::tokens) {
         // Print tokens
-        lex_res.debug_zip().for_each(|(tk, range, _)| {
+        lex_res.debug_zip().for_each(|(tk, range)| {
             debug::write_token(stderr, &source, tk, &range, true).unwrap();
             eprintln!();
         });

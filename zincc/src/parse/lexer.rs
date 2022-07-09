@@ -21,14 +21,17 @@ pub struct LexResult {
 }
 
 impl LexResult {
-    pub fn debug_zip(&self) -> Box<dyn std::iter::Iterator<Item = (TK, Range<usize>, u16)>> {
+    pub fn is_valid(&self) -> bool {
+        self.tokens.len() == self.ranges.len() && self.tokens.len() == self.ws_lens.len()
+    }
+
+    pub fn debug_zip(&self) -> Box<dyn std::iter::Iterator<Item = (TK, Range<usize>)>> {
+        assert!(self.is_valid());
         Box::new(
             self.tokens
                 .clone()
                 .into_iter()
-                .zip(self.spans.clone().into_iter())
-                .zip(self.ws_lens.clone().into_iter())
-                .map(|((tk, range), ws)| (tk, range, ws)),
+                .zip(self.ranges.clone().into_iter()),
         )
     }
 }
