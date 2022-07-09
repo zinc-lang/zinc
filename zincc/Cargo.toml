@@ -13,5 +13,6 @@ smallvec = { version = "1.9", features = ["union"] }
 
 fnv = "1.0"
 bimap = "0.6"
+rle_vec = "0.4"
 
 termcolor = "1.1"

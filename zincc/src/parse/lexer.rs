@@ -1,4 +1,5 @@
 use super::TK;
+use rle_vec::RleVec;
 use std::ops::Range;
 
 /// Given a `source` [`&str`] produce a [`LexResult`].
@@ -15,8 +16,8 @@ pub fn lex(source: &str) -> LexResult {
 #[derive(Debug)]
 pub struct LexResult {
     pub tokens: Vec<TK>,
-    pub ws_lens: Vec<u16>,
     pub ranges: Vec<Range<usize>>,
+    pub ws_lens: RleVec<u16>,
     pub errors: Vec<LexError>,
 }
 
@@ -67,10 +68,10 @@ impl<'s> Lexer<'s> {
             ws_len: 0,
             span: 0..0,
             out: LexResult {
-                tokens: vec![],
-                ws_lens: vec![],
-                errors: vec![],
+                tokens: Vec::new(),
                 ranges: Vec::new(),
+                ws_lens: RleVec::new(),
+                errors: Vec::new(),
             },
         }
     }
