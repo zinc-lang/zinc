@@ -33,7 +33,7 @@ fn main() {
     // Lex the source
     let lex_res = timer.spanned("lexing", || parse::lex(&source));
 
-    if options.dumps.contains(&"tokens".to_string()) {
+    if options.dumps.contains(&DumpOption::tokens) {
         // Print tokens
         lex_res.debug_zip().for_each(|(tk, range, _)| {
             debug::write_token(stderr, &source, tk, &range, true).unwrap();
@@ -57,7 +57,7 @@ fn main() {
     // Parse the tokens
     let parse_res = timer.spanned("parsing", || parse::parse(&lex_res.tokens));
 
-    if options.dumps.contains(&"cst".to_string()) {
+    if options.dumps.contains(&DumpOption::cst) {
         // Print cst
         debug::write_cst(
             stderr,
@@ -101,7 +101,7 @@ fn main() {
         ast::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.spans)
     });
 
-    if options.dumps.contains(&"ast".to_string()) {
+    if options.dumps.contains(&DumpOption::ast) {
         // Print the ast
         eprintln!("{:#?}\n", ast_map);
     }
@@ -111,21 +111,21 @@ fn main() {
         nameres::resolve(&source, &lex_res.spans, &ast_map)
     });
 
-    if options.dumps.contains(&"nameres".to_string()) {
+    if options.dumps.contains(&DumpOption::nameres) {
         // Print name resolution result
         eprintln!("{:#?}\n", nr_res);
     }
 
     let _ = timer.spanned("typing", || {});
 
-    if options.dumps.contains(&"typer".to_string()) {
+    if options.dumps.contains(&DumpOption::typer) {
         eprintln!("typer\n");
     }
 
     // @TODO: Actually consume something derived from the input source
     let zir = timer.spanned("zirgen", zir::test::create_test_funcs);
 
-    if options.dumps.contains(&"zir".to_string()) {
+    if options.dumps.contains(&DumpOption::zir) {
         eprint!("\n=-=-=  ZIR Dump  =-=-=");
         zir::print::dump(&zir, stderr).unwrap();
         eprintln!();
@@ -142,6 +142,7 @@ fn main() {
         let _ = fd.into_raw_fd();
     });
 
+    if options.dumps.contains(&DumpOption::llvm) {
         eprintln!("\n=-=-=  LLVM Module Dump  =-=-=");
         llvm_mod.dump();
         eprintln!();
@@ -157,7 +158,19 @@ fn main() {
 pub struct Options {
     files: Vec<String>,
     print_times: bool,
-    dumps: Vec<String>,
+    dumps: Vec<DumpOption>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum DumpOption {
+    tokens,
+    cst,
+    ast,
+    nameres,
+    zir,
+    typer,
+    llvm,
 }
 
 impl Options {
@@ -178,7 +191,7 @@ impl Options {
                     .short('D')
                     .takes_value(true)
                     .value_parser(PossibleValuesParser::new(&[
-                        "tokens", "cst", "ast", "nameres", "zir", "llvm", "typer",
+                        "tokens", "cst", "ast", "nameres", "zir", "typer", "llvm",
                     ]))
                     .action(ArgAction::Append),
             )
@@ -192,6 +205,16 @@ impl Options {
             .get_many::<String>("dump")
             .unwrap_or_default()
             .cloned()
+            .map(|s| match s.as_str() {
+                "tokens" => DumpOption::tokens,
+                "cst" => DumpOption::cst,
+                "ast" => DumpOption::ast,
+                "nameres" => DumpOption::nameres,
+                "zir" => DumpOption::zir,
+                "typer" => DumpOption::typer,
+                "llvm" => DumpOption::llvm,
+                _ => unreachable!(),
+            })
             .collect();
 
         Self {
