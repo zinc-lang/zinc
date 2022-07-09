@@ -6,7 +6,7 @@ The zinc programming language.
 
 </div>
 
-![build](https://github.com/tealsnow/zinc/actions/workflows/rust.yaml/badge.svg)
+![zincc](https://github.com/tealsnow/zinc/actions/workflows/rust.yml/badge.svg)
 
 ---
 
