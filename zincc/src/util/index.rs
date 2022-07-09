@@ -81,7 +81,7 @@ pub trait Idx: 'static + Copy + Eq + Hash {
 
 #[derive(Clone)]
 pub struct IndexVec<T, I: Idx> {
-    pub raw: Vec<T>,
+    raw: Vec<T>,
     _m: PhantomData<I>,
 }
 
@@ -111,6 +111,10 @@ impl<T, I: Idx> IndexVec<T, I> {
             raw,
             _m: PhantomData,
         }
+    }
+
+    pub fn raw(&self) -> &Vec<T> {
+        &self.raw
     }
 
     #[inline]

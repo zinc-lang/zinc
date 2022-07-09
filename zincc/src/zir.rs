@@ -318,7 +318,7 @@ pub mod codegen {
         }
 
         pub fn codegen(&mut self) {
-            for func in self.ctx.funcs.raw.iter() {
+            for func in self.ctx.funcs.raw().iter() {
                 self.gen_func(func);
             }
         }
@@ -458,7 +458,7 @@ pub mod print {
         }
 
         pub fn dump(&mut self) -> io::Result<()> {
-            for func in self.ctx.funcs.raw.iter() {
+            for func in self.ctx.funcs.raw().iter() {
                 let name = self.ctx.strings.get(func.name).unwrap();
                 write!(self.f, "\n{:?} :: ", name)?;
                 self.write_ty(func.ty)?;
