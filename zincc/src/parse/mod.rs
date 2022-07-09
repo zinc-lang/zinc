@@ -16,7 +16,7 @@ pub use parser::{
 #[allow(non_camel_case_types)]
 #[repr(u8)]
 pub enum TokenKind {
-    EOF,
+    Eof,
     err,
 
     brkt_paren_open,   // (

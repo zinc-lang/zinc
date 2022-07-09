@@ -101,12 +101,12 @@ struct PNode {
 /// Token ops
 impl Parser<'_> {
     fn at_end(&self) -> bool {
-        self.at(TK::EOF)
+        self.at(TK::Eof)
     }
 
     fn peek_n(&self, n: usize) -> TK {
         if self.cursor + n >= self.tokens.len() {
-            TK::EOF
+            TK::Eof
         } else {
             self.tokens[self.cursor + n]
         }
@@ -191,7 +191,7 @@ impl Parser<'_> {
             return;
         }
 
-        if self.at_set(&[TK::brkt_brace_close, TK::EOF, TK::kw_let]) {
+        if self.at_set(&[TK::brkt_brace_close, TK::Eof, TK::kw_let]) {
             self.bump(parent);
             self.panicking = false;
         } else {
@@ -291,7 +291,7 @@ impl Parser<'_> {
 
         self.expect(TK::brkt_brace_open, ParseContext::Block, &mut block);
 
-        while !self.at_set(&[TK::brkt_brace_close, TK::EOF]) {
+        while !self.at_set(&[TK::brkt_brace_close, TK::Eof]) {
             self.parse_stmt(&mut block);
         }
 

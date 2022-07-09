@@ -149,7 +149,7 @@ impl Lexer<'_> {
         }
 
         self.span.end -= 1;
-        self.tok(TK::EOF);
+        self.tok(TK::Eof);
     }
 
     fn tok(&mut self, kind: TK) {
