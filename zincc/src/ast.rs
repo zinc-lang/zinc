@@ -6,10 +6,11 @@ pub type CstId = crate::parse::cst::NodeId;
 pub use gen::gen;
 use smallvec::SmallVec;
 
-index::define_u32_idx!(DeclId);
-index::define_u32_idx!(StmtId);
-index::define_non_zero_u32_idx!(TyId);
-index::define_non_zero_u32_idx!(ExprId);
+index::define_idx! { pub struct DeclId: u32 }
+index::define_idx! { pub struct StmtId: u32 }
+
+index::define_idx! { pub struct TyId: u32 != 0 }
+index::define_idx! { pub struct ExprId: u32 != 0 }
 
 #[derive(Debug)]
 pub struct AstMap {

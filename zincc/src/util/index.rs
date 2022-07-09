@@ -4,23 +4,41 @@ use std::fmt::{self, Debug};
 use std::hash::Hash;
 use std::marker::PhantomData;
 
+/// Dry macro for creating simple NewType structs that implement [`Idx`].
+///
+/// # Examples
+///
+/// ```
+/// # use crate::util::index;
+/// // There are convenance overloads for common types
+/// index::define_idx! { pub struct MyU32Index: u32 }
+/// // or for a NonZeroU32:
+/// index::define_idx! { pub struct MyU32Index: u32 != 0 }
+///
+/// // or if you need finer control over the implementation.
+/// // `new` and `get` correspond to the `new` and `index` methods of `idx` directly.
+/// # type MyIntegerType = i32;
+/// index::define_idx! {
+///    pub struct MyIndex: MyIntegerType {
+///        new => |x: usize| { x.try_into().unwrap() }
+///        get => |s: MyIndex| { s.0.try_into().unwrap() }
+///    }
+/// }
+/// ```
+#[macro_export]
 macro_rules! define_idx {
-    ($name:ident, $inner_ty:ty, $blk_new:expr, $blk_get:expr) => {
-        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-        pub struct $name($inner_ty);
-
-        impl std::fmt::Debug for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(
-                    f,
-                    "{}({})",
-                    stringify!($name),
-                    crate::util::index::Idx::index(*self)
-                )
-            }
+    {
+        $(#[$outer:meta])*
+        $vis:vis struct $IndexTypeName:ident: $T:ty {
+            new => $blk_new:expr,
+            get => $blk_get:expr,
         }
+    } => {
+        $(#[$outer])*
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        $vis struct $IndexTypeName($T);
 
-        impl crate::util::index::Idx for $name {
+        impl $crate::util::index::Idx for $IndexTypeName {
             fn new(idx: usize) -> Self {
                 Self($blk_new(idx))
             }
@@ -29,55 +47,78 @@ macro_rules! define_idx {
                 $blk_get(self)
             }
         }
+
+        impl std::fmt::Debug for $IndexTypeName {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    "{}({})",
+                    stringify!($IndexTypeName),
+                    crate::util::index::Idx::index(*self)
+                )
+            }
+        }
     };
-}
-pub(crate) use define_idx;
-
-// macro_rules! define_usize_idx {
-//     ($name:ident) => {
-//         $crate::util::index::define_idx!($name, usize, |x| { x }, |s: $name| { s.0 });
-//     };
-// }
-// pub(crate) use define_usize_idx;
-
-// macro_rules! define_non_zero_usize_idx {
-//     ($name:ident) => {
-//         $crate::util::index::define_idx!(
-//             $name,
-//             std::num::NonZeroUsize,
-//             |x| { std::num::NonZeroUsize::new(x + 1).unwrap() },
-//             |s: $name| { s.0.get() - 1 }
-//         );
-//     };
-// }
-// pub(crate) use define_non_zero_usize_idx;
-
-macro_rules! define_u32_idx {
-    ($name:ident) => {
-        $crate::util::index::define_idx!(
-            $name,
-            u32,
-            |x: usize| { x.try_into().unwrap() },
-            |s: $name| { s.0 as usize }
-        );
+    {
+        $(#[$outer:meta])*
+        $vis:vis struct $IndexTypeName:ident: u32
+    } => {
+        $(#[$outer])*
+        $crate::util::index::define_idx! {
+            $vis struct $IndexTypeName: u32 {
+                new => |x: usize| { x.try_into().unwrap() },
+                get => |s: $IndexTypeName| { s.0 as usize },
+            }
+        }
     };
-}
-pub(crate) use define_u32_idx;
-
-macro_rules! define_non_zero_u32_idx {
-    ($name:ident) => {
-        $crate::util::index::define_idx!(
-            $name,
-            std::num::NonZeroU32,
-            |x: usize| { std::num::NonZeroU32::new(x as u32 + 1).unwrap() },
-            |s: $name| { s.0.get() as usize - 1 }
-        );
+    {
+        $(#[$outer:meta])*
+        $vis:vis struct $IndexTypeName:ident: u32 != 0
+    } => {
+        $(#[$outer])*
+        $crate::util::index::define_idx! {
+            $vis struct $IndexTypeName: std::num::NonZeroU32 {
+                new => |x: usize| {
+                    std::num::NonZeroU32::new(x as u32 + 1).unwrap()
+                },
+                get => |s: $IndexTypeName| { s.0.get() as usize - 1 },
+            }
+        }
     };
+    // {
+    //     $(#[$outer:meta])*
+    //     $vis:vis struct $IndexTypeName:ident: usize
+    // } => {
+    //     $(#[$outer])*
+    //     $crate::util::index::define_idx! {
+    //         $vis struct $IndexTypeName: usize {
+    //             new => |x: usize| { x },
+    //             get => |s: $IndexTypeName| { s },
+    //         }
+    //     }
+    // };
+    // {
+    //     $(#[$outer:meta])*
+    //     $vis:vis struct $IndexTypeName:ident: usize != 0
+    // } => {
+    //     $(#[$outer])*
+    //     $crate::util::index::define_idx! {
+    //         $vis struct $IndexTypeName: std::num::NonZeroUsize {
+    //             new => |x: std::num::NonZeroUsize| {
+    //                 std::num::NonZeroUsize::new(x + 1).unwrap()
+    //             },
+    //             get => |s: $IndexTypeName| { s.0.get() - 1 },
+    //         }
+    //     }
+    // };
 }
-pub(crate) use define_non_zero_u32_idx;
+pub use define_idx;
 
 pub trait Idx: 'static + Copy + Eq + Hash {
+    /// Instantiate this object given a [`usize`]
     fn new(idx: usize) -> Self;
+
+    /// Get the index of this object as a [`usize`]
     fn index(self) -> usize;
 }
 
@@ -104,7 +145,7 @@ impl<T, I: Idx> Default for IndexVec<T, I> {
 impl<T, I: Idx> IndexVec<T, I> {
     #[inline]
     pub fn new() -> Self {
-        Self::from_raw(vec![])
+        Self::from_raw(Vec::new())
     }
 
     #[inline]
@@ -227,7 +268,7 @@ impl<T: Eq, I: Idx> InterningIndexVec<T, I> {
     }
 }
 
-define_non_zero_u32_idx!(StringSymbol);
+define_idx! { pub struct StringSymbol: u32 != 0 }
 
 /// Small type specialization to allow checking if a string is interned from just a `&str`
 /// without having to first turn it into a `String`

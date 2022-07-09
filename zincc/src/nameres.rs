@@ -578,6 +578,17 @@ pub struct Map {
     func_args: IndexVec<FuncArg, FuncArgId>,
 }
 
+index::define_idx! { pub struct ScopeDescId: u32 }
+index::define_idx! { pub struct DeclDescId: u32 }
+index::define_idx! { pub struct TyId: u32 }
+index::define_idx! { pub struct UTyId: u32 }
+
+index::define_idx! { pub struct ExprId: u32 != 0 }
+index::define_idx! { pub struct BlockId: u32 != 0 }
+index::define_idx! { pub struct StmtId: u32 != 0 }
+index::define_idx! { pub struct LocalId: u32 != 0 }
+index::define_idx! { pub struct FuncArgId: u32 != 0 }
+
 #[derive(Debug)]
 pub struct TypeData {
     interned_utys: RefCell<InterningIndexVec<UTy, UTyId>>,
@@ -608,8 +619,6 @@ impl TypeData {
         }
     }
 }
-
-index::define_u32_idx!(ScopeDescId);
 
 /// A Description of a Scope. Such as a module, or a block.
 #[derive(Debug)]
@@ -649,8 +658,6 @@ impl ScopeKind {
         matches!(self, Self::Module(..))
     }
 }
-
-index::define_u32_idx!(DeclDescId);
 
 /// A description of a declaration.
 #[derive(Debug)]
@@ -700,8 +707,6 @@ pub enum IntSize {
     BitSized(u8),
 }
 
-index::define_u32_idx!(TyId);
-
 /// Holds a reference to where the type is mentioned in the ast,
 /// and the actual referenced unique type
 #[derive(Debug)]
@@ -709,8 +714,6 @@ pub struct Ty {
     pub ast: Option<ast::TyId>,
     pub id: UTyId,
 }
-
-index::define_u32_idx!(UTyId);
 
 /// A unique type, if two `UTypeId`s are equal, they represent the same type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -737,8 +740,6 @@ pub enum ExprPathResolution {
     Local(LocalId),
     Arg(FuncArgId),
 }
-
-index::define_non_zero_u32_idx!(ExprId);
 
 #[derive(Debug)]
 pub struct Expr {
@@ -778,15 +779,11 @@ pub struct ExprCall {
     pub args: SmallVec<[ExprId; 4]>,
 }
 
-index::define_non_zero_u32_idx!(BlockId);
-
 #[derive(Debug)]
 pub struct Block {
     pub cst: ast::CstId,
     pub stmts: Vec<StmtId>,
 }
-
-index::define_non_zero_u32_idx!(StmtId);
 
 #[derive(Debug)]
 pub struct Stmt {
@@ -801,8 +798,6 @@ pub enum StmtKind {
     Decl(DeclDescId),
 }
 
-index::define_non_zero_u32_idx!(LocalId);
-
 #[derive(Debug)]
 pub struct Local {
     pub scope: ScopeDescId,
@@ -810,8 +805,6 @@ pub struct Local {
     pub expr: ExprId,
     pub ty: Option<TyId>,
 }
-
-index::define_non_zero_u32_idx!(FuncArgId);
 
 #[derive(Debug)]
 pub struct FuncArg {

@@ -28,7 +28,7 @@ impl From<NamedNodeId> for NodeId {
     }
 }
 
-index::define_non_zero_u32_idx!(NodeId);
+index::define_idx! { pub struct NodeId: u32 != 0 }
 
 #[derive(Debug)]
 pub struct Cst {
