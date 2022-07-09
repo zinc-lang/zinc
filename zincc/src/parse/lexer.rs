@@ -15,8 +15,8 @@ pub fn lex(source: &str) -> LexResult {
 #[derive(Debug)]
 pub struct LexResult {
     pub tokens: Vec<TK>,
-    pub spans: Vec<Range<usize>>,
     pub ws_lens: Vec<u16>,
+    pub ranges: Vec<Range<usize>>,
     pub errors: Vec<LexError>,
 }
 
@@ -68,9 +68,9 @@ impl<'s> Lexer<'s> {
             span: 0..0,
             out: LexResult {
                 tokens: vec![],
-                spans: vec![],
                 ws_lens: vec![],
                 errors: vec![],
+                ranges: Vec::new(),
             },
         }
     }
@@ -170,7 +170,7 @@ impl Lexer<'_> {
 
         self.out.tokens.push(kind);
         self.out.ws_lens.push(self.ws_len);
-        self.out.spans.push(range);
+        self.out.ranges.push(range);
     }
 
     fn report_error(&mut self, kind: LexErrorKind) {

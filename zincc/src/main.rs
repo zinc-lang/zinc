@@ -64,7 +64,7 @@ fn main() {
             &parse_res.cst,
             &source,
             &lex_res.tokens,
-            &lex_res.spans,
+            &lex_res.ranges,
             true,
         )
         .unwrap();
@@ -79,7 +79,7 @@ fn main() {
                     let at = lex_res.tokens[err.at as usize];
                     let found = lex_res.tokens[err.found as usize];
 
-                    let at_range = &lex_res.spans[err.at as usize];
+                    let at_range = &lex_res.ranges[err.at as usize];
                     let at_loc =
                         parse::FileLocation::from_offset(&source, at_range.start as usize).unwrap();
 
@@ -98,7 +98,7 @@ fn main() {
 
     // Generate the ast
     let ast_map = timer.spanned("astgen", || {
-        ast::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.spans)
+        ast::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.ranges)
     });
 
     if options.dumps.contains(&DumpOption::ast) {
@@ -108,7 +108,7 @@ fn main() {
 
     // Perform the name resolution
     let nr_res = timer.spanned("nameres", || {
-        nameres::resolve(&source, &lex_res.spans, &ast_map)
+        nameres::resolve(&source, &lex_res.ranges, &ast_map)
     });
 
     if options.dumps.contains(&DumpOption::nameres) {
