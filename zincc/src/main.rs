@@ -1,14 +1,17 @@
-pub mod debug;
+mod debug;
 pub mod util;
 
-pub mod ast;
-pub mod nameres;
-pub mod parse;
-pub mod typer;
-pub mod zir;
+mod ast;
+mod parse;
+
+#[allow(dead_code)]
+mod nameres;
+#[allow(dead_code)]
+mod typer;
+#[allow(dead_code)]
+mod zir;
 
 // @TODO: Write tests, for everything
-// @TODO: Write documentation, for everything
 
 fn main() {
     let options = Options::get();
