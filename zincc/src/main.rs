@@ -33,7 +33,8 @@ fn main() {
     if options.dumps.contains(&"tokens".to_string()) {
         // Print tokens
         lex_res.debug_zip().for_each(|(tk, range, _)| {
-            eprintln!("{}", debug::format_token(&source, tk, &range, true));
+            debug::write_token(stderr, &source, tk, &range, true).unwrap();
+            eprintln!();
         });
         eprintln!();
     }

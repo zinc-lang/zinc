@@ -2,80 +2,37 @@ use crate::{
     parse::{self, cst, TokenKind},
     util::AutoIndentingWriter,
 };
-use std::{
-    fmt,
-    io::{self, Write},
-};
+use std::io::{self, Write};
+use termcolor::{Color, ColorSpec, WriteColor};
 
-#[derive(Debug, Clone, Copy)]
-pub enum TerminalColor {
-    BlackDark,
-    BlackLight,
-    RedDark,
-    RedLight,
-    GreenDark,
-    GreenLight,
-    YellowDark,
-    YellowLight,
-    BlueDark,
-    BlueLight,
-    MagentaDark,
-    MagentaLight,
-    CyanDark,
-    CyanLight,
-    WhiteDark,
-    WhiteLight,
-    Reset,
-}
-
-impl fmt::Display for TerminalColor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            TerminalColor::BlackDark => "\u{001b}[30m",
-            TerminalColor::BlackLight => "\u{001b}[30;1m",
-            TerminalColor::RedDark => "\u{001b}[31m",
-            TerminalColor::RedLight => "\u{001b}[31;1m",
-            TerminalColor::GreenDark => "\u{001b}[32m",
-            TerminalColor::GreenLight => "\u{001b}[32;1m",
-            TerminalColor::YellowDark => "\u{001b}[33m",
-            TerminalColor::YellowLight => "\u{001b}[33;1m",
-            TerminalColor::BlueDark => "\u{001b}[34m",
-            TerminalColor::BlueLight => "\u{001b}[34;1m",
-            TerminalColor::MagentaDark => "\u{001b}[35m",
-            TerminalColor::MagentaLight => "\u{001b}[34;1m",
-            TerminalColor::CyanDark => "\u{001b}[36m",
-            TerminalColor::CyanLight => "\u{001b}[36;1m",
-            TerminalColor::WhiteDark => "\u{001b}[37m",
-            TerminalColor::WhiteLight => "\u{001b}[37;1m",
-            TerminalColor::Reset => "\u{001b}[0m",
-        })
-    }
-}
-
-pub fn format_token(
+pub fn write_token<W: Write>(
+    out: &mut W,
     source: &str,
     tk: parse::TK,
     range: &std::ops::Range<usize>,
     use_color: bool,
-) -> String {
+) -> io::Result<()> {
     let slice = &source[range.start as usize..range.end as usize];
     let slice = unescape_string(slice);
     if use_color {
-        format!(
-            "{}{:?}{}@{}{:?}{}  {}'{}'{}",
-            TerminalColor::CyanDark,
-            tk,
-            TerminalColor::Reset,
-            TerminalColor::WhiteLight,
-            range,
-            TerminalColor::Reset,
-            TerminalColor::GreenDark,
-            slice,
-            TerminalColor::Reset,
-        )
+        let mut ansi = termcolor::Ansi::new(out);
+
+        ansi.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)))?;
+        write!(ansi, "{tk:?}")?;
+        ansi.reset()?;
+        write!(ansi, "@")?;
+        ansi.set_color(ColorSpec::new().set_fg(Some(Color::White)))?;
+        write!(ansi, "{range:?}")?;
+        ansi.reset()?;
+        write!(ansi, "  ")?;
+        ansi.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
+        write!(ansi, "'{slice}'")?;
+        ansi.reset()?;
     } else {
-        format!("{:?}@{:?}  '{}'", tk, range, slice)
+        write!(out, "{tk:?}@{range:?}  '{slice}'")?;
     }
+
+    Ok(())
 }
 
 pub fn unescape_string(str: &str) -> String {
@@ -136,21 +93,17 @@ impl<'s, W: Write> CstWriter<'s, W> {
                 cst::Element::Token(i) => {
                     let tk = *self.tokens.get(i.get()).unwrap();
                     let range = self.ranges.get(i.get()).unwrap();
-                    writeln!(
-                        self.f,
-                        "{}",
-                        format_token(self.source, tk, range, self.use_color)
-                    )?;
+                    write_token(&mut self.f, self.source, tk, range, self.use_color)?;
+                    writeln!(self.f)?;
                 }
                 cst::Element::Node(n) => {
                     if self.use_color {
-                        writeln!(
-                            self.f,
-                            "{}{:?}{}",
-                            TerminalColor::MagentaDark,
-                            n.kind,
-                            TerminalColor::Reset
-                        )?;
+                        let mut ansi = termcolor::Ansi::new(&mut self.f);
+
+                        ansi.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)))?;
+                        write!(ansi, "{:?}", n.kind)?;
+                        ansi.reset()?;
+                        writeln!(self.f)?;
                     } else {
                         writeln!(self.f, "{:?}", n.kind)?;
                     }
