@@ -8,6 +8,12 @@
 //! @FIXME:...
 //! This module is kind of a mess, we really need to clean it up.
 //! Some organization is needed. And possibly some restructuring.
+//!
+//! @NOTE:...
+//! Something to note is that it seems that is might be reasonable to be able to skip the astgen step.
+//! We could do it during stage 1 and 2 of the name resolver, whether this would be faster or not is unknown.
+//! It's possible that it would be slower as we would effectively be doing 2 passes over the cst, but that
+//! does not mean it would be inherently slower.
 
 use bimap::BiHashMap;
 use fnv::FnvHashMap;
@@ -578,16 +584,18 @@ pub struct Map {
     func_args: IndexVec<FuncArg, FuncArgId>,
 }
 
-index::define_idx! { pub struct ScopeDescId: u32 }
 index::define_idx! { pub struct DeclDescId: u32 }
-index::define_idx! { pub struct TyId: u32 }
+index::define_idx! { pub struct ScopeDescId: u32 != 0 }
+
+index::define_idx! { pub struct TyId: u32 != 0 }
 index::define_idx! { pub struct UTyId: u32 }
 
 index::define_idx! { pub struct ExprId: u32 != 0 }
-index::define_idx! { pub struct BlockId: u32 != 0 }
-index::define_idx! { pub struct StmtId: u32 != 0 }
-index::define_idx! { pub struct LocalId: u32 != 0 }
-index::define_idx! { pub struct FuncArgId: u32 != 0 }
+index::define_idx! { pub struct StmtId: u32 }
+index::define_idx! { pub struct BlockId: u32 }
+
+index::define_idx! { pub struct LocalId: u32 }
+index::define_idx! { pub struct FuncArgId: u32 }
 
 #[derive(Debug)]
 pub struct TypeData {
