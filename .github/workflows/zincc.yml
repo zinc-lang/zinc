@@ -22,7 +22,7 @@ jobs:
       uses: egor-tensin/setup-clang@v1
 
     - name: Checkout submodules
-      uses: textbook/git-checkout-submodule-action@2.1.1
+      run: git submodule update --init
 
     - uses: actions/checkout@v3
 
