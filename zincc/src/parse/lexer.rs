@@ -436,3 +436,251 @@ mod is_char {
         matches!(ch, b'0'..=b'7' | b'_')
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::TK;
+    use super::*;
+
+    #[test]
+    fn basic() {
+        let source = "()() {}{} [][]\n\0";
+        let res = lex(source);
+
+        assert!(res.is_valid());
+        assert!(res.errors.is_empty());
+
+        assert_eq!(
+            res.tokens.as_slice(),
+            &[
+                TK::brkt_paren_open,
+                TK::brkt_paren_close,
+                TK::brkt_paren_open,
+                TK::brkt_paren_close,
+                //
+                TK::brkt_brace_open,
+                TK::brkt_brace_close,
+                TK::brkt_brace_open,
+                TK::brkt_brace_close,
+                //
+                TK::brkt_square_open,
+                TK::brkt_square_close,
+                TK::brkt_square_open,
+                TK::brkt_square_close,
+                //
+                TK::Eof,
+            ]
+        );
+
+        let ws_lens: Vec<_> = res.ws_lens.iter().copied().collect();
+        assert_eq!(ws_lens.as_slice(), &[0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
+
+        assert_eq!(
+            res.ranges.as_slice(),
+            &[
+                0..1,
+                1..2,
+                2..3,
+                3..4, // ws
+                5..6,
+                6..7,
+                7..8,
+                8..9, // ws
+                10..11,
+                11..12,
+                12..13,
+                13..14, // ws
+                15..15,
+            ]
+        );
+    }
+
+    #[test]
+    fn compound() {
+        let source = ": :: = =>\n\0";
+        let res = lex(source);
+
+        assert!(res.is_valid());
+        assert!(res.errors.is_empty());
+
+        assert_eq!(
+            res.tokens.as_slice(),
+            &[
+                TK::punct_colon,
+                TK::punct_dblColon,
+                TK::punct_eq,
+                TK::punct_fat_arrow,
+                //
+                TK::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn ident() {
+        let source = "foo bar buux\n\0";
+        let res = lex(source);
+
+        assert!(res.is_valid());
+        assert!(res.errors.is_empty());
+
+        assert_eq!(
+            res.tokens.as_slice(),
+            &[
+                TK::ident,
+                TK::ident,
+                TK::ident,
+                //
+                TK::Eof,
+            ]
+        );
+
+        assert_eq!(
+            &[
+                &source[res.ranges[0].clone()],
+                &source[res.ranges[1].clone()],
+                &source[res.ranges[2].clone()],
+            ],
+            &["foo", "bar", "buux"]
+        );
+    }
+
+    #[test]
+    fn comment() {
+        let source = r#"
+foo
+// some comment
+bar
+"#;
+
+        let res = lex(&format!("{}{}", source, "\n\0"));
+
+        assert!(res.is_valid());
+        assert!(res.errors.is_empty());
+
+        assert_eq!(
+            res.tokens.as_slice(),
+            &[
+                TK::ident,
+                TK::ident,
+                //
+                TK::Eof,
+            ]
+        );
+
+        assert_eq!(
+            &[
+                &source[res.ranges[0].clone()],
+                &source[res.ranges[1].clone()],
+            ],
+            &["foo", "bar"]
+        );
+
+        assert_eq!(
+            &source[res.ranges[0].end..res.ranges[1].start],
+            "\n// some comment\n",
+        );
+    }
+
+    #[test]
+    fn string() {
+        let source = r#"
+"foo"
+"foo \n bar"
+"#;
+
+        let res = lex(&format!("{}{}", source, "\n\0"));
+
+        assert!(res.is_valid());
+        assert!(res.errors.is_empty());
+
+        assert_eq!(
+            res.tokens.as_slice(),
+            &[
+                TK::string_open,
+                TK::string_literal,
+                TK::string_close,
+                //
+                TK::string_open,
+                TK::string_literal,
+                TK::esc_char_newline,
+                TK::string_literal,
+                TK::string_close,
+                //
+                TK::Eof,
+            ]
+        );
+
+        assert_eq!(
+            &[
+                &source[res.ranges[1].clone()],
+                //
+                &source[res.ranges[4].clone()],
+                &source[res.ranges[5].clone()],
+                &source[res.ranges[6].clone()],
+            ],
+            &["foo", "foo ", "\\n", " bar",]
+        );
+    }
+
+    #[test]
+    fn keyword() {
+        let source = r#"
+foo,
+and,
+const,
+false,
+fn,
+let,
+mut,
+or,
+return,
+true,
+bar,
+"#;
+
+        let res = lex(&format!("{}{}", source, "\n\0"));
+
+        assert_eq!(
+            res.tokens,
+            &[
+                TK::ident,
+                TK::punct_comma,
+                TK::kw_and,
+                TK::punct_comma,
+                TK::kw_const,
+                TK::punct_comma,
+                TK::kw_false,
+                TK::punct_comma,
+                TK::kw_fn,
+                TK::punct_comma,
+                TK::kw_let,
+                TK::punct_comma,
+                TK::kw_mut,
+                TK::punct_comma,
+                TK::kw_or,
+                TK::punct_comma,
+                TK::kw_return,
+                TK::punct_comma,
+                TK::kw_true,
+                TK::punct_comma,
+                TK::ident,
+                TK::punct_comma,
+                TK::Eof,
+            ]
+        );
+
+        assert_eq!(
+            res.ranges[..res.ranges.len() - 1]
+                .iter()
+                .cloned()
+                .map(|r| &source[r])
+                .collect::<Vec<_>>()
+                .as_slice(),
+            &[
+                "foo", ",", "and", ",", "const", ",", "false", ",", "fn", ",", "let", ",", "mut",
+                ",", "or", ",", "return", ",", "true", ",", "bar", ",",
+            ],
+        )
+    }
+}
