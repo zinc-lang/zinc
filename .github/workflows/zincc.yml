@@ -26,8 +26,12 @@ jobs:
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
         sudo ./llvm.sh 13
+
+        apt update
         sudo apt-get install -y llvm-config
+
         /usr/bin/llvm-config --cxxflags
+
       # run: sudo apt-get install -y llvm-13
 
     - name: Install Ninja
