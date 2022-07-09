@@ -113,10 +113,14 @@ fn main() {
 
     if options.dumps.contains(&"nameres".to_string()) {
         // Print name resolution result
-        eprintln!("{:#?}", nr_res);
+        eprintln!("{:#?}\n", nr_res);
     }
 
     let _ = timer.spanned("typing", || {});
+
+    if options.dumps.contains(&"typer".to_string()) {
+        eprintln!("typer\n");
+    }
 
     // @TODO: Actually consume something derived from the input source
     let zir = timer.spanned("zirgen", zir::test::create_test_funcs);
@@ -172,7 +176,7 @@ impl Options {
                     .short('D')
                     .takes_value(true)
                     .value_parser(PossibleValuesParser::new(&[
-                        "tokens", "cst", "ast", "nameres", "zir", "llvm",
+                        "tokens", "cst", "ast", "nameres", "zir", "llvm", "typer",
                     ]))
                     .action(ArgAction::Append),
             )
