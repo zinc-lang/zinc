@@ -11,7 +11,6 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
@@ -21,19 +20,11 @@ jobs:
         chmod +x llvm.sh
         sudo ./llvm.sh 13
 
-        mkdir -p bin
-        touch ./bin/llvm-config
-        echo "#!/usr/bin/env bash\nllvm-config-13 $@" > ./bin/llvm-config
-        chmod +x ./bin/llvm-config
-
     - name: Install Deno
       uses: denoland/setup-deno@v1.1.0
 
-    - name: Install Clang
-      run: sudo apt-get install -y clang
-
-    - name: Install Ninja
-      run: sudo apt-get install -y ninja-build
+    - name: Install Clang && Ninja
+      run: sudo apt-get install -y clang ninja-build
 
     - name: Checkout
       uses: actions/checkout@v3
@@ -42,10 +33,7 @@ jobs:
 
     - name: Build llvm_c_2
       working-directory: llvm_c_2
-      shell: bash
-      run: |
-        export PATH=../../bin/:$PATH
-        ./rnn.ts build
+      run: ./rnn.ts build
 
     - name: Build zincc
       working-directory: zincc
