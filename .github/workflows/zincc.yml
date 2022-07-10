@@ -25,13 +25,13 @@ jobs:
         touch ./bin/llvm-config
         echo "#!/usr/bin/env bash\nllvm-config-13 $@" > ./bin/llvm-config
         chmod +x ./bin/llvm-config
-        export PATH=`pwd`/bin:$PATH
 
     - name: Install Deno
       uses: denoland/setup-deno@v1.1.0
 
     - name: Install Clang
       run: sudo apt-get install -y clang
+
     - name: Install Ninja
       run: sudo apt-get install -y ninja-build
 
@@ -41,13 +41,15 @@ jobs:
         submodules: true
 
     - name: Build llvm_c_2
-      run: ./rnn.ts build
       working-directory: llvm_c_2
+      run: |
+        export PATH=../../bin:$PATH
+        ./rnn.ts build
 
     - name: Build zincc
-      run: cargo build --verbose
       working-directory: zincc
+      run: cargo build --verbose
 
     - name: Run zincc tests
-      run: cargo test --verbose
       working-directory: zincc
+      run: cargo test --verbose
