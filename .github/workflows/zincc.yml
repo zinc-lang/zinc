@@ -42,8 +42,9 @@ jobs:
 
     - name: Build llvm_c_2
       working-directory: llvm_c_2
+      shell: bash
       run: |
-        export PATH=../../bin:$PATH
+        export PATH=../../bin/:$PATH
         ./rnn.ts build
 
     - name: Build zincc
