@@ -21,6 +21,10 @@ jobs:
         chmod +x llvm.sh
         sudo ./llvm.sh 13
 
+        sudo touch /usr/bin/llvm-config
+        chmod +x /usr/bin/llvm-config
+        echo "#!/usr/bin/env bash\nllvm-config-13 $@" >/usr/bin/llvm-config
+
     - name: Install Deno
       uses: denoland/setup-deno@v1.1.0
 
