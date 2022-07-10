@@ -24,7 +24,7 @@ jobs:
       uses: denoland/setup-deno@v1.1.0
 
     - name: Install Clang && Ninja
-      run: sudo apt-get install -y clang ninja-build cmake0-build
+      run: sudo apt-get install -y clang ninja-build cmake-build
 
     - name: Checkout
       uses: actions/checkout@v3
