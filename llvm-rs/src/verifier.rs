@@ -10,9 +10,7 @@ pub fn verify_function(function: &Function, out: &mut std::fs::File) -> bool {
             false,
             c::llvm_OStreamKind_llvm_OStreamKind__OK_OStream,
         );
-        let ret = c::llvm_verifyFunction(function.as_ptr(), os as c::llvm__raw_ostream__ref);
-        // c::llvm__raw_fd_ostream__dispose(os);
-        ret
+        c::llvm_verifyFunction(function.as_ptr(), os as c::llvm__raw_ostream__ref)
     }
 }
 
