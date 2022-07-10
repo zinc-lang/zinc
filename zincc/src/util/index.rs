@@ -54,7 +54,7 @@ macro_rules! define_idx {
                     f,
                     "{}({})",
                     stringify!($IndexTypeName),
-                    crate::util::index::Idx::index(*self)
+                    $crate::util::index::Idx::index(*self)
                 )
             }
         }
