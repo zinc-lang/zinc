@@ -521,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn compound() {
+    fn compound_punct() {
         let source = ": :: = =>\n\0";
         let res = lex(source);
 
