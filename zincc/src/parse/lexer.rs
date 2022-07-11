@@ -56,7 +56,7 @@ pub enum LexErrorKind {
 
 struct Lexer<'s> {
     ascii: &'s [u8],
-    span: Range<usize>,
+    range: Range<usize>,
     ws_len: u16,
     out: LexResult,
 }
@@ -66,7 +66,7 @@ impl<'s> Lexer<'s> {
         Self {
             ascii: source.as_bytes(),
             ws_len: 0,
-            span: 0..0,
+            range: 0..0,
             out: LexResult {
                 tokens: Vec::new(),
                 ranges: Vec::new(),
@@ -177,20 +177,20 @@ impl Lexer<'_> {
     fn report_error(&mut self, kind: LexErrorKind) {
         self.out.errors.push(LexError {
             kind,
-            offset: self.span.end,
+            offset: self.range.end,
         });
     }
 
     #[must_use]
     #[inline]
     fn advance(&mut self) -> u8 {
-        self.span.end += 1;
-        self.ascii[self.span.end - 1]
+        self.range.end += 1;
+        self.ascii[self.range.end - 1]
     }
 
     #[inline]
     fn peek_raw(&self, n: usize) -> u8 {
-        self.ascii[self.span.end + n]
+        self.ascii[self.range.end + n]
     }
 
     #[inline]
@@ -230,7 +230,7 @@ impl Lexer<'_> {
     #[inline]
     fn inc_ws(&mut self) {
         self.ws_len += 1;
-        self.span.start += 1;
+        self.range.start += 1;
     }
 
     #[inline]
@@ -253,7 +253,7 @@ impl Lexer<'_> {
         let mut p = self.peek();
         while p != b'\"' && p != b'\0' {
             if p == b'\\' {
-                if self.span.start != self.span.end {
+                if self.range.start != self.range.end {
                     self.tok(TK::string_literal);
                 }
 
@@ -264,7 +264,7 @@ impl Lexer<'_> {
             }
             p = self.peek();
         }
-        if self.span.start != self.span.end {
+        if self.range.start != self.range.end {
             self.tok(TK::string_literal);
         }
         if !self.eat(b'\"') {
@@ -353,7 +353,7 @@ impl Lexer<'_> {
     fn lex_ident(&mut self) {
         self.lex_while_condition(is_char::ident_mid);
 
-        let slice = &self.ascii[self.span.clone()];
+        let slice = &self.ascii[self.range.clone()];
 
         let kind = match slice[0] {
             // and
