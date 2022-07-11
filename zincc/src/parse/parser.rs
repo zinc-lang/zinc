@@ -344,7 +344,7 @@ impl Parser<'_> {
                 self.bump(&mut func); // ident
 
                 let mut proto = self.node(NK::func_proto);
-                self.parse_func_params_ret(ParseContext::DeclFunc, &mut proto);
+                self.parse_func_params_and_ret(ParseContext::DeclFunc, &mut proto);
                 self.append_node(proto, &mut func);
 
                 let mut body = self.node(NK::decl_func_body);
@@ -407,7 +407,7 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_func_params_ret(&mut self, ctx: ParseContext, parent: &mut PNode) {
+    fn parse_func_params_and_ret(&mut self, ctx: ParseContext, parent: &mut PNode) {
         self.expect(TK::brkt_paren_open, ctx, parent);
         while !self.at(TK::brkt_paren_close) {
             let mut param = self.node(NK::func_proto_param);
@@ -439,7 +439,7 @@ impl Parser<'_> {
         let mut proto = self.node(NK::func_proto);
         self.bump(&mut proto); // 'fn'
 
-        self.parse_func_params_ret(ParseContext::TyFunc, &mut proto);
+        self.parse_func_params_and_ret(ParseContext::TyFunc, &mut proto);
 
         self.append_node(proto, parent);
     }
@@ -619,6 +619,7 @@ impl Parser<'_> {
 
                 self.bump(&mut call); // '('
 
+                // args
                 if !self.at(TK::brkt_paren_close) {
                     self.parse_expr(&mut call);
                     while self.eat(TK::punct_comma, &mut call)
