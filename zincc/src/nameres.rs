@@ -77,6 +77,33 @@ pub struct NameResolutionResult {
     pub map: IdMap,
 }
 
+#[derive(Debug, Default)]
+pub struct IdMap {
+    pub decls: FnvHashMap<DeclDescId, DeclKind>,
+
+    pub blocks: IndexVec<BlockId, Block>,
+    pub block_scope_map: FnvHashMap<ScopeDescId, BlockId>,
+
+    pub exprs: IndexVec<ExprId, Expr>,
+    pub stmts: IndexVec<StmtId, Stmt>,
+
+    pub locals: IndexVec<LocalId, Local>,
+    pub func_args: IndexVec<FuncArgId, FuncArg>,
+}
+
+index::define_idx! { pub struct DeclDescId: u32 }
+index::define_idx! { pub struct ScopeDescId: u32 != 0 }
+
+index::define_idx! { pub struct TyId: u32 != 0 }
+index::define_idx! { pub struct UTyId: u32 }
+
+index::define_idx! { pub struct ExprId: u32 != 0 }
+index::define_idx! { pub struct StmtId: u32 }
+index::define_idx! { pub struct BlockId: u32 }
+
+index::define_idx! { pub struct LocalId: u32 }
+index::define_idx! { pub struct FuncArgId: u32 }
+
 #[derive(Debug)]
 pub struct SharedData<'s> {
     pub source: &'s str,
@@ -569,33 +596,6 @@ mod stage2 {
         }
     }
 }
-
-#[derive(Debug, Default)]
-pub struct IdMap {
-    decls: FnvHashMap<DeclDescId, DeclKind>,
-
-    blocks: IndexVec<BlockId, Block>,
-    block_scope_map: FnvHashMap<ScopeDescId, BlockId>,
-
-    exprs: IndexVec<ExprId, Expr>,
-    stmts: IndexVec<StmtId, Stmt>,
-
-    locals: IndexVec<LocalId, Local>,
-    func_args: IndexVec<FuncArgId, FuncArg>,
-}
-
-index::define_idx! { pub struct DeclDescId: u32 }
-index::define_idx! { pub struct ScopeDescId: u32 != 0 }
-
-index::define_idx! { pub struct TyId: u32 != 0 }
-index::define_idx! { pub struct UTyId: u32 }
-
-index::define_idx! { pub struct ExprId: u32 != 0 }
-index::define_idx! { pub struct StmtId: u32 }
-index::define_idx! { pub struct BlockId: u32 }
-
-index::define_idx! { pub struct LocalId: u32 }
-index::define_idx! { pub struct FuncArgId: u32 }
 
 #[derive(Debug)]
 pub struct TypeData {
