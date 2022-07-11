@@ -18,7 +18,7 @@
 
 use bimap::BiHashMap;
 use smallvec::SmallVec;
-use std::cell::RefCell;
+use std::{cell::RefCell, num::NonZeroU8};
 
 // @TODO: Continue to test if this makes any speed difference. (2022-07-11)
 use fnv::FnvHashMap;
@@ -714,7 +714,7 @@ pub enum PrimTy {
 pub enum IntSize {
     Unspecified,
     PtrSized,
-    BitSized(u8),
+    BitSized(NonZeroU8),
 }
 
 /// Holds a reference to where the type is mentioned in the ast,
