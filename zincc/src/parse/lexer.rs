@@ -125,7 +125,19 @@ impl Lexer<'_> {
                     }
                 }
 
-                b'"' => self.lex_string(),
+                b'"' => {
+                    // string_prefix
+                    if self.ws_len == 0 {
+                        let prev = self.out.tokens.last_mut().unwrap();
+                        if *prev == TK::ident {
+                            let _ = std::mem::replace(prev, TK::string_prefix);
+                        }
+                    }
+
+                    self.lex_string();
+
+                    self.lex_literal_suffix();
+                }
 
                 b'\0' => break 'lex_loop,
 
@@ -134,39 +146,40 @@ impl Lexer<'_> {
                         match self.peek() {
                             b'x' => {
                                 self.lex_number_generic(TK::int_hex, is_char::number_hex);
-                                continue 'lex_loop;
                             }
                             b'b' => {
                                 self.lex_number_generic(TK::int_bin, is_char::number_binary);
-                                continue 'lex_loop;
                             }
                             b'o' => {
                                 self.lex_number_generic(TK::int_oct, is_char::number_octal);
-                                continue 'lex_loop;
                             }
-                            _ => {}
+                            _ => self.lex_number(),
                         }
-                    }
-
-                    match () {
-                        _ if is_char::number_start(ch) => self.lex_number(),
-                        _ if is_char::ident_start(ch) => self.lex_ident(),
-                        _ => {
-                            self.report_error(LexErrorKind::UnrecognizedChar);
-                            self.tok(TK::err);
+                        self.lex_literal_suffix();
+                    } else {
+                        match () {
+                            _ if is_char::number_start(ch) => {
+                                self.lex_number();
+                                self.lex_literal_suffix();
+                            }
+                            _ if is_char::ident_start(ch) => self.lex_ident(),
+                            _ => {
+                                self.report_error(LexErrorKind::UnrecognizedChar);
+                                self.tok(TK::err);
+                            }
                         }
                     }
                 }
             }
         }
 
-        self.span.end -= 1;
+        self.range.end -= 1;
         self.tok(TK::Eof);
     }
 
     fn tok(&mut self, kind: TK) {
-        let range = self.span.start..self.span.end;
-        self.span.start = self.span.end;
+        let range = self.range.start..self.range.end;
+        self.range.start = self.range.end;
 
         self.out.tokens.push(kind);
         self.out.ws_lens.push(self.ws_len);
@@ -398,6 +411,15 @@ impl Lexer<'_> {
             TK::ident
         }
     }
+
+    fn lex_literal_suffix(&mut self) {
+        debug_assert!(self.ws_len == 0);
+
+        if is_char::ident_start(self.peek()) {
+            self.lex_while_condition(is_char::ident_mid);
+            self.tok(TK::string_num_suffix);
+        }
+    }
 }
 
 mod is_char {
@@ -441,6 +463,9 @@ mod is_char {
 mod tests {
     use super::super::TK;
     use super::*;
+
+    // @TODO: basic punct tests
+    // @TODO: integer/float tests
 
     #[test]
     fn basic() {

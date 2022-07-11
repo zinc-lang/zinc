@@ -12,7 +12,6 @@ mod typer;
 mod zir;
 
 // @TODO: Write tests, for everything
-// @TODO: Literal prefixes
 
 fn main() {
     let options = Options::get();

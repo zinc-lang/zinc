@@ -51,9 +51,12 @@ pub enum TokenKind {
     int_oct, // 0o
     int_bin, // 0b
 
+    string_prefix,  // an ident preceding a string without any whitespace
     string_open,    // "
     string_literal, // any normal text which has not been escaped
     string_close,   // "
+
+    string_num_suffix, // an ident following a string or number without any whitespace
 
     esc_asciicode,        // \xNN
     esc_unicode,          // \u{NNNN}
