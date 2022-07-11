@@ -30,10 +30,12 @@ impl From<NamedNodeId> for NodeId {
 
 index::define_idx! { pub struct NodeId: u32 != 0 }
 
+pub type NodeMap = IndexVec<NodeId, Node>;
+
 #[derive(Debug)]
 pub struct Cst {
     pub root: NamedNodeId,
-    pub map: IndexVec<Node, NodeId>,
+    pub map: NodeMap,
 }
 
 impl Cst {

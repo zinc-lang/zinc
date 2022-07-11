@@ -36,12 +36,7 @@ pub fn resolve(
     stage2(sd, scopes, scope_kind_map)
 }
 
-pub fn stage1<'s>(
-    sd: &'s SharedData<'s>,
-) -> (
-    IndexVec<ScopeDesc, ScopeDescId>,
-    BiHashMap<ScopeKind, ScopeDescId>,
-) {
+pub fn stage1<'s>(sd: &'s SharedData<'s>) -> (ScopeDescMap, BiHashMap<ScopeKind, ScopeDescId>) {
     let mut stage = stage1::Stage1Gen::<'s>::new(sd);
     stage.seed();
     (stage.scopes, stage.scope_kind_map)
@@ -49,7 +44,7 @@ pub fn stage1<'s>(
 
 pub fn stage2(
     sd: SharedData,
-    scopes: IndexVec<ScopeDesc, ScopeDescId>,
+    scopes: ScopeDescMap,
     scope_kinds_map: BiHashMap<ScopeKind, ScopeDescId>,
 ) -> NameResolutionResult {
     let td = TypeData::new();
@@ -71,7 +66,7 @@ pub fn stage2(
 
 #[derive(Debug)]
 pub struct NameResolutionResult {
-    pub scopes: IndexVec<ScopeDesc, ScopeDescId>,
+    pub scopes: ScopeDescMap,
     pub scope_kinds_map: BiHashMap<ScopeKind, ScopeDescId>,
     pub strings: StringInterningVec,
     pub td: TypeData,
@@ -141,7 +136,7 @@ mod stage1 {
     #[derive(Debug)]
     pub(super) struct Stage1Gen<'s> {
         sd: &'s SharedData<'s>,
-        pub(super) scopes: IndexVec<ScopeDesc, ScopeDescId>,
+        pub(super) scopes: ScopeDescMap,
         pub(super) scope_kind_map: BiHashMap<ScopeKind, ScopeDescId>,
     }
 
@@ -239,7 +234,7 @@ mod stage2 {
         sd: &'s SharedData<'s>,
         td: &'s TypeData,
 
-        scopes: &'s IndexVec<ScopeDesc, ScopeDescId>,
+        scopes: &'s ScopeDescMap,
         scope_kind_map: &'s BiHashMap<ScopeKind, ScopeDescId>,
         current_scope: ScopeDescId,
 
@@ -261,7 +256,7 @@ mod stage2 {
         pub(super) fn new(
             sd: &'s SharedData<'s>,
             td: &'s TypeData,
-            scopes: &'s IndexVec<ScopeDesc, ScopeDescId>,
+            scopes: &'s ScopeDescMap,
             scope_kind_map: &'s BiHashMap<ScopeKind, ScopeDescId>,
         ) -> Self {
             Self {
@@ -576,12 +571,12 @@ mod stage2 {
 #[derive(Debug, Default)]
 pub struct Map {
     decls: FnvHashMap<DeclDescId, DeclKind>,
-    exprs: IndexVec<Expr, ExprId>,
-    stmts: IndexVec<Stmt, StmtId>,
-    blocks: IndexVec<Block, BlockId>,
+    exprs: IndexVec<ExprId, Expr>,
+    stmts: IndexVec<StmtId, Stmt>,
+    blocks: IndexVec<BlockId, Block>,
     block_scope_map: FnvHashMap<ScopeDescId, BlockId>,
-    locals: IndexVec<Local, LocalId>,
-    func_args: IndexVec<FuncArg, FuncArgId>,
+    locals: IndexVec<LocalId, Local>,
+    func_args: IndexVec<FuncArgId, FuncArg>,
 }
 
 index::define_idx! { pub struct DeclDescId: u32 }
@@ -599,8 +594,8 @@ index::define_idx! { pub struct FuncArgId: u32 }
 
 #[derive(Debug)]
 pub struct TypeData {
-    interned_utys: RefCell<InterningIndexVec<UTy, UTyId>>,
-    tys: RefCell<IndexVec<Ty, TyId>>,
+    interned_utys: RefCell<InterningIndexVec<UTyId, UTy>>,
+    tys: RefCell<IndexVec<TyId, Ty>>,
     void_ty: TyId,
 }
 
@@ -628,10 +623,12 @@ impl TypeData {
     }
 }
 
+pub type ScopeDescMap = IndexVec<ScopeDescId, ScopeDesc>;
+
 /// A Description of a Scope. Such as a module, or a block.
 #[derive(Debug)]
 pub struct ScopeDesc {
-    pub decls: IndexVec<DeclDesc, DeclDescId>,
+    pub decls: IndexVec<DeclDescId, DeclDesc>,
     pub decls_name_map: FnvHashMap<StringSymbol, DeclDescId>,
 
     pub children: SmallVec<[ScopeDescId; 4]>,

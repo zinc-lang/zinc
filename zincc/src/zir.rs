@@ -5,9 +5,9 @@ use crate::util::index::{self, IndexVec, InterningIndexVec, StringInterningVec, 
 #[derive(Debug, Default)]
 pub struct Context {
     strings: StringInterningVec,
-    tys: InterningIndexVec<Ty, TyId>,
-    blocks: IndexVec<Block, BlockId>,
-    funcs: IndexVec<Func, FuncId>,
+    tys: InterningIndexVec<TyId, Ty>,
+    blocks: IndexVec<BlockId, Block>,
+    funcs: IndexVec<FuncId, Func>,
 }
 
 impl Context {
@@ -67,9 +67,9 @@ pub struct Block {
     label: StringSymbol,
     func: FuncId,
 
-    insts: IndexVec<Inst, BlockLocalInstId>,
+    insts: IndexVec<BlockLocalInstId, Inst>,
     // inst_nodes: Vec<NodeId>,
-    inst_tys: IndexVec<TyId, BlockLocalInstId>,
+    inst_tys: IndexVec<BlockLocalInstId, TyId>,
     // ty_nodes: Vec<NodeId>,
     // names: Vec<Option<String>>,
 }

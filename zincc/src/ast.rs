@@ -15,10 +15,10 @@ index::define_idx! { pub struct ExprId: u32 != 0 }
 #[derive(Debug)]
 pub struct AstMap {
     pub root: Root,
-    pub decls: IndexVec<Decl, DeclId>,
-    pub tys: IndexVec<Ty, TyId>,
-    pub stmts: IndexVec<Stmt, StmtId>,
-    pub exprs: IndexVec<Expr, ExprId>,
+    pub decls: IndexVec<DeclId, Decl>,
+    pub tys: IndexVec<TyId, Ty>,
+    pub stmts: IndexVec<StmtId, Stmt>,
+    pub exprs: IndexVec<ExprId, Expr>,
 }
 
 #[derive(Debug)]

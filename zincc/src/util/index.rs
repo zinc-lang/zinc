@@ -123,12 +123,12 @@ pub trait Idx: 'static + Copy + Eq + Hash {
 }
 
 #[derive(Clone)]
-pub struct IndexVec<T, I: Idx> {
+pub struct IndexVec<I: Idx, T> {
     raw: Vec<T>,
     _m: PhantomData<I>,
 }
 
-impl<T: Debug, I: Idx> fmt::Debug for IndexVec<T, I> {
+impl<T: Debug, I: Idx> fmt::Debug for IndexVec<I, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map()
             .entries(self.raw.iter().enumerate().map(|(k, v)| (k, v)))
@@ -136,13 +136,13 @@ impl<T: Debug, I: Idx> fmt::Debug for IndexVec<T, I> {
     }
 }
 
-impl<T, I: Idx> Default for IndexVec<T, I> {
+impl<T, I: Idx> Default for IndexVec<I, T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T, I: Idx> IndexVec<T, I> {
+impl<T, I: Idx> IndexVec<I, T> {
     #[inline]
     pub fn new() -> Self {
         Self::from_raw(Vec::new())
@@ -196,17 +196,17 @@ impl<T, I: Idx> IndexVec<T, I> {
 
 #[derive(Clone)]
 #[non_exhaustive]
-pub struct InterningIndexVec<T: Eq, I: Idx> {
-    raw: IndexVec<T, I>,
+pub struct InterningIndexVec<I: Idx, T: Eq> {
+    raw: IndexVec<I, T>,
 }
 
-impl<T: Eq + Debug, I: Idx> fmt::Debug for InterningIndexVec<T, I> {
+impl<T: Eq + Debug, I: Idx> fmt::Debug for InterningIndexVec<I, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.raw, f)
     }
 }
 
-impl<T: Eq, I: Idx> Default for InterningIndexVec<T, I> {
+impl<T: Eq, I: Idx> Default for InterningIndexVec<I, T> {
     fn default() -> Self {
         Self {
             raw: Default::default(),
@@ -214,18 +214,18 @@ impl<T: Eq, I: Idx> Default for InterningIndexVec<T, I> {
     }
 }
 
-impl<T: Eq, I: Idx> InterningIndexVec<T, I> {
+impl<T: Eq, I: Idx> InterningIndexVec<I, T> {
     #[inline]
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn raw(&self) -> &IndexVec<T, I> {
+    pub fn raw(&self) -> &IndexVec<I, T> {
         &self.raw
     }
 
     #[inline]
-    pub fn from_raw(raw: IndexVec<T, I>) -> Self {
+    pub fn from_raw(raw: IndexVec<I, T>) -> Self {
         Self { raw }
     }
 
@@ -272,7 +272,7 @@ define_idx! { pub struct StringSymbol: u32 != 0 }
 
 /// Small type specialization to allow checking if a string is interned from just a `&str`
 /// without having to first turn it into a `String`
-pub type StringInterningVec = InterningIndexVec<String, StringSymbol>;
+pub type StringInterningVec = InterningIndexVec<StringSymbol, String>;
 
 impl StringInterningVec {
     pub fn is_str_interned(&self, str: &str) -> bool {
