@@ -1,0 +1,8 @@
+fn main() {
+    1;
+    false;
+    {
+        true;
+        return 5;
+    }
+}

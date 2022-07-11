@@ -116,10 +116,10 @@ fn main() {
         eprintln!("{:#?}\n", nr_res);
     }
 
-    let _ = timer.spanned("typing", || {});
+    let type_map = timer.spanned("typing", || typer::resolve(&nr_res));
 
     if options.dumps.contains(&DumpOption::typer) {
-        eprintln!("typer\n");
+        eprintln!("{:#?}\n", type_map);
     }
 
     // @TODO: Actually consume something derived from the input source
