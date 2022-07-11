@@ -4,8 +4,6 @@
 
 The zinc programming language.
 
-![zincc](https://github.com/tealsnow/zinc/actions/workflows/zincc.yml/badge.svg)
-
 </div>
 
 ---
