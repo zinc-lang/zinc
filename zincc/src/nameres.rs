@@ -3,11 +3,12 @@
 //! Next in stage 2 we actually resolve the bodies of the declarations, such as the expression(s) of a function.
 //! Or the types in a type declaration.
 //!
-//! ## Side note:
-//!
 //! @FIXME:...
 //! This module is kind of a mess, we really need to clean it up.
 //! Some organization is needed. And possibly some restructuring.
+//! We could probably also combine stage 1 and 2 into a single struct
+//! to avoid the disorganisation that occurs with having to share some
+//! state between them.
 //!
 //! @NOTE:...
 //! Something to note is that it seems that is might be reasonable to be able to skip the astgen step.
@@ -16,9 +17,12 @@
 //! does not mean it would be inherently slower.
 
 use bimap::BiHashMap;
-use fnv::FnvHashMap;
 use smallvec::SmallVec;
 use std::cell::RefCell;
+
+// @TODO: Continue to test if this makes any speed difference. (2022-07-11)
+use fnv::FnvHashMap;
+// use std::collections::HashMap as FnvHashMap;
 
 use crate::{
     ast,
@@ -36,13 +40,13 @@ pub fn resolve(
     stage2(sd, scopes, scope_kind_map)
 }
 
-pub fn stage1<'s>(sd: &'s SharedData<'s>) -> (ScopeDescMap, BiHashMap<ScopeKind, ScopeDescId>) {
+fn stage1<'s>(sd: &'s SharedData<'s>) -> (ScopeDescMap, BiHashMap<ScopeKind, ScopeDescId>) {
     let mut stage = stage1::Stage1Gen::<'s>::new(sd);
     stage.seed();
     (stage.scopes, stage.scope_kind_map)
 }
 
-pub fn stage2(
+fn stage2(
     sd: SharedData,
     scopes: ScopeDescMap,
     scope_kinds_map: BiHashMap<ScopeKind, ScopeDescId>,
@@ -70,7 +74,7 @@ pub struct NameResolutionResult {
     pub scope_kinds_map: BiHashMap<ScopeKind, ScopeDescId>,
     pub strings: StringInterningVec,
     pub td: TypeData,
-    pub map: Map,
+    pub map: IdMap,
 }
 
 #[derive(Debug)]
@@ -129,8 +133,6 @@ impl<'s> SharedData<'s> {
 }
 
 mod stage1 {
-    use bimap::BiHashMap;
-
     use super::*;
 
     #[derive(Debug)]
@@ -249,7 +251,7 @@ mod stage2 {
         locals: Vec<LocalId>,
         locals_bread_crumbs: Vec<u32>,
 
-        pub(crate) map: Map,
+        pub(crate) map: IdMap,
     }
 
     impl<'s> Stage2<'s> {
@@ -569,12 +571,15 @@ mod stage2 {
 }
 
 #[derive(Debug, Default)]
-pub struct Map {
+pub struct IdMap {
     decls: FnvHashMap<DeclDescId, DeclKind>,
-    exprs: IndexVec<ExprId, Expr>,
-    stmts: IndexVec<StmtId, Stmt>,
+
     blocks: IndexVec<BlockId, Block>,
     block_scope_map: FnvHashMap<ScopeDescId, BlockId>,
+
+    exprs: IndexVec<ExprId, Expr>,
+    stmts: IndexVec<StmtId, Stmt>,
+
     locals: IndexVec<LocalId, Local>,
     func_args: IndexVec<FuncArgId, FuncArg>,
 }
