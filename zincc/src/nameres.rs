@@ -552,6 +552,16 @@ mod stage2 {
                             signed: false,
                             size: None,
                         },
+
+                        "byte" => PrimTy::Integer {
+                            signed: false,
+                            size: Some(NonZeroU8::new(8).unwrap()),
+                        },
+                        "sbyte" => PrimTy::Integer {
+                            signed: true,
+                            size: Some(NonZeroU8::new(8).unwrap()),
+                        },
+
                         "bool" => PrimTy::Bool,
                         "void" => PrimTy::Void,
                         // if it starts with 's' and the rest of the string is a number
