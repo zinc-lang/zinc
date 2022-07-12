@@ -128,7 +128,7 @@ pub struct IndexVec<I: Idx, T> {
     _m: PhantomData<I>,
 }
 
-impl<T: Debug, I: Idx> fmt::Debug for IndexVec<I, T> {
+impl<I: Idx, T: Debug> fmt::Debug for IndexVec<I, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map()
             .entries(self.raw.iter().enumerate().map(|(k, v)| (k, v)))
@@ -142,7 +142,16 @@ impl<T, I: Idx> Default for IndexVec<I, T> {
     }
 }
 
-impl<T, I: Idx> IndexVec<I, T> {
+impl<I: Idx, T> std::ops::Index<I> for IndexVec<I, T> {
+    type Output = T;
+
+    #[track_caller]
+    fn index(&self, index: I) -> &Self::Output {
+        self.get(index).unwrap()
+    }
+}
+
+impl<I: Idx, T> IndexVec<I, T> {
     #[inline]
     pub fn new() -> Self {
         Self::from_raw(Vec::new())
@@ -200,13 +209,13 @@ pub struct InterningIndexVec<I: Idx, T: Eq> {
     raw: IndexVec<I, T>,
 }
 
-impl<T: Eq + Debug, I: Idx> fmt::Debug for InterningIndexVec<I, T> {
+impl<I: Idx, T: Eq + Debug> fmt::Debug for InterningIndexVec<I, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.raw, f)
     }
 }
 
-impl<T: Eq, I: Idx> Default for InterningIndexVec<I, T> {
+impl<I: Idx, T: Eq> Default for InterningIndexVec<I, T> {
     fn default() -> Self {
         Self {
             raw: Default::default(),
@@ -214,7 +223,16 @@ impl<T: Eq, I: Idx> Default for InterningIndexVec<I, T> {
     }
 }
 
-impl<T: Eq, I: Idx> InterningIndexVec<I, T> {
+impl<I: Idx, T: Eq> std::ops::Index<I> for InterningIndexVec<I, T> {
+    type Output = T;
+
+    #[track_caller]
+    fn index(&self, index: I) -> &Self::Output {
+        self.get(index).unwrap()
+    }
+}
+
+impl<I: Idx, T: Eq> InterningIndexVec<I, T> {
     #[inline]
     pub fn new() -> Self {
         Self::default()
