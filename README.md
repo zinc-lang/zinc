@@ -11,6 +11,7 @@ The zinc programming language.
 ## Goals
 
 <!-- 
+@TODO: Add a taste of the syntax to the front page
 @TODO: Add a tour of the language README
 @TODO: Migrate to a checklist showing what is and isn't functional
 -->
