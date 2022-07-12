@@ -276,7 +276,7 @@ pub mod gen {
             let node = self.cst.get(id);
             debug_assert_eq!(node.nodes().len(), 2);
 
-            debug_assert_eq!(*self.tokens.get(node.tokens()[0].get()).unwrap(), TK::kw_fn);
+            debug_assert_eq!(self.tokens[node.tokens()[0].get()], TK::kw_fn);
             let name = node.tokens()[1];
 
             let proto = node.nodes()[0];

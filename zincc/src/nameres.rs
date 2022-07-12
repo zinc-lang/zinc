@@ -108,6 +108,7 @@ pub struct SharedData<'s> {
     pub source: &'s str,
     pub ranges: &'s [std::ops::Range<usize>],
     pub ast: &'s ast::AstMap,
+    // @TODO: Could we move this out; take it as a &mut parameter for each stage?
     pub strings: RefCell<StringInterningVec>,
 }
 
@@ -184,7 +185,7 @@ mod stage1 {
         }
 
         fn seed_decl(&mut self, id: ast::DeclId, parent_id: ScopeDescId) {
-            let decl = self.sd.ast.decls.get(id).unwrap();
+            let decl = &self.sd.ast.decls[id];
             match &decl.kind {
                 ast::DeclKind::Func(func) => {
                     let sym = self.sd.get_tok_sym(func.name);
@@ -210,7 +211,7 @@ mod stage1 {
         }
 
         fn seed_expr(&mut self, id: ast::ExprId, parent_id: ScopeDescId) {
-            let expr = self.sd.ast.exprs.get(id).unwrap();
+            let expr = &self.sd.ast.exprs[id];
             match &expr.kind {
                 ast::ExprKind::Path(_) => {}
                 ast::ExprKind::Literal(_) => {}
@@ -242,7 +243,7 @@ mod stage1 {
         }
 
         fn seed_stmt(&mut self, id: ast::StmtId, parent_id: ScopeDescId) {
-            let stmt = self.sd.ast.stmts.get(id).unwrap();
+            let stmt = &self.sd.ast.stmts[id];
             match &stmt.kind {
                 ast::StmtKind::Decl(decl) => self.seed_decl(*decl, parent_id),
                 ast::StmtKind::Expr(expr) => self.seed_expr(*expr, parent_id),
@@ -280,7 +281,7 @@ mod stage2 {
             Self {
                 sd,
                 scope_map,
-                current_scope: *scope_map.descs.indices().get(0).unwrap(),
+                current_scope: scope_map.descs.indices()[0],
                 args: Default::default(),
                 locals: Default::default(),
                 locals_bread_crumbs: Default::default(),
@@ -295,36 +296,31 @@ mod stage2 {
         }
 
         fn resolve_decl(&mut self, decl_id: ast::DeclId) -> DeclId {
-            let scope = self.scope_map.descs.get(self.current_scope).unwrap();
+            let scope = &self.scope_map.descs[self.current_scope];
 
             let old_args = std::mem::take(&mut self.args);
             let old_locals = std::mem::take(&mut self.locals);
             let old_locals_crumbs = std::mem::take(&mut self.locals_bread_crumbs);
 
-            let kind = &self.sd.ast.decls.get(decl_id).unwrap().kind;
+            let kind = &self.sd.ast.decls[decl_id].kind;
             let ret = match kind {
                 ast::DeclKind::Func(func) => {
                     let sym = self.sd.get_tok_sym(func.name);
-                    let decl_desc_id = *scope.decls_name_map.get(&sym).unwrap();
-                    let decl_desc = scope.decls.get(decl_desc_id).unwrap();
+                    let decl_desc_id = scope.decls_name_map[&sym];
+                    let decl_desc = &scope.decls[decl_desc_id];
                     assert_eq!(decl_desc.ast_id, decl_id);
                     assert_eq!(decl_desc.tag, DeclDescTag::Func);
 
                     let ty = self.get_ty(func.ty);
 
                     debug_assert!(
-                        {
-                            // let tys = self.td.tys.borrow();
-                            // let utys = self.td.interned_utys.borrow();
-                            // utys.get(tys.get(ty).unwrap().id).unwrap().is_func()
-                            self.map.utys[self.map.tys[ty].id].is_func()
-                        },
+                        self.map.utys[self.map.tys[ty].id].is_func(),
                         "internal compiler error; function does not have function type"
                     );
 
                     // setup args
                     assert!(self.args.is_empty());
-                    match &self.sd.ast.tys.get(func.ty).unwrap().kind {
+                    match &self.sd.ast.tys[func.ty].kind {
                         ast::TyKind::Func(ast::TyFunc { params, .. }) => {
                             params.iter().for_each(|param| {
                                 if let Some(name) = param.name {
@@ -357,7 +353,7 @@ mod stage2 {
         }
 
         fn resolve_expr(&mut self, expr_id: ast::ExprId) -> ExprId {
-            let expr = self.sd.ast.exprs.get(expr_id).unwrap();
+            let expr = &self.sd.ast.exprs[expr_id];
             let kind = match expr.kind.clone() {
                 ast::ExprKind::Path(path) => ExprKind::Res(self.resolve_expr_path(&path)),
                 ast::ExprKind::Block(blk) => {
@@ -367,7 +363,7 @@ mod stage2 {
                             .kinds
                             .get_by_left(&ScopeKind::Block(expr_id))
                             .unwrap();
-                        let current_scope = self.scope_map.descs.get(self.current_scope).unwrap();
+                        let current_scope = &self.scope_map.descs[self.current_scope];
                         assert!(current_scope.children.contains(scope));
                         scope
                     };
@@ -380,7 +376,7 @@ mod stage2 {
                         .stmts
                         .iter()
                         .map(|stmt_id| {
-                            let stmt = self.sd.ast.stmts.get(*stmt_id).unwrap();
+                            let stmt = &self.sd.ast.stmts[*stmt_id];
                             let kind = match stmt.kind {
                                 ast::StmtKind::Let(ref l) => {
                                     let name = self.sd.get_tok_sym(l.name);
@@ -448,7 +444,7 @@ mod stage2 {
         }
 
         fn get_ty(&mut self, ty_id: ast::TyId) -> TyId {
-            let ty = &self.sd.ast.tys.get(ty_id).unwrap().kind;
+            let ty = &self.sd.ast.tys[ty_id].kind;
             let uty = match ty {
                 ast::TyKind::Path(path) => UTy::Res(self.resolve_ty_path(path)),
                 ast::TyKind::Func(ty) => UTy::Func {
@@ -488,14 +484,14 @@ mod stage2 {
                             .locals
                             .iter()
                             .rev()
-                            .find(|&&id| self.map.locals.get(id).unwrap().name == sym)
+                            .find(|&&id| self.map.locals[id].name == sym)
                             .map(|&id| ExprPathResolution::Local(id))
                         {
                             local
                         } else if let Some(arg) = self
                             .args
                             .iter()
-                            .find(|&&id| self.map.func_args.get(id).unwrap().name == sym)
+                            .find(|&&id| self.map.func_args[id].name == sym)
                             .map(|&id| ExprPathResolution::Arg(id))
                         {
                             arg
@@ -509,7 +505,7 @@ mod stage2 {
                 .collect::<Vec<_>>();
 
             assert!(res.len() == 1, "todo!");
-            res.get(0).unwrap().clone()
+            res[0].clone()
         }
 
         fn search_for_decl_in_scope_looking_up(
@@ -517,7 +513,7 @@ mod stage2 {
             scope_id: ScopeDescId,
             sym: StringSymbol,
         ) -> DeclId {
-            let scope = self.scope_map.descs.get(scope_id).unwrap();
+            let scope = &self.scope_map.descs[scope_id];
 
             match scope.decls_name_map.get(&sym) {
                 Some(id) => *id,
@@ -531,10 +527,7 @@ mod stage2 {
                 }
                 None => {
                     let strings = self.sd.strings.borrow();
-                    todo!(
-                        "could not find value `{}` in scope",
-                        strings.get(sym).unwrap()
-                    );
+                    todo!("could not find value `{}` in scope", strings[sym]);
                 }
             }
         }
