@@ -542,20 +542,26 @@ mod stage2 {
                     let str = self.sd.get_tok_slice(*idx);
 
                     let prim_ty = match str {
-                        "sint" => PrimTy::Sint(IntSize::Unspecified),
-                        "uint" => PrimTy::Uint(IntSize::Unspecified),
-                        "sintptr" => PrimTy::Sint(IntSize::PtrSized),
-                        "uintptr" => PrimTy::Uint(IntSize::PtrSized),
+                        "sint" | "sintptr" => PrimTy::Integer {
+                            signed: true,
+                            size: None,
+                        },
+                        "uint" | "uintptr" => PrimTy::Integer {
+                            signed: false,
+                            size: None,
+                        },
                         "bool" => PrimTy::Bool,
                         "void" => PrimTy::Void,
                         // if it starts with 's' and the rest of the string is a number
-                        _ if str.starts_with('s') && chk_int_num(&str[1..]) => {
-                            PrimTy::Sint(IntSize::BitSized(str[1..].parse().unwrap()))
-                        }
+                        _ if str.starts_with('s') && chk_int_num(&str[1..]) => PrimTy::Integer {
+                            signed: true,
+                            size: Some(str[1..].parse().unwrap()),
+                        },
                         // if it starts with 'u' and the rest of the string is a number
-                        _ if str.starts_with('u') && chk_int_num(&str[1..]) => {
-                            PrimTy::Uint(IntSize::BitSized(str[1..].parse().unwrap()))
-                        }
+                        _ if str.starts_with('u') && chk_int_num(&str[1..]) => PrimTy::Integer {
+                            signed: false,
+                            size: Some(str[1..].parse().unwrap()),
+                        },
                         _ => todo!(),
                     };
                     TyPathResolution::PrimTy(prim_ty)
@@ -653,19 +659,13 @@ pub enum TyPathResolution {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrimTy {
-    Sint(IntSize),
-    Uint(IntSize),
+    Integer {
+        signed: bool,
+        size: Option<NonZeroU8>,
+    },
     Void,
     Bool,
     // @TODO: Add more
-}
-
-/// 1 byte
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IntSize {
-    Unspecified,
-    PtrSized,
-    BitSized(NonZeroU8),
 }
 
 /// Holds a reference to where the type is mentioned in the ast,
