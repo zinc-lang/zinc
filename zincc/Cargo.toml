@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 clap = "3.2"
 
-llvm = { path = "../llvm-rs" }
+llvm = { path = "../llvm-rs/llvm-rs" }
 smallvec = { version = "1.9", features = ["union"] }
 
 fnv = "1.0"
