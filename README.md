@@ -44,46 +44,50 @@ The zinc programming language.
 
 ## Building
 
-### Dependencies:
+Building llvm-rs is easier with nix as it takes care of any dependencies, but is not required.
 
-- llvm-13
-- clang
-- ninja
+### With nix
+
+``` sh
+git submodules update --init
+cd llvm-rs
+nix-shell # enter a nix shell
+make
+exit # exit the nix shell
+
+cd ../zincc
+cargo build # or cargo run -- <args>
+```
+
+### Without nix
+
+#### Dependencies:
+
 - deno
-
-### Cloning
-
-``` sh
-$ git clone https://github.com/tealsnow/zinc.git
-$ cd zinc
-$ git submodules update --init
-```
-
-### Building `llvm_c_2`
-
-This only need to be done once
+- ninja
+- cmake
+- clang-13 or later
+- libclang-13
+- libllvm-13
+- rust
 
 ``` sh
-$ cd llvm_c_2
-$ ./rnn.ts build
-$ cd ../
+git submodules update --init
+cd llvm-rs
+make
+
+cd ../zincc
+cargo build # or cargo run -- <args>
 ```
 
-### Building `zincc`
-
-``` sh
-$ cd zincc
-$ cargo build
-```
-
-### Running `zincc` on some source code
+## Usage
 
 ``` sh
 # within zincc/
 $ cargo r -- -T ../zinc_src/<pick a file>
 ```
 
-## Things I want to make with this
+## Things I want to make with this (Eventual goals)
 
 - Programming language(s)
   - Self-hosted zinc compiler
