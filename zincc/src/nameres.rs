@@ -36,50 +36,49 @@ pub fn resolve(
     ast_map: &ast::AstMap,
 ) -> NameResolutionResult {
     let sd = SharedData::new(source, spans, ast_map);
-    let (scopes, scope_kind_map) = stage1(&sd);
-    stage2(sd, scopes, scope_kind_map)
+    let scope_map = stage1(&sd);
+    stage2(sd, scope_map)
 }
 
-fn stage1<'s>(sd: &'s SharedData<'s>) -> (ScopeDescMap, BiHashMap<ScopeKind, ScopeDescId>) {
+fn stage1<'s>(sd: &'s SharedData<'s>) -> ScopeMap {
     let mut stage = stage1::Stage1Gen::<'s>::new(sd);
     stage.seed();
-    (stage.scopes, stage.scope_kind_map)
+    stage.map
 }
 
-fn stage2(
-    sd: SharedData,
-    scopes: ScopeDescMap,
-    scope_kinds_map: BiHashMap<ScopeKind, ScopeDescId>,
-) -> NameResolutionResult {
-    let td = TypeData::new();
-
+fn stage2(sd: SharedData, scope_map: ScopeMap) -> NameResolutionResult {
     let map = {
-        let mut stage = stage2::Stage2::new(&sd, &td, &scopes, &scope_kinds_map);
+        let mut stage = stage2::Stage2::new(&sd, &scope_map);
         stage.do_resolution();
         stage.map
     };
 
     NameResolutionResult {
-        scopes,
-        scope_kinds_map,
+        scope_map,
         strings: sd.strings.into_inner(),
-        td,
         map,
     }
 }
 
 #[derive(Debug)]
 pub struct NameResolutionResult {
-    pub scopes: ScopeDescMap,
-    pub scope_kinds_map: BiHashMap<ScopeKind, ScopeDescId>,
     pub strings: StringInterningVec,
-    pub td: TypeData,
+    pub scope_map: ScopeMap,
     pub map: IdMap,
 }
 
 #[derive(Debug, Default)]
+pub struct ScopeMap {
+    pub descs: IndexVec<ScopeDescId, ScopeDesc>,
+    pub kinds: BiHashMap<ScopeKind, ScopeDescId>,
+}
+
+#[derive(Debug, Default)]
 pub struct IdMap {
-    pub decls: FnvHashMap<DeclDescId, DeclKind>,
+    pub utys: InterningIndexVec<UTyId, UTy>,
+    pub tys: IndexVec<TyId, Ty>,
+
+    pub decls: FnvHashMap<DeclId, DeclKind>,
 
     pub blocks: IndexVec<BlockId, Block>,
     pub block_scope_map: FnvHashMap<ScopeDescId, BlockId>,
@@ -91,7 +90,7 @@ pub struct IdMap {
     pub func_args: IndexVec<FuncArgId, FuncArg>,
 }
 
-index::define_idx! { pub struct DeclDescId: u32 }
+index::define_idx! { pub struct DeclId: u32 }
 index::define_idx! { pub struct ScopeDescId: u32 != 0 }
 
 index::define_idx! { pub struct TyId: u32 != 0 }
@@ -165,21 +164,19 @@ mod stage1 {
     #[derive(Debug)]
     pub(super) struct Stage1Gen<'s> {
         sd: &'s SharedData<'s>,
-        pub(super) scopes: ScopeDescMap,
-        pub(super) scope_kind_map: BiHashMap<ScopeKind, ScopeDescId>,
+        pub(super) map: ScopeMap,
     }
 
     impl<'s> Stage1Gen<'s> {
         pub fn new(sd: &'s SharedData<'s>) -> Self {
             Self {
                 sd,
-                scopes: Default::default(),
-                scope_kind_map: Default::default(),
+                map: ScopeMap::default(),
             }
         }
 
         pub fn seed(&mut self) {
-            let root_scope = self.scopes.push(ScopeDesc::new(None));
+            let root_scope = self.map.descs.push(ScopeDesc::new(None));
 
             self.sd.ast.root.decls.iter().for_each(|decl| {
                 self.seed_decl(*decl, root_scope);
@@ -191,7 +188,7 @@ mod stage1 {
             match &decl.kind {
                 ast::DeclKind::Func(func) => {
                     let sym = self.sd.get_tok_sym(func.name);
-                    let scope = self.scopes.get_mut(parent_id).unwrap();
+                    let scope = self.map.descs.get_mut(parent_id).unwrap();
 
                     // @TODO: Handle error
                     assert!(
@@ -219,11 +216,10 @@ mod stage1 {
                 ast::ExprKind::Literal(_) => {}
 
                 ast::ExprKind::Block(blk) => {
-                    let block_scope = self.scopes.push(ScopeDesc::new(Some(parent_id)));
-                    let parent = self.scopes.get_mut(parent_id).unwrap();
+                    let block_scope = self.map.descs.push(ScopeDesc::new(Some(parent_id)));
+                    let parent = self.map.descs.get_mut(parent_id).unwrap();
                     parent.children.push(block_scope);
-                    self.scope_kind_map
-                        .insert(ScopeKind::Block(id), block_scope);
+                    self.map.kinds.insert(ScopeKind::Block(id), block_scope);
 
                     blk.stmts
                         .iter()
@@ -261,10 +257,8 @@ mod stage2 {
 
     pub(crate) struct Stage2<'s> {
         sd: &'s SharedData<'s>,
-        td: &'s TypeData,
 
-        scopes: &'s ScopeDescMap,
-        scope_kind_map: &'s BiHashMap<ScopeKind, ScopeDescId>,
+        scope_map: &'s ScopeMap,
         current_scope: ScopeDescId,
 
         /// Before resolving the body of a function we set this up to the function's args.
@@ -282,18 +276,11 @@ mod stage2 {
     }
 
     impl<'s> Stage2<'s> {
-        pub(super) fn new(
-            sd: &'s SharedData<'s>,
-            td: &'s TypeData,
-            scopes: &'s ScopeDescMap,
-            scope_kind_map: &'s BiHashMap<ScopeKind, ScopeDescId>,
-        ) -> Self {
+        pub(super) fn new(sd: &'s SharedData<'s>, scope_map: &'s ScopeMap) -> Self {
             Self {
                 sd,
-                td,
-                scopes,
-                scope_kind_map,
-                current_scope: *scopes.indices().get(0).unwrap(),
+                scope_map,
+                current_scope: *scope_map.descs.indices().get(0).unwrap(),
                 args: Default::default(),
                 locals: Default::default(),
                 locals_bread_crumbs: Default::default(),
@@ -307,8 +294,8 @@ mod stage2 {
             });
         }
 
-        fn resolve_decl(&mut self, decl_id: ast::DeclId) -> DeclDescId {
-            let scope = self.scopes.get(self.current_scope).unwrap();
+        fn resolve_decl(&mut self, decl_id: ast::DeclId) -> DeclId {
+            let scope = self.scope_map.descs.get(self.current_scope).unwrap();
 
             let old_args = std::mem::take(&mut self.args);
             let old_locals = std::mem::take(&mut self.locals);
@@ -327,9 +314,10 @@ mod stage2 {
 
                     debug_assert!(
                         {
-                            let tys = self.td.tys.borrow();
-                            let utys = self.td.interned_utys.borrow();
-                            utys.get(tys.get(ty).unwrap().id).unwrap().is_func()
+                            // let tys = self.td.tys.borrow();
+                            // let utys = self.td.interned_utys.borrow();
+                            // utys.get(tys.get(ty).unwrap().id).unwrap().is_func()
+                            self.map.utys[self.map.tys[ty].id].is_func()
                         },
                         "internal compiler error; function does not have function type"
                     );
@@ -375,10 +363,11 @@ mod stage2 {
                 ast::ExprKind::Block(blk) => {
                     let blk_scope = {
                         let scope = self
-                            .scope_kind_map
+                            .scope_map
+                            .kinds
                             .get_by_left(&ScopeKind::Block(expr_id))
                             .unwrap();
-                        let current_scope = self.scopes.get(self.current_scope).unwrap();
+                        let current_scope = self.scope_map.descs.get(self.current_scope).unwrap();
                         assert!(current_scope.children.contains(scope));
                         scope
                     };
@@ -396,12 +385,14 @@ mod stage2 {
                                 ast::StmtKind::Let(ref l) => {
                                     let name = self.sd.get_tok_sym(l.name);
                                     let expr = self.resolve_expr(l.expr);
-                                    let local_id = self.map.locals.push(Local {
+                                    let ty = l.ty.map(|id| self.get_ty(id));
+                                    let local = Local {
                                         scope: self.current_scope,
                                         name,
                                         expr,
-                                        ty: l.ty.map(|id| self.get_ty(id)),
-                                    });
+                                        ty,
+                                    };
+                                    let local_id = self.map.locals.push(local);
                                     self.locals.push(local_id);
                                     StmtKind::Let(local_id)
                                 }
@@ -456,7 +447,7 @@ mod stage2 {
             self.map.exprs.push(expr)
         }
 
-        fn get_ty(&self, ty_id: ast::TyId) -> TyId {
+        fn get_ty(&mut self, ty_id: ast::TyId) -> TyId {
             let ty = &self.sd.ast.tys.get(ty_id).unwrap().kind;
             let uty = match ty {
                 ast::TyKind::Path(path) => UTy::Res(self.resolve_ty_path(path)),
@@ -466,17 +457,15 @@ mod stage2 {
                         .iter()
                         .map(|param| self.get_ty(param.ty))
                         .collect(),
-                    ret: ty.ret.map_or(self.td.void_ty, |ret| self.get_ty(ret)),
+                    ret: ty.ret.map(|ret| self.get_ty(ret)),
                 },
                 ast::TyKind::Slice(ty) => UTy::Slice(self.get_ty(*ty)),
                 ast::TyKind::Nullable(ty) => UTy::Nullable(self.get_ty(*ty)),
             };
 
-            let mut interned_utys = self.td.interned_utys.borrow_mut();
-            let id = interned_utys.get_or_intern(uty);
+            let id = self.map.utys.get_or_intern(uty);
 
-            let mut tys = self.td.tys.borrow_mut();
-            tys.push(Ty {
+            self.map.tys.push(Ty {
                 ast: Some(ty_id),
                 id,
             })
@@ -527,13 +516,13 @@ mod stage2 {
             &self,
             scope_id: ScopeDescId,
             sym: StringSymbol,
-        ) -> DeclDescId {
-            let scope = self.scopes.get(scope_id).unwrap();
+        ) -> DeclId {
+            let scope = self.scope_map.descs.get(scope_id).unwrap();
 
             match scope.decls_name_map.get(&sym) {
                 Some(id) => *id,
                 None if scope.parent.is_some() && {
-                    let kind = self.scope_kind_map.get_by_right(&scope_id).unwrap();
+                    let kind = self.scope_map.kinds.get_by_right(&scope_id).unwrap();
                     !kind.is_module()
                 } =>
                 {
@@ -597,44 +586,13 @@ mod stage2 {
     }
 }
 
-#[derive(Debug)]
-pub struct TypeData {
-    interned_utys: RefCell<InterningIndexVec<UTyId, UTy>>,
-    tys: RefCell<IndexVec<TyId, Ty>>,
-    void_ty: TyId,
-}
-
-impl Default for TypeData {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TypeData {
-    pub fn new() -> Self {
-        let mut interned_utys = InterningIndexVec::new();
-        let mut tys = IndexVec::new();
-        let void_uty = interned_utys.intern(UTy::Res(TyPathResolution::PrimTy(PrimTy::Void)));
-        let void_ty = tys.push(Ty {
-            ast: None,
-            id: void_uty,
-        });
-
-        Self {
-            interned_utys: RefCell::new(interned_utys),
-            tys: RefCell::new(tys),
-            void_ty,
-        }
-    }
-}
-
-pub type ScopeDescMap = IndexVec<ScopeDescId, ScopeDesc>;
+// pub type ScopeDescMap = IndexVec<ScopeDescId, ScopeDesc>;
 
 /// A Description of a Scope. Such as a module, or a block.
 #[derive(Debug)]
 pub struct ScopeDesc {
-    pub decls: IndexVec<DeclDescId, DeclDesc>,
-    pub decls_name_map: FnvHashMap<StringSymbol, DeclDescId>,
+    pub decls: IndexVec<DeclId, DeclDesc>,
+    pub decls_name_map: FnvHashMap<StringSymbol, DeclId>,
 
     pub children: SmallVec<[ScopeDescId; 4]>,
 
@@ -725,13 +683,13 @@ pub struct Ty {
     pub id: UTyId,
 }
 
-/// A unique type, if two `UTypeId`s are equal, they represent the same type.
+/// A unique type, if two `UTyId`s are equal, they represent the same type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UTy {
     Res(TyPathResolution),
     Func {
         args: SmallVec<[TyId; 4]>,
-        ret: TyId,
+        ret: Option<TyId>,
     },
     Slice(TyId),
     Nullable(TyId),
@@ -746,7 +704,7 @@ impl UTy {
 
 #[derive(Debug, Clone)]
 pub enum ExprPathResolution {
-    Decl(DeclDescId),
+    Decl(DeclId),
     Local(LocalId),
     Arg(FuncArgId),
 }
@@ -805,7 +763,7 @@ pub struct Stmt {
 pub enum StmtKind {
     Let(LocalId),
     Expr(ExprId),
-    Decl(DeclDescId),
+    Decl(DeclId),
 }
 
 #[derive(Debug)]
