@@ -4,5 +4,20 @@ fn main() {
     {
         true;
         return 5;
+        return;
     }
+
+    1 + 2;
+
+    three;
+    add;
+    three();
+}
+
+fn three(): sint {
+    return 1 + 2;
+}
+
+fn add(a: sint, b: sint): sint {
+    // return a + b;
 }
