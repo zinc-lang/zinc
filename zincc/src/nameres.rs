@@ -75,8 +75,9 @@ pub struct ScopeMap {
 
 #[derive(Debug, Default)]
 pub struct IdMap {
-    pub utys: InterningIndexVec<UTyId, UTy>,
     pub tys: IndexVec<TyId, Ty>,
+    pub utys: InterningIndexVec<UTyId, UTy>,
+    pub func_tys: InterningIndexVec<TyFuncId, TyFunc>,
 
     pub decls: FnvHashMap<DeclId, DeclKind>,
 
@@ -102,6 +103,8 @@ index::define_idx! { pub struct BlockId: u32 }
 
 index::define_idx! { pub struct LocalId: u32 }
 index::define_idx! { pub struct FuncArgId: u32 }
+
+index::define_idx! { pub struct TyFuncId: u32 }
 
 #[derive(Debug)]
 pub struct SharedData<'s> {
@@ -311,27 +314,20 @@ mod stage2 {
                     assert_eq!(decl_desc.ast_id, decl_id);
                     assert_eq!(decl_desc.tag, DeclDescTag::Func);
 
-                    let ty = self.get_ty(func.ty);
-
-                    debug_assert!(
-                        self.map.utys[self.map.tys[ty].id].is_func(),
-                        "internal compiler error; function does not have function type"
-                    );
+                    let ty = self.get_ty_func(func.ty);
 
                     // setup args
                     assert!(self.args.is_empty());
-                    match &self.sd.ast.tys[func.ty].kind {
-                        ast::TyKind::Func(ast::TyFunc { params, .. }) => {
-                            params.iter().for_each(|param| {
-                                if let Some(name) = param.name {
-                                    let name = self.sd.get_tok_sym(name);
-                                    let ty = self.get_ty(param.ty);
-                                    let id = self.map.func_args.push(FuncArg { name, ty });
-                                    self.args.push(id);
-                                }
-                            })
-                        }
-                        _ => unreachable!(),
+                    {
+                        let ty = &self.sd.ast.func_tys[func.ty];
+                        ty.params.iter().for_each(|param| {
+                            if let Some(name) = param.name {
+                                let name = self.sd.get_tok_sym(name);
+                                let ty = self.get_ty(param.ty);
+                                let id = self.map.func_args.push(FuncArg { name, ty });
+                                self.args.push(id);
+                            }
+                        })
                     }
 
                     let body = self.resolve_expr(func.body);
@@ -447,14 +443,7 @@ mod stage2 {
             let ty = &self.sd.ast.tys[ty_id].kind;
             let uty = match ty {
                 ast::TyKind::Path(path) => UTy::Res(self.resolve_ty_path(path)),
-                ast::TyKind::Func(ty) => UTy::Func {
-                    args: ty
-                        .params
-                        .iter()
-                        .map(|param| self.get_ty(param.ty))
-                        .collect(),
-                    ret: ty.ret.map(|ret| self.get_ty(ret)),
-                },
+                ast::TyKind::Func(id) => UTy::Func(self.get_ty_func(*id)),
                 ast::TyKind::Slice(ty) => UTy::Slice(self.get_ty(*ty)),
                 ast::TyKind::Nullable(ty) => UTy::Nullable(self.get_ty(*ty)),
             };
@@ -465,6 +454,19 @@ mod stage2 {
                 ast: Some(ty_id),
                 id,
             })
+        }
+
+        fn get_ty_func(&mut self, ty_func_id: ast::TyFuncId) -> TyFuncId {
+            let func = &self.sd.ast.func_tys[ty_func_id];
+            let params = func
+                .params
+                .iter()
+                .map(|param| self.get_ty(param.ty))
+                .collect();
+            let ret = func.ret.map(|id| self.get_ty(id));
+
+            let func = TyFunc { params, ret };
+            self.map.func_tys.get_or_intern(func)
         }
 
         fn resolve_expr_path(&self, path: &ast::Path) -> ExprPathResolution {
@@ -647,7 +649,7 @@ pub enum DeclKind {
 
 #[derive(Debug)]
 pub struct DeclFunc {
-    pub ty: TyId, // Func type
+    pub ty: TyFuncId,
     pub body: ExprId,
 }
 
@@ -680,10 +682,7 @@ pub struct Ty {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UTy {
     Res(TyPathResolution),
-    Func {
-        args: SmallVec<[TyId; 4]>,
-        ret: Option<TyId>,
-    },
+    Func(TyFuncId),
     Slice(TyId),
     Nullable(TyId),
 }
@@ -691,8 +690,14 @@ pub enum UTy {
 impl UTy {
     #[must_use]
     pub fn is_func(&self) -> bool {
-        matches!(self, Self::Func { .. })
+        matches!(self, Self::Func(..))
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct TyFunc {
+    pub params: SmallVec<[TyId; 4]>,
+    pub ret: Option<TyId>,
 }
 
 #[derive(Debug, Clone)]

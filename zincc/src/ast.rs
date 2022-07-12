@@ -8,17 +8,21 @@ use smallvec::SmallVec;
 
 index::define_idx! { pub struct DeclId: u32 }
 index::define_idx! { pub struct StmtId: u32 }
+index::define_idx! { pub struct ExprId: u32 != 0 }
 
 index::define_idx! { pub struct TyId: u32 != 0 }
-index::define_idx! { pub struct ExprId: u32 != 0 }
+index::define_idx! { pub struct TyFuncId: u32  }
 
 #[derive(Debug)]
 pub struct AstMap {
     pub root: Root,
+
     pub decls: IndexVec<DeclId, Decl>,
-    pub tys: IndexVec<TyId, Ty>,
     pub stmts: IndexVec<StmtId, Stmt>,
     pub exprs: IndexVec<ExprId, Expr>,
+
+    pub tys: IndexVec<TyId, Ty>,
+    pub func_tys: IndexVec<TyFuncId, TyFunc>,
 }
 
 #[derive(Debug)]
@@ -51,7 +55,7 @@ pub enum DeclKind {
 #[derive(Debug)]
 pub struct DeclFunc {
     pub name: TokenIndex,
-    pub ty: TyId,
+    pub ty: TyFuncId,
     pub body: ExprId,
 }
 
@@ -64,7 +68,7 @@ pub struct Ty {
 #[derive(Debug)]
 pub enum TyKind {
     Path(Path),
-    Func(TyFunc),
+    Func(TyFuncId),
     Slice(TyId),
     Nullable(TyId),
 }
@@ -241,9 +245,10 @@ pub mod gen {
                 map: AstMap {
                     root: ast::Root::nil(),
                     decls: Default::default(),
-                    tys: Default::default(),
                     stmts: Default::default(),
                     exprs: Default::default(),
+                    tys: Default::default(),
+                    func_tys: Default::default(),
                 },
             }
         }
@@ -286,10 +291,6 @@ pub mod gen {
             debug_assert_eq!(body.kind, NK::decl_func_body);
 
             let ty = self.gen_ty_func(proto);
-            let ty = self.map.tys.push(ast::Ty {
-                cst: proto.raw,
-                kind: ast::TyKind::Func(ty),
-            });
             let body = self.gen_expr(self.cst.get(body).nodes()[0]);
 
             ast::DeclFunc { ty, name, body }
@@ -332,7 +333,7 @@ pub mod gen {
             self.map.tys.push(ast::Ty { cst: id.raw, kind })
         }
 
-        fn gen_ty_func(&mut self, id: NamedNodeId) -> ast::TyFunc {
+        fn gen_ty_func(&mut self, id: NamedNodeId) -> ast::TyFuncId {
             debug_assert_eq!(id.kind, NK::func_proto);
             let node = self.cst.get(id);
 
@@ -359,7 +360,8 @@ pub mod gen {
                 .map(|&id| self.cst.get(id).nodes()[0])
                 .map(|id| self.gen_ty(id));
 
-            ast::TyFunc { params, ret }
+            let func = ast::TyFunc { params, ret };
+            self.map.func_tys.push(func)
         }
 
         fn gen_expr(&mut self, id: NamedNodeId) -> ast::ExprId {
