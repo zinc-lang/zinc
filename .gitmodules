@@ -1,3 +1,0 @@
-[submodule "llvm_c_2-sys/llvm_c_2"]
-	path = llvm_c_2-sys/llvm_c_2
-	url = https://github.com/tealsnow/llvm_c_2.git
