@@ -57,10 +57,12 @@ pub struct Timer {
 }
 
 impl Timer {
+    #[inline]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[inline(always)]
     pub fn spanned<T>(&mut self, name: &'static str, f: impl FnOnce() -> T) -> T {
         let (res, duration) = self.stopwatch.spanned(f);
         self.map.push((name, duration));
