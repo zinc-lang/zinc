@@ -16,13 +16,11 @@
 //! It's possible that it would be slower as we would effectively be doing 2 passes over the cst, but that
 //! does not mean it would be inherently slower.
 
-use bimap::BiHashMap;
+use fnv::FnvHashMap as HashMap;
 use smallvec::SmallVec;
 use std::{cell::RefCell, num::NonZeroU8};
 
-// @TODO: Continue to test if this makes any speed difference. (2022-07-11)
-use fnv::FnvHashMap;
-// use std::collections::HashMap as FnvHashMap;
+type BiHashMap<K, V> = bimap::BiHashMap<K, V, fnv::FnvBuildHasher, fnv::FnvBuildHasher>;
 
 use crate::{
     ast,
@@ -73,10 +71,10 @@ pub struct IdMap {
     pub utys: InterningIndexVec<UTyId, UTy>,
     pub func_tys: InterningIndexVec<TyFuncId, TyFunc>,
 
-    pub decls: FnvHashMap<DeclId, DeclKind>,
+    pub decls: HashMap<DeclId, DeclKind>,
 
     pub blocks: IndexVec<BlockId, Block>,
-    pub block_scope_map: FnvHashMap<ScopeDescId, BlockId>,
+    pub block_scope_map: HashMap<ScopeDescId, BlockId>,
 
     pub exprs: IndexVec<ExprId, Expr>,
     pub stmts: IndexVec<StmtId, Stmt>,
@@ -600,7 +598,7 @@ mod stage2 {
 #[derive(Debug)]
 pub struct ScopeDesc {
     pub decls: IndexVec<DeclId, DeclDesc>,
-    pub decls_name_map: FnvHashMap<StringSymbol, DeclId>,
+    pub decls_name_map: HashMap<StringSymbol, DeclId>,
 
     pub children: SmallVec<[ScopeDescId; 4]>,
 

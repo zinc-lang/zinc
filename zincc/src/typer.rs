@@ -3,8 +3,9 @@ use crate::{
     nameres::{self as nr, NameResolutionResult},
     util::index::{self, InterningIndexVec},
 };
+use fnv::FnvHashMap as HashMap;
 use smallvec::SmallVec;
-use std::{collections::HashMap, num::NonZeroU8};
+use std::num::NonZeroU8;
 
 pub fn resolve(nr: &NameResolutionResult) -> TypeMap {
     let mut typer = Typer::new(nr);
