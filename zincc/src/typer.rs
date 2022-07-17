@@ -59,6 +59,8 @@ pub struct TypeMap {
 
     pub tys: InterningIndexVec<TyId, Ty>,
     pub func_tys: InterningIndexVec<TyFuncId, TyFunc>,
+
+    pub decl_func_tys: HashMap<nr::DeclFuncId, TyFuncId>,
 }
 
 index::define_idx! { pub struct TyFuncId: u32 }
@@ -103,8 +105,10 @@ impl<'nr> Typer<'nr> {
     fn resolve_decl(&mut self, decl_id: nr::DeclId) {
         let decl = &self.nr.decls[&decl_id];
         match decl {
-            nr::DeclKind::Func(func) => {
-                let _ = self.nr_ty_func_id_to_ty_func_id(func.ty);
+            nr::DeclKind::Func(id) => {
+                let func = &self.nr.decl_funcs[*id];
+                let ty = self.nr_ty_func_id_to_ty_func_id(func.ty);
+                self.map.decl_func_tys.insert(*id, ty);
 
                 self.resolve_expr(func.body);
             }
@@ -193,7 +197,8 @@ impl<'nr> Typer<'nr> {
                     nr::ExprPathResolution::Decl(id) => {
                         let decl = &self.nr.decls[id];
                         match decl {
-                            nr::DeclKind::Func(func) => {
+                            nr::DeclKind::Func(id) => {
+                                let func = &self.nr.decl_funcs[*id];
                                 let ty = Ty::Func(self.nr_ty_func_id_to_ty_func_id(func.ty));
                                 self.map.tys.get_or_intern(ty)
                             }

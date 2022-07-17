@@ -42,6 +42,8 @@ index::define_idx! { pub struct FuncArgId: u32 }
 
 index::define_idx! { pub struct TyFuncId: u32 }
 
+index::define_idx! { pub struct DeclFuncId: u32 }
+
 #[derive(Debug, Default)]
 pub struct NameResolutionMap {
     pub scope_descs: IndexVec<ScopeDescId, ScopeDesc>,
@@ -52,6 +54,7 @@ pub struct NameResolutionMap {
     pub func_tys: InterningIndexVec<TyFuncId, TyFunc>,
 
     pub decls: HashMap<DeclId, DeclKind>,
+    pub decl_funcs: IndexVec<DeclFuncId, DeclFunc>,
 
     pub blocks: IndexVec<BlockId, Block>,
     pub block_scope_map: HashMap<ScopeDescId, BlockId>,
@@ -63,11 +66,22 @@ pub struct NameResolutionMap {
     pub func_args: IndexVec<FuncArgId, FuncArg>,
 }
 
+impl NameResolutionMap {
+    pub fn root_scope_id() -> ScopeDescId {
+        use crate::util::index::Idx;
+        ScopeDescId::new(0)
+    }
+
+    pub fn root_scope(&self) -> &ScopeDesc {
+        &self.scope_descs[Self::root_scope_id()]
+    }
+}
+
 /// A Description of a Scope. Such as a module, or a block.
 #[derive(Debug)]
 pub struct ScopeDesc {
     pub decls: IndexVec<DeclId, DeclDesc>,
-    pub decls_name_map: HashMap<StringSymbol, DeclId>,
+    pub decls_name_map: BiHashMap<StringSymbol, DeclId>,
 
     pub children: SmallVec<[ScopeDescId; 4]>,
 
@@ -117,7 +131,7 @@ pub enum DeclDescTag {
 
 #[derive(Debug)]
 pub enum DeclKind {
-    Func(DeclFunc),
+    Func(DeclFuncId),
 }
 
 #[derive(Debug)]
@@ -253,6 +267,8 @@ mod resolver {
     };
     use std::{cell::RefCell, num::NonZeroU8};
 
+    use super::NameResolutionMap;
+
     pub(super) struct NameResolver<'s> {
         source: &'s str,
         ranges: &'s [std::ops::Range<usize>],
@@ -281,13 +297,12 @@ mod resolver {
             ranges: &'s [std::ops::Range<usize>],
             ast: &'s ast::AstMap,
         ) -> Self {
-            use crate::util::index::Idx;
             Self {
                 source,
                 ranges,
                 ast,
+                current_scope: NameResolutionMap::root_scope_id(),
                 strings: RefCell::new(StringInterningVec::new()),
-                current_scope: nr::ScopeDescId::new(0),
                 args: Default::default(),
                 locals: Default::default(),
                 locals_bread_crumbs: Default::default(),
@@ -314,7 +329,7 @@ mod resolver {
 
                     // @TODO: Handle error
                     assert!(
-                        !scope.decls_name_map.contains_key(&sym),
+                        !scope.decls_name_map.contains_left(&sym),
                         "todo!: Handle error, multiple decls with the same name"
                     );
 
@@ -398,7 +413,7 @@ mod resolver {
             let ret = match kind {
                 ast::DeclKind::Func(func) => {
                     let sym = self.get_tok_sym(func.name);
-                    let decl_desc_id = scope.decls_name_map[&sym];
+                    let decl_desc_id = *scope.decls_name_map.get_by_left(&sym).unwrap();
                     let decl_desc = &scope.decls[decl_desc_id];
                     assert_eq!(decl_desc.ast_id, decl_id);
                     assert_eq!(decl_desc.tag, nr::DeclDescTag::Func);
@@ -423,9 +438,8 @@ mod resolver {
                     self.args.clear();
 
                     let func = nr::DeclFunc { ty, body };
-                    self.map
-                        .decls
-                        .insert(decl_desc_id, nr::DeclKind::Func(func));
+                    let id = self.map.decl_funcs.push(func);
+                    self.map.decls.insert(decl_desc_id, nr::DeclKind::Func(id));
 
                     decl_desc_id
                 }
@@ -615,7 +629,7 @@ mod resolver {
         ) -> nr::DeclId {
             let scope = &self.map.scope_descs[scope_id];
 
-            match scope.decls_name_map.get(&sym) {
+            match scope.decls_name_map.get_by_left(&sym) {
                 Some(id) => *id,
                 None if scope.parent.is_some() && {
                     let kind = self.map.scope_kinds.get_by_right(&scope_id).unwrap();

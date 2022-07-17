@@ -151,6 +151,14 @@ impl<I: Idx, T> std::ops::Index<I> for IndexVec<I, T> {
     }
 }
 
+impl<I: Idx, T> std::ops::Deref for IndexVec<I, T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.raw()
+    }
+}
+
 impl<I: Idx, T> IndexVec<I, T> {
     #[inline]
     pub fn new() -> Self {

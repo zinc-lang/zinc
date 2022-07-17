@@ -109,8 +109,8 @@ fn main() {
         eprintln!("{:#?}\n", ty_map);
     }
 
-    let zir = timer.spanned("zir generation", zir::test::create_test_funcs);
-    // let zir = timer.spanned("zir generation", || zir::gen(&nr_res, &ty_map, strings));
+    // let zir = timer.spanned("zir generation", zir::test::create_test_funcs);
+    let zir = timer.spanned("zir generation", || zir::gen(&nr_res, &ty_map, strings));
 
     if options.dumps.contains(&DumpOption::zir) {
         eprint!("\n=-=-=  ZIR Dump  =-=-=");
