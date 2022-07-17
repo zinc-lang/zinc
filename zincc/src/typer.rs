@@ -1,13 +1,12 @@
 use crate::{
-    ast,
-    nameres::{self as nr, NameResolutionResult},
+    ast, nameres as nr,
     util::index::{self, InterningIndexVec},
 };
 use fnv::FnvHashMap as HashMap;
 use smallvec::SmallVec;
 use std::num::NonZeroU8;
 
-pub fn resolve(nr: &NameResolutionResult) -> TypeMap {
+pub fn resolve(nr: &nr::NameResolutionMap) -> TypeMap {
     let mut typer = Typer::new(nr);
     typer.resolve();
     typer.map
@@ -72,12 +71,12 @@ pub struct TyFunc {
 
 #[derive(Debug)]
 struct Typer<'nr> {
-    nr: &'nr NameResolutionResult,
+    nr: &'nr nr::NameResolutionMap,
     map: TypeMap,
 }
 
 impl<'nr> Typer<'nr> {
-    fn new(nr: &'nr NameResolutionResult) -> Self {
+    fn new(nr: &'nr nr::NameResolutionMap) -> Self {
         Self {
             nr,
             map: Default::default(),
@@ -86,14 +85,13 @@ impl<'nr> Typer<'nr> {
 
     fn resolve(&mut self) {
         self.nr
-            .map
             .decls
             .keys()
             .cloned()
             .for_each(|decl_id| self.resolve_decl(decl_id));
 
         // assert that all exprs have a type
-        self.nr.map.exprs.indices().iter().for_each(|id| {
+        self.nr.exprs.indices().iter().for_each(|id| {
             assert!(
                 self.map.exprs.contains_key(id),
                 "expr id({:?}), does not have a type",
@@ -103,7 +101,7 @@ impl<'nr> Typer<'nr> {
     }
 
     fn resolve_decl(&mut self, decl_id: nr::DeclId) {
-        let decl = &self.nr.map.decls[&decl_id];
+        let decl = &self.nr.decls[&decl_id];
         match decl {
             nr::DeclKind::Func(func) => {
                 let _ = self.nr_ty_func_id_to_ty_func_id(func.ty);
@@ -114,7 +112,7 @@ impl<'nr> Typer<'nr> {
     }
 
     fn nr_uty_id_to_ty_id(&mut self, uty: nr::UTyId) -> TyId {
-        let uty = &self.nr.map.utys[uty];
+        let uty = &self.nr.utys[uty];
         let ty = match uty {
             nr::UTy::Res(res) => match res {
                 nr::TyPathResolution::PrimTy(prim) => {
@@ -131,23 +129,23 @@ impl<'nr> Typer<'nr> {
                 }
             },
             nr::UTy::Func(id) => Ty::Func(self.nr_ty_func_id_to_ty_func_id(*id)),
-            nr::UTy::Slice(id) => Ty::Slice(self.nr_uty_id_to_ty_id(self.nr.map.tys[*id].id)),
-            nr::UTy::Nullable(id) => Ty::Nullable(self.nr_uty_id_to_ty_id(self.nr.map.tys[*id].id)),
+            nr::UTy::Slice(id) => Ty::Slice(self.nr_uty_id_to_ty_id(self.nr.tys[*id].id)),
+            nr::UTy::Nullable(id) => Ty::Nullable(self.nr_uty_id_to_ty_id(self.nr.tys[*id].id)),
         };
         self.map.tys.get_or_intern(ty)
     }
 
     fn nr_ty_func_id_to_ty_func_id(&mut self, ty_func: nr::TyFuncId) -> TyFuncId {
-        let func = &self.nr.map.func_tys[ty_func];
+        let func = &self.nr.func_tys[ty_func];
         let params = func
             .params
             .iter()
-            .map(|&id| self.nr_uty_id_to_ty_id(self.nr.map.tys[id].id))
+            .map(|&id| self.nr_uty_id_to_ty_id(self.nr.tys[id].id))
             .collect();
         let ret = func
             .ret
             .map_or(self.map.tys.get_or_intern(Ty::Prim(TyPrim::Void)), |id| {
-                self.nr_uty_id_to_ty_id(self.nr.map.tys[id].id)
+                self.nr_uty_id_to_ty_id(self.nr.tys[id].id)
             });
 
         let func = TyFunc { params, ret };
@@ -155,10 +153,10 @@ impl<'nr> Typer<'nr> {
     }
 
     fn resolve_stmt(&mut self, stmt_id: nr::StmtId) {
-        let stmt = &self.nr.map.stmts[stmt_id];
+        let stmt = &self.nr.stmts[stmt_id];
         match &stmt.kind {
             nr::StmtKind::Let(local_id) => {
-                let local = &self.nr.map.locals[*local_id];
+                let local = &self.nr.locals[*local_id];
                 if let Some(_ty) = local.ty {
                     // @TODO: check type matches expr
                     todo!()
@@ -188,12 +186,12 @@ impl<'nr> Typer<'nr> {
     }
 
     fn resolve_expr(&mut self, expr_id: nr::ExprId) -> TyId {
-        let expr = &self.nr.map.exprs[expr_id];
+        let expr = &self.nr.exprs[expr_id];
         let ty = match &expr.kind {
             nr::ExprKind::Res(res) => {
                 let id = match res {
                     nr::ExprPathResolution::Decl(id) => {
-                        let decl = &self.nr.map.decls[id];
+                        let decl = &self.nr.decls[id];
                         match decl {
                             nr::DeclKind::Func(func) => {
                                 let ty = Ty::Func(self.nr_ty_func_id_to_ty_func_id(func.ty));
@@ -203,8 +201,8 @@ impl<'nr> Typer<'nr> {
                     }
                     nr::ExprPathResolution::Local(id) => self.map.locals[id],
                     nr::ExprPathResolution::Arg(id) => {
-                        let arg = &self.nr.map.func_args[*id];
-                        let ty = &self.nr.map.tys[arg.ty];
+                        let arg = &self.nr.func_args[*id];
+                        let ty = &self.nr.tys[arg.ty];
 
                         self.nr_uty_id_to_ty_id(ty.id)
                     }
@@ -212,7 +210,7 @@ impl<'nr> Typer<'nr> {
                 return self.map_expr_ty(expr_id, id);
             }
             nr::ExprKind::Block(block) => {
-                self.nr.map.blocks[*block]
+                self.nr.blocks[*block]
                     .stmts
                     .iter()
                     .cloned()
