@@ -15,25 +15,19 @@ mod zir;
 fn main() {
     let options = Options::get();
 
-    assert_eq!(options.files.len(), 1);
-    let source_path = &options.files[0];
-
-    // Read file to string
-    let source = util::read_file_to_string(source_path)
+    let source = util::read_file_to_string(&options.path)
         .map(|s| s + "\n\0")
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to read file at path '{}', {}", source_path, e);
+        .unwrap_or_else(|err| {
+            eprintln!("Failed to read file at path '{}', {}", options.path, err);
             std::process::exit(1);
         });
 
     let mut timer = util::time::Timer::new();
     let stderr = &mut std::io::stderr();
 
-    // Lex the source
-    let lex_res = timer.spanned("lexing", || parse::lex(&source));
+    let lex_res = timer.spanned("lexical analysis", || parse::lex(&source));
 
     if options.dumps.contains(&DumpOption::tokens) {
-        // Print tokens
         lex_res.debug_zip().for_each(|(tk, range)| {
             debug::write_token(stderr, &source, tk, &range, options.color).unwrap();
             eprintln!();
@@ -53,11 +47,9 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Parse the tokens
     let parse_res = timer.spanned("parsing", || parse::parse(&lex_res.tokens));
 
     if options.dumps.contains(&DumpOption::cst) {
-        // Print cst
         debug::write_cst(
             stderr,
             &parse_res.cst,
@@ -95,34 +87,30 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Generate the ast
-    let ast_map = timer.spanned("astgen", || {
+    let ast_map = timer.spanned("ast generation", || {
         ast::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.ranges)
     });
 
     if options.dumps.contains(&DumpOption::ast) {
-        // Print the ast
         eprintln!("{:#?}\n", ast_map);
     }
 
-    // Perform the name resolution
-    let (nr_res, strings) = timer.spanned("nameres", || {
+    let (nr_res, strings) = timer.spanned("name resolution", || {
         nameres::resolve(&source, &lex_res.ranges, &ast_map)
     });
 
     if options.dumps.contains(&DumpOption::nameres) {
-        // Print name resolution result
         eprintln!("{:#?}\n", nr_res);
     }
 
-    let ty_map = timer.spanned("typing", || typer::resolve(&nr_res));
+    let ty_map = timer.spanned("type checking", || typer::resolve(&nr_res));
 
     if options.dumps.contains(&DumpOption::typer) {
         eprintln!("{:#?}\n", ty_map);
     }
 
-    // @TODO: Actually consume something derived from the input source
-    let zir = timer.spanned("zirgen", zir::test::create_test_funcs);
+    let zir = timer.spanned("zir generation", zir::test::create_test_funcs);
+    // let zir = timer.spanned("zir generation", || zir::gen(&nr_res, &ty_map, strings));
 
     if options.dumps.contains(&DumpOption::zir) {
         eprint!("\n=-=-=  ZIR Dump  =-=-=");
@@ -131,9 +119,9 @@ fn main() {
     }
 
     let (_llvm_ctx, llvm_mod, _llvm_funcs, _llvm_blocks) =
-        timer.spanned("codegen", || zir::codegen::codegen(&zir));
+        timer.spanned("llvm-ir generation", || zir::codegen::codegen(&zir));
 
-    timer.spanned("llvm verify", || {
+    timer.spanned("llvm-ir verification", || {
         use std::os::unix::prelude::{FromRawFd, IntoRawFd};
 
         let mut fd = unsafe { std::fs::File::from_raw_fd(1) };
@@ -142,20 +130,20 @@ fn main() {
     });
 
     if options.dumps.contains(&DumpOption::llvm) {
-        eprintln!("\n=-=-=  LLVM Module Dump  =-=-=");
+        eprintln!("\n=-=-=  LLVM-IR Module Dump  =-=-=");
         llvm_mod.dump();
         eprintln!();
     }
 
     if options.print_times {
         eprintln!("Times:");
-        timer.write("  ", stderr).unwrap();
+        timer.write(stderr).unwrap();
     }
 }
 
 #[derive(Debug)]
 pub struct Options {
-    files: Vec<String>,
+    path: String,
     print_times: bool,
     dumps: Vec<DumpOption>,
     color: bool,
@@ -179,9 +167,8 @@ impl Options {
 
         let matches = Command::new("zincc")
             .arg(
-                Arg::new("FILES")
+                Arg::new("FILE")
                     .required(true)
-                    .multiple_values(true)
                     .value_hint(clap::ValueHint::FilePath),
             )
             .arg(
@@ -208,7 +195,7 @@ impl Options {
             )
             .get_matches();
 
-        let files = matches.get_many("FILES").unwrap().cloned().collect();
+        let path = matches.value_of("FILE").unwrap().to_string();
 
         let print_times = matches.contains_id("print_times");
 
@@ -236,7 +223,7 @@ impl Options {
         };
 
         Self {
-            files,
+            path,
             dumps,
             print_times,
             color,

@@ -67,17 +67,15 @@ impl Timer {
         res
     }
 
-    pub fn write(&self, padding: &str, writer: &mut impl std::io::Write) -> std::io::Result<()> {
-        let total = self.map.iter().map(|(_, dur)| dur).sum::<Duration>();
+    pub fn write(&self, writer: &mut impl std::io::Write) -> std::io::Result<()> {
+        let align = self.map.iter().map(|(s, _)| s.len()).max().unwrap();
 
-        let mut map = self.map.clone();
-        map.push(("total", total));
-
-        let align = map.iter().map(|(str, _)| str.len()).max().unwrap();
-
-        for (name, duration) in map.iter() {
-            writeln!(writer, "{padding}{name:>align$}: {duration:?}")?;
+        let mut total = Duration::ZERO;
+        for (name, duration) in self.map.iter() {
+            writeln!(writer, "{name:>align$}: {duration:?}")?;
+            total += *duration;
         }
+        writeln!(writer, "\n{name:>align$}: {total:?}", name = "total")?;
 
         Ok(())
     }
