@@ -36,7 +36,7 @@ fn main() {
     if options.dumps.contains(&DumpOption::tokens) {
         // Print tokens
         lex_res.debug_zip().for_each(|(tk, range)| {
-            debug::write_token(stderr, &source, tk, &range, true).unwrap();
+            debug::write_token(stderr, &source, tk, &range, options.color).unwrap();
             eprintln!();
         });
         eprintln!();
@@ -65,7 +65,7 @@ fn main() {
             &source,
             &lex_res.tokens,
             &lex_res.ranges,
-            true,
+            options.color,
         )
         .unwrap();
         eprintln!();
@@ -159,6 +159,7 @@ pub struct Options {
     files: Vec<String>,
     print_times: bool,
     dumps: Vec<DumpOption>,
+    color: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -178,10 +179,14 @@ impl Options {
         use clap::{builder::PossibleValuesParser, Arg, ArgAction, Command};
 
         let matches = Command::new("zincc")
-            .arg(Arg::new("FILES").required(true).multiple_values(true))
+            .arg(
+                Arg::new("FILES")
+                    .required(true)
+                    .multiple_values(true)
+                    .value_hint(clap::ValueHint::FilePath),
+            )
             .arg(
                 Arg::new("print_times")
-                    .long("print-times")
                     .short('T')
                     .help("Print how long processes took"),
             )
@@ -194,6 +199,13 @@ impl Options {
                         "tokens", "cst", "ast", "nameres", "zir", "typer", "llvm",
                     ]))
                     .action(ArgAction::Append),
+            )
+            .arg(
+                Arg::new("color")
+                    .long("color")
+                    .takes_value(true)
+                    .value_name("WHEN")
+                    .value_parser(PossibleValuesParser::new(&["auto", "always", "never"])),
             )
             .get_matches();
 
@@ -217,10 +229,18 @@ impl Options {
             })
             .collect();
 
+        let color = match matches.value_of("color").unwrap_or("auto") {
+            "auto" => atty::is(atty::Stream::Stdout),
+            "always" => true,
+            "never" => false,
+            _ => unreachable!(),
+        };
+
         Self {
             files,
             dumps,
             print_times,
+            color,
         }
     }
 }
