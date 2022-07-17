@@ -124,6 +124,7 @@ impl<'nr> Typer<'nr> {
                         },
                         nr::PrimTy::Void => TyPrim::Void,
                         nr::PrimTy::Bool => TyPrim::Bool,
+                        nr::PrimTy::Never => TyPrim::Never,
                     };
                     Ty::Prim(prim)
                 }

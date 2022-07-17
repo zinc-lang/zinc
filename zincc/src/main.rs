@@ -4,10 +4,9 @@ pub mod util;
 mod ast;
 mod parse;
 
-#[allow(dead_code)]
 mod nameres;
-#[allow(dead_code)]
 mod typer;
+
 #[allow(dead_code)]
 mod zir;
 
@@ -107,7 +106,7 @@ fn main() {
     }
 
     // Perform the name resolution
-    let nr_res = timer.spanned("nameres", || {
+    let (nr_res, strings) = timer.spanned("nameres", || {
         nameres::resolve(&source, &lex_res.ranges, &ast_map)
     });
 
@@ -116,10 +115,10 @@ fn main() {
         eprintln!("{:#?}\n", nr_res);
     }
 
-    let type_map = timer.spanned("typing", || typer::resolve(&nr_res));
+    let ty_map = timer.spanned("typing", || typer::resolve(&nr_res));
 
     if options.dumps.contains(&DumpOption::typer) {
-        eprintln!("{:#?}\n", type_map);
+        eprintln!("{:#?}\n", ty_map);
     }
 
     // @TODO: Actually consume something derived from the input source

@@ -34,35 +34,29 @@ pub fn resolve(
     source: &str,
     spans: &[std::ops::Range<usize>],
     ast_map: &ast::AstMap,
-) -> NameResolutionResult {
+) -> (NameResolutionResult, StringInterningVec) {
     let sd = SharedData::new(source, spans, ast_map);
-    let scope_map = stage1(&sd);
-    stage2(sd, scope_map)
-}
 
-fn stage1<'s>(sd: &'s SharedData<'s>) -> ScopeMap {
-    let mut stage = stage1::Stage1Gen::<'s>::new(sd);
-    stage.seed();
-    stage.map
-}
-
-fn stage2(sd: SharedData, scope_map: ScopeMap) -> NameResolutionResult {
-    let map = {
-        let mut stage = stage2::Stage2::new(&sd, &scope_map);
-        stage.do_resolution();
-        stage.map
+    let scope_map = {
+        let mut stage1 = stage1::Stage1Gen::new(&sd);
+        stage1.seed();
+        stage1.map
     };
 
-    NameResolutionResult {
-        scope_map,
-        strings: sd.strings.into_inner(),
-        map,
-    }
+    let map = {
+        let mut stage2 = stage2::Stage2::new(&sd, &scope_map);
+        stage2.do_resolution();
+        stage2.map
+    };
+
+    (
+        NameResolutionResult { scope_map, map },
+        sd.strings.into_inner(),
+    )
 }
 
 #[derive(Debug)]
 pub struct NameResolutionResult {
-    pub strings: StringInterningVec,
     pub scope_map: ScopeMap,
     pub map: IdMap,
 }
@@ -564,6 +558,9 @@ mod stage2 {
 
                         "bool" => PrimTy::Bool,
                         "void" => PrimTy::Void,
+
+                        "never" => PrimTy::Never,
+
                         // if it starts with 's' and the rest of the string is a number
                         _ if str.starts_with('s') && chk_int_num(&str[1..]) => PrimTy::Integer {
                             signed: true,
@@ -625,7 +622,7 @@ impl ScopeDesc {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScopeKind {
     Block(ast::ExprId),
-    Module(StringSymbol),
+    // Module(StringSymbol),
 }
 
 impl ScopeKind {
@@ -634,7 +631,8 @@ impl ScopeKind {
     /// [`Module`]: ScopeKind::Module
     #[must_use]
     pub fn is_module(&self) -> bool {
-        matches!(self, Self::Module(..))
+        // matches!(self, Self::Module(..))
+        false
     }
 }
 
@@ -649,7 +647,6 @@ pub struct DeclDesc {
 pub enum DeclDescTag {
     Func,
     // @TODO: Add more
-    Temp,
 }
 
 #[derive(Debug)]
@@ -677,6 +674,7 @@ pub enum PrimTy {
     },
     Void,
     Bool,
+    Never,
     // @TODO: Add more
 }
 
@@ -695,13 +693,6 @@ pub enum UTy {
     Func(TyFuncId),
     Slice(TyId),
     Nullable(TyId),
-}
-
-impl UTy {
-    #[must_use]
-    pub fn is_func(&self) -> bool {
-        matches!(self, Self::Func(..))
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
