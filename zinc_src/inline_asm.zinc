@@ -11,7 +11,7 @@
 typealias str = []u8; // utf-8
 
 @comptime
-inline_asm fn<T>(
+fn<T> inline_asm(
     { volatile = false },
     /// The inline asm to execute
     asm_string str,
@@ -75,10 +75,39 @@ fn add_asm(a: sintptr, b: sintptr): sintptr {
 }
 
 extern "Builtin" fn inline_asm<{
-    result_type: typeliteral,
+    result_type: type, // not a keyword
     volatile: bool = false,
     outputs: [](register: str, name: str) = [],
     inputs: [](register: str, name: str) = [],
     clobbers: []str = [],
     asm: str,
 }>(inputs...): (outputs...);
+
+// =-=-=-=-=-=-=-=-=-=-=-=-=
+
+fn inline_asm#<{
+    result: type,
+    volatile: bool = false,
+    inputs: [](register: str, name: str) = [],
+    outputs: [](register: str, name: str) = [],
+    clobbers: []str = [],
+    asm: str,
+}>(
+    #{ // comptime
+        for (_, name) in inputs {
+            %{ %name: uintptr, } // syntax literal
+        }
+    }
+): #{ // comptime
+    if outputs.len == 1 {
+        %{ uintptr }
+    } else {
+        %%(
+            for (_, _) in outputs {
+                %{ uintptr, }
+            }
+        %%)
+    }
+} {
+    // ...
+}
