@@ -55,6 +55,7 @@ pub enum TyPrim {
 pub struct TypeMap {
     // pub locals: HashMap<nr::LocalId, TyId>,
     pub exprs: HashMap<nr::ExprId, TyId>,
+    pub locals: HashMap<nr::LocalId, TyId>,
 
     pub tys: InterningIndexVec<TyId, Ty>,
     pub func_tys: InterningIndexVec<TyFuncId, TyFunc>,
@@ -154,7 +155,16 @@ impl<'nr> Typer<'nr> {
     fn resolve_stmt(&mut self, stmt_id: nr::StmtId) {
         let stmt = &self.nr.map.stmts[stmt_id];
         match &stmt.kind {
-            nr::StmtKind::Let(_) => todo!(),
+            nr::StmtKind::Let(local_id) => {
+                let local = &self.nr.map.locals[*local_id];
+                if let Some(_ty) = local.ty {
+                    // @TODO: check type matches expr
+                    todo!()
+                } else {
+                    let id = self.resolve_expr(local.expr);
+                    self.map.locals.insert(*local_id, id);
+                }
+            }
             nr::StmtKind::Expr(expr_id) => {
                 self.resolve_expr(*expr_id);
             }
@@ -164,24 +174,41 @@ impl<'nr> Typer<'nr> {
         }
     }
 
+    #[inline]
+    #[track_caller]
+    fn map_expr_ty(&mut self, expr_id: nr::ExprId, ty: TyId) -> TyId {
+        if let Some(other_ty) = self.map.exprs.get(&expr_id) {
+            assert_eq!(ty, *other_ty);
+        } else {
+            self.map.exprs.insert(expr_id, ty);
+        }
+        ty
+    }
+
     fn resolve_expr(&mut self, expr_id: nr::ExprId) -> TyId {
         let expr = &self.nr.map.exprs[expr_id];
         let ty = match &expr.kind {
-            nr::ExprKind::Res(res) => match res {
-                nr::ExprPathResolution::Decl(id) => {
-                    let decl = &self.nr.map.decls[id];
-                    match decl {
-                        nr::DeclKind::Func(func) => {
-                            let ty = Ty::Func(self.nr_ty_func_id_to_ty_func_id(func.ty));
-                            let id = self.map.tys.get_or_intern(ty);
-                            self.map.exprs.insert(expr_id, id);
-                            return id;
+            nr::ExprKind::Res(res) => {
+                let id = match res {
+                    nr::ExprPathResolution::Decl(id) => {
+                        let decl = &self.nr.map.decls[id];
+                        match decl {
+                            nr::DeclKind::Func(func) => {
+                                let ty = Ty::Func(self.nr_ty_func_id_to_ty_func_id(func.ty));
+                                self.map.tys.get_or_intern(ty)
+                            }
                         }
                     }
-                }
-                nr::ExprPathResolution::Local(_) => todo!(),
-                nr::ExprPathResolution::Arg(_) => todo!(),
-            },
+                    nr::ExprPathResolution::Local(id) => self.map.locals[id],
+                    nr::ExprPathResolution::Arg(id) => {
+                        let arg = &self.nr.map.func_args[*id];
+                        let ty = &self.nr.map.tys[arg.ty];
+
+                        self.nr_uty_id_to_ty_id(ty.id)
+                    }
+                };
+                return self.map_expr_ty(expr_id, id);
+            }
             nr::ExprKind::Block(block) => {
                 self.nr.map.blocks[*block]
                     .stmts
@@ -193,6 +220,7 @@ impl<'nr> Typer<'nr> {
             }
             nr::ExprKind::Literal(literal) => match literal {
                 nr::ExprLiteral::String(_) => todo!(),
+                // @TODO: Properly handle integer type discerning
                 nr::ExprLiteral::Integer(_) => Ty::Prim(TyPrim::Integer {
                     signed: true,
                     size: None,
@@ -207,7 +235,7 @@ impl<'nr> Typer<'nr> {
                 match infix.op {
                     ast::ExprInfixOp::Equal => {
                         if lhs != rhs {
-                            todo!("err")
+                            todo!("err: types don't match")
                         } else {
                             return lhs;
                         }
@@ -217,23 +245,25 @@ impl<'nr> Typer<'nr> {
                     | ast::ExprInfixOp::Mul
                     | ast::ExprInfixOp::Div => {
                         let id = self.check_arithmetic_infix_op(lhs, rhs);
-                        self.map.exprs.insert(expr_id, id);
-                        return id;
+                        return self.map_expr_ty(expr_id, id);
                     }
                 }
             }
             nr::ExprKind::Call(call) => {
+                for arg in &call.args {
+                    self.resolve_expr(*arg);
+                }
+
                 let callee_ty = self.resolve_expr(call.callee);
-                let ty = &self.map.tys[callee_ty];
+                let callee_ty = &self.map.tys[callee_ty];
 
-                if let Some(id) = ty.as_func() {
+                if let Some(id) = callee_ty.as_func() {
                     let func = &self.map.func_tys[*id];
-                    // @TODO: check args
+                    // @TODO: Check arg types
 
-                    self.map.exprs.insert(expr_id, func.ret);
-                    return func.ret;
+                    return self.map_expr_ty(expr_id, func.ret);
                 } else {
-                    todo!("err")
+                    todo!("err: callee is not a function")
                 }
             }
             nr::ExprKind::Return(expr_id) => {
@@ -243,8 +273,7 @@ impl<'nr> Typer<'nr> {
             }
         };
         let id = self.map.tys.get_or_intern(ty);
-        self.map.exprs.insert(expr_id, id);
-        id
+        self.map_expr_ty(expr_id, id)
     }
 
     fn check_arithmetic_infix_op(&mut self, lhs: TyId, rhs: TyId) -> TyId {
@@ -260,19 +289,19 @@ impl<'nr> Typer<'nr> {
                             {
                                 lhs
                             }
-                            _ => todo!("err"),
+                            _ => todo!("err: integer type mismatch"),
                         }
                     } else {
-                        todo!("err")
+                        todo!("err: integer type mismatch")
                     }
                 }
-                TyPrim::Bool => todo!("err"),
-                TyPrim::Void => todo!("err"),
+                TyPrim::Bool => todo!("err: cannot use bool as operand"),
+                TyPrim::Void => todo!("err: cannot use void as operand"),
                 TyPrim::Never => self.map.tys.get_or_intern(Ty::Prim(TyPrim::Never)),
             },
-            Ty::Func { .. } => todo!("err"),
-            Ty::Slice(_) => todo!("err"),
-            Ty::Nullable(_) => todo!("err"),
+            Ty::Func { .. } => todo!("err: cannot use function as operand"),
+            Ty::Slice(_) => todo!("err: cannot use slice as operand"),
+            Ty::Nullable(_) => todo!("err: cannot use nullable as operand"),
         }
     }
 }

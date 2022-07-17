@@ -12,6 +12,10 @@ fn main() {
     three;
     add;
     three();
+
+    let a = 2;
+    let b = three();
+    let x = add(a, b);
 }
 
 fn three(): sint {
@@ -19,5 +23,9 @@ fn three(): sint {
 }
 
 fn add(a: sint, b: sint): sint {
-    // return a + b;
+    return a + b;
+}
+
+fn sum(a: sint, b: sint, c: sint): sint {
+    return a + b + c;
 }
