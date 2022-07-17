@@ -384,7 +384,10 @@ impl Parser<'_> {
             TK::brkt_square_open => {
                 let mut slice_ty = self.node(NK::ty_slice);
                 self.bump(&mut slice_ty); // '['
+
+                // @TODO: parse optional size
                 self.expect(TK::brkt_square_close, ParseContext::TySlice, &mut slice_ty); // ']'
+
                 self.parse_ty(&mut slice_ty); // ty
                 self.append_node(slice_ty, parent);
             }
