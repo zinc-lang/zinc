@@ -16,3 +16,4 @@ bimap = "0.6"
 rle_vec = "0.4"
 
 termcolor = "1.1"
+atty = "0.2"
