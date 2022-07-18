@@ -8,13 +8,13 @@ The zinc programming language.
 
 ---
 
-## Goals
-
 <!-- 
 @TODO: Add a taste of the syntax to the front page
 @TODO: Add a tour of the language README
 @TODO: Migrate to a checklist showing what is and isn't functional
 -->
+
+## Goals
 
 - AOT compiled binary(s)
 - Control over allocator(s)
@@ -43,49 +43,12 @@ The zinc programming language.
 - Powerful package and project manager
 - Powerful async, also much like rust
 
-## Building
-
-Building llvm-rs is easier with nix as it takes care of any dependencies, but is not required.
-
-### With nix
-
-``` sh
-git submodules update --init
-cd llvm-rs
-nix-shell # enter a nix shell
-make
-exit # exit the nix shell
-
-cd ../zincc
-cargo build # or cargo run -- <args>
-```
-
-### Without nix
-
-#### Dependencies:
-
-- deno
-- ninja
-- cmake
-- clang-13 or later
-- libclang-13
-- libllvm-13
-- rust
-
-``` sh
-git submodules update --init
-cd llvm-rs
-make
-
-cd ../zincc
-cargo build # or cargo run -- <args>
-```
-
 ## Usage
 
 ``` sh
-# within zincc/
-$ cargo r -- -T ../zinc_src/<pick a file>
+cd zincc
+cargo r --
+cargo r -- -T ../zinc_src/<pick a file>
 ```
 
 ## Things I want to make with this (Eventual goals)
