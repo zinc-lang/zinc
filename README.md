@@ -43,11 +43,22 @@ The zinc programming language.
 - Powerful package and project manager
 - Powerful async, also much like rust
 
+## Building
+
+``` sh
+git clone https://github.com/tealsnow/zinc.git
+cd zinc
+git submodule update --init --recursive
+cd zincc
+cargo b
+```
+
 ## Usage
 
 ``` sh
-cd zincc
-cargo r --
+# within zincc
+cargo r -- --help
+# or
 cargo r -- -T ../zinc_src/<pick a file>
 ```
 
