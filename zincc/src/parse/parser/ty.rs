@@ -9,6 +9,26 @@ impl Parser<'_> {
                 let mut path = self.parse_path();
                 path.parent = Some(parent);
             }
+            TK::brkt_square_open => {
+                let mut ty = self.pnode(NK::ty_slice, parent);
+                _ = ty.peek();
+                ty.push_token();
+
+                if !ty.at(TK::brkt_square_close) {
+                    ty.kind = NK::ty_array;
+                    self.parse_expr(*ty);
+                }
+
+                ty.expect(TK::brkt_square_close);
+
+                self.parse_ty(*ty);
+            }
+            TK::punct_question => {
+                let mut nullable = self.pnode(NK::ty_nullable, parent);
+                _ = nullable.peek();
+                nullable.push_token();
+                self.parse_ty(*nullable);
+            }
             _ => todo!(),
         }
     }

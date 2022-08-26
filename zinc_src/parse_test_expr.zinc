@@ -22,7 +22,9 @@
 
     // .() tuple literal
     // .{} struct literal
+    // Foo {}
     // .[] array literal
+    // [2][1, 2]
 
     {
         block_end
@@ -35,11 +37,14 @@
     -42;
     &foo;
 
+    // ^foo; // address of
+    // foo^; // dereference
+
     let foo = 1;
     let bar uint = 2;
 
     // let* baz = 3;
-    let mut baz = 3;
+    // let mut baz = 3;
     set baz = bar;
 }
 
@@ -71,8 +76,5 @@
 :: compound_expr fn {
     // if
     // while
-
-    // How do we want to do for loops?
-    // standard syntax?
-    // lambdas?
+    // for in
 }

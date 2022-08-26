@@ -198,6 +198,14 @@ pub enum NodeKind {
     expr_call,
     // /// `expr (',' expr) ','?`
     // expr_call_args,
+
+    //
+    /// `'[]' ty`
+    ty_slice,
+    /// `'[' expr ']' ty`
+    ty_array,
+    /// `'?' ty`
+    ty_nullable,
 }
 
 pub type NK = NodeKind;

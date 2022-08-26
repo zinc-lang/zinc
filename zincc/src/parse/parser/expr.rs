@@ -1,43 +1,5 @@
 use super::*;
 
-// /// Parse stmt
-// impl Parser<'_> {
-//     fn parse_stmt(&mut self, parent: &mut PNode) {
-//         match self.peek() {
-//             TK::kw_let => {
-//                 let mut binding = self.node(NK::stmt_let);
-
-//                 self.bump(&mut binding); // 'let'
-
-//                 self.parse_binding(&mut binding);
-
-//                 self.append_node(binding, parent);
-//             }
-//             _ => {
-//                 if let Some(decl) = self.try_parse_decl() {
-//                     let mut stmt = self.node(NK::stmt_decl);
-//                     self.append_node(decl, &mut stmt);
-//                     self.append_node(stmt, parent);
-//                 } else {
-//                     let mut stmt = self.node(NK::stmt_expr);
-//                     self.parse_stmt_expr(&mut stmt);
-//                     self.append_node(stmt, parent);
-//                 }
-//             }
-//         }
-//     }
-
-//     /// Parse an expression in the context of a statement.
-//     /// ie. with a semicolon if it does not end with a '}'
-//     fn parse_stmt_expr(&mut self, parent: &mut PNode) {
-//         self.parse_expr(parent);
-
-//         if self.tokens[self.cursor - 1] != TK::brkt_brace_close {
-//             self.expect(TK::punct_semiColon, ParseContext::Stmt, parent);
-//         }
-//     }
-// }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 enum Precedence {
@@ -88,16 +50,7 @@ impl Parser<'_> {
             // self.append_node(expr, parent);
             expr.parent = Some(parent)
         } else {
-            todo!()
-            // self.report(
-            //     parent,
-            //     ParseError::Expected(ParseErrorExpected {
-            //         what: ParseErrorExpectedWhat::Item(ParseErrorItem::Expr),
-            //         at: self.cursor,
-            //         found: self.cursor,
-            //         context: ParseContext::ExprStart,
-            //     }),
-            // );
+            todo!("error: expected expr")
         }
     }
 
@@ -112,7 +65,10 @@ impl Parser<'_> {
             if let Some(e) = self.try_parse_expr_middle(p, lhs, infix_prec) {
                 lhs = e;
             } else {
-                unreachable!();
+                // @NOTE:...
+                // If we reach this then there is an inconsistency with how this function determines
+                // how and when to continue parsing.
+                unreachable!("middle of expression failed to parse when precedence allowed it");
             }
 
             p = self.peek();
@@ -136,14 +92,7 @@ impl Parser<'_> {
 
             TK::brkt_paren_open => todo!("parse paren exprs"),
 
-            // TK::kw_return => {
-            //     let mut ret = self.node(NK::expr_return);
-            //     self.bump(&mut ret); // 'return'
-            //     if let Some(expr) = self.try_parse_expr() {
-            //         self.append_node(expr, &mut ret);
-            //     }
-            //     ret
-            // }
+            TK::kw_return => todo!("return expr"),
 
             //
             TK::kw_let => {

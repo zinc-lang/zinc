@@ -1,0 +1,4 @@
+:: name fn (foo uint) {}
+:: slice fn (foo []uint) {}
+:: array fn (foo [3]uint) {}
+:: nullable fn (foo ?uint) {}

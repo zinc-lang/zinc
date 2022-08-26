@@ -9,11 +9,11 @@ edition = "2021"
 clap = "3.2"
 
 llvm = { path = "../llvm-rs/llvm-rs" }
-smallvec = { version = "1.9", features = ["union"] }
 
-fnv = "1.0"
-bimap = "0.6"
-rle_vec = "0.4"
+# smallvec = { version = "1.9", features = ["union"] }
+# fnv = "1.0"
+# bimap = "0.6"
+# rle_vec = "0.4"
 
 termcolor = "1.1"
 atty = "0.2"
@@ -24,3 +24,7 @@ fern = "0.6"
 chrono = "0.4"
 
 # thiserror = "1.0.32"
+
+[profile.dev]
+opt-level = 1
+overflow-checks = false
