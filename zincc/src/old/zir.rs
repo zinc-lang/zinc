@@ -487,15 +487,10 @@ pub mod print {
                 writeln!(self.f, " {{")?;
                 self.f.push_indent();
 
-                for (blk_i, blk) in func
-                    .blocks()
-                    .iter()
-                    .map(|&id| &self.ctx.blocks()[id])
-                    .enumerate()
-                {
+                for (blk_i, blk) in func.blocks().iter().map(|&id| (id, &self.ctx.blocks()[id])) {
                     let label = &self.ctx.strings()[blk.label()];
                     self.f.pop_indent();
-                    writeln!(self.f, "#{} {}:", blk_i, label)?;
+                    writeln!(self.f, "#{} {}:", blk_i.index(), label)?;
                     self.f.push_indent();
 
                     for local_inst in blk.insts().indices() {
@@ -635,7 +630,7 @@ mod gen {
                         let builder = zir::InstBuilder::new(blk);
 
                         self.gen_expr(body, &builder);
-                        builder.build_ret_void(&mut self.ctx);
+                        // builder.build_ret_void(&mut self.ctx);
                     }
                 }
             }
@@ -665,9 +660,20 @@ mod gen {
                     nr::ExprLiteral::Float(_) => todo!(),
                     nr::ExprLiteral::Bool(_) => todo!(),
                 },
-                nr::ExprKind::Infix(_) => todo!(),
+                nr::ExprKind::Infix(infix) => {
+                    let lhs = self.gen_expr(infix.lhs, builder);
+                    let rhs = self.gen_expr(infix.rhs, builder);
+                    builder.build_add(&mut self.ctx, lhs, rhs)
+                }
                 nr::ExprKind::Call(_) => todo!(),
-                nr::ExprKind::Return(_) => todo!(),
+                nr::ExprKind::Return(id) => {
+                    if let Some(id) = id {
+                        let inst = self.gen_expr(*id, builder);
+                        builder.build_ret(&mut self.ctx, inst)
+                    } else {
+                        builder.build_ret_void(&mut self.ctx)
+                    }
+                }
             }
         }
 

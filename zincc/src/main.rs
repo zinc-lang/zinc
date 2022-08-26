@@ -1,144 +1,204 @@
-mod debug;
+#[macro_use]
+extern crate tracing;
+
 pub mod util;
 
-mod ast;
+mod debug;
 mod parse;
+mod source_map;
 
-mod nameres;
-mod typer;
-
-#[allow(dead_code)]
-mod zir;
-
-// @TODO: Write tests, for everything
+use source_map::{SourceFile, SourceFileId, SourceMap};
 
 fn main() {
     let options = Options::get();
 
-    let source = util::read_file_to_string(&options.path)
-        .map(|s| s + "\n\0")
-        .unwrap_or_else(|err| {
-            eprintln!("Failed to read file at path '{}', {}", options.path, err);
-            std::process::exit(1);
-        });
+    setup_logger().expect("failed to setup logger");
+
+    let mut source_map = SourceMap::new(SourceFile::new(options.path).unwrap());
+
+    let file_id = source_map.root;
+
+    read_file_source(&mut source_map, file_id).unwrap();
 
     let mut timer = util::time::Timer::new();
     let stderr = &mut std::io::stderr();
 
-    let lex_res = timer.spanned("lexical analysis", || parse::lex(&source));
-
-    if options.dumps.contains(&DumpOption::tokens) {
-        lex_res.debug_zip().for_each(|(tk, range)| {
-            debug::write_token(stderr, &source, tk, &range, options.color).unwrap();
-            eprintln!();
+    {
+        let lex_errors = info_span!("Lexer").in_scope(|| {
+            timer.spanned("lexical analyser", || parse::lex(&mut source_map, file_id))
         });
-        eprintln!();
-    }
 
-    // Print errors and exit if there are any
-    if !lex_res.errors.is_empty() {
-        for err in lex_res.errors {
-            let loc = parse::FileLocation::from_offset(&source, err.offset).unwrap();
-            // @TODO: Better error formatting
-            eprintln!("error: {:?}  @[{}:{}]", err.kind, loc.line, loc.column);
+        if options.dumps.contains(&DumpOption::tokens) {
+            let source = &source_map.sources[&file_id];
+
+            source_map.lex_data[&file_id]
+                .debug_zip()
+                .for_each(|(&tk, range)| {
+                    if !tk.is_trivia() {
+                        debug::write_token(stderr, source, tk, range, options.color).unwrap();
+                        eprintln!();
+                    }
+                });
+
+            eprintln!();
         }
 
-        eprintln!("\nAborting due to errors");
-        std::process::exit(1);
-    }
+        // Print errors and exit if there are any
+        if !lex_errors.is_empty() {
+            let source = &source_map.sources[&file_id];
 
-    let parse_res = timer.spanned("parsing", || parse::parse(&lex_res.tokens));
-
-    if options.dumps.contains(&DumpOption::cst) {
-        debug::write_cst(
-            stderr,
-            &parse_res.cst,
-            &source,
-            &lex_res.tokens,
-            &lex_res.ranges,
-            options.color,
-        )
-        .unwrap();
-        eprintln!();
-    }
-
-    // Print errors and exit if there are any
-    if !parse_res.errors.is_empty() {
-        for error in parse_res.errors {
-            match error {
-                parse::ParseError::Expected(err) => {
-                    let at = lex_res.tokens[err.at as usize];
-                    let found = lex_res.tokens[err.found as usize];
-
-                    let at_range = &lex_res.ranges[err.at as usize];
-                    let at_loc =
-                        parse::FileLocation::from_offset(&source, at_range.start as usize).unwrap();
-
-                    // @TODO: Better error formatting
-                    eprintln!(
-                        "error: expected '{:?}' at '{:?}' in '{:?}', but found '{:?}'  @[{}:{}]",
-                        err.what, at, err.context, found, at_loc.line, at_loc.column
-                    );
-                }
+            for err in lex_errors {
+                let loc = parse::FileLocation::from_offset(source, err.offset).unwrap();
+                // @TODO: Better error formatting
+                eprintln!("error: {:?}  @[{}:{}]", err.kind, loc.line, loc.column);
             }
+
+            eprintln!();
+            eprintln!("Aborting due to errors");
+            std::process::exit(1);
+        }
+    }
+
+    {
+        let parse_errors = info_span!("Parser")
+            .in_scope(|| timer.spanned("parser", || parse::parse(&mut source_map, file_id)));
+
+        if options.dumps.contains(&DumpOption::cst) {
+            let source = &source_map.sources[&file_id];
+            let lex_data = &source_map.lex_data[&file_id];
+            let cst = &source_map.csts[&file_id];
+
+            debug::write_cst(
+                stderr,
+                cst,
+                source,
+                &lex_data.tokens,
+                &lex_data.ranges,
+                options.color,
+            )
+            .unwrap();
+            eprintln!();
         }
 
-        eprintln!("\nAborting due to errors");
-        std::process::exit(1);
+        // Print errors and exit if there are any
+        if !parse_errors.is_empty() {
+            // // let source = &source_map.sources[&file_id];
+            // // let lex_data = &source_map.lex_data[&file_id];
+
+            // for error in parse_errors {
+            //     // match error {
+            //     //     parse::ParseError::Expected(err) => {
+            //     //         let at = lex_data.tokens[err.at as usize];
+            //     //         let found = lex_data.tokens[err.found as usize];
+
+            //     //         let at_range = &lex_data.ranges[err.at as usize];
+            //     //         let at_loc =
+            //     //             parse::FileLocation::from_offset(source, at_range.start as usize)
+            //     //                 .unwrap();
+
+            //     //         // @TODO: Better error formatting
+            //     //         eprintln!(
+            //     //         "error: expected '{:?}' at '{:?}' in '{:?}', but found '{:?}'  @[{}:{}]",
+            //     //         err.what, at, err.context, found, at_loc.line, at_loc.column
+            //     //     );
+            //     //     }
+            //     // }
+            // }
+
+            // eprintln!("\nAborting due to errors");
+            // std::process::exit(1);
+
+            todo!()
+        }
     }
 
-    let ast_map = timer.spanned("ast generation", || {
-        ast::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.ranges)
-    });
+    // let ast_map = timer.spanned("ast generation", || {
+    //     ast::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.ranges)
+    // });
 
-    if options.dumps.contains(&DumpOption::ast) {
-        eprintln!("{:#?}\n", ast_map);
-    }
+    // drop(parse_res);
 
-    let (nr_res, strings) = timer.spanned("name resolution", || {
-        nameres::resolve(&source, &lex_res.ranges, &ast_map)
-    });
+    // if options.dumps.contains(&DumpOption::ast) {
+    //     eprintln!("{:#?}\n", ast_map);
+    // }
 
-    if options.dumps.contains(&DumpOption::nameres) {
-        eprintln!("{:#?}\n", nr_res);
-    }
+    // let (nr_res, strings) = timer.spanned("name resolution", || {
+    //     nameres::resolve(&source, &lex_res.ranges, &ast_map)
+    // });
 
-    let ty_map = timer.spanned("type checking", || typer::resolve(&nr_res));
+    // drop(source);
+    // drop(lex_res);
+    // drop(ast_map);
 
-    if options.dumps.contains(&DumpOption::typer) {
-        eprintln!("{:#?}\n", ty_map);
-    }
+    // if options.dumps.contains(&DumpOption::nameres) {
+    //     eprintln!("{:#?}\n", nr_res);
+    // }
 
-    // let zir = timer.spanned("zir generation", zir::test::create_test_funcs);
-    let zir = timer.spanned("zir generation", || zir::gen(&nr_res, &ty_map, strings));
+    // let ty_map = timer.spanned("type checking", || typer::resolve(&nr_res));
 
-    if options.dumps.contains(&DumpOption::zir) {
-        eprint!("\n=-=-=  ZIR Dump  =-=-=");
-        zir::print::dump(&zir, stderr).unwrap();
-        eprintln!();
-    }
+    // if options.dumps.contains(&DumpOption::typer) {
+    //     eprintln!("{:#?}\n", ty_map);
+    // }
 
-    let (_llvm_ctx, llvm_mod, _llvm_funcs, _llvm_blocks) =
-        timer.spanned("llvm-ir generation", || zir::codegen::codegen(&zir));
+    // // let zir = timer.spanned("zir generation", zir::test::create_test_funcs);
+    // let zir = timer.spanned("zir generation", || zir::gen(&nr_res, &ty_map, strings));
 
-    timer.spanned("llvm-ir verification", || {
-        use std::os::unix::prelude::{FromRawFd, IntoRawFd};
+    // drop(nr_res);
+    // drop(ty_map);
 
-        let mut fd = unsafe { std::fs::File::from_raw_fd(1) };
-        llvm::verify_module(&llvm_mod, &mut fd);
-        let _ = fd.into_raw_fd();
-    });
+    // if options.dumps.contains(&DumpOption::zir) {
+    //     eprint!("\n=-=-=  ZIR Dump  =-=-=");
+    //     zir::print::dump(&zir, stderr).unwrap();
+    //     eprintln!();
+    // }
 
-    if options.dumps.contains(&DumpOption::llvm) {
-        eprintln!("\n=-=-=  LLVM-IR Module Dump  =-=-=");
-        llvm_mod.dump();
-        eprintln!();
-    }
+    // let (_llvm_ctx, llvm_mod, _llvm_funcs, _llvm_blocks) =
+    //     timer.spanned("llvm-ir generation", || zir::codegen::codegen(&zir));
+
+    // timer.spanned("llvm-ir verification", || {
+    //     use std::os::unix::prelude::{FromRawFd, IntoRawFd};
+
+    //     let mut fd = unsafe { std::fs::File::from_raw_fd(1) };
+    //     llvm::verify_module(&llvm_mod, &mut fd);
+    //     let _ = fd.into_raw_fd();
+    // });
+
+    // if options.dumps.contains(&DumpOption::llvm) {
+    //     eprintln!("\n=-=-=  LLVM-IR Module Dump  =-=-=");
+    //     llvm_mod.dump();
+    //     eprintln!();
+    // }
 
     if options.print_times {
-        eprintln!("Times:");
+        eprintln!("\nTimes:");
         timer.write(stderr).unwrap();
     }
+}
+
+fn setup_logger() -> Result<(), fern::InitError> {
+    fern::Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "{}[{}][{}] {}",
+                chrono::Local::now().format("[%H:%M:%S]"),
+                record.target(),
+                record.level(),
+                message
+            ))
+        })
+        .chain(std::io::stderr())
+        .apply()?;
+    Ok(())
+}
+
+fn read_file_source(map: &mut SourceMap, file_id: SourceFileId) -> std::io::Result<()> {
+    let file = &map.files[file_id];
+    let path = file.get_path();
+
+    let source = util::read_file_to_string(path).map(|s| s + "\n\0")?;
+    map.sources.insert(file_id, source);
+
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -154,11 +214,12 @@ pub struct Options {
 pub enum DumpOption {
     tokens,
     cst,
-    ast,
-    nameres,
-    zir,
-    typer,
-    llvm,
+    // ast,
+    // nameres,
+    // strings,
+    // typer,
+    // zir,
+    // llvm,
 }
 
 impl Options {
@@ -182,7 +243,14 @@ impl Options {
                     .short('D')
                     .takes_value(true)
                     .value_parser(PossibleValuesParser::new(&[
-                        "tokens", "cst", "ast", "nameres", "zir", "typer", "llvm",
+                        "tokens",
+                        "cst",
+                        // "ast",
+                        // "nameres",
+                        // "strings",
+                        // "typer",
+                        // "zir",
+                        // "llvm",
                     ]))
                     .action(ArgAction::Append),
             )
@@ -206,11 +274,12 @@ impl Options {
             .map(|s| match s.as_str() {
                 "tokens" => DumpOption::tokens,
                 "cst" => DumpOption::cst,
-                "ast" => DumpOption::ast,
-                "nameres" => DumpOption::nameres,
-                "zir" => DumpOption::zir,
-                "typer" => DumpOption::typer,
-                "llvm" => DumpOption::llvm,
+                // "ast" => DumpOption::ast,
+                // "nameres" => DumpOption::nameres,
+                // "strings" => DumpOption::strings,
+                // "typer" => DumpOption::typer,
+                // "zir" => DumpOption::zir,
+                // "llvm" => DumpOption::llvm,
                 _ => unreachable!(),
             })
             .collect();

@@ -1,0 +1,279 @@
+use super::*;
+
+// /// Parse stmt
+// impl Parser<'_> {
+//     fn parse_stmt(&mut self, parent: &mut PNode) {
+//         match self.peek() {
+//             TK::kw_let => {
+//                 let mut binding = self.node(NK::stmt_let);
+
+//                 self.bump(&mut binding); // 'let'
+
+//                 self.parse_binding(&mut binding);
+
+//                 self.append_node(binding, parent);
+//             }
+//             _ => {
+//                 if let Some(decl) = self.try_parse_decl() {
+//                     let mut stmt = self.node(NK::stmt_decl);
+//                     self.append_node(decl, &mut stmt);
+//                     self.append_node(stmt, parent);
+//                 } else {
+//                     let mut stmt = self.node(NK::stmt_expr);
+//                     self.parse_stmt_expr(&mut stmt);
+//                     self.append_node(stmt, parent);
+//                 }
+//             }
+//         }
+//     }
+
+//     /// Parse an expression in the context of a statement.
+//     /// ie. with a semicolon if it does not end with a '}'
+//     fn parse_stmt_expr(&mut self, parent: &mut PNode) {
+//         self.parse_expr(parent);
+
+//         if self.tokens[self.cursor - 1] != TK::brkt_brace_close {
+//             self.expect(TK::punct_semiColon, ParseContext::Stmt, parent);
+//         }
+//     }
+// }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+enum Precedence {
+    None = 0,
+    SetLet, // Assignment or binding
+    // LogicalOr,  // || or
+    // LogicalAnd, // && and
+    Equality, // == !=
+    // Order,      // < <= > >=
+    Sum,        // + -
+    Product,    // * /
+    CastPrefix, // as not !
+    Suffix,     // () ? .
+}
+
+impl Precedence {
+    fn of(kind: TK) -> Self {
+        match kind {
+            // TK::kw_or => Self::LogicalOr,
+            // TK::kw_and => Self::LogicalAnd,
+
+            //
+            TK::punct_eqEq | TK::punct_bangEq => Self::Equality,
+
+            TK::punct_plus | TK::punct_minus => Self::Sum,
+            TK::punct_star | TK::punct_slash => Self::Product,
+            // TK::brkt_paren_open => Self::Call,
+
+            //
+            TK::brkt_paren_open | TK::punct_question | TK::punct_dot => Self::Suffix,
+            _ => Self::None,
+        }
+    }
+}
+
+/// Parse expr
+impl Parser<'_> {
+    pub fn parse_expr(&mut self, parent: NodeId) {
+        self.parse_expr_precedence(Precedence::None, parent);
+    }
+
+    fn try_parse_expr(&mut self) -> Option<PNode> {
+        self.try_parse_expr_precedence(Precedence::None)
+    }
+
+    fn parse_expr_precedence(&mut self, prec: Precedence, parent: NodeId) {
+        if let Some(mut expr) = self.try_parse_expr_precedence(prec) {
+            // self.append_node(expr, parent);
+            expr.parent = Some(parent)
+        } else {
+            todo!()
+            // self.report(
+            //     parent,
+            //     ParseError::Expected(ParseErrorExpected {
+            //         what: ParseErrorExpectedWhat::Item(ParseErrorItem::Expr),
+            //         at: self.cursor,
+            //         found: self.cursor,
+            //         context: ParseContext::ExprStart,
+            //     }),
+            // );
+        }
+    }
+
+    fn try_parse_expr_precedence(&mut self, prec: Precedence) -> Option<PNode> {
+        let mut lhs = self.try_parse_expr_start()?;
+
+        let init_prec = prec;
+        let mut p = self.peek();
+        let mut infix_prec = Precedence::of(p);
+
+        while init_prec < infix_prec {
+            if let Some(e) = self.try_parse_expr_middle(p, lhs, infix_prec) {
+                lhs = e;
+            } else {
+                unreachable!();
+            }
+
+            p = self.peek();
+            infix_prec = Precedence::of(p);
+        }
+
+        Some(lhs)
+    }
+
+    fn try_parse_expr_start(&mut self) -> Option<PNode> {
+        let expr = match self.peek() {
+            TK::ident => self.parse_path(),
+            TK::string_open => self.parse_string(),
+
+            TK::int_dec | TK::int_hex | TK::int_bin | TK::int_oct => self.parse_int(),
+            TK::float => self.parse_float(),
+
+            TK::kw_false | TK::kw_true => self.parse_bool(),
+
+            TK::brkt_brace_open => self.parse_expr_block(),
+
+            TK::brkt_paren_open => todo!("parse paren exprs"),
+
+            // TK::kw_return => {
+            //     let mut ret = self.node(NK::expr_return);
+            //     self.bump(&mut ret); // 'return'
+            //     if let Some(expr) = self.try_parse_expr() {
+            //         self.append_node(expr, &mut ret);
+            //     }
+            //     ret
+            // }
+
+            //
+            TK::kw_let => {
+                let mut bind = self.pnode_np(NK::expr_let);
+
+                bind.push_token(); // 'let'
+
+                self.parse_pattern(*bind);
+
+                if !bind.at(TK::punct_eq) {
+                    // ty?
+                    let ty = self.pnode(NK::expr_let_ty, *bind);
+                    self.parse_ty(*ty);
+                }
+
+                bind.expect(TK::punct_eq); // '='
+
+                self.parse_expr_precedence(Precedence::SetLet, *bind);
+
+                bind
+            }
+
+            TK::kw_set => {
+                let mut set = self.pnode_np(NK::expr_set);
+
+                set.push_token(); // 'set'
+                self.parse_expr(*set); // expr
+                set.expect(TK::punct_eq); // '='
+                self.parse_expr(*set); // expr
+
+                set
+            }
+
+            TK::punct_minus | TK::punct_bang | TK::punct_ampersand => {
+                let prefix = self.pnode_np(NK::expr_prefix);
+
+                {
+                    let mut op = self.pnode(NK::expr_prefix_op, *prefix);
+                    op.push_token();
+                }
+
+                self.parse_expr_precedence(Precedence::CastPrefix, *prefix);
+
+                prefix
+            }
+
+            _ => return None,
+        };
+        Some(expr)
+    }
+
+    fn try_parse_expr_middle(&mut self, p: TK, mut lhs: PNode, prec: Precedence) -> Option<PNode> {
+        let node = match p {
+            TK::punct_plus
+            | TK::punct_minus
+            | TK::punct_star
+            | TK::punct_slash
+            | TK::punct_eqEq
+            | TK::punct_bangEq => {
+                let infix = self.pnode_np(NK::expr_infix);
+
+                // lhs
+                lhs.parent = Some(*infix);
+                drop(lhs);
+
+                // op
+                {
+                    let mut op = self.pnode(NK::expr_infix_op, *infix);
+                    // @TODO: parse multiple operators
+                    op.push_token();
+                }
+
+                // rhs
+                self.parse_expr_precedence(prec, *infix);
+
+                infix
+            }
+            TK::brkt_paren_open => {
+                let mut call = self.pnode_np(NK::expr_call);
+
+                // callee
+                lhs.parent = Some(*call);
+                drop(lhs);
+
+                call.push_token(); // '('
+
+                // args
+                while !call.at(TK::brkt_paren_close) {
+                    self.parse_expr(*call);
+                    if !call.eat(TK::punct_comma) {
+                        break;
+                    }
+                }
+
+                call.expect(TK::brkt_paren_close);
+
+                call
+            }
+            _ => return None,
+        };
+        Some(node)
+    }
+
+    pub fn parse_expr_block(&mut self) -> PNode {
+        let mut block = self.pnode_np(NK::expr_block);
+
+        block.expect(TK::brkt_brace_open);
+
+        while !block.at(TK::brkt_brace_close) {
+            if block.at(TK::punct_doubleColon) {
+                self.parse_decl(*block);
+            } else if let Some(mut expr) = self.try_parse_expr() {
+                // @TODO: do not expect a semicolon if the expr ends with a brace
+                if block.at(TK::punct_semicolon) {
+                    expr.parent = Some(*block);
+                    drop(expr);
+                    block.push_token();
+                } else {
+                    let end = self.pnode(NK::expr_block_end, *block);
+                    expr.parent = Some(*end);
+
+                    break;
+                }
+            } else {
+                todo!("error");
+            }
+        }
+
+        block.expect(TK::brkt_brace_close);
+
+        block
+    }
+}

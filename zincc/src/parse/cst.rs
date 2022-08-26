@@ -1,6 +1,3 @@
-//! CST - Concrete Syntax Tree
-//! Adds nothing more than structure to the existing tokens
-
 use crate::util::index::{self, IndexVec};
 use std::{fmt, num::NonZeroUsize};
 
@@ -67,27 +64,27 @@ impl Node {
         Self::default()
     }
 
-    pub fn tokens(&self) -> Vec<TokenIndex> {
-        self.elements
-            .iter()
-            .filter_map(|e| match e {
-                Element::Token(i) => Some(i),
-                _ => None,
-            })
-            .cloned()
-            .collect()
-    }
+    // pub fn tokens(&self) -> Vec<TokenIndex> {
+    //     self.elements
+    //         .iter()
+    //         .filter_map(|e| match e {
+    //             Element::Token(i) => Some(i),
+    //             _ => None,
+    //         })
+    //         .cloned()
+    //         .collect()
+    // }
 
-    pub fn nodes(&self) -> Vec<NamedNodeId> {
-        self.elements
-            .iter()
-            .filter_map(|e| match e {
-                Element::Node(id) => Some(id),
-                _ => None,
-            })
-            .cloned()
-            .collect()
-    }
+    // pub fn nodes(&self) -> Vec<NamedNodeId> {
+    //     self.elements
+    //         .iter()
+    //         .filter_map(|e| match e {
+    //             Element::Node(id) => Some(id),
+    //             _ => None,
+    //         })
+    //         .cloned()
+    //         .collect()
+    // }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -109,76 +106,98 @@ impl TokenIndex {
 #[allow(non_camel_case_types)]
 #[repr(u8)]
 pub enum NodeKind {
-    /// Only one of these should exist, for a source file
-    /// `decl*`
     root,
-    /// When the parser is 'panicking' skipped tokens are put under this.
-    skipped,
+    err,
 
-    /// Since all tokens need to be given a node parent, int and float literals have these nodes.
-    literal_int,
-    literal_float,
-
-    /// `'::'? ident ( '::' ident )*`
-    path,
-    /// '"' ( char | '\' char | '\u' '{' 4xHexNumber '}' | '\x' 2xHexNumber )* '"'
+    //
+    integer,
+    float,
     string,
-    /// `'{' stmt* '}'`
-    block,
+    boolean,
 
-    /// A 'let' or 'const' may or may not have this depending on if the user has written a type.
-    /// `( ':' ty )?`
-    binding_ty,
+    /// `path := ident ( '::' ident )*`
+    path,
 
-    /// The 'fn' is present in all cases except for function declarations, in which case it is before the name of the function.
-    /// `'fn'? '(' param ( ',' param )* ','? ')' ret`
-    func_proto,
-    /// `( ident ':' )? ty`
-    func_proto_param,
-    /// `( ':' ty )?`
-    func_proto_ret,
+    /// `'::' ident | func | module | struct | enum | union`
+    decl,
 
-    /// `'fn' ident proto body`
+    /// `func := sig ( ';' | body )`
     decl_func,
-    /// `( block | '=>' expr ';' )`
-    decl_func_body,
+    // /// `body := ( '=>' expr ) | block`
+    // decl_func_body,
 
-    /// `'const' ident binding_ty '=' expr ';'`
-    decl_const,
+    //
+    /// `'fn' genericsList? paramsList? ty?`
+    func_sig,
 
-    /// `'let' ident binding_ty '=' expr ';'`
-    stmt_let,
-    /// `expr ';'`
-    stmt_expr,
-    /// decl
-    stmt_decl,
+    /// `'(' param ( ',' param )* ','? ')'`
+    paramsList,
+    /// `ident ty default?`
+    param_param,
+    /// `'=' expr`
+    param_param_default,
+    // @TODO: Named
+
+    //
+    /// `'[' genericParam ( ',' genericParam )* ','? ']'`
+    genericsList,
+    /// `ident ( constraint ( '+' constraint )* )? default?`
+    genericParam_type,
+    /// `ty`
+    genericParam_type_constraint,
+    /// '=' ty`
+    genericParam_type_default,
+    /// `ident! ty default?`
+    genericParam_value,
+    /// `'=' expr`
+    genericParam_value_default,
+    // @TODO: Named
+
+    //
+    /// `'ref'? 'mut'? ident`
+    pattern_ident,
+    /// `path`
+    pattern_path,
+    // /// `'_'`
+    // pattern_wildcard,
+    // /// `'(' pattern ( ',' pattern )* ','? ')'`
+    // pattern_tuple,
+
+    //
+    /// `'{' ( expr ';' )* end? '}'
+    expr_block,
+    /// `expr`
+    expr_block_end,
+
+    /// `op expr`
+    expr_prefix,
+    /// `'not' | '!' | '-' | '&'`
+    expr_prefix_op,
+
+    /// `'let' pattern ty? '=' expr`
+    expr_let,
+    /// `ty`
+    expr_let_ty,
+
+    /// `'set' expr '=' expr`
+    expr_set,
 
     /// `expr op expr`
+    ///
     expr_infix,
-    /// `punct*`
+    /// ```text
+    /// | '+' | '-' | '*' | '/' | '='
+    /// | '==' | '!='
+    /// | '>' | '<' | '>=' | '<='
+    /// | 'and' | 'or'
+    /// ```
+    // @TODO: Should we have a separate `op` for each operator?
     expr_infix_op,
 
-    // /// `'()'`
-    // expr_unit,
-    // /// `'(' expr ')'`
-    // expr_grouping,
-    // /// `'(' expr ( ',' expr )* ','? ')'`
-    // expr_tuple,
-    /// 'false'
-    expr_false,
-    /// 'true'
-    expr_true,
-
-    /// `expr tuple`
+    /// `expr '(' args? ')'`
     expr_call,
-    // expr_call_arg,
-    /// `'return' expr`
-    expr_return,
-
-    /// `'[]' ty`
-    ty_slice,
-    /// `'?' ty`
-    ty_nullable,
+    // /// `expr (',' expr) ','?`
+    // expr_call_args,
 }
 
 pub type NK = NodeKind;

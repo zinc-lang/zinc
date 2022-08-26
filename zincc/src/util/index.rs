@@ -151,6 +151,12 @@ impl<I: Idx, T> std::ops::Index<I> for IndexVec<I, T> {
     }
 }
 
+impl<I: Idx, T> std::ops::IndexMut<I> for IndexVec<I, T> {
+    #[track_caller]
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        self.get_mut(index).unwrap()
+    }
+}
 impl<I: Idx, T> std::ops::Deref for IndexVec<I, T> {
     type Target = [T];
 
@@ -178,9 +184,9 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
-    pub fn push(&mut self, t: T) -> I {
+    pub fn push(&mut self, item: T) -> I {
         let idx = I::new(self.raw.len());
-        self.raw.push(t);
+        self.raw.push(item);
         idx
     }
 

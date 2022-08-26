@@ -92,6 +92,9 @@ impl<'s, W: Write> CstWriter<'s, W> {
             match elem {
                 cst::Element::Token(i) => {
                     let tk = *self.tokens.get(i.get()).unwrap();
+                    if tk.is_trivia() {
+                        continue;
+                    }
                     let range = self.ranges.get(i.get()).unwrap();
                     write_token(&mut self.f, self.source, tk, range, self.use_color)?;
                     writeln!(self.f)?;

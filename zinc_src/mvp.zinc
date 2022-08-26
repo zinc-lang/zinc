@@ -1,0 +1,56 @@
+// requirements:
+// - function call
+// - function call w/ arguments and return
+// - function w/ params and return
+// - typealias
+// - slice type
+// - field access
+// - let
+// - inline asm
+
+// requirements:
+// - function call
+:: main fn void {
+    print("Hello, world!");
+}
+
+// requirements:
+// - typealias
+// - slice type
+:: typealias str = []u8;
+
+// requirements:
+// - function w/ params and return
+// - function call w/ arguments and return
+// - slice type
+:: print fn (s str) void {
+    write(1, str);
+}
+
+// requirements:
+// - function w/ params and return
+// - function call w/ arguments and return
+// - slice type
+// - field access
+:: write fn (fd uint, s str) uint {
+    syscall3(1, fd, s.ptr, s.len)
+}
+
+// requirements:
+// - function w/ params and return
+// - let
+// - inline asm
+:: syscall3 fn (nr uint, a uint, b uint, c uint) uint {
+    let ret uint = ---;
+    asm volatile {
+        "syscall",
+        in "rax" nr,
+        in "rdi" a,
+        in "rsi" b,
+        in "rdx" c,
+        out "rcx" _, // clobber
+        out "r11" _, // clobber
+        lateout "rax" ret,
+    };
+    ret
+}

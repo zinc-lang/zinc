@@ -1,30 +1,36 @@
-fn main() {
-    let a = 2;
-    let b = three();
-    add(a, b);
+:: main fn void {
+    // let x = 2;
+    // let y = three();
+    // add2(x, y);
 
-    {
-        let c = a + b;
-    }
+    // x;
+
+    // {
+    //     // let z = x + y;
+    // }
+
+    foo();
+
+    add2(1, 2);
+    add3(1, 2, 3);
 }
 
-fn three(): sint {
-    return 1 + 2;
+:: three fn uint
+    => 3;
+
+:: add2 fn (a sint, b sint) sint {
+    // a + b
 }
 
-fn add(a: sint, b: sint): sint {
-    return a + b;
-    // return sum(a, b, 0);
+:: add3 fn (a sint, b sint, c sint) sint {
+    // a + b + c
 }
 
-fn sum(a: sint, b: sint, c: sint): sint {
-    return a + b + c;
-}
+:: foo fn void {
+    :: bar fn void {}
 
-fn foo() {
-    fn bar() {}
+    bar();
     {
         bar();
     }
-    bar();
 }

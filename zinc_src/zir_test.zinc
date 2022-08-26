@@ -1,9 +1,0 @@
-fn main() {
-    1;
-    // 1 + 2;
-    // three();
-}
-
-// fn three(): sint {
-//     return 1 + 2;
-// }

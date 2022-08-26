@@ -1,0 +1,29 @@
+:: main fn void {
+    let one = 2;
+
+    let six = add2(one, 2, three());
+
+    let str = int_to_str(six);
+    let _ = write(1, str);
+}
+
+:: three fn uint {
+    3
+}
+
+:: sum fn (a uint, b uint, c uint) uint
+    => a + b + c;
+
+:: write fn (fd uint, bytes []u8) uint {
+    syscall3(1, fd, bytes.ptr, bytes.len)
+}
+
+:: write_all fn (fd uint, bytes []u8) void {
+    let* written = 0;
+    while (written != bytes.len)
+        written += write(fd, bytes[written..]);
+}
+
+:: syscall3 fn (nr uint, a uint, b uint, c uint) uint {
+    // some inline asm syntax
+}

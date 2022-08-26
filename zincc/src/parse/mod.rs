@@ -1,11 +1,13 @@
 pub mod cst;
 mod lexer;
+
+// #[allow(dead_code)]
+// mod parser;
 mod parser;
 
-pub use lexer::{lex, LexResult};
-pub use parser::{
-    parse, ParseContext, ParseError, ParseErrorExpected, ParseErrorExpectedWhat, ParseResult,
-};
+pub use lexer::lex;
+// pub use parser::{parse, ParseContext, ParseError, ParseErrorExpected, ParseErrorExpectedWhat};
+pub use parser::{parse, ParseError};
 
 /// A token represents a piece of source code with semantic meaning.
 /// Such as `brkt` being a prefix for all bracket tokens: `(){}[]`.
@@ -16,8 +18,11 @@ pub use parser::{
 #[allow(non_camel_case_types)]
 #[repr(u8)]
 pub enum TokenKind {
-    Eof,
+    eof,
     err,
+
+    tr_whitespace,
+    tr_comment,
 
     brkt_paren_open,   // (
     brkt_paren_close,  // )
@@ -26,22 +31,31 @@ pub enum TokenKind {
     brkt_square_open,  // [
     brkt_square_close, // ]
 
-    punct_colon,     // :
-    punct_dblColon,  // ::
-    punct_semiColon, // ;
-    punct_comma,     // ,
-
-    punct_eq,    // =
-    punct_plus,  // +
-    punct_minus, // -
-    punct_star,  // *
-    punct_slash, // /
-
-    punct_question, // ?
-    punct_bang,     // !
-    punct_amp,      // &
-
-    punct_fat_arrow, // =>
+    punct_ampersand,     // &
+    punct_bang,          // !
+    punct_bangEq,        // !=
+    punct_colon,         // :
+    punct_doubleColon,   // ::
+    punct_semicolon,     // ;
+    punct_comma,         // ,
+    punct_dot,           // .
+    punct_doubleDot,     // ..
+    punct_tripleDot,     // ...
+    punct_eq,            // =
+    punct_eqEq,          // ==
+    punct_fatArrow,      // =>
+    punct_greaterThan,   // >
+    punct_greaterThanEq, // >=
+    punct_lessThan,      // <
+    punct_lessThanEq,    // <=
+    // punct_lThinArrow,    // <-
+    punct_minus,      // -
+    punct_rThinArrow, // ->
+    punct_pipe,       // |
+    punct_plus,       // +
+    punct_question,   // ?
+    punct_slash,      // /
+    punct_star,       // *
 
     ident,
 
@@ -51,32 +65,49 @@ pub enum TokenKind {
     int_oct, // 0o
     int_bin, // 0b
 
-    string_prefix,  // an ident preceding a string without any whitespace
+    // string_prefix,  // an ident preceding a string without any whitespace
     string_open,    // "
     string_literal, // any normal text which has not been escaped
     string_close,   // "
 
-    string_num_suffix, // an ident following a string or number without any whitespace
-
+    // string_num_suffix, // an ident following a string or number without any whitespace
+    //
     esc_asciicode,        // \xNN
     esc_unicode,          // \u{NNNN}
     esc_char_newline,     // \n
     esc_char_return,      // \r
     esc_char_tab,         // \t
     esc_char_backslash,   // \\
-    esc_char_doublequote, // \"
-    esc_char_singlequote, // \'
+    esc_char_doubleQuote, // \"
+    esc_char_singleQuote, // \'
     esc_char_other,       // \{anything that is not above}
 
-    kw_and,
+    kw_class,
     kw_const,
+    kw_else,
+    kw_enum,
     kw_false,
     kw_fn,
+    kw_if,
+    kw_impl,
+    kw_import,
     kw_let,
+    kw_mixin,
+    kw_module,
     kw_mut,
-    kw_or,
+    kw_pub,
     kw_return,
+    kw_set,
+    kw_struct,
+    kw_trait,
     kw_true,
+    kw_union,
+}
+
+impl TokenKind {
+    pub fn is_trivia(self) -> bool {
+        matches!(self, TK::tr_whitespace | TK::tr_comment)
+    }
 }
 
 pub type TK = TokenKind;

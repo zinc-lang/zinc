@@ -1,81 +1,109 @@
 <div align="center">
 
-# Zinc lang
+# Zinc
 
 The zinc programming language.
 
+An successor language to C++.
 </div>
 
 ---
 
-<!-- 
-@TODO: Add a taste of the syntax to the front page
-@TODO: Add a tour of the language README
-@TODO: Migrate to a checklist showing what is and isn't functional
--->
+<img src="./Zinc.svg" align="right" width="256"
+     alt="Quicksort code in Carbon. Follow the link to read more.">
+</a>
 
 ## Goals
 
-- AOT compiled binary(s)
-- Control over allocator(s)
-- Scope local context that is implicitly passed to zinc functions
-- Support constructs to allow for multiple paradigms, such as:
-  - Procedural
-  - Declarative 
-  - Functional
-  - Data oriented, with ways to specify SOA or AOS
-  - Object oriented, inheritance and polymorphism
-- Powerful compile-time execution
-  - Syntax clearly separate for runtime and compile constructs and operations
-  - Generics / templates
-  - Powerful meta-programming
-  - Macros, code generation based on code
-  - Be transparent about generated code
-  - Attributes / annotations, part of the macro system
-- Strongly typed
-  - Concepts as the preferred means of dynamic dispatch, think c++20's concepts
-  - First-class trait/interface system, like rust, but some oop thrown in
-  - Concept / trait / interface, effectively all the same thing
-  - [runtime polymorphism done right](https://github.com/ldionne/dyno)
-- First-class c interop
-  - Binding generation from c header source code
-- First-class IDE support
-- Powerful package and project manager
-- Powerful async, also much like rust
+<sub>Yes, a lot the ideas here are taken from carbon.<sub/>
 
-## Building
+- Performance-critical
+- Software and **language evolution**
+- Code that is easy to **read**, **understand**, and **write**
+- Perfect and configurable **safety** and testing mechanisms
+- Practical **testing** mechanisms
+- Fast and **scalable** development
+- **Modern** OS platforms, hardware architectures, and environments
 
-``` sh
-git clone https://github.com/tealsnow/zinc.git
-cd zinc
-git submodule update --init --recursive
-cd zincc
-cargo b
+- _**Interoperability** with and **migration** from existing C++ code_
+
+In other words, we want to do what C++ does but better.
+
+## How?
+
+Through **interoperability**, **migration**, and **language evolution**.
+
+- Tight move semantics
+- Types as an expression
+- Explicit object parameter declares a method (the self keyword)
+- Type parameters as first class citizens
+
+## (Multiple) inheritance
+
+- `class`
+  - Cannot be inherited
+  - Able to carry state
+  - Can instantiated
+  - Able to inherit from multiple traits and mixins
+- `mixin`
+  - Can be inherited
+  - Able to carry state
+  - Cannot be instantiated
+  - Able to inherit from multiple traits and mixins
+  - Similar to an abstract class or pure virtual class with state
+- `trait`
+  - Can be inherited
+  - Unable to carry state
+  - Cannot be instantiated
+  - Can only inherit / require other traits
+  - Entirely comptime construct - does not incur a runtime cost
+  - Similar to an interface or pure virtual class without state
+
+## C++ interop
+
+### C++ from zinc
+
+```c++
+// circle.h
+
+struct Circle {
+    float r;
+}
 ```
 
-## Usage
+```zinc
+// math.zinc
 
-``` sh
-# within zincc
-cargo r -- --help
-# or
-cargo r -- -T ../zinc_src/<pick a file>
+:: import cxx "circle.h" as cpp;
+
+:: pub printAreas fn (circles []cpp::Circle) {
+    let* area = 0;
+    circles.foreach(fn (c) {
+        set area += PI * c.r * c.r;
+    });
+    println("{}", area);
+}
 ```
 
-## Things I want to make with this (Eventual goals)
+### Zinc from c++
 
-- Programming language(s)
-  - Self-hosted zinc compiler
-  - Proof-Of-Concept managed VM language
-- OOP UI library, like flutter
-  - A file editor, like a good one
-- Game Engine
-  - A commercial game
-- Proof-Of-Concept OS
-  
-## Contributing
+```c++
+// my_cpp.cpp
 
-Feel free to open any pull request, I'm open to any contributions.
+#include "my_module.zinc.hpp"
+
+void func() {
+    my_module::foo();
+}
+```
+
+```zinc
+// my_module.zinc
+
+:: foo fn void {
+    println("Hello, world");
+}
+```
 
 ## License
 

@@ -1,0 +1,18 @@
+:: main fn void {
+    // 1 + 2 + 3;
+
+    // let one = 1;
+    // let three = three();
+    three();
+
+    // let six = sum(one, 2, three);
+    sum(1, 2, 3);
+}
+
+:: three fn uint => 3;
+
+:: sum fn (a uint, b uint, c uint) uint {
+    // a + b + c
+}
+
+:: foo fn void {}
