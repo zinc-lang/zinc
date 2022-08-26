@@ -3,22 +3,18 @@ use super::*;
 /// Parse
 impl Parser<'_> {
     pub fn parse_top_level(&mut self) -> cst::NamedNodeId {
-        // let mut root = self.pnode_np(NK::root);
+        let root = self.node_map.push(cst::Node::new());
 
-        let mut root = std::mem::ManuallyDrop::new(self.pnode_np(NK::root));
-
-        while !root.at_end() {
-            self.parse_decl(**root);
+        while self.peek() != TK::eof {
+            self.parse_decl(root);
         }
 
-        root.push_token();
+        // @TODO: Should we append the EOF token? Doing so adds a lot of complexity.
 
         cst::NamedNodeId {
-            kind: root.kind,
-            raw: root.node,
+            kind: NK::root,
+            raw: root,
         }
-
-        // do not call root.drop()
     }
 
     pub fn parse_path(&mut self) -> PNode {
@@ -75,21 +71,4 @@ impl Parser<'_> {
         bool.expect_one_of(&[TK::kw_true, TK::kw_false]);
         bool
     }
-
-    // /// 'let's and 'const's
-    // fn parse_binding(&mut self, binding: &mut PNode) {
-    //     // ident
-    //     self.expect(TK::ident, ParseContext::DeclConst, binding);
-
-    //     // ( ':' ty )?
-    //     if self.eat(TK::punct_colon, binding) {
-    //         let mut ty = self.node(NK::binding_ty);
-    //         self.parse_ty(&mut ty);
-    //         self.append_node(ty, binding);
-    //     }
-
-    //     // '=' expr
-    //     self.expect(TK::punct_eq, ParseContext::DeclConst, binding);
-    //     self.parse_stmt_expr(binding);
-    // }
 }

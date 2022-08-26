@@ -11,17 +11,18 @@ mod parse;
 mod pattern;
 mod ty;
 
-pub fn parse(map: &mut SourceMap, file_id: SourceFileId) -> Vec<ParseError> {
-    // let tokens = &map.lex_data[&file_id].tokens;
-    // let tokens = tokens
-    //     .iter()
-    //     .filter(|t| !t.is_trivia())
-    //     .cloned()
-    //     .collect::<Vec<_>>()
-    //     .into_boxed_slice();
+use {std::cell::RefCell, std::os::raw::c_void, std::ptr::null};
 
+thread_local! {
+    static PARSER_PTR: RefCell<*const c_void> = RefCell::new(null());
+}
+
+unsafe fn get_thread_parser<'s>() -> &'static mut Parser<'s> {
+    &mut *(PARSER_PTR.with(|ptr| *ptr.borrow() as *const Parser as *mut Parser))
+}
+
+pub fn parse(map: &mut SourceMap, file_id: SourceFileId) -> Vec<ParseError> {
     let mut parser = Parser {
-        // tokens: &*tokens,
         tokens: &map.lex_data[&file_id].tokens,
 
         // panicking: false,
@@ -32,10 +33,25 @@ pub fn parse(map: &mut SourceMap, file_id: SourceFileId) -> Vec<ParseError> {
         node_map: Default::default(),
     };
 
+    PARSER_PTR.with(|ptr| {
+        assert!(
+            ptr.borrow().is_null(),
+            "There can only be one parser per thread"
+        );
+
+        let mut ptr = ptr.borrow_mut();
+        *ptr = &parser as *const Parser as *const _;
+    });
+
     let root = parser.parse_top_level();
 
+    PARSER_PTR.with(|ptr| {
+        let mut ptr = ptr.borrow_mut();
+        *ptr = null();
+    });
+
     let cst = cst::Cst {
-        root: root.into(),
+        root,
         map: parser.node_map,
     };
     map.csts.insert(file_id, cst);
@@ -57,56 +73,13 @@ struct Parser<'s> {
 #[derive(Debug)]
 pub enum ParseError {
     _TODO,
-    // Expected(ParseErrorExpected),
 }
-
-// #[derive(Debug)]
-// pub struct ParseErrorExpected {
-//     pub what: ParseErrorExpectedWhat,
-//     pub at: usize,
-//     pub found: usize,
-//     pub context: ParseContext,
-// }
-
-// #[derive(Debug)]
-// pub enum ParseErrorExpectedWhat {
-//     Item(ParseErrorItem),
-//     Token(TK),
-//     // OneOf(Vec<ParseErrorExpectedWhat>),
-// }
-
-// #[derive(Debug)]
-// pub enum ParseErrorItem {
-//     Decl,
-//     Expr,
-//     Ty,
-// }
-
-// #[derive(Debug, Clone, Copy)]
-// pub enum ParseContext {
-//     TopLevel,
-//     // Block,
-//     Decl,
-//     DeclFunc,
-//     // Stmt,
-//     // // StmtLet,
-//     // // StmtReturn,
-//     // ExprStart,
-//     // // ExprParen,
-//     // ExprCall,
-//     String,
-//     Path,
-//     // TyFunc,
-//     // Ty,
-//     // TySlice,
-// }
 
 #[derive(Debug, Clone)]
 struct PNode {
     kind: NodeKind,
     node: NodeId,
-    parser: *const std::os::raw::c_void,
-    // this is needed as sometimes the parent is not known create time
+    // Sometimes the parent is not known at time of creation
     parent: Option<NodeId>,
 }
 
@@ -120,7 +93,7 @@ impl Deref for PNode {
 
 impl PNode {
     pub fn push_token(&mut self) {
-        let parser = unsafe { &mut *(self.parser as *const Parser as *mut Parser) };
+        let parser = unsafe { get_thread_parser() };
         let node = &mut parser.node_map[self.node];
         node.elements
             .push(cst::Element::Token(cst::TokenIndex::new(parser.cursor)));
@@ -136,7 +109,7 @@ impl PNode {
     }
 
     fn peek_n(&mut self, n: usize) -> TK {
-        let parser = unsafe { &mut *(self.parser as *const Parser as *mut Parser) };
+        let parser = unsafe { get_thread_parser() };
         loop {
             let tok = parser.tokens[parser.cursor + n];
             if tok.is_trivia() {
@@ -150,11 +123,6 @@ impl PNode {
 
     pub fn at(&mut self, tk: TK) -> bool {
         self.peek() == tk
-    }
-
-    #[inline]
-    pub fn at_end(&mut self) -> bool {
-        self.at(TK::eof)
     }
 
     pub fn at_one_of(&mut self, set: &[TK]) -> bool {
@@ -210,19 +178,18 @@ impl From<PNode> for NamedNodeId {
 
 impl Drop for PNode {
     fn drop(&mut self) {
-        if let Some(parent) = self.parent {
-            assert!(parent != self.node);
+        let parent = self
+            .parent
+            .expect("PNode does not have parent at time of drop");
+        assert!(parent != self.node);
 
-            let parser = unsafe { &mut *(self.parser as *const Parser as *mut Parser) };
-            let parent = &mut parser.node_map[parent];
+        let parser = unsafe { get_thread_parser() };
+        let parent = &mut parser.node_map[parent];
 
-            parent.elements.push(cst::Element::Node(NamedNodeId {
-                kind: self.kind,
-                raw: self.node,
-            }));
-        } else {
-            unreachable!()
-        }
+        parent.elements.push(cst::Element::Node(NamedNodeId {
+            kind: self.kind,
+            raw: self.node,
+        }));
     }
 }
 
@@ -249,7 +216,6 @@ impl Parser<'_> {
         PNode {
             kind,
             node,
-            parser: self as *const Self as *const _,
             parent: Some(parent),
         }
     }
@@ -260,50 +226,12 @@ impl Parser<'_> {
         PNode {
             kind,
             node,
-            parser: self as *const Self as *const _,
             parent: None,
         }
     }
-
-    // fn node_bump(&mut self, nk: NK) -> PNode {
-    //     let mut n = self.pnode_np(nk);
-    //     n.push_token();
-    //     n
-    // }
 }
 
-/// Error ops
-impl Parser<'_> {
-    // fn report(&mut self, parent: &mut PNode, err: ParseError) {
-    //     todo!()
-    //     // if !self.panicking {
-    //     //     self.panicking = true;
-
-    //     //     self.errors.push(err);
-    //     //     return;
-    //     // }
-
-    //     // if self.at_set(&[TK::brkt_brace_close, TK::eof, TK::kw_let]) {
-    //     //     self.bump(parent);
-    //     //     self.panicking = false;
-    //     // } else {
-    //     //     let mut node = self.node(NK::err);
-    //     //     self.bump(&mut node);
-    //     //     self.append_node(node, parent);
-    //     // }
-    // }
-
-    // fn expect(&mut self, what: TK, context: ParseContext, parent: &mut PNode) {
-    //     if !self.eat(what, parent) {
-    //         self.report(
-    //             parent,
-    //             ParseError::Expected(ParseErrorExpected {
-    //                 what: ParseErrorExpectedWhat::Token(what),
-    //                 at: self.cursor - 1,
-    //                 found: self.cursor,
-    //                 context,
-    //             }),
-    //         )
-    //     }
-    // }
-}
+// /// Error ops
+// impl Parser<'_> {
+//     fn report(&mut self,) {}
+// }
