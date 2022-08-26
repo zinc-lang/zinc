@@ -1,0 +1,73 @@
+:: literal_expr fn void {
+    123;
+    0xbeaf;
+    0b0111_1011;
+    0o1647;
+
+    24.5;
+    1.2E+4;
+
+    "foo bar";
+    "foo\nbar";
+
+    // todo multi-line string literal
+
+    true;
+    false;
+
+    foo;
+    bar;
+    foo::bar;
+    foo::bar::baz;
+
+    // .() tuple literal
+    // .{} struct literal
+    // .[] array literal
+}
+
+:: prefix_expr fn void {
+    not false;
+    !false;
+    -42;
+    &foo;
+
+    let foo = 1;
+    let bar uint = 2;
+
+    let* baz = 3;
+    set baz = bar;
+}
+
+:: infix_expr fn void {
+    a + b;
+    a + b - c;
+
+    a * b;
+    a / b;
+
+    a * b + c; // == (a * b) + c
+    a + b * c; // == a + (b * c)
+
+    foo and bar;
+    foo and bar or aaa and bbb; // == (foo and bar) or (aaa and bbb)
+    foo and !bar or not aaa and bbb; // == (foo and (!bar)) or ((not aaa) and bbb)
+}
+
+:: suffix_expr fn void {
+    foo();
+    foo(foo, bar);
+    foo(foo, bar,);
+
+    // foo?;
+    // foo.bar;
+    // foo.[n];
+}
+
+:: compound_expr fn void {
+    // if
+    // while
+
+    // How do we want to do for loops?
+    // standard syntax?
+    // lambdas?
+}

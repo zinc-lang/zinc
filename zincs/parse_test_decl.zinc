@@ -1,0 +1,47 @@
+:: main fn void {}
+
+:: empty_block fn void {}
+:: single_expr fn void => {};
+
+:: get_true fn bool => true;
+:: get_false fn bool => false;
+
+:: param fn (a uint) void {}
+:: params fn (a uint, b bool) void {}
+:: param_default_value fn (a uint = 3) void {}
+// :: param_triple_dot fn (a uint...) void {}
+
+:: comptime_param fn [T] void {}
+:: comptime_params fn [K, V] void {}
+:: comptime_param_default_value fn [T = bool] void {}
+:: comptime_param_constrained fn [T SomeTrait] void {}
+:: comptime_param_constrained_multiple fn [T SomeTrait + SomeOtherTrait] void {}
+// :: comptime_param_triple_dot fn [T...] void {}
+
+:: comptime_param_value fn [N! uint] void {}
+:: comptime_param_value_default_value fn [N! uint = 3] void {}
+
+:: comptime_params_and_normal_params fn
+    [T, R] (foo uint, bar bool) R {}
+
+// :: Vector struct [T, N! uint] {}
+// :: Vector struct [T Debug + Clone, N! uint] {}
+
+// :: Clone trait {
+//     :: clone fn Self;
+// }
+
+// :: ImplicitCopy trait : Clone {}
+
+// :: Vector struct [
+//     T type(
+//         operator(+) &
+//         operator(-) &
+//         operator(*) &
+//         operator(/) &
+//         ImplicitCopy
+//     ),
+//     N! uint
+// ] {
+
+// }

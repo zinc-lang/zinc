@@ -1,0 +1,18 @@
+(()) [{}]
+
+& ! : ; , . = > < - + ? / *
+
+:: .. ... => ->
+
+// Some comment
+
+42 36.2 42.0E+2 5.2E-3
+0xdeadbeef 0xDEAD_BEEF 0o145_357 0b1100_0101
+
+foo bar
+
+class else enum false fn if impl import let mixin module pub struct trait true union
+and as get new or set
+
+"foo bar"
+"this is string"

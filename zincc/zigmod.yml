@@ -1,6 +1,0 @@
-id: 3e0sc2uakw65uoaos3atyy9z2fh5mps6b88jiwyga1xnyu4k
-name: zincc
-license: MIT
-description: zig compiler
-root_dependencies:
-  - src: git https://github.com/Hejsil/zig-clap commit-511b357b9fd6480f46cf2a52b1d168471d1ec015 # v0.5.0

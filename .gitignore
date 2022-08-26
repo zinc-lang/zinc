@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 Cargo.lock
 target
 scratch
@@ -8,3 +9,7 @@ zig-cache
 zig-out
 deps.zig
 zigmod.lock
+=======
+zig-cache
+zig-out
+>>>>>>> Stashed changes

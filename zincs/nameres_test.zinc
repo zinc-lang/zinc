@@ -1,0 +1,36 @@
+:: main fn void {
+    // let x = 2;
+    // let y = three();
+    // add2(x, y);
+
+    // x;
+
+    // {
+    //     // let z = x + y;
+    // }
+
+    foo();
+
+    add2(1, 2);
+    add3(1, 2, 3);
+}
+
+:: three fn uint
+    => 3;
+
+:: add2 fn (a sint, b sint) sint {
+    // a + b
+}
+
+:: add3 fn (a sint, b sint, c sint) sint {
+    // a + b + c
+}
+
+:: foo fn void {
+    :: bar fn void {}
+
+    bar();
+    {
+        bar();
+    }
+}

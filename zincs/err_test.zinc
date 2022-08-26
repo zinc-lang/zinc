@@ -1,0 +1,11 @@
+:: lexer fn void {
+    // 1.2E3;
+    // foo ^ bar;
+    // as	df;
+    // "asdf;
+}
+
+:: parser fn void {
+    // foo::;
+    // :
+}
