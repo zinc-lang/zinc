@@ -3,9 +3,12 @@ use crate::source_map::{self, SourceFileId, SourceMap};
 use std::ops::Range;
 
 pub fn lex(map: &mut SourceMap, file_id: SourceFileId) -> Vec<LexError> {
-    let source = &map.sources[&file_id];
+    debug_assert!(map.sources.contains_key(&file_id));
+    debug_assert!(!map.lex_data.contains_key(&file_id));
 
+    let source = &map.sources[&file_id];
     debug_assert!(source.ends_with("\n\0"));
+
     let mut lexer = Lexer::new(source);
     lexer.do_lex();
 

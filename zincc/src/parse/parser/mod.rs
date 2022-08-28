@@ -22,6 +22,9 @@ unsafe fn get_thread_parser<'s>() -> &'static mut Parser<'s> {
 }
 
 pub fn parse(map: &mut SourceMap, file_id: SourceFileId) -> Vec<ParseError> {
+    debug_assert!(map.lex_data.contains_key(&file_id));
+    debug_assert!(!map.csts.contains_key(&file_id));
+
     let mut parser = Parser {
         tokens: &map.lex_data[&file_id].tokens,
 

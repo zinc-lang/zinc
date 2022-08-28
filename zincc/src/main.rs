@@ -10,9 +10,9 @@ mod source_map;
 use source_map::{SourceFile, SourceFileId, SourceMap};
 
 fn main() {
-    let options = Options::get();
-
     setup_logger().expect("failed to setup logger");
+
+    let options = Options::get();
 
     let mut source_map = SourceMap::new(SourceFile::new(options.path).unwrap());
 
@@ -192,6 +192,8 @@ fn setup_logger() -> Result<(), fern::InitError> {
 }
 
 fn read_file_source(map: &mut SourceMap, file_id: SourceFileId) -> std::io::Result<()> {
+    debug_assert!(!map.sources.contains_key(&file_id));
+
     let file = &map.files[file_id];
     let path = file.get_path();
 
