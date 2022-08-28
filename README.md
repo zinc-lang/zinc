@@ -104,9 +104,3 @@ void func() {
     println("Hello, world");
 }
 ```
-
-## License
-
-This software is distributed under the terms of both the MIT license and Apache license (Version 2.0) unless any portion is specified otherwise.
-
-See `LICENSE-APACHE`, `LICENSE-MIT`, and `COPYRIGHT` for details.
