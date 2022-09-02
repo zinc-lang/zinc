@@ -1,5 +1,5 @@
 use super::{
-    cst::{self, NamedNodeId, NodeId, NodeKind, NK},
+    cst::{self, NodeId, NodeKind, NK},
     TokenKind, TK,
 };
 use crate::source_map::{SourceFileId, SourceMap};
@@ -33,7 +33,8 @@ pub fn parse(map: &mut SourceMap, file_id: SourceFileId) -> Vec<ParseError> {
 
         errors: Vec::new(),
 
-        node_map: Default::default(),
+        // node_map: Default::default(),
+        cst: Default::default(),
     };
 
     PARSER_PTR.with(|ptr| {
@@ -46,18 +47,20 @@ pub fn parse(map: &mut SourceMap, file_id: SourceFileId) -> Vec<ParseError> {
         *ptr = &parser as *const Parser as *const _;
     });
 
-    let root = parser.parse_top_level();
+    // let root = parser.parse_top_level();
+    parser.parse_top_level();
 
     PARSER_PTR.with(|ptr| {
         let mut ptr = ptr.borrow_mut();
         *ptr = null();
     });
 
-    let cst = cst::Cst {
-        root,
-        map: parser.node_map,
-    };
-    map.csts.insert(file_id, cst);
+    // let cst = cst::Cst {
+    //     // root,
+    //     // map: parser.node_map,
+    // };
+    // map.csts.insert(file_id, cst);
+    map.csts.insert(file_id, parser.cst);
 
     parser.errors
 }
@@ -70,7 +73,8 @@ struct Parser<'s> {
 
     errors: Vec<ParseError>,
 
-    node_map: cst::NodeMap,
+    // node_map: cst::NodeMap,
+    cst: cst::Cst,
 }
 
 #[derive(Debug)]
@@ -97,8 +101,7 @@ impl Deref for PNode {
 impl PNode {
     pub fn push_token(&mut self) {
         let parser = unsafe { get_thread_parser() };
-        let node = &mut parser.node_map[self.node];
-        node.elements
+        parser.cst.elements[self.node.index()]
             .push(cst::Element::Token(cst::TokenIndex::new(parser.cursor)));
         parser.cursor += 1;
     }
@@ -170,15 +173,6 @@ impl PNode {
     }
 }
 
-impl From<PNode> for NamedNodeId {
-    fn from(val: PNode) -> Self {
-        NamedNodeId {
-            raw: val.node,
-            kind: val.kind,
-        }
-    }
-}
-
 impl Drop for PNode {
     fn drop(&mut self) {
         let parent = self
@@ -187,12 +181,8 @@ impl Drop for PNode {
         assert!(parent != self.node);
 
         let parser = unsafe { get_thread_parser() };
-        let parent = &mut parser.node_map[parent];
-
-        parent.elements.push(cst::Element::Node(NamedNodeId {
-            kind: self.kind,
-            raw: self.node,
-        }));
+        parser.cst.elements[parent.index()].push(cst::Element::Node(self.node));
+        parser.cst.kinds[parent.index()] = self.kind;
     }
 }
 
@@ -215,7 +205,7 @@ impl Parser<'_> {
 /// Node ops
 impl Parser<'_> {
     fn pnode(&mut self, kind: NK, parent: NodeId) -> PNode {
-        let node = self.node_map.push(cst::Node::new());
+        let node = self.cst.alloc();
         PNode {
             kind,
             node,
@@ -225,7 +215,7 @@ impl Parser<'_> {
 
     // pnode_no_parent
     fn pnode_np(&mut self, kind: NK) -> PNode {
-        let node = self.node_map.push(cst::Node::new());
+        let node = self.cst.alloc();
         PNode {
             kind,
             node,

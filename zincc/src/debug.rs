@@ -56,7 +56,7 @@ pub fn write_cst<W: Write>(
     ranges: &[std::ops::Range<usize>],
     use_color: bool,
 ) -> io::Result<()> {
-    CstWriter::new(writer, cst, source, tokens, ranges, use_color).print(cst.root())
+    CstWriter::new(writer, cst, source, tokens, ranges, use_color).print(cst.root)
 }
 
 pub struct CstWriter<'s, W: Write> {
@@ -87,8 +87,8 @@ impl<'s, W: Write> CstWriter<'s, W> {
         }
     }
 
-    pub fn print(&mut self, node: &cst::Node) -> io::Result<()> {
-        for elem in node.elements.iter() {
+    pub fn print(&mut self, node: cst::NodeId) -> io::Result<()> {
+        for elem in self.cst.elements[node.index()].iter() {
             match elem {
                 cst::Element::Token(i) => {
                     let tk = *self.tokens.get(i.get()).unwrap();
@@ -100,18 +100,19 @@ impl<'s, W: Write> CstWriter<'s, W> {
                     writeln!(self.f)?;
                 }
                 cst::Element::Node(n) => {
+                    let kind = self.cst.kinds[node.index()];
                     if self.use_color {
                         let mut ansi = termcolor::Ansi::new(&mut self.f);
 
                         ansi.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)))?;
-                        write!(ansi, "{:?}", n.kind)?;
+                        write!(ansi, "{:?}", kind)?;
                         ansi.reset()?;
                         writeln!(self.f)?;
                     } else {
-                        writeln!(self.f, "{:?}", n.kind)?;
+                        writeln!(self.f, "{:?}", kind)?;
                     }
                     self.f.push_indent();
-                    self.print(self.cst.get(*n))?;
+                    self.print(*n)?;
                     self.f.pop_indent();
                 }
             }

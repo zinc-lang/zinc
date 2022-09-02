@@ -2,18 +2,26 @@ use super::*;
 
 /// Parse
 impl Parser<'_> {
-    pub fn parse_top_level(&mut self) -> cst::NamedNodeId {
-        let root = self.node_map.push(cst::Node::new());
+    // pub fn parse_top_level(&mut self) -> cst::NamedNodeId {
+    //     let root = self.node_map.push(cst::Node::new());
+
+    //     while self.peek() != TK::eof {
+    //         self.parse_decl(root);
+    //     }
+
+    //     // @TODO: Should we append the EOF token? Doing so adds a lot of complexity.
+
+    //     cst::NamedNodeId {
+    //         kind: NK::root,
+    //         raw: root,
+    //     }
+    // }
+
+    pub fn parse_top_level(&mut self) {
+        let root = self.cst.root;
 
         while self.peek() != TK::eof {
             self.parse_decl(root);
-        }
-
-        // @TODO: Should we append the EOF token? Doing so adds a lot of complexity.
-
-        cst::NamedNodeId {
-            kind: NK::root,
-            raw: root,
         }
     }
 
