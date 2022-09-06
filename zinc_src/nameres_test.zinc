@@ -1,4 +1,4 @@
-:: main fn void {
+:: main fn {
     // let x = 2;
     // let y = three();
     // add2(x, y);
@@ -11,8 +11,8 @@
 
     foo();
 
-    add2(1, 2);
-    add3(1, 2, 3);
+    // add2(1, 2);
+    // add3(1, 2, 3);
 }
 
 :: three fn uint
@@ -26,11 +26,17 @@
     // a + b + c
 }
 
-:: foo fn void {
-    :: bar fn void {}
-
+:: foo fn {
     bar();
     {
         bar();
+    };
+
+    :: bar fn {}
+
+    :: asdf fn {
+        asdf();
     }
+
+    foo();
 }

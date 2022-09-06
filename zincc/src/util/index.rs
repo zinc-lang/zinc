@@ -3,6 +3,7 @@
 use std::fmt::{self, Debug};
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::ops::Range;
 
 /// Dry macro for creating simple NewType structs that implement [`Idx`].
 ///
@@ -10,7 +11,7 @@ use std::marker::PhantomData;
 ///
 /// ```
 /// # use crate::util::index;
-/// // There are convenance overloads for common types
+/// // There are convenience overloads for common types
 /// index::define_idx! { pub struct MyU32Index: u32 }
 /// // or for a NonZeroU32:
 /// index::define_idx! { pub struct MyU32Index: u32 != 0 }
@@ -85,32 +86,6 @@ macro_rules! define_idx {
             }
         }
     };
-    // {
-    //     $(#[$outer:meta])*
-    //     $vis:vis struct $IndexTypeName:ident: usize
-    // } => {
-    //     $(#[$outer])*
-    //     $crate::util::index::define_idx! {
-    //         $vis struct $IndexTypeName: usize {
-    //             new => |x: usize| { x },
-    //             get => |s: $IndexTypeName| { s },
-    //         }
-    //     }
-    // };
-    // {
-    //     $(#[$outer:meta])*
-    //     $vis:vis struct $IndexTypeName:ident: usize != 0
-    // } => {
-    //     $(#[$outer])*
-    //     $crate::util::index::define_idx! {
-    //         $vis struct $IndexTypeName: std::num::NonZeroUsize {
-    //             new => |x: std::num::NonZeroUsize| {
-    //                 std::num::NonZeroUsize::new(x + 1).unwrap()
-    //             },
-    //             get => |s: $IndexTypeName| { s.0.get() - 1 },
-    //         }
-    //     }
-    // };
 }
 pub use define_idx;
 
@@ -157,6 +132,18 @@ impl<I: Idx, T> std::ops::IndexMut<I> for IndexVec<I, T> {
         self.get_mut(index).unwrap()
     }
 }
+
+impl<I: Idx, T> std::ops::Index<Range<I>> for IndexVec<I, T> {
+    type Output = [T];
+
+    #[track_caller]
+    fn index(&self, index: Range<I>) -> &Self::Output {
+        let start = index.start.index();
+        let end = index.end.index();
+        &self.raw[start..end]
+    }
+}
+
 impl<I: Idx, T> std::ops::Deref for IndexVec<I, T> {
     type Target = [T];
 
@@ -179,6 +166,7 @@ impl<I: Idx, T> IndexVec<I, T> {
         }
     }
 
+    #[inline]
     pub fn raw(&self) -> &Vec<T> {
         &self.raw
     }
@@ -188,6 +176,14 @@ impl<I: Idx, T> IndexVec<I, T> {
         let idx = I::new(self.raw.len());
         self.raw.push(item);
         idx
+    }
+
+    pub fn push_range(&mut self, iter: impl Iterator<Item = T>) -> Range<I> {
+        let start = I::new(self.raw.len());
+        iter.for_each(|item| self.raw.push(item));
+        let end = I::new(self.raw.len());
+
+        start..end
     }
 
     #[inline]
@@ -207,18 +203,18 @@ impl<I: Idx, T> IndexVec<I, T> {
         self.raw.get_mut(index.index())
     }
 
-    #[inline]
-    pub fn indices(&self) -> Vec<I> {
-        self.raw
-            .iter()
-            .enumerate()
-            .map(|(idx, _)| I::new(idx))
-            .collect()
+    pub fn indices(&self) -> impl Iterator<Item = I> + '_ {
+        self.raw.iter().enumerate().map(|(idx, _)| I::new(idx))
     }
 }
 
+pub fn indicies_of_range<I: Idx>(range: Range<I>) -> impl Iterator<Item = I> {
+    (range.start.index()..range.end.index())
+        .into_iter()
+        .map(|i| I::new(i))
+}
+
 #[derive(Clone)]
-#[non_exhaustive]
 pub struct InterningIndexVec<I: Idx, T: Eq> {
     raw: IndexVec<I, T>,
 }
@@ -327,3 +323,29 @@ impl StringInterningVec {
         self.get_from_str_value(str).unwrap_unchecked()
     }
 }
+
+// #[derive(Debug)]
+// pub struct IndexSet<I: Idx> {
+//     counter: usize,
+//     _m: PhantomData<I>,
+// }
+
+// impl<I: Idx> Default for IndexSet<I> {
+//     fn default() -> Self {
+//         Self::new()
+//     }
+// }
+
+// impl<I: Idx> IndexSet<I> {
+//     pub fn new() -> Self {
+//         Self {
+//             counter: 0,
+//             _m: PhantomData,
+//         }
+//     }
+
+//     pub fn push(&mut self) -> I {
+//         self.counter += 1;
+//         I::new(self.counter - 1)
+//     }
+// }

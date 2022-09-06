@@ -1,6 +1,8 @@
 use std::num::{NonZeroU32, NonZeroUsize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+use super::TokenKind;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(NonZeroU32);
 
 impl NodeId {
@@ -13,11 +15,16 @@ impl NodeId {
     }
 }
 
+impl std::fmt::Debug for NodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NodeId({})", self.index())
+    }
+}
+
 #[derive(Debug)]
 pub struct Cst {
-    pub root: NodeId,
-    pub elements: Vec<Vec<Element>>,
-    pub kinds: Vec<NodeKind>,
+    elements: Vec<Vec<Element>>,
+    kinds: Vec<NodeKind>,
 }
 
 impl Default for Cst {
@@ -29,10 +36,59 @@ impl Default for Cst {
 impl Cst {
     pub fn new() -> Self {
         Self {
-            root: NodeId::new(0),
             elements: vec![Vec::new()],
             kinds: vec![NodeKind::root],
         }
+    }
+
+    pub fn root(&self) -> NodeId {
+        NodeId::new(0)
+    }
+
+    pub fn trivia_removed(&self, tokens: &[TokenKind]) -> Cst {
+        let elements = self
+            .elements
+            .clone()
+            .into_iter()
+            .map(|vec| {
+                vec.into_iter()
+                    .filter(|elem| match elem {
+                        Element::Node(_) => true,
+                        Element::Token(i) => !tokens[i.get()].is_trivia(),
+                    })
+                    .collect()
+            })
+            .collect();
+        Cst {
+            elements,
+            kinds: self.kinds.clone(),
+        }
+    }
+
+    pub fn set_kind(&mut self, node: NodeId, kind: NodeKind) {
+        self.kinds[node.index()] = kind;
+    }
+
+    pub fn kind(&self, node: NodeId) -> NodeKind {
+        self.kinds[node.index()]
+    }
+
+    pub fn elements(&self, node: NodeId) -> impl Iterator<Item = &Element> {
+        self.elements[node.index()].iter()
+    }
+
+    pub fn tokens(&self, node: NodeId) -> impl Iterator<Item = &TokenIndex> {
+        self.elements[node.index()].iter().filter_map(|e| match e {
+            Element::Token(i) => Some(i),
+            _ => None,
+        })
+    }
+
+    pub fn nodes(&self, node: NodeId) -> impl Iterator<Item = &NodeId> {
+        self.elements[node.index()].iter().filter_map(|e| match e {
+            Element::Node(id) => Some(id),
+            _ => None,
+        })
     }
 
     pub fn alloc(&mut self) -> NodeId {
@@ -42,19 +98,13 @@ impl Cst {
         id
     }
 
-    // pub fn tokens(&self, node: NodeId) -> impl Iterator<Item = &TokenIndex> {
-    //     self.elements[node.index()].iter().filter_map(|e| match e {
-    //         Element::Token(i) => Some(i),
-    //         _ => None,
-    //     })
-    // }
+    pub fn push_child_node(&mut self, node: NodeId, child: NodeId) {
+        self.elements[node.index()].push(Element::Node(child))
+    }
 
-    // pub fn nodes(&self, node: NodeId) -> impl Iterator<Item = &NodeId> {
-    //     self.elements[node.index()].iter().filter_map(|e| match e {
-    //         Element::Node(id) => Some(id),
-    //         _ => None,
-    //     })
-    // }
+    pub fn push_child_token(&mut self, node: NodeId, token: TokenIndex) {
+        self.elements[node.index()].push(Element::Token(token));
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -63,7 +113,7 @@ pub enum Element {
     Node(NodeId),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TokenIndex(NonZeroUsize);
 
 impl TokenIndex {
@@ -75,6 +125,12 @@ impl TokenIndex {
     #[inline(always)]
     pub fn get(self) -> usize {
         self.0.get() - 1
+    }
+}
+
+impl std::fmt::Debug for TokenIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TokenIndex({})", self.get())
     }
 }
 
@@ -99,8 +155,8 @@ pub enum NodeKind {
 
     /// `func := sig ( ';' | body )`
     decl_func,
-    // /// `body := ( '=>' expr ) | block`
-    // decl_func_body,
+    /// `body := ( '=>' expr ) | block`
+    decl_func_body,
 
     //
     /// `'fn' genericsList? paramsList? ty?`

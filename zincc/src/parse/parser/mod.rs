@@ -33,7 +33,6 @@ pub fn parse(map: &mut SourceMap, file_id: SourceFileId) -> Vec<ParseError> {
 
         errors: Vec::new(),
 
-        // node_map: Default::default(),
         cst: Default::default(),
     };
 
@@ -47,7 +46,6 @@ pub fn parse(map: &mut SourceMap, file_id: SourceFileId) -> Vec<ParseError> {
         *ptr = &parser as *const Parser as *const _;
     });
 
-    // let root = parser.parse_top_level();
     parser.parse_top_level();
 
     PARSER_PTR.with(|ptr| {
@@ -55,11 +53,6 @@ pub fn parse(map: &mut SourceMap, file_id: SourceFileId) -> Vec<ParseError> {
         *ptr = null();
     });
 
-    // let cst = cst::Cst {
-    //     // root,
-    //     // map: parser.node_map,
-    // };
-    // map.csts.insert(file_id, cst);
     map.csts.insert(file_id, parser.cst);
 
     parser.errors
@@ -73,7 +66,6 @@ struct Parser<'s> {
 
     errors: Vec<ParseError>,
 
-    // node_map: cst::NodeMap,
     cst: cst::Cst,
 }
 
@@ -101,8 +93,9 @@ impl Deref for PNode {
 impl PNode {
     pub fn push_token(&mut self) {
         let parser = unsafe { get_thread_parser() };
-        parser.cst.elements[self.node.index()]
-            .push(cst::Element::Token(cst::TokenIndex::new(parser.cursor)));
+        parser
+            .cst
+            .push_child_token(self.node, cst::TokenIndex::new(parser.cursor));
         parser.cursor += 1;
     }
 
@@ -175,14 +168,15 @@ impl PNode {
 
 impl Drop for PNode {
     fn drop(&mut self) {
-        let parent = self
-            .parent
-            .expect("PNode does not have parent at time of drop");
-        assert!(parent != self.node);
+        if let Some(parent) = self.parent {
+            assert!(parent != self.node);
 
-        let parser = unsafe { get_thread_parser() };
-        parser.cst.elements[parent.index()].push(cst::Element::Node(self.node));
-        parser.cst.kinds[parent.index()] = self.kind;
+            let parser = unsafe { get_thread_parser() };
+            parser.cst.push_child_node(parent, self.node);
+            parser.cst.set_kind(self.node, self.kind);
+        } else {
+            error!("PNode does not have parent at time of drop");
+        }
     }
 }
 

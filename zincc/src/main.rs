@@ -3,6 +3,9 @@ extern crate tracing;
 
 pub mod util;
 
+#[allow(dead_code)]
+mod ast;
+
 mod debug;
 mod parse;
 mod source_map;
@@ -24,9 +27,8 @@ fn main() {
     let stderr = &mut std::io::stderr();
 
     {
-        let lex_errors = info_span!("Lexer").in_scope(|| {
-            timer.spanned("lexical analyser", || parse::lex(&mut source_map, file_id))
-        });
+        let lex_errors = info_span!("Lexer")
+            .in_scope(|| timer.spanned("lexer", || parse::lex(&mut source_map, file_id)));
 
         if options.dumps.contains(&DumpOption::tokens) {
             let source = &source_map.sources[&file_id];
@@ -112,6 +114,19 @@ fn main() {
         }
     }
 
+    {
+        let ast = info_span!("AstGen").in_scope(|| {
+            timer.spanned("ast-gen", || {
+                let gen = ast::gen::Generator::new(&mut source_map, file_id);
+                gen.generate()
+            })
+        });
+
+        if options.dumps.contains(&DumpOption::ast) {
+            dbg!(ast);
+        }
+    }
+
     // let ast_map = timer.spanned("ast generation", || {
     //     ast::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.ranges)
     // });
@@ -176,13 +191,22 @@ fn main() {
 }
 
 fn setup_logger() -> Result<(), fern::InitError> {
+    use fern::colors::Color;
+
+    let colors = fern::colors::ColoredLevelConfig::new()
+        .trace(Color::White)
+        .debug(Color::Magenta)
+        .info(Color::Blue)
+        .warn(Color::Yellow)
+        .error(Color::Red);
+
     fern::Dispatch::new()
-        .format(|out, message, record| {
+        .format(move |out, message, record| {
             out.finish(format_args!(
                 "{}[{}][{}] {}",
                 chrono::Local::now().format("[%H:%M:%S]"),
                 record.target(),
-                record.level(),
+                colors.color(record.level()),
                 message
             ))
         })
@@ -216,7 +240,7 @@ pub struct Options {
 pub enum DumpOption {
     tokens,
     cst,
-    // ast,
+    ast,
     // nameres,
     // strings,
     // typer,
@@ -245,9 +269,8 @@ impl Options {
                     .short('D')
                     .takes_value(true)
                     .value_parser(PossibleValuesParser::new(&[
-                        "tokens",
-                        "cst",
-                        // "ast",
+                        "tokens", "cst",
+                        "ast",
                         // "nameres",
                         // "strings",
                         // "typer",
@@ -276,7 +299,7 @@ impl Options {
             .map(|s| match s.as_str() {
                 "tokens" => DumpOption::tokens,
                 "cst" => DumpOption::cst,
-                // "ast" => DumpOption::ast,
+                "ast" => DumpOption::ast,
                 // "nameres" => DumpOption::nameres,
                 // "strings" => DumpOption::strings,
                 // "typer" => DumpOption::typer,

@@ -74,10 +74,10 @@ impl Timer {
 
         let mut total = Duration::ZERO;
         for (name, duration) in self.map.iter() {
-            writeln!(writer, "{name:>align$}: {duration:?}")?;
+            writeln!(writer, "\t{name:>align$}: {duration:?}")?;
             total += *duration;
         }
-        writeln!(writer, "\n{name:>align$}: {total:?}", name = "total")?;
+        writeln!(writer, "\n\t{name:>align$}: {total:?}", name = "total")?;
 
         Ok(())
     }
