@@ -1,13 +1,15 @@
-:: main fn void {
-    // let x = 2;
-    // let y = three();
-    // add2(x, y);
+:: main fn {
+    let x = 2;
+    let y = three();
+    add2(x, y);
 
-    // x;
+    x;
 
-    // {
-    //     // let z = x + y;
-    // }
+    {
+        let z = x + y;
+    };
+
+    // z;
 
     foo();
 
@@ -19,18 +21,24 @@
     => 3;
 
 :: add2 fn (a sint, b sint) sint {
-    // a + b
+    a + b
 }
 
 :: add3 fn (a sint, b sint, c sint) sint {
-    // a + b + c
+    a + b + c
 }
 
-:: foo fn void {
-    :: bar fn void {}
-
+:: foo fn {
     bar();
     {
-        bar();
+        bar()
+    };
+
+    :: bar fn {}
+
+    :: asdf fn {
+        asdf();
     }
+
+    foo();
 }

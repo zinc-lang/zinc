@@ -1,93 +1,119 @@
-use crate::util::index::{self, IndexVec};
-use std::{fmt, num::NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroUsize};
 
-// @FIXME:...
-// This would be better implemented as a map of `NodeId`s to their kinds within the `Cst` struct.
-// Best to look into performance implications first.
+use super::TokenKind;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NamedNodeId {
-    pub kind: NodeKind, // u8
-    pub raw: NodeId,    // NonZeroU32
-}
+pub struct NodeId(NonZeroU32);
 
-impl fmt::Debug for NamedNodeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "NodeId({:?}, {})",
-            self.kind,
-            index::Idx::index(self.raw)
-        )
+impl NodeId {
+    fn new(index: usize) -> Self {
+        Self(NonZeroU32::new(index as u32 + 1).unwrap())
+    }
+
+    pub fn index(self) -> usize {
+        self.0.get() as usize - 1
     }
 }
 
-impl From<NamedNodeId> for NodeId {
-    fn from(id: NamedNodeId) -> Self {
-        id.raw
+impl std::fmt::Debug for NodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NodeId({})", self.index())
     }
 }
-
-index::define_idx! { pub struct NodeId: u32 != 0 }
-
-pub type NodeMap = IndexVec<NodeId, Node>;
 
 #[derive(Debug)]
 pub struct Cst {
-    pub root: NamedNodeId,
-    pub map: NodeMap,
+    elements: Vec<Vec<Element>>,
+    kinds: Vec<NodeKind>,
+}
+
+impl Default for Cst {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Cst {
-    pub fn root(&self) -> &Node {
-        self.get(self.root.raw)
+    pub fn new() -> Self {
+        Self {
+            elements: vec![Vec::new()],
+            kinds: vec![NodeKind::root],
+        }
     }
 
-    #[track_caller]
-    pub fn get(&self, raw: impl Into<NodeId>) -> &Node {
-        self.map.get(raw.into()).unwrap()
+    pub fn root(&self) -> NodeId {
+        NodeId::new(0)
+    }
+
+    pub fn trivia_removed(&self, tokens: &[TokenKind]) -> Cst {
+        let elements = self
+            .elements
+            .clone()
+            .into_iter()
+            .map(|vec| {
+                vec.into_iter()
+                    .filter(|elem| match elem {
+                        Element::Node(_) => true,
+                        Element::Token(i) => !tokens[i.get()].is_trivia(),
+                    })
+                    .collect()
+            })
+            .collect();
+        Cst {
+            elements,
+            kinds: self.kinds.clone(),
+        }
+    }
+
+    pub fn set_kind(&mut self, node: NodeId, kind: NodeKind) {
+        self.kinds[node.index()] = kind;
+    }
+
+    pub fn kind(&self, node: NodeId) -> NodeKind {
+        self.kinds[node.index()]
+    }
+
+    pub fn elements(&self, node: NodeId) -> impl Iterator<Item = &Element> {
+        self.elements[node.index()].iter()
+    }
+
+    pub fn tokens(&self, node: NodeId) -> impl Iterator<Item = &TokenIndex> {
+        self.elements[node.index()].iter().filter_map(|e| match e {
+            Element::Token(i) => Some(i),
+            _ => None,
+        })
+    }
+
+    pub fn nodes(&self, node: NodeId) -> impl Iterator<Item = &NodeId> {
+        self.elements[node.index()].iter().filter_map(|e| match e {
+            Element::Node(id) => Some(id),
+            _ => None,
+        })
+    }
+
+    pub fn alloc(&mut self) -> NodeId {
+        let id = NodeId::new(self.elements.len());
+        self.elements.push(vec![]);
+        self.kinds.push(NodeKind::err);
+        id
+    }
+
+    pub fn push_child_node(&mut self, node: NodeId, child: NodeId) {
+        self.elements[node.index()].push(Element::Node(child))
+    }
+
+    pub fn push_child_token(&mut self, node: NodeId, token: TokenIndex) {
+        self.elements[node.index()].push(Element::Token(token));
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum Element {
     Token(TokenIndex),
-    Node(NamedNodeId),
+    Node(NodeId),
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct Node {
-    pub elements: Vec<Element>,
-}
-
-impl Node {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    // pub fn tokens(&self) -> Vec<TokenIndex> {
-    //     self.elements
-    //         .iter()
-    //         .filter_map(|e| match e {
-    //             Element::Token(i) => Some(i),
-    //             _ => None,
-    //         })
-    //         .cloned()
-    //         .collect()
-    // }
-
-    // pub fn nodes(&self) -> Vec<NamedNodeId> {
-    //     self.elements
-    //         .iter()
-    //         .filter_map(|e| match e {
-    //             Element::Node(id) => Some(id),
-    //             _ => None,
-    //         })
-    //         .cloned()
-    //         .collect()
-    // }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TokenIndex(NonZeroUsize);
 
 impl TokenIndex {
@@ -99,6 +125,12 @@ impl TokenIndex {
     #[inline(always)]
     pub fn get(self) -> usize {
         self.0.get() - 1
+    }
+}
+
+impl std::fmt::Debug for TokenIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TokenIndex({})", self.get())
     }
 }
 
@@ -123,8 +155,8 @@ pub enum NodeKind {
 
     /// `func := sig ( ';' | body )`
     decl_func,
-    // /// `body := ( '=>' expr ) | block`
-    // decl_func_body,
+    /// `body := ( '=>' expr ) | block`
+    decl_func_body,
 
     //
     /// `'fn' genericsList? paramsList? ty?`
@@ -174,8 +206,10 @@ pub enum NodeKind {
     /// `'not' | '!' | '-' | '&'`
     expr_prefix_op,
 
+    /// `'let' ident ty? '=' expr`
+    expr_let_basic,
     /// `'let' pattern ty? '=' expr`
-    expr_let,
+    expr_let_pattern,
     /// `ty`
     expr_let_ty,
 

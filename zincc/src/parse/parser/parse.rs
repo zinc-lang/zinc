@@ -2,18 +2,11 @@ use super::*;
 
 /// Parse
 impl Parser<'_> {
-    pub fn parse_top_level(&mut self) -> cst::NamedNodeId {
-        let root = self.node_map.push(cst::Node::new());
+    pub fn parse_top_level(&mut self) {
+        let root = self.cst.root();
 
         while self.peek() != TK::eof {
             self.parse_decl(root);
-        }
-
-        // @TODO: Should we append the EOF token? Doing so adds a lot of complexity.
-
-        cst::NamedNodeId {
-            kind: NK::root,
-            raw: root,
         }
     }
 
@@ -57,6 +50,7 @@ impl Parser<'_> {
     pub fn parse_int(&mut self) -> PNode {
         let mut int = self.pnode_np(NK::integer);
         int.expect_one_of(&[TK::int_dec, TK::int_bin, TK::int_hex, TK::int_oct]);
+        let _ = int.peek(); // @FIXME: Why does this fix a bug?
         int
     }
 
