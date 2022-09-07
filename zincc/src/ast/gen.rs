@@ -38,7 +38,6 @@ mod mut_cell {
 
         fn deref(&self) -> &Self::Target {
             unsafe { &*self.value.as_ptr() as &Self::Target }
-            // unsafe { &*(self.value.borrow().deref() as *const T) }
         }
     }
 }
@@ -140,11 +139,6 @@ impl<'s> Generator<'s> {
                 trace!(?name, ?tag, "Seeded decl");
 
                 decls.push(scope::DeclDesc { name, tag, node });
-                // let id = self
-                //     .map
-                //     .with(|map| map.scope.decls.push(scope::DeclDesc { name, tag, node }));
-                // self.map
-                //     .with(|map| map.scope.scopes[self.current.scope].decls.push(id))
             }
         }
 
