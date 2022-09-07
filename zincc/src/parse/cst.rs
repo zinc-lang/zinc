@@ -206,8 +206,10 @@ pub enum NodeKind {
     /// `'not' | '!' | '-' | '&'`
     expr_prefix_op,
 
+    /// `'let' ident ty? '=' expr`
+    expr_let_basic,
     /// `'let' pattern ty? '=' expr`
-    expr_let,
+    expr_let_pattern,
     /// `ty`
     expr_let_ty,
 

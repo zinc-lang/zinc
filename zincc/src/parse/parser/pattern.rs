@@ -1,7 +1,10 @@
 use super::*;
 
 impl Parser<'_> {
-    pub fn parse_pattern(&mut self, parent: NodeId) {
+    /// # Returns
+    /// true: ident
+    /// false: not ident
+    pub fn parse_pattern(&mut self, parent: NodeId) -> bool {
         let mut node = self.pnode(NK::err, parent);
         match node.peek() {
             TK::ident => {
@@ -12,9 +15,13 @@ impl Parser<'_> {
                 } else {
                     node.kind = NK::pattern_ident;
                     node.push_token();
+
+                    return true;
                 }
             }
             _ => todo!(),
         }
+
+        false
     }
 }

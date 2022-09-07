@@ -96,11 +96,14 @@ impl Parser<'_> {
 
             //
             TK::kw_let => {
-                let mut bind = self.pnode_np(NK::expr_let);
+                let mut bind = self.pnode_np(NK::expr_let_basic);
 
                 bind.push_token(); // 'let'
 
-                self.parse_pattern(*bind);
+                let pattern_ident = self.parse_pattern(*bind);
+                if !pattern_ident {
+                    bind.kind = NK::expr_let_pattern;
+                }
 
                 if !bind.at(TK::punct_eq) {
                     // ty?

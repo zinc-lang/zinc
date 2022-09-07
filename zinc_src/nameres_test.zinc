@@ -1,35 +1,37 @@
 :: main fn {
-    // let x = 2;
-    // let y = three();
-    // add2(x, y);
+    let x = 2;
+    let y = three();
+    add2(x, y);
 
-    // x;
+    x;
 
-    // {
-    //     // let z = x + y;
-    // }
+    {
+        let z = x + y;
+    };
+
+    // z;
 
     foo();
 
-    // add2(1, 2);
-    // add3(1, 2, 3);
+    add2(1, 2);
+    add3(1, 2, 3);
 }
 
 :: three fn uint
     => 3;
 
 :: add2 fn (a sint, b sint) sint {
-    // a + b
+    a + b
 }
 
 :: add3 fn (a sint, b sint, c sint) sint {
-    // a + b + c
+    a + b + c
 }
 
 :: foo fn {
     bar();
     {
-        bar();
+        bar()
     };
 
     :: bar fn {}

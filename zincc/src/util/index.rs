@@ -89,6 +89,17 @@ macro_rules! define_idx {
 }
 pub use define_idx;
 
+pub fn indicies_of_range<I: Idx>(range: Range<I>) -> impl Iterator<Item = I> {
+    (range.start.index()..range.end.index())
+        .into_iter()
+        .map(|i| I::new(i))
+}
+
+pub fn empty_range<I: Idx>() -> Range<I> {
+    let zero = I::new(0);
+    zero..zero
+}
+
 pub trait Idx: 'static + Copy + Eq + Hash {
     /// Instantiate this object given a [`usize`]
     fn new(idx: usize) -> Self;
@@ -208,12 +219,6 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 }
 
-pub fn indicies_of_range<I: Idx>(range: Range<I>) -> impl Iterator<Item = I> {
-    (range.start.index()..range.end.index())
-        .into_iter()
-        .map(|i| I::new(i))
-}
-
 #[derive(Clone)]
 pub struct InterningIndexVec<I: Idx, T: Eq> {
     raw: IndexVec<I, T>,
@@ -303,11 +308,11 @@ define_idx! { pub struct StringSymbol: u32 != 0 }
 pub type StringInterningVec = InterningIndexVec<StringSymbol, String>;
 
 impl StringInterningVec {
-    pub fn is_str_interned(&self, str: &str) -> bool {
+    pub fn str_is_interned(&self, str: &str) -> bool {
         self.raw.raw.iter().any(|it| it == str)
     }
 
-    pub fn get_from_str_value(&self, str: &str) -> Option<StringSymbol> {
+    pub fn str_get_from_value(&self, str: &str) -> Option<StringSymbol> {
         self.raw
             .raw
             .iter()
@@ -315,12 +320,17 @@ impl StringInterningVec {
             .map(StringSymbol::new)
     }
 
+    pub fn str_get_or_intern(&mut self, str: &str) -> StringSymbol {
+        self.str_get_from_value(str)
+            .unwrap_or_else(|| self.intern(str.to_string()))
+    }
+
     /// # Safety
     /// Same as [`InterningVec`]'s `get_from_value_unchecked`
     ///
     /// [`InterningVec`]: ./struct.InterningVec.html
-    pub unsafe fn get_from_str_value_unchecked(&self, str: &str) -> StringSymbol {
-        self.get_from_str_value(str).unwrap_unchecked()
+    pub unsafe fn str_get_from_value_unchecked(&self, str: &str) -> StringSymbol {
+        self.str_get_from_value(str).unwrap_unchecked()
     }
 }
 
