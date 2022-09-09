@@ -98,7 +98,7 @@ pub mod ty {
         #[derive(Debug)]
         pub enum Primitive {
             Integer(IntegerPrimitive),
-            Bool,
+            // Bool,
             Void,
         }
 
@@ -106,8 +106,8 @@ pub mod ty {
         pub enum IntegerPrimitive {
             Sint,
             Uint,
-            SintSized(bool, u8),
-            UintSized(bool, u8),
+            // SintSized(bool, u8),
+            // UintSized(bool, u8),
         }
     }
 
@@ -165,8 +165,8 @@ pub mod expr {
     pub enum Literal {
         // String(StringSymbol),
         Integer(u64),
-        Float(f64),
-        Boolean(bool),
+        // Float(f64),
+        // Boolean(bool),
     }
 
     #[derive(Debug)]
@@ -220,7 +220,7 @@ pub mod pattern {
 
     #[derive(Debug)]
     pub enum Kind {
-        Ident(NodeId),
+        // Ident(NodeId),
         // @TODO: More
     }
 }

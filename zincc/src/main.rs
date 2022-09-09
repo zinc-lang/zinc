@@ -3,19 +3,20 @@ extern crate tracing;
 
 pub mod util;
 
-#[allow(dead_code)]
 mod ast;
-
 mod debug;
 mod parse;
+mod report;
 mod source_map;
 
 use source_map::{SourceFile, SourceFileId, SourceMap};
 
 fn main() {
-    setup_logger().expect("failed to setup logger");
-
     let options = Options::get();
+
+    if options.log {
+        setup_logger().expect("failed to setup logger");
+    }
 
     let mut source_map = SourceMap::new(SourceFile::new(options.path).unwrap());
 
@@ -27,7 +28,7 @@ fn main() {
     let stderr = &mut std::io::stderr();
 
     {
-        let lex_errors = info_span!("Lexer")
+        let reports = info_span!("Lexer")
             .in_scope(|| timer.spanned("lexer", || parse::lex(&mut source_map, file_id)));
 
         if options.dumps.contains(&DumpOption::tokens) {
@@ -45,15 +46,11 @@ fn main() {
             eprintln!();
         }
 
-        // Print errors and exit if there are any
-        if !lex_errors.is_empty() {
-            let source = &source_map.sources[&file_id];
-
-            for err in lex_errors {
-                let loc = parse::FileLocation::from_offset(source, err.offset).unwrap();
-                // @TODO: Better error formatting
-                eprintln!("error: {:?}  @[{}:{}]", err.kind, loc.line, loc.column);
-            }
+        // As of currently the lexer only produces errors
+        if !reports.is_empty() {
+            reports
+                .iter()
+                .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
 
             eprintln!();
             eprintln!("Aborting due to errors");
@@ -127,63 +124,6 @@ fn main() {
         }
     }
 
-    // let ast_map = timer.spanned("ast generation", || {
-    //     ast::gen(&parse_res.cst, &source, &lex_res.tokens, &lex_res.ranges)
-    // });
-
-    // drop(parse_res);
-
-    // if options.dumps.contains(&DumpOption::ast) {
-    //     eprintln!("{:#?}\n", ast_map);
-    // }
-
-    // let (nr_res, strings) = timer.spanned("name resolution", || {
-    //     nameres::resolve(&source, &lex_res.ranges, &ast_map)
-    // });
-
-    // drop(source);
-    // drop(lex_res);
-    // drop(ast_map);
-
-    // if options.dumps.contains(&DumpOption::nameres) {
-    //     eprintln!("{:#?}\n", nr_res);
-    // }
-
-    // let ty_map = timer.spanned("type checking", || typer::resolve(&nr_res));
-
-    // if options.dumps.contains(&DumpOption::typer) {
-    //     eprintln!("{:#?}\n", ty_map);
-    // }
-
-    // // let zir = timer.spanned("zir generation", zir::test::create_test_funcs);
-    // let zir = timer.spanned("zir generation", || zir::gen(&nr_res, &ty_map, strings));
-
-    // drop(nr_res);
-    // drop(ty_map);
-
-    // if options.dumps.contains(&DumpOption::zir) {
-    //     eprint!("\n=-=-=  ZIR Dump  =-=-=");
-    //     zir::print::dump(&zir, stderr).unwrap();
-    //     eprintln!();
-    // }
-
-    // let (_llvm_ctx, llvm_mod, _llvm_funcs, _llvm_blocks) =
-    //     timer.spanned("llvm-ir generation", || zir::codegen::codegen(&zir));
-
-    // timer.spanned("llvm-ir verification", || {
-    //     use std::os::unix::prelude::{FromRawFd, IntoRawFd};
-
-    //     let mut fd = unsafe { std::fs::File::from_raw_fd(1) };
-    //     llvm::verify_module(&llvm_mod, &mut fd);
-    //     let _ = fd.into_raw_fd();
-    // });
-
-    // if options.dumps.contains(&DumpOption::llvm) {
-    //     eprintln!("\n=-=-=  LLVM-IR Module Dump  =-=-=");
-    //     llvm_mod.dump();
-    //     eprintln!();
-    // }
-
     if options.print_times {
         eprintln!("\nTimes:");
         timer.write(stderr).unwrap();
@@ -219,9 +159,8 @@ fn read_file_source(map: &mut SourceMap, file_id: SourceFileId) -> std::io::Resu
     debug_assert!(!map.sources.contains_key(&file_id));
 
     let file = &map.files[file_id];
-    let path = file.get_path();
 
-    let source = util::read_file_to_string(path).map(|s| s + "\n\0")?;
+    let source = util::read_file_to_string(file.path()).map(|s| s + "\n\0")?;
     map.sources.insert(file_id, source);
 
     Ok(())
@@ -233,24 +172,22 @@ pub struct Options {
     print_times: bool,
     dumps: Vec<DumpOption>,
     color: bool,
+    log: bool,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, strum::EnumString, strum::EnumVariantNames)]
 #[allow(non_camel_case_types)]
 pub enum DumpOption {
     tokens,
     cst,
     ast,
-    // nameres,
-    // strings,
-    // typer,
-    // zir,
-    // llvm,
 }
 
 impl Options {
     pub fn get() -> Self {
         use clap::{builder::PossibleValuesParser, Arg, ArgAction, Command};
+        use std::str::FromStr;
+        use strum::VariantNames;
 
         let matches = Command::new("zincc")
             .arg(
@@ -268,15 +205,7 @@ impl Options {
                     .long("dump")
                     .short('D')
                     .takes_value(true)
-                    .value_parser(PossibleValuesParser::new(&[
-                        "tokens", "cst",
-                        "ast",
-                        // "nameres",
-                        // "strings",
-                        // "typer",
-                        // "zir",
-                        // "llvm",
-                    ]))
+                    .value_parser(PossibleValuesParser::new(DumpOption::VARIANTS))
                     .action(ArgAction::Append),
             )
             .arg(
@@ -284,8 +213,9 @@ impl Options {
                     .long("color")
                     .takes_value(true)
                     .value_name("WHEN")
-                    .value_parser(PossibleValuesParser::new(&["auto", "always", "never"])),
+                    .value_parser(PossibleValuesParser::new(["auto", "always", "never"])),
             )
+            .arg(Arg::new("log").long("log").help("Print logs"))
             .get_matches();
 
         let path = matches.value_of("FILE").unwrap().to_string();
@@ -295,18 +225,7 @@ impl Options {
         let dumps = matches
             .get_many::<String>("dump")
             .unwrap_or_default()
-            .cloned()
-            .map(|s| match s.as_str() {
-                "tokens" => DumpOption::tokens,
-                "cst" => DumpOption::cst,
-                "ast" => DumpOption::ast,
-                // "nameres" => DumpOption::nameres,
-                // "strings" => DumpOption::strings,
-                // "typer" => DumpOption::typer,
-                // "zir" => DumpOption::zir,
-                // "llvm" => DumpOption::llvm,
-                _ => unreachable!(),
-            })
+            .map(|s| DumpOption::from_str(s).unwrap())
             .collect();
 
         let color = match matches.value_of("color").unwrap_or("auto") {
@@ -316,11 +235,14 @@ impl Options {
             _ => unreachable!(),
         };
 
+        let log = matches.contains_id("log");
+
         Self {
             path,
             dumps,
             print_times,
             color,
+            log,
         }
     }
 }
