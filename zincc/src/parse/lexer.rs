@@ -1,8 +1,11 @@
 use super::TK;
-use crate::source_map::{self, SourceFileId, SourceMap};
+use crate::{
+    report::{self, Report},
+    source_map::{self, SourceFileId, SourceMap},
+};
 use std::ops::Range;
 
-pub fn lex(map: &mut SourceMap, file_id: SourceFileId) -> Vec<LexError> {
+pub fn lex(map: &mut SourceMap, file_id: SourceFileId) -> Vec<Report> {
     debug_assert!(map.sources.contains_key(&file_id));
     debug_assert!(!map.lex_data.contains_key(&file_id));
 
@@ -19,24 +22,13 @@ pub fn lex(map: &mut SourceMap, file_id: SourceFileId) -> Vec<LexError> {
     };
     map.lex_data.insert(file_id, lex_data);
 
-    lexer.errors
-}
+    let reports = lexer
+        .reports
+        .into_iter()
+        .map(|rep| rep.file(file_id).build())
+        .collect::<Vec<_>>();
 
-#[derive(Debug, Clone)]
-pub struct LexError {
-    pub kind: LexErrorKind,
-    pub offset: usize,
-}
-
-#[derive(Debug, Clone)]
-pub enum LexErrorKind {
-    UnrecognizedChar,
-    // UnexpectedEOF,
-    ExpectedHexCharInAsciiEscape,
-    ExpectedPlusOrMinusAfterEInFloatLiteral,
-    ExpectedBraceInUnicodeEsc,
-    ExpectedHexCharInUnicodeEsc,
-    UnterminatedString,
+    reports
 }
 
 struct Lexer<'s> {
@@ -47,7 +39,8 @@ struct Lexer<'s> {
     ranges: Vec<Range<usize>>,
     line_offsets: Vec<usize>,
 
-    errors: Vec<LexError>,
+    // errors: Vec<LexError>,
+    reports: Vec<report::Builder>,
 }
 
 impl<'s> Lexer<'s> {
@@ -58,7 +51,8 @@ impl<'s> Lexer<'s> {
             tokens: Vec::new(),
             ranges: Vec::new(),
             line_offsets: Vec::new(),
-            errors: Vec::new(),
+            // errors: Vec::new(),
+            reports: Vec::new(),
         }
     }
 }
@@ -176,7 +170,7 @@ impl Lexer<'_> {
                             // self.lex_literal_suffix();
                         }
                         _ => {
-                            self.report_error(LexErrorKind::UnrecognizedChar);
+                            self.report(Report::builder().error().message("unexpected character"));
                             self.tok(TK::err);
                         }
                     }
@@ -187,6 +181,8 @@ impl Lexer<'_> {
         self.range.start -= 1;
         self.range.end -= 1;
         self.tok(TK::eof);
+        self.line_offsets
+            .push(self.line_offsets[self.line_offsets.len() - 1]);
     }
 
     fn tok(&mut self, kind: TK) {
@@ -197,11 +193,13 @@ impl Lexer<'_> {
         self.ranges.push(range);
     }
 
-    fn report_error(&mut self, kind: LexErrorKind) {
-        self.errors.push(LexError {
-            kind,
-            offset: self.range.end,
-        });
+    fn report(&mut self, report: report::Builder) {
+        let report = if report.span.is_none() {
+            report.span(self.range.end - 1..self.range.end)
+        } else {
+            report
+        };
+        self.reports.push(report)
     }
 
     #[must_use]
@@ -272,9 +270,10 @@ impl Lexer<'_> {
 
     fn lex_string(&mut self) {
         self.tok(TK::string_open);
+        let start_range = self.range.start - 1..self.range.start;
 
         let mut p = self.peek();
-        while p != b'\"' && p != b'\0' {
+        while p != b'\"' && p != b'\0' && p != b'\n' {
             if p == b'\\' {
                 if self.range.start != self.range.end {
                     self.tok(TK::string_literal);
@@ -291,7 +290,13 @@ impl Lexer<'_> {
             self.tok(TK::string_literal);
         }
         if !self.eat(b'\"') {
-            self.report_error(LexErrorKind::UnterminatedString);
+            self.report(
+                Report::builder()
+                    .error()
+                    .span(start_range)
+                    .message("unterminated string")
+                    .short("starts here"),
+            );
         }
 
         self.tok(TK::string_close);
@@ -308,7 +313,9 @@ impl Lexer<'_> {
             b'x' => {
                 let mut lex_char = || {
                     if !is_char::number_hex(self.advance()) {
-                        self.report_error(LexErrorKind::ExpectedHexCharInAsciiEscape);
+                        self.report(Report::builder().error().message(
+                            "expected hexidecimal character in ascii escape starting with '\\x'",
+                        ))
                     }
                 };
                 lex_char();
@@ -318,7 +325,11 @@ impl Lexer<'_> {
             }
             b'u' => {
                 if self.advance() != b'{' {
-                    self.report_error(LexErrorKind::ExpectedBraceInUnicodeEsc);
+                    self.report(
+                        Report::builder()
+                            .error()
+                            .message("expected '{' in unicode escape after '\\u'"),
+                    )
                 }
 
                 let mut count = 0;
@@ -331,7 +342,11 @@ impl Lexer<'_> {
                     count += 1;
 
                     if !is_char::number_hex(self.advance()) {
-                        self.report_error(LexErrorKind::ExpectedHexCharInUnicodeEsc);
+                        self.report(
+                            Report::builder()
+                                .error()
+                                .message("expected hexideciaml charactor in unicode escape"),
+                        );
                         break;
                     }
 
@@ -341,7 +356,11 @@ impl Lexer<'_> {
                 }
 
                 if !self.eat(b'}') {
-                    self.report_error(LexErrorKind::ExpectedBraceInUnicodeEsc);
+                    self.report(
+                        Report::builder()
+                            .error()
+                            .message("expected '}' after unicode escape"),
+                    )
                 }
 
                 TK::esc_unicode
@@ -364,7 +383,12 @@ impl Lexer<'_> {
             if self.eat(b'E') {
                 match self.peek() {
                     b'+' | b'-' => self.advance_anz(),
-                    _ => self.report_error(LexErrorKind::ExpectedPlusOrMinusAfterEInFloatLiteral),
+                    _ => self.report(
+                        Report::builder()
+                            .error()
+                            .message("expected '+' or '-' after 'E' in float literal")
+                            .short("help: place a '+' or '-' after here"),
+                    ),
                 }
                 self.lex_while_condition(is_char::number_mid);
             }

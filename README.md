@@ -4,14 +4,11 @@
 
 The zinc programming language.
 
-An successor language to C++.
 </div>
 
 ---
 
-<img src="./Zinc.svg" align="right" width="256"
-     alt="Quicksort code in Carbon. Follow the link to read more.">
-</a>
+<img src="./Zinc.svg" align="right" width="256" />
 
 ## Goals
 

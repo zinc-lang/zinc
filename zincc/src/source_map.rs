@@ -43,8 +43,12 @@ impl SourceFile {
         Ok(Self { path })
     }
 
-    pub fn get_path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         self.path.as_path()
+    }
+
+    pub fn path_relative(&self) -> PathBuf {
+        pathdiff::diff_paths(&self.path, std::env::current_dir().unwrap()).unwrap()
     }
 }
 
