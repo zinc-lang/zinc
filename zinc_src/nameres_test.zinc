@@ -40,5 +40,9 @@
         asdf();
     }
 
+    // not_found;
+    // barfoo;
+    // foobar();
+
     foo();
 }

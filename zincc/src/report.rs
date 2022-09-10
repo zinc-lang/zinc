@@ -98,6 +98,13 @@ impl Builder {
         self
     }
 
+    pub fn maybe_set_file(mut self, set_file: impl FnOnce() -> SourceFileId) -> Self {
+        if self.file.is_none() {
+            self.file = Some(set_file())
+        }
+        self
+    }
+
     pub fn span(mut self, span: Span) -> Self {
         self.span = Some(span);
         self
@@ -225,7 +232,7 @@ pub fn format_report<W: io::Write>(
         )?;
 
         if let Some(short) = &report.short {
-            let highlight_start_offset = report.span.start - offending_line_range.start;
+            let highlight_start_offset = report.span.end - offending_line_range.start - 1;
             writeln!(
                 f,
                 "{} {} {:width$}{} {}",
@@ -236,12 +243,14 @@ pub fn format_report<W: io::Write>(
                 short.color(highlight_color).bold(),
                 width = highlight_start_offset,
             )?;
+        } else {
+            writeln!(f, "{} {}", padding, "|".bright_blue().bold())?;
         }
     } else {
         todo!()
     }
 
-    writeln!(f, "{} {}", padding, "|".bright_blue().bold())?;
+    writeln!(f)?;
 
     Ok(())
 }

@@ -79,39 +79,63 @@ fn main() {
             eprintln!();
         }
 
-        if !reports.is_empty() {
-            let (errors, unimpls) = report::split(reports);
+        let (errors, unimpls) = report::split(reports);
 
-            if !unimpls.is_empty() {
-                unimpls
-                    .iter()
-                    .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
+        let mut had_errors = false;
 
-                eprintln!("\nAborting due to encountering unimplemented features");
-                std::process::exit(1);
-            }
+        if !unimpls.is_empty() {
+            had_errors = true;
+            unimpls
+                .iter()
+                .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
+        }
 
-            if !errors.is_empty() {
-                errors
-                    .iter()
-                    .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
+        if !errors.is_empty() {
+            had_errors = true;
+            errors
+                .iter()
+                .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
+        }
 
-                eprintln!("\nAborting due to errors");
-                std::process::exit(1);
-            }
+        if had_errors {
+            eprintln!("Aborting due to errors");
+            std::process::exit(1);
         }
     }
 
     {
-        let ast = info_span!("AstGen").in_scope(|| {
+        let (ast, reports) = info_span!("AstGen").in_scope(|| {
             timer.spanned("ast-gen", || {
-                let gen = ast::gen::Generator::new(&mut source_map, file_id);
+                let gen = ast::gen::Generator::new(&source_map, file_id);
                 gen.generate()
             })
         });
 
         if options.dumps.contains(&DumpOption::ast) {
             dbg!(ast);
+        }
+
+        let (errors, unimpls) = report::split(reports);
+
+        let mut had_errors = false;
+
+        if !unimpls.is_empty() {
+            had_errors = true;
+            unimpls
+                .iter()
+                .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
+        }
+
+        if !errors.is_empty() {
+            had_errors = true;
+            errors
+                .iter()
+                .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
+        }
+
+        if had_errors {
+            eprintln!("Aborting due to errors");
+            std::process::exit(1);
         }
     }
 
