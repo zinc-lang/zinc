@@ -59,7 +59,7 @@ fn main() {
     }
 
     {
-        let parse_errors = info_span!("Parser")
+        let reports = info_span!("Parser")
             .in_scope(|| timer.spanned("parser", || parse::parse(&mut source_map, file_id)));
 
         if options.dumps.contains(&DumpOption::cst) {
@@ -79,35 +79,26 @@ fn main() {
             eprintln!();
         }
 
-        // Print errors and exit if there are any
-        if !parse_errors.is_empty() {
-            // // let source = &source_map.sources[&file_id];
-            // // let lex_data = &source_map.lex_data[&file_id];
+        if !reports.is_empty() {
+            let (errors, unimpls) = report::split(reports);
 
-            // for error in parse_errors {
-            //     // match error {
-            //     //     parse::ParseError::Expected(err) => {
-            //     //         let at = lex_data.tokens[err.at as usize];
-            //     //         let found = lex_data.tokens[err.found as usize];
+            if !unimpls.is_empty() {
+                unimpls
+                    .iter()
+                    .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
 
-            //     //         let at_range = &lex_data.ranges[err.at as usize];
-            //     //         let at_loc =
-            //     //             parse::FileLocation::from_offset(source, at_range.start as usize)
-            //     //                 .unwrap();
+                eprintln!("\nAborting due to encountering unimplemented features");
+                std::process::exit(1);
+            }
 
-            //     //         // @TODO: Better error formatting
-            //     //         eprintln!(
-            //     //         "error: expected '{:?}' at '{:?}' in '{:?}', but found '{:?}'  @[{}:{}]",
-            //     //         err.what, at, err.context, found, at_loc.line, at_loc.column
-            //     //     );
-            //     //     }
-            //     // }
-            // }
+            if !errors.is_empty() {
+                errors
+                    .iter()
+                    .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
 
-            // eprintln!("\nAborting due to errors");
-            // std::process::exit(1);
-
-            todo!()
+                eprintln!("\nAborting due to errors");
+                std::process::exit(1);
+            }
         }
     }
 

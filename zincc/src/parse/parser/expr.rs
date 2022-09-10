@@ -47,10 +47,9 @@ impl Parser<'_> {
 
     fn parse_expr_precedence(&mut self, prec: Precedence, parent: NodeId) {
         if let Some(mut expr) = self.try_parse_expr_precedence(prec) {
-            // self.append_node(expr, parent);
             expr.parent = Some(parent)
         } else {
-            todo!("error: expected expr")
+            self.report(report_expr_error)
         }
     }
 
@@ -90,13 +89,22 @@ impl Parser<'_> {
 
             TK::brkt_brace_open => self.parse_expr_block(),
 
-            TK::brkt_paren_open => todo!("parse paren exprs"),
+            // @TODO
+            TK::brkt_paren_open => {
+                self.report_unimpl(|| Report::builder().message("paren expression"))
+            }
 
-            TK::kw_return => todo!("return expr"),
+            // @TODO
+            TK::kw_return => self.report_unimpl(|| Report::builder().message("return expression")),
 
-            //
+            // @TODO
+            TK::kw_if => self.report_unimpl(|| Report::builder().message("if expression")),
+
+            // @TODO
+            TK::kw_fn => self.report_unimpl(|| Report::builder().message("fn expression")),
+
             TK::kw_let => {
-                let mut bind = self.pnode_np(NK::expr_let_basic);
+                let mut bind = self.pnode(NK::expr_let_basic);
 
                 bind.push_token(); // 'let'
 
@@ -107,7 +115,7 @@ impl Parser<'_> {
 
                 if !bind.at(TK::punct_eq) {
                     // ty?
-                    let ty = self.pnode(NK::expr_let_ty, *bind);
+                    let ty = self.pnode(NK::expr_let_ty).parent(*bind);
                     self.parse_ty(*ty);
                 }
 
@@ -119,7 +127,7 @@ impl Parser<'_> {
             }
 
             TK::kw_set => {
-                let mut set = self.pnode_np(NK::expr_set);
+                let mut set = self.pnode(NK::expr_set);
 
                 set.push_token(); // 'set'
                 self.parse_expr(*set); // expr
@@ -130,10 +138,10 @@ impl Parser<'_> {
             }
 
             TK::punct_minus | TK::punct_bang | TK::punct_ampersand => {
-                let prefix = self.pnode_np(NK::expr_prefix);
+                let prefix = self.pnode(NK::expr_prefix);
 
                 {
-                    let mut op = self.pnode(NK::expr_prefix_op, *prefix);
+                    let mut op = self.pnode(NK::expr_prefix_op).parent(*prefix);
                     op.push_token();
                 }
 
@@ -155,7 +163,7 @@ impl Parser<'_> {
             | TK::punct_slash
             | TK::punct_eqEq
             | TK::punct_bangEq => {
-                let infix = self.pnode_np(NK::expr_infix);
+                let infix = self.pnode(NK::expr_infix);
 
                 // lhs
                 lhs.parent = Some(*infix);
@@ -163,7 +171,7 @@ impl Parser<'_> {
 
                 // op
                 {
-                    let mut op = self.pnode(NK::expr_infix_op, *infix);
+                    let mut op = self.pnode(NK::expr_infix_op).parent(*infix);
                     // @TODO: parse multiple operators
                     op.push_token();
                 }
@@ -174,7 +182,7 @@ impl Parser<'_> {
                 infix
             }
             TK::brkt_paren_open => {
-                let mut call = self.pnode_np(NK::expr_call);
+                let mut call = self.pnode(NK::expr_call);
 
                 // callee
                 lhs.parent = Some(*call);
@@ -200,7 +208,7 @@ impl Parser<'_> {
     }
 
     pub fn parse_expr_block(&mut self) -> PNode {
-        let mut block = self.pnode_np(NK::expr_block);
+        let mut block = self.pnode(NK::expr_block);
 
         block.expect(TK::brkt_brace_open);
 
@@ -208,19 +216,21 @@ impl Parser<'_> {
             if block.at(TK::punct_doubleColon) {
                 self.parse_decl(*block);
             } else if let Some(mut expr) = self.try_parse_expr() {
-                // @TODO: do not expect a semicolon if the expr ends with a brace
-                if block.at(TK::punct_semicolon) {
+                if block.at(TK::brkt_brace_close) {
+                    let end = self.pnode(NK::expr_block_end).parent(*block);
+                    expr.parent = Some(*end);
+                    break;
+                } else {
                     expr.parent = Some(*block);
                     drop(expr);
-                    block.push_token();
-                } else {
-                    let end = self.pnode(NK::expr_block_end, *block);
-                    expr.parent = Some(*end);
-
-                    break;
+                    if self.tokens[self.cursor - 1] != TK::brkt_brace_close {
+                        block.expect(TK::punct_semicolon);
+                    } else {
+                        let _ = block.eat(TK::punct_semicolon);
+                    }
                 }
             } else {
-                todo!("error");
+                self.report(report_expr_error)
             }
         }
 
@@ -228,4 +238,8 @@ impl Parser<'_> {
 
         block
     }
+}
+
+fn report_expr_error() -> report::Builder {
+    Report::builder().error().message("expected expression")
 }

@@ -10,7 +10,7 @@ impl Parser<'_> {
                 path.parent = Some(parent);
             }
             TK::brkt_square_open => {
-                let mut ty = self.pnode(NK::ty_slice, parent);
+                let mut ty = self.pnode(NK::ty_slice).parent(parent);
                 _ = ty.peek();
                 ty.push_token();
 
@@ -24,7 +24,7 @@ impl Parser<'_> {
                 self.parse_ty(*ty);
             }
             TK::punct_question => {
-                let mut nullable = self.pnode(NK::ty_nullable, parent);
+                let mut nullable = self.pnode(NK::ty_nullable).parent(parent);
                 _ = nullable.peek();
                 nullable.push_token();
                 self.parse_ty(*nullable);
@@ -34,7 +34,7 @@ impl Parser<'_> {
     }
 
     pub fn parse_ty_func_wo_return(&mut self) -> PNode {
-        let mut sig = self.pnode_np(NK::func_sig);
+        let mut sig = self.pnode(NK::func_sig);
 
         sig.expect(TK::kw_fn);
 
@@ -56,18 +56,18 @@ impl Parser<'_> {
     }
 
     fn parse_params_list(&mut self, parent: NodeId) {
-        let mut list = self.pnode(NK::paramsList, parent);
+        let mut list = self.pnode(NK::paramsList).parent(parent);
 
         list.expect(TK::brkt_paren_open);
 
         while !list.at(TK::brkt_paren_close) {
-            let mut param = self.pnode(NK::param_param, *list);
+            let mut param = self.pnode(NK::param_param).parent(*list);
 
             param.expect(TK::ident);
             self.parse_ty(*param);
 
             if param.at(TK::punct_eq) {
-                let mut def = self.pnode(NK::param_param_default, *param);
+                let mut def = self.pnode(NK::param_param_default).parent(*param);
                 def.push_token();
                 self.parse_expr(*def);
             }
@@ -81,12 +81,12 @@ impl Parser<'_> {
     }
 
     fn parse_generics_list(&mut self, parent: NodeId) {
-        let mut list = self.pnode(NK::genericsList, parent);
+        let mut list = self.pnode(NK::genericsList).parent(parent);
 
         list.expect(TK::brkt_square_open);
 
         while !list.at(TK::brkt_square_close) {
-            let mut generic = self.pnode(NK::genericParam_type, *list);
+            let mut generic = self.pnode(NK::genericParam_type).parent(*list);
 
             generic.expect(TK::ident);
 
@@ -97,7 +97,7 @@ impl Parser<'_> {
 
                 // Default value
                 if generic.at(TK::punct_eq) {
-                    let mut def = self.pnode(NK::genericParam_value_default, *generic);
+                    let mut def = self.pnode(NK::genericParam_value_default).parent(*generic);
                     def.push_token();
                     self.parse_expr(*def);
                 }
@@ -107,7 +107,9 @@ impl Parser<'_> {
                 // '+' separated type constraints
                 if !generic.at_one_of(&[TK::punct_comma, TK::brkt_square_close, TK::punct_eq]) {
                     loop {
-                        let con = self.pnode(NK::genericParam_type_constraint, *generic);
+                        let con = self
+                            .pnode(NK::genericParam_type_constraint)
+                            .parent(*generic);
                         self.parse_ty(*con);
 
                         drop(con); // Make sure 'con' gets appended to generic before the '+'
@@ -119,7 +121,7 @@ impl Parser<'_> {
 
                 // Default type
                 if generic.at(TK::punct_eq) {
-                    let mut def = self.pnode(NK::genericParam_type_default, *generic);
+                    let mut def = self.pnode(NK::genericParam_type_default).parent(*generic);
                     def.push_token();
                     self.parse_ty(*def);
                 }

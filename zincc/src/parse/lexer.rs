@@ -22,13 +22,11 @@ pub fn lex(map: &mut SourceMap, file_id: SourceFileId) -> Vec<Report> {
     };
     map.lex_data.insert(file_id, lex_data);
 
-    let reports = lexer
+    lexer
         .reports
         .into_iter()
         .map(|rep| rep.file(file_id).build())
-        .collect::<Vec<_>>();
-
-    reports
+        .collect::<Vec<_>>()
 }
 
 struct Lexer<'s> {
@@ -194,12 +192,8 @@ impl Lexer<'_> {
     }
 
     fn report(&mut self, report: report::Builder) {
-        let report = if report.span.is_none() {
-            report.span(self.range.end - 1..self.range.end)
-        } else {
-            report
-        };
-        self.reports.push(report)
+        self.reports
+            .push(report.maybe_set_span(|| self.range.end - 1..self.range.end))
     }
 
     #[must_use]
@@ -463,7 +457,7 @@ impl Lexer<'_> {
             // struct
             b's' if slice.len() > 1 => match slice[1] {
                 b'e' if &slice[2..] == b"t" => TK::kw_set,
-                b't' if &slice[2..] == b"uct" => TK::kw_struct,
+                b't' if &slice[2..] == b"ruct" => TK::kw_struct,
                 _ => TK::ident,
             },
 

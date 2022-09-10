@@ -4,7 +4,7 @@ mod lexer;
 mod parser;
 
 pub use lexer::lex;
-pub use parser::{parse, ParseError};
+pub use parser::parse;
 
 /// A token represents a piece of source code with semantic meaning.
 /// Such as `brkt` being a prefix for all bracket tokens: `(){}[]`.
@@ -104,6 +104,83 @@ pub enum TokenKind {
 impl TokenKind {
     pub fn is_trivia(self) -> bool {
         matches!(self, TK::tr_whitespace | TK::tr_comment)
+    }
+
+    pub fn name(self) -> &'static str {
+        use TokenKind::*;
+        match self {
+            eof => todo!(),
+            err => todo!(),
+            tr_whitespace => todo!(),
+            tr_comment => todo!(),
+            brkt_paren_open => "'('",
+            brkt_paren_close => "')'",
+            brkt_brace_open => "'{'",
+            brkt_brace_close => "'}'",
+            brkt_square_open => "'['",
+            brkt_square_close => "']'",
+            punct_ampersand => "'&'",
+            punct_bang => "'!'",
+            punct_bangEq => "'!='",
+            punct_colon => "':'",
+            punct_doubleColon => "'::'",
+            punct_semicolon => "';'",
+            punct_comma => "','",
+            punct_dot => "'.'",
+            punct_doubleDot => "'..'",
+            punct_tripleDot => "'...'",
+            punct_eq => "'='",
+            punct_eqEq => "'=='",
+            punct_fatArrow => "'=>'",
+            punct_greaterThan => "'>'",
+            punct_greaterThanEq => "'>='",
+            punct_lessThan => "'<'",
+            punct_lessThanEq => "'<='",
+            punct_minus => "'-'",
+            punct_rThinArrow => "'->'",
+            punct_pipe => "'|'",
+            punct_plus => "'+'",
+            punct_question => "'?'",
+            punct_slash => "'/'",
+            punct_star => "'*'",
+            ident => "an identifier",
+            float => todo!(),
+            int_dec => todo!(),
+            int_hex => todo!(),
+            int_oct => todo!(),
+            int_bin => todo!(),
+            string_open | string_close => "'\"'",
+            string_literal => todo!(),
+            esc_asciicode => todo!(),
+            esc_unicode => todo!(),
+            esc_char_newline => todo!(),
+            esc_char_return => todo!(),
+            esc_char_tab => todo!(),
+            esc_char_backslash => todo!(),
+            esc_char_doubleQuote => todo!(),
+            esc_char_singleQuote => todo!(),
+            esc_char_other => todo!(),
+            kw_class => todo!(),
+            kw_const => todo!(),
+            kw_else => todo!(),
+            kw_enum => todo!(),
+            kw_false => todo!(),
+            kw_fn => todo!(),
+            kw_if => todo!(),
+            kw_impl => todo!(),
+            kw_import => todo!(),
+            kw_let => todo!(),
+            kw_mixin => todo!(),
+            kw_module => todo!(),
+            kw_mut => todo!(),
+            kw_pub => todo!(),
+            kw_return => todo!(),
+            kw_set => todo!(),
+            kw_struct => todo!(),
+            kw_trait => todo!(),
+            kw_true => todo!(),
+            kw_union => todo!(),
+        }
     }
 }
 

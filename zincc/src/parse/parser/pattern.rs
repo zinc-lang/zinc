@@ -5,7 +5,7 @@ impl Parser<'_> {
     /// true: ident
     /// false: not ident
     pub fn parse_pattern(&mut self, parent: NodeId) -> bool {
-        let mut node = self.pnode(NK::err, parent);
+        let mut node = self.pnode(NK::err).parent(parent);
         match node.peek() {
             TK::ident => {
                 if node.peek_next() == TK::punct_doubleColon {

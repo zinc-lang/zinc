@@ -27,27 +27,29 @@ impl Report {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     Error,
     // Warning,
+    Unimpl,
 }
 
 impl Level {
     pub fn get(&self) -> (colored::Color, &'static str) {
         match self {
             Level::Error => (colored::Color::BrightRed, "error"),
+            Level::Unimpl => (colored::Color::BrightCyan, "unimpl"),
         }
     }
 }
 
 #[derive(Debug, Default)]
 pub struct Builder {
-    pub level: Option<Level>,
-    pub file: Option<SourceFileId>,
-    pub span: Option<Span>,
-    pub message: Option<String>,
-    pub short: Option<String>,
+    level: Option<Level>,
+    file: Option<SourceFileId>,
+    span: Option<Span>,
+    message: Option<String>,
+    short: Option<String>,
 
     #[cfg(debug_assertions)]
     created_at: LocationWrapper,
@@ -85,6 +87,12 @@ impl Builder {
         self
     }
 
+    pub fn unimpl(mut self) -> Self {
+        debug_assert!(self.level.is_none());
+        self.level = Some(Level::Unimpl);
+        self
+    }
+
     pub fn file(mut self, file: SourceFileId) -> Self {
         self.file = Some(file);
         self
@@ -92,6 +100,13 @@ impl Builder {
 
     pub fn span(mut self, span: Span) -> Self {
         self.span = Some(span);
+        self
+    }
+
+    pub fn maybe_set_span(mut self, set_span: impl FnOnce() -> Span) -> Self {
+        if self.span.is_none() {
+            self.span = Some(set_span());
+        }
         self
     }
 
@@ -126,6 +141,22 @@ impl Builder {
             short: self.short,
         }
     }
+}
+
+/// # Returns
+/// `(errors, unimpls)`
+pub fn split(reports: Vec<Report>) -> (Vec<Report>, Vec<Report>) {
+    let mut errors = Vec::new();
+    let mut unimpls = Vec::new();
+
+    for report in reports.into_iter() {
+        match report.level {
+            Level::Error => errors.push(report),
+            Level::Unimpl => unimpls.push(report),
+        }
+    }
+
+    (errors, unimpls)
 }
 
 pub fn format_report<W: io::Write>(
@@ -164,7 +195,7 @@ pub fn format_report<W: io::Write>(
 
     writeln!(f, "{} {}", padding, "|".bright_blue().bold())?;
 
-    if location.start.line == location.end.line {
+    if location.start.line == location.end.line || location.start.line + 1 == location.end.line {
         let line_offsets = &source_map.lex_data[&report.file].line_offsets;
         let line_offset_index = line_offsets
             .iter()
