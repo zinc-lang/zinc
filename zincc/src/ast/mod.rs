@@ -93,6 +93,7 @@ pub mod ty {
         #[derive(Debug)]
         pub enum Resolution {
             Primitive(Primitive),
+            Err,
         }
 
         #[derive(Debug)]
@@ -158,6 +159,7 @@ pub mod expr {
             Decl(scope::DeclDescId),
             Arg(ty::FuncParamId),
             Local(LetBasicId),
+            Err,
         }
     }
 

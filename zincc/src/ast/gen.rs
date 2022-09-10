@@ -4,6 +4,7 @@ use crate::{
         cst::{Cst, NK},
         TK,
     },
+    report::{self, Report},
     source_map::{SourceFileId, SourceMap},
     util::index::{self, StringSymbol},
 };
@@ -40,15 +41,24 @@ mod mut_cell {
             unsafe { &*self.value.as_ptr() as &Self::Target }
         }
     }
+
+    impl<T: Default> Default for MutCell<T> {
+        fn default() -> Self {
+            Self {
+                value: Default::default(),
+            }
+        }
+    }
 }
 
 use mut_cell::MutCell;
 
 #[derive(Debug)]
 pub struct Generator<'s> {
-    source_map: &'s mut SourceMap,
+    source_map: &'s SourceMap,
     map: MutCell<AstMap>,
     current: MutCell<Current>,
+    reports: MutCell<Vec<report::Report>>,
 }
 
 #[derive(Debug)]
@@ -58,27 +68,61 @@ struct Current {
 }
 
 impl<'s> Generator<'s> {
-    pub fn new(source_map: &'s mut SourceMap, file: SourceFileId) -> Self {
+    pub fn new(source_map: &'s SourceMap, file: SourceFileId) -> Self {
         let map = AstMap::default();
         let scope = map.scope.root;
 
         Self {
             source_map,
-
             map: MutCell::new(map),
             current: MutCell::new(Current { file, scope }),
+            reports: MutCell::new(Vec::new()),
         }
     }
 
-    pub fn generate(self) -> Ast {
+    pub fn generate(self) -> (Ast, Vec<Report>) {
         let _s = trace_span!("Generate").entered();
         self.seed_file();
         let file = self.gen_file();
 
-        Ast {
+        let ast = Ast {
             map: self.map.into_inner(),
             root_file: file,
+        };
+        (ast, self.reports.into_inner())
+    }
+
+    fn report(&self, func: impl FnOnce() -> report::Builder) {
+        self.reports
+            .with(|reports| reports.push(func().maybe_set_file(|| self.current.file).build()))
+    }
+
+    fn get_node_span(&self, cst: &Cst, node: NodeId) -> Range<usize> {
+        fn iterate(cst: &Cst, node: NodeId) -> (Option<&TokenIndex>, Option<&TokenIndex>) {
+            let mut first = cst.tokens(node).next();
+            let mut last = cst.tokens(node).last();
+
+            for &node in cst.nodes(node) {
+                let (a, b) = iterate(cst, node);
+
+                if first.is_none() {
+                    first = a;
+                }
+
+                last = b;
+            }
+
+            (first, last)
         }
+
+        let (first, last) = iterate(cst, node);
+
+        let ranges = &self.source_map.lex_data[&self.current.file].ranges;
+
+        let start = &ranges[first.unwrap().get()];
+        let end = &ranges[last.unwrap().get()];
+
+        start.start..end.end
     }
 
     fn current_cst_no_trivia(&self) -> Cst {
@@ -159,7 +203,7 @@ impl<'s> Generator<'s> {
         for &node in cst.nodes(cst.root()) {
             match cst.kind(node) {
                 NK::decl => decls.push(self.gen_decl(cst, node)),
-                _ => todo!(),
+                _ => unreachable!(),
             }
         }
 
@@ -293,16 +337,30 @@ impl<'s> Generator<'s> {
             }
 
             NK::path => {
-                let file_tokens = &self.source_map.lex_data[&self.current.file].tokens;
+                let lex_data = &self.source_map.lex_data[&self.current.file];
+                let file_tokens = &lex_data.tokens;
                 let mut tokens = cst.tokens(node);
-                let name = *tokens.find(|i| file_tokens[i.get()] == TK::ident).unwrap();
-                let name = self.get_token_string(name);
+                let name_tok_idx = *tokens.find(|i| file_tokens[i.get()] == TK::ident).unwrap();
+                let name = self.get_token_string(name_tok_idx);
 
-                let res = self.expr_resolve(self.current.scope, name).unwrap();
+                let res = self
+                    .expr_resolve(self.current.scope, name)
+                    .unwrap_or_else(|| {
+                        self.report(|| {
+                            Report::builder()
+                                .error()
+                                .span(lex_data.ranges[name_tok_idx.get()].clone())
+                                .message(format!(
+                                    "cannot find `{}` in this scope",
+                                    self.map.strings[name]
+                                ))
+                                .short("not found is this scope")
+                        });
+                        expr::res::Resolution::Err
+                    });
                 expr::Kind::Res(res)
             }
 
-            //
             NK::integer => {
                 let index = self
                     .find_token(cst, node, |tk| {
@@ -344,18 +402,33 @@ impl<'s> Generator<'s> {
                 let callee = *nodes_iter.next().unwrap();
 
                 let callee = if cst.kind(callee) == NK::path {
-                    let file_tokens = &self.source_map.lex_data[&self.current.file].tokens;
+                    let lex_data = &self.source_map.lex_data[&self.current.file];
+                    let file_tokens = &lex_data.tokens;
                     let mut tokens = cst.tokens(callee);
-                    let name = *tokens.find(|i| file_tokens[i.get()] == TK::ident).unwrap();
-                    let name = self.get_token_string(name);
+                    let name_token_idx =
+                        *tokens.find(|i| file_tokens[i.get()] == TK::ident).unwrap();
+                    let name = self.get_token_string(name_token_idx);
 
-                    // debug!(vec = ?cst.tokens(callee).collect::<Vec<_>>());
-
-                    let decl = self.expr_resolve_decl(self.current.scope, name).unwrap();
+                    let decl = self
+                        .expr_resolve_decl(self.current.scope, name)
+                        .map(expr::res::Resolution::Decl)
+                        .unwrap_or_else(|| {
+                            self.report(|| {
+                                Report::builder()
+                                    .error()
+                                    .span(lex_data.ranges[name_token_idx.get()].clone())
+                                    .message(format!(
+                                        "cannot find function `{}` in this scope",
+                                        self.map.strings[name]
+                                    ))
+                                    .short("not found in this scope")
+                            });
+                            expr::res::Resolution::Err
+                        });
 
                     expr::Expr {
                         node: callee,
-                        kind: expr::Kind::Res(expr::res::Resolution::Decl(decl)),
+                        kind: expr::Kind::Res(decl),
                     }
                 } else {
                     self.gen_expr(cst, callee)
@@ -479,7 +552,15 @@ impl<'s> Generator<'s> {
                         ty::res::IntegerPrimitive::Uint,
                     )),
                     "void" => ty::res::Resolution::Primitive(ty::res::Primitive::Void),
-                    _ => todo!(),
+                    _ => {
+                        self.report(|| {
+                            Report::builder()
+                                .unimpl()
+                                .span(self.get_node_span(cst, node))
+                                .message("todo type")
+                        });
+                        ty::res::Resolution::Err
+                    }
                 };
                 ty::Kind::Res(res)
             }
