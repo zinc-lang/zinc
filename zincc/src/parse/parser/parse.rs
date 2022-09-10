@@ -11,7 +11,7 @@ impl Parser<'_> {
     }
 
     pub fn parse_path(&mut self) -> PNode {
-        let mut path = self.pnode_np(NK::path);
+        let mut path = self.pnode(NK::path);
 
         path.expect(TK::ident);
 
@@ -24,7 +24,7 @@ impl Parser<'_> {
     }
 
     pub fn parse_string(&mut self) -> PNode {
-        let mut str = self.pnode_np(NK::string);
+        let mut str = self.pnode(NK::string);
 
         str.expect(TK::string_open);
 
@@ -48,20 +48,19 @@ impl Parser<'_> {
     }
 
     pub fn parse_int(&mut self) -> PNode {
-        let mut int = self.pnode_np(NK::integer);
+        let mut int = self.pnode(NK::integer);
         int.expect_one_of(&[TK::int_dec, TK::int_bin, TK::int_hex, TK::int_oct]);
-        let _ = int.peek(); // @FIXME: Why does this fix a bug?
         int
     }
 
     pub fn parse_float(&mut self) -> PNode {
-        let mut float = self.pnode_np(NK::float);
+        let mut float = self.pnode(NK::float);
         float.expect(TK::float);
         float
     }
 
     pub fn parse_bool(&mut self) -> PNode {
-        let mut bool = self.pnode_np(NK::boolean);
+        let mut bool = self.pnode(NK::boolean);
         bool.expect_one_of(&[TK::kw_true, TK::kw_false]);
         bool
     }
