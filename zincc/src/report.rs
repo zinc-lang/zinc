@@ -170,7 +170,7 @@ pub fn format_report<W: io::Write>(
     f: &mut W,
     report: &Report,
     source_map: &source_map::SourceMap,
-) -> std::io::Result<()> {
+) -> io::Result<()> {
     use colored::Colorize;
 
     let (highlight_color, level_str) = report.level.get();

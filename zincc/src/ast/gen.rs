@@ -58,13 +58,13 @@ pub struct Generator<'s> {
     source_map: &'s SourceMap,
     map: MutCell<AstMap>,
     current: MutCell<Current>,
-    reports: MutCell<Vec<report::Report>>,
+    reports: MutCell<Vec<Report>>,
 }
 
 #[derive(Debug)]
 struct Current {
     file: SourceFileId,
-    scope: scope::Id,
+    scope: ScopeId,
 }
 
 impl<'s> Generator<'s> {
@@ -151,10 +151,23 @@ impl<'s> Generator<'s> {
             .copied()
     }
 
+    fn get_token_lexeme(&self, token: TokenIndex) -> &str {
+        &self.source_map.sources[&self.current.file]
+            [self.source_map.lex_data[&self.current.file].ranges[token.get()].clone()]
+    }
+
     fn get_token_string(&self, token: TokenIndex) -> StringSymbol {
-        let str = &self.source_map.sources[&self.current.file]
-            [self.source_map.lex_data[&self.current.file].ranges[token.get()].clone()];
+        let str = self.get_token_lexeme(token);
         self.map.with(|map| map.strings.str_get_or_intern(str))
+    }
+
+    fn append_child_to_current_scope(&self, child: ScopeId) {
+        self.map.with(|map| {
+            let parent = &mut map.scope.scopes[self.current.scope];
+            parent.push_child(child);
+
+            map.scope.parents.insert(child, self.current.scope);
+        });
     }
 
     /// Iterating over the `decl`s in the node found within `self.current_file`
@@ -190,7 +203,7 @@ impl<'s> Generator<'s> {
             .map
             .with(|map| map.scope.decls.push_range(decls.into_iter()));
         self.map
-            .with(|map| map.scope.scopes[self.current.scope].decls = decls);
+            .with(|map| map.scope.scopes[self.current.scope].set_decls(decls));
     }
 
     fn gen_file(&self) -> AstFile {
@@ -229,13 +242,20 @@ impl<'s> Generator<'s> {
         let name = self.find_token(cst, node, |tk| tk == TK::ident).unwrap();
         let name = self.get_token_string(name);
 
-        let desc =
-            index::indicies_of_range(self.map.scope.scopes[self.current.scope].decls.clone())
-                .find(|&s| self.map.scope.decls[s].name == name)
-                .unwrap();
+        let desc = index::indices_of_range(self.map.scope.scopes[self.current.scope].get_decls())
+            .find(|&s| self.map.scope.decls[s].name == name)
+            .unwrap();
 
         let kind = match cst.kind(decl) {
             NK::decl_func => {
+                let scope = scope::Scope::new_func();
+                let scope = self.map.with(|map| map.scope.scopes.push(scope));
+
+                self.append_child_to_current_scope(scope);
+
+                let old_scope = self.current.scope;
+                self.current.with(|current| current.scope = scope);
+
                 let mut nodes_iter = cst.nodes(decl);
 
                 let sig = *nodes_iter.next().unwrap();
@@ -253,6 +273,9 @@ impl<'s> Generator<'s> {
 
                 let func = decl::Func { sig, body };
                 let func = self.map.with(|map| map.decl_funcs.push(func));
+
+                self.current.with(|current| current.scope = old_scope);
+
                 decl::Kind::Func(func)
             }
             _ => todo!(),
@@ -261,16 +284,13 @@ impl<'s> Generator<'s> {
         (decl::Decl { node, kind }, desc)
     }
 
-    fn alloc_decls_and_descs(&self, vec: Vec<(decl::Decl, scope::DeclDescId)>) -> Range<decl::Id> {
+    fn alloc_decls_and_descs(&self, vec: Vec<(decl::Decl, scope::DeclDescId)>) -> Range<DeclId> {
         let (decls, decl_descs): (Vec<_>, Vec<_>) = vec.into_iter().unzip();
 
         let decls = self.map.with(|map| map.decls.push_range(decls.into_iter()));
 
-        for (decl, desc) in index::indicies_of_range(decls.clone())
-            .into_iter()
-            .zip(decl_descs)
-        {
-            self.map.with(|map| map.scope.decls_map.insert(desc, decl));
+        for (decl, desc) in index::indices_of_range(&decls).into_iter().zip(decl_descs) {
+            self.map.with(|map| map.scope.decls_map.insert(decl, desc));
         }
 
         decls
@@ -282,15 +302,10 @@ impl<'s> Generator<'s> {
 
         let kind = match cst.kind(node) {
             NK::expr_block => {
-                let scope = scope::Scope::new(scope::Kind::Block);
+                let scope = scope::Scope::new_block();
                 let scope = self.map.with(|map| map.scope.scopes.push(scope));
 
-                self.map.with(|map| {
-                    let parent = &mut map.scope.scopes[self.current.scope];
-                    parent.children.push(scope);
-
-                    map.scope.parents.insert(scope, self.current.scope);
-                });
+                self.append_child_to_current_scope(scope);
 
                 let old_scope = self.current.scope;
                 self.current.with(|current| current.scope = scope);
@@ -343,21 +358,19 @@ impl<'s> Generator<'s> {
                 let name_tok_idx = *tokens.find(|i| file_tokens[i.get()] == TK::ident).unwrap();
                 let name = self.get_token_string(name_tok_idx);
 
-                let res = self
-                    .expr_resolve(self.current.scope, name)
-                    .unwrap_or_else(|| {
-                        self.report(|| {
-                            Report::builder()
-                                .error()
-                                .span(lex_data.ranges[name_tok_idx.get()].clone())
-                                .message(format!(
-                                    "cannot find `{}` in this scope",
-                                    self.map.strings[name]
-                                ))
-                                .short("not found is this scope")
-                        });
-                        expr::res::Resolution::Err
+                let res = self.expr_resolve(name).unwrap_or_else(|| {
+                    self.report(|| {
+                        Report::builder()
+                            .error()
+                            .span(lex_data.ranges[name_tok_idx.get()].clone())
+                            .message(format!(
+                                "cannot find `{}` in this scope",
+                                self.map.strings[name]
+                            ))
+                            .short("not found is this scope")
                     });
+                    expr::res::Resolution::Err
+                });
                 expr::Kind::Res(res)
             }
 
@@ -400,43 +413,11 @@ impl<'s> Generator<'s> {
                 let mut nodes_iter = cst.nodes(node);
 
                 let callee = *nodes_iter.next().unwrap();
-
-                let callee = if cst.kind(callee) == NK::path {
-                    let lex_data = &self.source_map.lex_data[&self.current.file];
-                    let file_tokens = &lex_data.tokens;
-                    let mut tokens = cst.tokens(callee);
-                    let name_token_idx =
-                        *tokens.find(|i| file_tokens[i.get()] == TK::ident).unwrap();
-                    let name = self.get_token_string(name_token_idx);
-
-                    let decl = self
-                        .expr_resolve_decl(self.current.scope, name)
-                        .map(expr::res::Resolution::Decl)
-                        .unwrap_or_else(|| {
-                            self.report(|| {
-                                Report::builder()
-                                    .error()
-                                    .span(lex_data.ranges[name_token_idx.get()].clone())
-                                    .message(format!(
-                                        "cannot find function `{}` in this scope",
-                                        self.map.strings[name]
-                                    ))
-                                    .short("not found in this scope")
-                            });
-                            expr::res::Resolution::Err
-                        });
-
-                    expr::Expr {
-                        node: callee,
-                        kind: expr::Kind::Res(decl),
-                    }
-                } else {
-                    self.gen_expr(cst, callee)
-                };
+                let callee = self.gen_expr(cst, callee);
                 let callee = self.map.with(|map| map.exprs.push(callee));
 
                 let args = nodes_iter.map(|&id| self.gen_expr(cst, id));
-                let args = args.collect::<Vec<_>>(); // just passing args was trigering the RefCell
+                let args = args.collect::<Vec<_>>(); // just passing args was triggering the RefCell
                 let args = self.map.with(|map| map.exprs.push_range(args.into_iter()));
 
                 expr::Kind::Call(expr::Call { callee, args })
@@ -469,7 +450,7 @@ impl<'s> Generator<'s> {
                 let binding = self.map.with(|map| map.expr_basic_lets.push(binding));
 
                 self.map
-                    .with(|map| map.scope.scopes[self.current.scope].locals.push(binding));
+                    .with(|map| map.scope.scopes[self.current.scope].push_local(binding));
 
                 expr::Kind::LetBasic(binding)
             }
@@ -480,57 +461,68 @@ impl<'s> Generator<'s> {
         expr::Expr { node, kind }
     }
 
-    fn expr_resolve(
-        &self,
-        scope_id: scope::Id,
-        name: StringSymbol,
-    ) -> Option<expr::res::Resolution> {
-        let scope = &self.map.scope.scopes[scope_id];
+    fn expr_resolve(&self, name: StringSymbol) -> Option<expr::res::Resolution> {
+        trace!(?name, "Resolving expr");
 
-        // search locals first, then args, then the parent scope
-        scope
-            .locals
-            .iter()
-            .find(|&&id| self.map.expr_basic_lets[id].ident == name)
-            .cloned()
-            .map(expr::res::Resolution::Local)
-            .or_else(|| {
-                index::indicies_of_range(scope.args.clone())
-                    .find(|&id| self.map.ty_func_params[id].name == name)
-                    .map(expr::res::Resolution::Arg)
-                    .or_else(|| {
-                        index::indicies_of_range(scope.decls.clone())
-                            .find(|&id| self.map.scope.decls[id].name == name)
-                            .map(expr::res::Resolution::Decl)
-                    })
-                    .or_else(|| match scope.kind {
-                        scope::Kind::Root => None,
-                        scope::Kind::Block => {
-                            let parent = self.map.scope.parents[&scope_id];
-                            self.expr_resolve(parent, name)
-                        }
-                    })
-            })
-    }
-
-    fn expr_resolve_decl(
-        &self,
-        scope_id: scope::Id,
-        name: StringSymbol,
-    ) -> Option<scope::DeclDescId> {
-        let scope = &self.map.scope.scopes[scope_id];
-
-        index::indicies_of_range(scope.decls.clone())
-            .map(|id| (id, &self.map.scope.decls[id]))
-            .find(|(_, decl)| decl.name == name)
-            .map(|(id, _)| id)
-            .or_else(|| match scope.kind {
-                scope::Kind::Root => None,
-                scope::Kind::Block => {
-                    let parent = self.map.scope.parents[&scope_id];
-                    self.expr_resolve_decl(parent, name)
+        // search for local
+        {
+            let mut id = self.current.scope;
+            let mut scope = &self.map.scope.scopes[id];
+            loop {
+                if !scope.is_block() {
+                    break;
                 }
-            })
+
+                for &local in scope.get_locals().iter().rev() {
+                    if self.map.expr_basic_lets[local].ident == name {
+                        return Some(expr::res::Resolution::Local(local));
+                    }
+                }
+
+                id = self.map.scope.parents[&id];
+                scope = &self.map.scope.scopes[id];
+            }
+        };
+
+        // search for arg
+        let nearest_function = {
+            let mut id = self.current.scope;
+            let mut scope = &self.map.scope.scopes[id];
+            while !scope.is_func() {
+                id = self.map.scope.parents[&id];
+                scope = &self.map.scope.scopes[id];
+            }
+            scope
+        };
+
+        for arg in index::indices_of_range(nearest_function.get_args()) {
+            if self.map.ty_func_params[arg].name == name {
+                return Some(expr::res::Resolution::Arg(arg));
+            }
+        }
+
+        {
+            let mut id = self.current.scope;
+            let mut scope = &self.map.scope.scopes[id];
+            loop {
+                if !scope.is_func() {
+                    for decl in index::indices_of_range(scope.get_decls()) {
+                        if self.map.scope.decls[decl].name == name {
+                            return Some(expr::res::Resolution::Decl(decl));
+                        }
+                    }
+                }
+
+                if !scope.can_search_up() {
+                    break;
+                }
+
+                id = self.map.scope.parents[&id];
+                scope = &self.map.scope.scopes[id];
+            }
+        }
+
+        None
     }
 
     fn gen_ty(&self, cst: &Cst, node: NodeId) -> ty::Ty {
@@ -539,10 +531,9 @@ impl<'s> Generator<'s> {
 
         let kind = match cst.kind(node) {
             NK::path => {
-                // @TODO: Mulitiple path segments
+                // @TODO: Multiple path segments
                 let ident = self.find_token(cst, node, |tk| tk == TK::ident).unwrap();
-                let ident = &self.source_map.sources[&self.current.file]
-                    [self.source_map.lex_data[&self.current.file].ranges[ident.get()].clone()];
+                let ident = self.get_token_lexeme(ident);
 
                 let res = match ident {
                     "sint" => ty::res::Resolution::Primitive(ty::res::Primitive::Integer(
@@ -579,9 +570,8 @@ impl<'s> Generator<'s> {
         let _s = trace_span!("Gen ty func").entered();
         trace!(?node);
 
-        let mut nodes_iter = cst.nodes(node);
-
-        let params = nodes_iter
+        let params = cst
+            .nodes(node)
             .find(|&&node| cst.kind(node) == NK::paramsList)
             .map(|&node| {
                 let mut params = Vec::new();
@@ -607,15 +597,19 @@ impl<'s> Generator<'s> {
                     .with(|map| map.ty_func_params.push_range(params.into_iter()));
 
                 self.map
-                    .with(|map| map.scope.scopes[self.current.scope].args = params.clone());
+                    .with(|map| map.scope.scopes[self.current.scope].set_args(params.clone()));
 
                 params
             });
 
-        let ret = nodes_iter.next().map(|&node| {
-            let ty = self.gen_ty(cst, node);
-            self.map.with(|map| map.tys.push(ty))
-        });
+        let ret = cst
+            .nodes(node)
+            .find(|&&node| cst.kind(node) == NK::func_sig_ret)
+            .map(|&node| {
+                let ty = *cst.nodes(node).next().unwrap();
+                let ty = self.gen_ty(cst, ty);
+                self.map.with(|map| map.tys.push(ty))
+            });
 
         ty::Func { params, ret }
     }

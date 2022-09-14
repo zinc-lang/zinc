@@ -11,11 +11,14 @@ mod source_map;
 
 use source_map::{SourceFile, SourceFileId, SourceMap};
 
+// @TODO: Check for name collisions in ast/gen
+// @TODO: Type and semantics checking
+
 fn main() {
     let options = Options::get();
 
     if options.log {
-        setup_logger().expect("failed to setup logger");
+        setup_logger().expect("logger should have been setup");
     }
 
     let mut source_map = SourceMap::new(SourceFile::new(options.path).unwrap());

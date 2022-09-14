@@ -40,9 +40,24 @@
         asdf();
     }
 
-    // not_found;
-    // barfoo;
-    // foobar();
+    // not_found; // err: not found
+    // barfoo; // err: not found
+    // foobar(); // err: not found
 
     foo();
+}
+
+:: var fn sint;
+
+:: square fn (a sint) sint
+    => a * a;
+
+:: some_func fn  {
+    // a; // err: not found
+}
+
+:: nested_func fn (p sint) {
+    :: nested fn {
+        // p; // err: not found
+    }
 }

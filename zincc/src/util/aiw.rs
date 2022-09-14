@@ -1,7 +1,7 @@
 use std::io::Write;
 
-pub struct AutoIndentingWriter<'a, T: Write> {
-    inner: &'a mut T,
+pub struct AutoIndentingWriter<T: Write> {
+    inner: T,
 
     /// If true, the writer will not write any bytes to the inner writer.
     /// It will however still track the indentation level.
@@ -21,8 +21,8 @@ pub struct AutoIndentingWriter<'a, T: Write> {
     indent_next_line: usize,
 }
 
-impl<'a, T: Write> AutoIndentingWriter<'a, T> {
-    pub fn new(writer: &'a mut T, indent_delta: usize) -> Self {
+impl<T: Write> AutoIndentingWriter<T> {
+    pub fn new(writer: T, indent_delta: usize) -> Self {
         Self {
             inner: writer,
             disable_write: false,
@@ -61,12 +61,19 @@ impl<'a, T: Write> AutoIndentingWriter<'a, T> {
         if len == 0 {
             Ok(0)
         } else {
-            if !self.disable_write {
-                self.inner.write_all(buf)?;
+            let lines = buf.split_inclusive(|&ch| ch == b'\n');
+            for line in lines {
+                self.apply_indent()?;
+
+                if !self.disable_write {
+                    self.inner.write_all(line)?;
+                }
+
+                if buf[len - 1] == b'\n' {
+                    self.reset_line();
+                }
             }
-            if buf[len - 1] == b'\n' {
-                self.reset_line();
-            }
+
             Ok(len)
         }
     }
@@ -90,7 +97,7 @@ impl<'a, T: Write> AutoIndentingWriter<'a, T> {
         Ok(())
     }
 
-    fn get_current_indent(&mut self) -> usize {
+    fn get_current_indent(&self) -> usize {
         let mut indent_current = self.indent_count;
         if indent_current > 0 {
             let indent_count = self.indent_count - self.indent_next_line;
@@ -149,7 +156,7 @@ impl<'a, T: Write> AutoIndentingWriter<'a, T> {
     }
 
     /// Checks if the most recent indentation exceeds the currently pushed indents
-    pub fn is_line_over_indented(&mut self) -> bool {
+    pub fn is_line_over_indented(&self) -> bool {
         if self.current_line_empty {
             false
         } else {
@@ -158,17 +165,18 @@ impl<'a, T: Write> AutoIndentingWriter<'a, T> {
     }
 }
 
-impl<T: Write> Write for AutoIndentingWriter<'_, T> {
+impl<T: Write> Write for AutoIndentingWriter<T> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if buf.is_empty() {
-            Ok(0)
-        } else {
-            self.apply_indent()?;
-            self.write_no_indent(buf)
-        }
+        self.write_no_indent(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()
+    }
+}
+
+impl From<AutoIndentingWriter<Vec<u8>>> for String {
+    fn from(val: AutoIndentingWriter<Vec<u8>>) -> Self {
+        String::from_utf8(val.inner).unwrap()
     }
 }

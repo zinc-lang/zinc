@@ -161,6 +161,7 @@ pub enum NodeKind {
     //
     /// `'fn' genericsList? paramsList? ty?`
     func_sig,
+    func_sig_ret,
 
     /// `'(' param ( ',' param )* ','? ')'`
     paramsList,
