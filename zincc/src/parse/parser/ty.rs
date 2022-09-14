@@ -52,7 +52,12 @@ impl Parser<'_> {
     fn parse_ty_func(&mut self, parent: NodeId) {
         let mut sig = self.parse_ty_func_wo_return();
         sig.parent = Some(parent);
-        self.parse_ty(*sig);
+        self.parse_ty_func_return(*sig);
+    }
+
+    pub fn parse_ty_func_return(&mut self, parent: NodeId) {
+        let ret = self.pnode(NK::func_sig_ret).parent(parent);
+        self.parse_ty(*ret);
     }
 
     fn parse_params_list(&mut self, parent: NodeId) {

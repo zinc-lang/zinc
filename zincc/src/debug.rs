@@ -1,7 +1,9 @@
 use crate::{
+    ast,
     parse::{self, cst, TokenKind},
-    util::AutoIndentingWriter,
+    util::{index, AutoIndentingWriter},
 };
+use std::fmt;
 use std::io::{self, Write};
 use termcolor::{Color, ColorSpec, WriteColor};
 
@@ -60,7 +62,7 @@ pub fn write_cst<W: Write>(
 }
 
 pub struct CstWriter<'s, W: Write> {
-    f: AutoIndentingWriter<'s, W>,
+    f: AutoIndentingWriter<&'s mut W>,
     cst: &'s cst::Cst,
     source: &'s str,
     tokens: &'s [TokenKind],

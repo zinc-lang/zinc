@@ -243,11 +243,9 @@ impl Drop for PNode {
             let parser = unsafe { get_thread_parser() };
             parser.cst.push_child_node(parent, self.node);
             parser.cst.set_kind(self.node, self.kind);
-        } else {
-            if self.kind != NK::err {
-                error!("PNode does not have parent at time of drop");
-                // panic!();
-            }
+        } else if self.kind != NK::err {
+            error!("PNode does not have parent at time of drop");
+            // panic!();
         }
     }
 }

@@ -89,7 +89,7 @@ macro_rules! define_idx {
 }
 pub use define_idx;
 
-pub fn indicies_of_range<I: Idx>(range: Range<I>) -> impl Iterator<Item = I> {
+pub fn indices_of_range<I: Idx>(range: &Range<I>) -> impl Iterator<Item = I> {
     (range.start.index()..range.end.index())
         .into_iter()
         .map(|i| I::new(i))
@@ -114,7 +114,7 @@ pub struct IndexVec<I: Idx, T> {
     _m: PhantomData<I>,
 }
 
-impl<I: Idx, T: Debug> fmt::Debug for IndexVec<I, T> {
+impl<I: Idx, T: Debug> Debug for IndexVec<I, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map()
             .entries(self.raw.iter().enumerate().map(|(k, v)| (k, v)))
@@ -224,7 +224,7 @@ pub struct InterningIndexVec<I: Idx, T: Eq> {
     raw: IndexVec<I, T>,
 }
 
-impl<I: Idx, T: Eq + Debug> fmt::Debug for InterningIndexVec<I, T> {
+impl<I: Idx, T: Eq + Debug> Debug for InterningIndexVec<I, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.raw, f)
     }
@@ -263,7 +263,7 @@ impl<I: Idx, T: Eq> InterningIndexVec<I, T> {
     }
 
     #[inline]
-    pub fn is_interned(&mut self, t: &T) -> bool {
+    pub fn is_interned(&self, t: &T) -> bool {
         self.raw.raw.iter().any(|it| it == t)
     }
 

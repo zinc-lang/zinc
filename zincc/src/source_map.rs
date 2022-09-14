@@ -61,7 +61,7 @@ pub struct LexData {
 
 impl LexData {
     #[allow(clippy::clone_double_ref)] // the fix does not work
-    pub fn debug_zip(&self) -> impl std::iter::Iterator<Item = (&parse::TokenKind, &Range<usize>)> {
+    pub fn debug_zip(&self) -> impl Iterator<Item = (&parse::TokenKind, &Range<usize>)> {
         let tokens = self.tokens.deref().clone().iter();
         let ranges = self.ranges.deref().clone().iter();
         tokens.zip(ranges)
