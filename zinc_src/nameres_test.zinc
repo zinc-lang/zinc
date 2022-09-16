@@ -52,7 +52,7 @@
 :: square fn (a sint) sint
     => a * a;
 
-:: some_func fn  {
+:: some_func fn {
     // a; // err: not found
 }
 
@@ -61,3 +61,7 @@
         // p; // err: not found
     }
 }
+
+// :: some_func fn {} // err: defined multiple times
+
+// :: too_many fn (foo uint, foo sint) {} // err: parameter used more than once

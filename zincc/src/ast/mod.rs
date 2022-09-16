@@ -121,6 +121,7 @@ pub mod ty {
     #[derive(Debug)]
     pub struct FuncParam {
         pub name: StringSymbol,
+        pub name_token: TokenIndex,
         pub ty: TyId,
     }
 }
@@ -456,6 +457,7 @@ pub mod scope {
     #[derive(Debug)]
     pub struct DeclDesc {
         pub name: StringSymbol,
+        pub name_token: TokenIndex,
         pub tag: DeclDescTag,
         pub node: NodeId,
     }
