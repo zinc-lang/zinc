@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    ast::scope::DeclDesc,
     parse::{
         cst::{Cst, NK},
         TK,
@@ -93,8 +94,18 @@ impl<'s> Generator<'s> {
     }
 
     fn report(&self, func: impl FnOnce() -> report::Builder) {
-        self.reports
-            .with(|reports| reports.push(func().maybe_set_file(|| self.current.file).build()))
+        self.reports.with(|reports| {
+            reports.push(
+                self.maybe_map_sub_report(func().maybe_set_file(|| self.current.file))
+                    .build(),
+            )
+        })
+    }
+
+    fn maybe_map_sub_report(&self, report: report::Builder) -> report::Builder {
+        report.map_sub_report(|rep| {
+            self.maybe_map_sub_report(rep.maybe_set_file(|| self.current.file))
+        })
     }
 
     fn get_node_span(&self, cst: &Cst, node: NodeId) -> Range<usize> {
@@ -151,9 +162,12 @@ impl<'s> Generator<'s> {
             .copied()
     }
 
+    fn get_token_span(&self, token: TokenIndex) -> Range<usize> {
+        self.source_map.lex_data[&self.current.file].ranges[token.get()].clone()
+    }
+
     fn get_token_lexeme(&self, token: TokenIndex) -> &str {
-        &self.source_map.sources[&self.current.file]
-            [self.source_map.lex_data[&self.current.file].ranges[token.get()].clone()]
+        &self.source_map.sources[&self.current.file][self.get_token_span(token)]
     }
 
     fn get_token_string(&self, token: TokenIndex) -> StringSymbol {
@@ -178,13 +192,38 @@ impl<'s> Generator<'s> {
 
         let cst = &self.current_cst_no_trivia();
 
-        let mut decls = Vec::new();
+        let mut decls: Vec<DeclDesc> = Vec::new();
         for &node in cst.nodes(node) {
             if cst.kind(node) == NK::decl {
                 let mut nodes_iter = cst.nodes(node);
 
-                let name = self.find_token(cst, node, |tk| tk == TK::ident).unwrap();
-                let name = self.get_token_string(name);
+                let name_token = self.find_token(cst, node, |tk| tk == TK::ident).unwrap();
+                let name = self.get_token_string(name_token);
+
+                // Check if it has been defined before, and report acordingly
+                for decl in decls.iter() {
+                    if name != decl.name {
+                        continue;
+                    }
+                    self.report(|| {
+                        let name = &self.map.strings[name];
+                        Report::builder()
+                            .error()
+                            .span(self.get_token_span(name_token))
+                            .message(format!("the name `{}` is defined multiple times", name))
+                            .short(format!("`{}` redefined here", name))
+                            .sub_report(
+                                Report::builder()
+                                    .note()
+                                    .span(self.get_token_span(decl.name_token))
+                                    .message(format!(
+                                        "previous definition of the value `{}` here",
+                                        name,
+                                    ))
+                                    .short(format!("`{}` first defined here", name)),
+                            )
+                    })
+                }
 
                 let decl_kind = *nodes_iter.next().unwrap();
                 debug_assert!(nodes_iter.next().is_none());
@@ -195,13 +234,19 @@ impl<'s> Generator<'s> {
                 };
                 trace!(?name, ?tag, "Seeded decl");
 
-                decls.push(scope::DeclDesc { name, tag, node });
+                decls.push(scope::DeclDesc {
+                    name,
+                    name_token,
+                    tag,
+                    node,
+                });
             }
         }
 
         let decls = self
             .map
             .with(|map| map.scope.decls.push_range(decls.into_iter()));
+
         self.map
             .with(|map| map.scope.scopes[self.current.scope].set_decls(decls));
     }
@@ -355,16 +400,16 @@ impl<'s> Generator<'s> {
                 let lex_data = &self.source_map.lex_data[&self.current.file];
                 let file_tokens = &lex_data.tokens;
                 let mut tokens = cst.tokens(node);
-                let name_tok_idx = *tokens.find(|i| file_tokens[i.get()] == TK::ident).unwrap();
-                let name = self.get_token_string(name_tok_idx);
+                let name_token = *tokens.find(|i| file_tokens[i.get()] == TK::ident).unwrap();
+                let name = self.get_token_string(name_token);
 
                 let res = self.expr_resolve(name).unwrap_or_else(|| {
                     self.report(|| {
                         Report::builder()
                             .error()
-                            .span(lex_data.ranges[name_tok_idx.get()].clone())
+                            .span(lex_data.ranges[name_token.get()].clone())
                             .message(format!(
-                                "cannot find `{}` in this scope",
+                                "could not find `{}` in this scope",
                                 self.map.strings[name]
                             ))
                             .short("not found is this scope")
@@ -462,7 +507,8 @@ impl<'s> Generator<'s> {
     }
 
     fn expr_resolve(&self, name: StringSymbol) -> Option<expr::res::Resolution> {
-        trace!(?name, "Resolving expr");
+        let _p = trace_span!("Resoving expr");
+        trace!(?name);
 
         // search for local
         {
@@ -574,18 +620,41 @@ impl<'s> Generator<'s> {
             .nodes(node)
             .find(|&&node| cst.kind(node) == NK::paramsList)
             .map(|&node| {
-                let mut params = Vec::new();
+                let mut params: Vec<ty::FuncParam> = Vec::new();
                 for &node in cst.nodes(node) {
                     let param = match cst.kind(node) {
                         NK::param_param => {
-                            let name = self.find_token(cst, node, |tk| tk == TK::ident).unwrap();
-                            let name = self.get_token_string(name);
+                            let name_token =
+                                self.find_token(cst, node, |tk| tk == TK::ident).unwrap();
+                            let name = self.get_token_string(name_token);
+
+                            // Check if param has been defined before, and report accordingly
+                            for param in params.iter() {
+                                if name != param.name {
+                                    continue;
+                                }
+                                self.report(|| {
+                                    let name = &self.map.strings[name];
+                                    Report::builder()
+                                        .error()
+                                        .span(self.get_token_span(name_token))
+                                        .message(format!(
+                                            "indenifier `{}` is used more than once as a parameter",
+                                            name
+                                        ))
+                                        .short("used as a parameter more than once")
+                                })
+                            }
 
                             let ty = *cst.nodes(node).next().unwrap();
                             let ty = self.gen_ty(cst, ty);
                             let ty = self.map.with(|map| map.tys.push(ty));
 
-                            ty::FuncParam { name, ty }
+                            ty::FuncParam {
+                                name,
+                                name_token,
+                                ty,
+                            }
                         }
                         _ => todo!(),
                     };

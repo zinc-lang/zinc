@@ -11,7 +11,6 @@ mod source_map;
 
 use source_map::{SourceFile, SourceFileId, SourceMap};
 
-// @TODO: Check for name collisions in ast/gen
 // @TODO: Type and semantics checking
 
 fn main() {

@@ -7,7 +7,7 @@ use std::{
     ops::{Deref, Range},
 };
 
-type Span = Range<usize>;
+pub type Span = Range<usize>;
 
 #[derive(Debug)]
 pub struct Report {
@@ -18,6 +18,8 @@ pub struct Report {
     pub message: String,
     /// Short message, displayed in context
     pub short: Option<String>,
+    // pub secondary: Option<(Span, Option<String>)>,
+    pub sub_report: Option<Box<Report>>,
 }
 
 impl Report {
@@ -32,6 +34,7 @@ pub enum Level {
     Error,
     // Warning,
     Unimpl,
+    Note,
 }
 
 impl Level {
@@ -39,6 +42,7 @@ impl Level {
         match self {
             Level::Error => (colored::Color::BrightRed, "error"),
             Level::Unimpl => (colored::Color::BrightCyan, "unimpl"),
+            Level::Note => (colored::Color::BrightGreen, "note"),
         }
     }
 }
@@ -50,6 +54,8 @@ pub struct Builder {
     span: Option<Span>,
     message: Option<String>,
     short: Option<String>,
+    // secondary: Option<(Span, Option<String>)>,
+    sub_report: Option<Box<Builder>>,
 
     #[cfg(debug_assertions)]
     created_at: LocationWrapper,
@@ -81,15 +87,22 @@ impl Builder {
         Self::default()
     }
 
-    pub fn error(mut self) -> Self {
-        debug_assert!(self.level.is_none());
-        self.level = Some(Level::Error);
-        self
+    pub fn error(self) -> Self {
+        self.set_level(Level::Error)
     }
 
-    pub fn unimpl(mut self) -> Self {
+    pub fn unimpl(self) -> Self {
+        self.set_level(Level::Unimpl)
+    }
+
+    pub fn note(self) -> Self {
+        self.set_level(Level::Note)
+    }
+
+    #[track_caller]
+    fn set_level(mut self, level: Level) -> Self {
         debug_assert!(self.level.is_none());
-        self.level = Some(Level::Unimpl);
+        self.level = Some(level);
         self
     }
 
@@ -117,13 +130,28 @@ impl Builder {
         self
     }
 
-    pub fn message(mut self, message: impl Into<String>) -> Self {
-        self.message = Some(message.into());
+    pub fn message(mut self, message: impl ToString) -> Self {
+        self.message = Some(message.to_string());
         self
     }
 
-    pub fn short(mut self, short: impl Into<String>) -> Self {
-        self.short = Some(short.into());
+    pub fn short(mut self, short: impl ToString) -> Self {
+        self.short = Some(short.to_string());
+        self
+    }
+
+    // pub fn secondary(mut self, span: Span, text: Option<impl ToString>) -> Self {
+    //     self.secondary = Some((span, text.map(|t| t.to_string())));
+    //     self
+    // }
+
+    pub fn sub_report(mut self, report: Builder) -> Self {
+        self.sub_report = Some(Box::new(report));
+        self
+    }
+
+    pub fn map_sub_report(mut self, func: impl FnOnce(Builder) -> Builder) -> Self {
+        self.sub_report = self.sub_report.map(|s| *s).map(func).map(Box::new);
         self
     }
 
@@ -146,6 +174,8 @@ impl Builder {
             span: get!(span),
             message: get!(message),
             short: self.short,
+            // secondary: self.secondary,
+            sub_report: self.sub_report.map(|b| Box::new(b.build())),
         }
     }
 }
@@ -160,6 +190,7 @@ pub fn split(reports: Vec<Report>) -> (Vec<Report>, Vec<Report>) {
         match report.level {
             Level::Error => errors.push(report),
             Level::Unimpl => unimpls.push(report),
+            Level::Note => unreachable!("A report of level 'note' should never be a main report"),
         }
     }
 
@@ -243,11 +274,15 @@ pub fn format_report<W: io::Write>(
                 short.color(highlight_color).bold(),
                 width = highlight_start_offset,
             )?;
-        } else {
-            writeln!(f, "{} {}", padding, "|".bright_blue().bold())?;
         }
+
+        writeln!(f, "{} {}", padding, "|".bright_blue().bold())?;
     } else {
         todo!()
+    }
+
+    if let Some(sub) = &report.sub_report {
+        format_report(f, sub, source_map)?;
     }
 
     writeln!(f)?;
