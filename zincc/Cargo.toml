@@ -3,29 +3,22 @@ name = "zincc"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 clap = "3.2"
 
 llvm = { path = "../llvm-rs/llvm-rs" }
 
-# smallvec = { version = "1.9", features = ["union"] }
-# fnv = "1.0"
-# bimap = "0.6"
-# rle_vec = "0.4"
-
-termcolor = "1.1"
-atty = "0.2"
-
 log = { version = "0.4", features = ["release_max_level_off"] }
 tracing = { version = "0.1", features = ["release_max_level_off", "log"] }
 fern = { version = "0.6", features = ["colored"] }
-chrono = "0.4"
+
+colored = "2.0"
+atty = "0.2"
+ansi-escapes = "0.1"
 
 strum = { version = "0.24", features = ["derive"] }
-colored = "2.0"
 pathdiff = "0.2"
+chrono = "0.4"
 
 # thiserror = "1.0"
 

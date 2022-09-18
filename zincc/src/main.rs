@@ -1,6 +1,8 @@
 #[macro_use]
 extern crate tracing;
 
+extern crate ansi_escapes as ansi;
+
 pub mod util;
 
 mod ast;
@@ -11,7 +13,10 @@ mod source_map;
 
 use source_map::{SourceFile, SourceFileId, SourceMap};
 
-// @TODO: Type and semantics checking
+// @TODO: Look into using https://github.com/zesterer/ariadne
+// @TODO: Typer
+// @TODO: Semantics checking
+// @TODO: Code-gen
 
 fn main() {
     let options = Options::get();
@@ -30,14 +35,16 @@ fn main() {
     let stderr = &mut std::io::stderr();
 
     {
+        // Lex
         let reports = info_span!("Lexer")
             .in_scope(|| timer.spanned("lexer", || parse::lex(&mut source_map, file_id)));
+        eprint!("{}{}", ansi::CursorLeft, ansi::EraseLine);
 
         if options.dumps.contains(&DumpOption::tokens) {
             let source = &source_map.sources[&file_id];
 
             source_map.lex_data[&file_id]
-                .debug_zip()
+                .zip()
                 .for_each(|(&tk, range)| {
                     if !tk.is_trivia() {
                         debug::write_token(stderr, source, tk, range, options.color).unwrap();
@@ -61,6 +68,7 @@ fn main() {
     }
 
     {
+        // Parse
         let reports = info_span!("Parser")
             .in_scope(|| timer.spanned("parser", || parse::parse(&mut source_map, file_id)));
 
@@ -106,12 +114,10 @@ fn main() {
     }
 
     {
-        let (ast, reports) = info_span!("AstGen").in_scope(|| {
-            timer.spanned("ast-gen", || {
-                let gen = ast::gen::Generator::new(&source_map, file_id);
-                gen.generate()
-            })
-        });
+        // Ast gen
+        let (ast, reports) = info_span!("AstGen")
+            .in_scope(|| timer.spanned("ast-gen", || ast::gen(&mut source_map, file_id)));
+        eprint!("{}{}", ansi::CursorLeft, ansi::EraseLine);
 
         if options.dumps.contains(&DumpOption::ast) {
             dbg!(ast);
@@ -142,7 +148,7 @@ fn main() {
     }
 
     if options.print_times {
-        eprintln!("\nTimes:");
+        eprintln!("Times:");
         timer.write(stderr).unwrap();
     }
 }

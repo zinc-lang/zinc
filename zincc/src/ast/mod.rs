@@ -1,32 +1,32 @@
 use crate::{
     parse::cst::{NodeId, TokenIndex},
-    source_map::SourceFileId,
     util::index::{define_idx, IndexVec, StringInterningVec, StringSymbol},
 };
 use std::ops::Range;
 
-pub mod gen;
+mod gen;
 
-pub use {decl::DeclId, expr::ExprId, scope::ScopeId, ty::TyId};
+pub use gen::gen;
 
-#[derive(Debug)]
-pub struct Ast {
-    pub map: AstMap,
-    pub root_file: AstFile,
-}
+pub use {
+    decl::{Decl, DeclId},
+    expr::{Expr, ExprId},
+    scope::ScopeId,
+    ty::{Ty, TyId},
+};
 
 #[derive(Debug, Default)]
 pub struct AstMap {
     pub strings: StringInterningVec,
 
-    pub decls: IndexVec<DeclId, decl::Decl>,
+    pub decls: IndexVec<DeclId, Decl>,
     pub decl_funcs: IndexVec<decl::FuncId, decl::Func>,
 
-    pub tys: IndexVec<TyId, ty::Ty>,
+    pub tys: IndexVec<TyId, Ty>,
     pub ty_funcs: IndexVec<ty::FuncId, ty::Func>,
     pub ty_func_params: IndexVec<ty::FuncParamId, ty::FuncParam>,
 
-    pub exprs: IndexVec<ExprId, expr::Expr>,
+    pub exprs: IndexVec<ExprId, Expr>,
     pub expr_basic_lets: IndexVec<expr::LetBasicId, expr::LetBasic>,
     pub expr_blocks: IndexVec<expr::BlockId, expr::Block>,
 
@@ -37,7 +37,6 @@ pub struct AstMap {
 pub struct AstFile {
     pub node: NodeId,
     pub scope: ScopeId,
-    pub file: SourceFileId,
 
     pub decls: Range<DeclId>,
 }
@@ -351,7 +350,7 @@ pub mod scope {
         pub fn set_args(&mut self, args: Range<ty::FuncParamId>) {
             match self {
                 Scope::Root(_) => unreachable!("Cannot set args in root scope"),
-                Scope::Block(_) => unreachable!("Cannot set arsg in block scope"),
+                Scope::Block(_) => unreachable!("Cannot set args in block scope"),
                 Scope::Func(func) => {
                     debug_assert!(func.args == index::empty_range());
                     func.args = args;
@@ -377,7 +376,7 @@ pub mod scope {
             match self {
                 Scope::Block(block) => block.locals.push(local),
                 Scope::Root(_) => unreachable!("Cannot push local to root scope"),
-                Scope::Func(_) => unreachable!("Cannot push local to funciton scope"),
+                Scope::Func(_) => unreachable!("Cannot push local to function scope"),
             }
         }
 
