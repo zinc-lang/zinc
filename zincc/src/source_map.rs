@@ -1,4 +1,4 @@
-use crate::{parse, util};
+use crate::{ast, parse, util};
 use std::{
     collections::HashMap,
     ops::{Deref, Range},
@@ -12,6 +12,7 @@ pub struct SourceMap {
     pub sources: HashMap<SourceFileId, String>,
     pub lex_data: HashMap<SourceFileId, LexData>,
     pub csts: HashMap<SourceFileId, parse::cst::Cst>,
+    pub ast_files: HashMap<SourceFileId, ast::AstFile>,
 }
 
 impl SourceMap {
@@ -24,7 +25,12 @@ impl SourceMap {
             sources: Default::default(),
             lex_data: Default::default(),
             csts: Default::default(),
+            ast_files: Default::default(),
         }
+    }
+
+    pub fn set_ast_files(&mut self, ast_files: HashMap<SourceFileId, ast::AstFile>) {
+        self.ast_files = ast_files;
     }
 }
 
@@ -60,10 +66,9 @@ pub struct LexData {
 }
 
 impl LexData {
-    #[allow(clippy::clone_double_ref)] // the fix does not work
-    pub fn debug_zip(&self) -> impl Iterator<Item = (&parse::TokenKind, &Range<usize>)> {
-        let tokens = self.tokens.deref().clone().iter();
-        let ranges = self.ranges.deref().clone().iter();
+    pub fn zip(&self) -> impl Iterator<Item = (&parse::TokenKind, &Range<usize>)> {
+        let tokens = self.tokens.deref().iter();
+        let ranges = self.ranges.deref().iter();
         tokens.zip(ranges)
     }
 }

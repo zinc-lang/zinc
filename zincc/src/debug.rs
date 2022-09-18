@@ -3,9 +3,11 @@ use crate::{
     parse::{self, cst, TokenKind},
     util::{index, AutoIndentingWriter},
 };
-use std::fmt;
-use std::io::{self, Write};
-use termcolor::{Color, ColorSpec, WriteColor};
+use colored::Colorize;
+use std::{
+    fmt,
+    io::{self, Write},
+};
 
 pub fn write_token<W: Write>(
     out: &mut W,
@@ -17,24 +19,16 @@ pub fn write_token<W: Write>(
     let slice = &source[range.start as usize..range.end as usize];
     let slice = unescape_string(slice);
     if use_color {
-        let mut ansi = termcolor::Ansi::new(out);
-
-        ansi.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)))?;
-        write!(ansi, "{tk:?}")?;
-        ansi.reset()?;
-        write!(ansi, "@")?;
-        ansi.set_color(ColorSpec::new().set_fg(Some(Color::White)))?;
-        write!(ansi, "{range:?}")?;
-        ansi.reset()?;
-        write!(ansi, "  ")?;
-        ansi.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
-        write!(ansi, "'{slice}'")?;
-        ansi.reset()?;
+        write!(
+            out,
+            "{}@{}  {}",
+            format!("{tk:?}").cyan(),
+            format!("{range:?}").white(),
+            format!("'{slice}'").green()
+        )
     } else {
-        write!(out, "{tk:?}@{range:?}  '{slice}'")?;
+        write!(out, "{tk:?}@{range:?}  '{slice}'")
     }
-
-    Ok(())
 }
 
 pub fn unescape_string(str: &str) -> String {
@@ -104,16 +98,13 @@ impl<'s, W: Write> CstWriter<'s, W> {
                 cst::Element::Node(n) => {
                     let kind = self.cst.kind(*n);
                     if self.use_color {
-                        let mut ansi = termcolor::Ansi::new(&mut self.f);
-
-                        ansi.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)))?;
-                        write!(ansi, "{:?}", kind)?;
-                        ansi.reset()?;
-                        write!(self.f, " [ {} ]", n.index())?;
-                        writeln!(self.f)?;
+                        write!(self.f, "{}", format!("{kind:?}").magenta())?;
                     } else {
-                        writeln!(self.f, "{:?}", kind)?;
+                        write!(self.f, "{:?}", kind)?;
                     }
+
+                    writeln!(self.f, " [ {} ] ", n.index())?;
+
                     self.f.push_indent();
                     self.print(*n)?;
                     self.f.pop_indent();

@@ -7,69 +7,39 @@ use crate::{
     },
     report::{self, Report},
     source_map::{SourceFileId, SourceMap},
-    util::index::{self, StringSymbol},
+    util::{
+        index::{self, StringSymbol},
+        mut_cell::MutCell,
+        progress::Progress,
+    },
 };
+use std::collections::HashMap;
 
-mod mut_cell {
-    use std::cell::RefCell;
+pub fn gen(source_map: &mut SourceMap, file: SourceFileId) -> (AstMap, Vec<Report>) {
+    let gen = Generator::new(source_map, file);
+    let (map, reports, files) = gen.generate();
 
-    #[derive(Debug)]
-    pub struct MutCell<T> {
-        value: RefCell<T>,
-    }
+    source_map.set_ast_files(files);
 
-    impl<T> MutCell<T> {
-        pub fn new(value: T) -> Self {
-            let value = RefCell::new(value);
-            Self { value }
-        }
-
-        #[track_caller]
-        pub fn with<R>(&self, func: impl FnOnce(&mut T) -> R) -> R {
-            let value = &mut *self.value.borrow_mut();
-            func(value)
-        }
-
-        pub fn into_inner(self) -> T {
-            self.value.into_inner()
-        }
-    }
-
-    impl<T> std::ops::Deref for MutCell<T> {
-        type Target = T;
-
-        fn deref(&self) -> &Self::Target {
-            unsafe { &*self.value.as_ptr() as &Self::Target }
-        }
-    }
-
-    impl<T: Default> Default for MutCell<T> {
-        fn default() -> Self {
-            Self {
-                value: Default::default(),
-            }
-        }
-    }
+    (map, reports)
 }
 
-use mut_cell::MutCell;
-
-#[derive(Debug)]
-pub struct Generator<'s> {
+struct Generator<'s> {
     source_map: &'s SourceMap,
     map: MutCell<AstMap>,
     current: MutCell<Current>,
     reports: MutCell<Vec<Report>>,
+    progress: MutCell<Progress<&'static str>>,
+    files: MutCell<HashMap<SourceFileId, AstFile>>,
 }
 
-#[derive(Debug)]
 struct Current {
     file: SourceFileId,
     scope: ScopeId,
 }
 
 impl<'s> Generator<'s> {
-    pub fn new(source_map: &'s SourceMap, file: SourceFileId) -> Self {
+    fn new(source_map: &'s SourceMap, file: SourceFileId) -> Self {
         let map = AstMap::default();
         let scope = map.scope.root;
 
@@ -77,24 +47,43 @@ impl<'s> Generator<'s> {
             source_map,
             map: MutCell::new(map),
             current: MutCell::new(Current { file, scope }),
-            reports: MutCell::new(Vec::new()),
+            reports: Default::default(),
+            progress: MutCell::new(Progress::new("ast-gen", 1)),
+            files: Default::default(),
         }
     }
 
-    pub fn generate(self) -> (Ast, Vec<Report>) {
+    fn generate(self) -> (AstMap, Vec<Report>, HashMap<SourceFileId, AstFile>) {
         let _s = trace_span!("Generate").entered();
-        self.seed_file();
-        let file = self.gen_file();
 
-        let ast = Ast {
-            map: self.map.into_inner(),
-            root_file: file,
-        };
-        (ast, self.reports.into_inner())
+        self.seed_file();
+        self.gen_file();
+
+        self.progress_inc();
+
+        (
+            self.map.into_inner(),
+            self.reports.into_inner(),
+            self.files.into_inner(),
+        )
+    }
+
+    fn print_progress(&self) {
+        eprint!("{}", self.progress);
+    }
+
+    fn progress_inc(&self) {
+        self.progress.mutate(|prog| prog.inc());
+        self.print_progress();
+    }
+
+    fn progress_inc_out_of(&self, by: usize) {
+        self.progress.mutate(|prog| prog.inc_out_of(by));
+        self.print_progress();
     }
 
     fn report(&self, func: impl FnOnce() -> report::Builder) {
-        self.reports.with(|reports| {
+        self.reports.mutate(|reports| {
             reports.push(
                 self.maybe_map_sub_report(func().maybe_set_file(|| self.current.file))
                     .build(),
@@ -172,11 +161,11 @@ impl<'s> Generator<'s> {
 
     fn get_token_string(&self, token: TokenIndex) -> StringSymbol {
         let str = self.get_token_lexeme(token);
-        self.map.with(|map| map.strings.str_get_or_intern(str))
+        self.map.mutate(|map| map.strings.str_get_or_intern(str))
     }
 
     fn append_child_to_current_scope(&self, child: ScopeId) {
-        self.map.with(|map| {
+        self.map.mutate(|map| {
             let parent = &mut map.scope.scopes[self.current.scope];
             parent.push_child(child);
 
@@ -192,92 +181,113 @@ impl<'s> Generator<'s> {
 
         let cst = &self.current_cst_no_trivia();
 
+        let nodes = cst
+            .nodes(node)
+            .filter(|&&n| cst.kind(n) == NK::decl)
+            .cloned()
+            .collect::<Box<[_]>>();
+
+        self.progress_inc_out_of(nodes.len());
+
         let mut decls: Vec<DeclDesc> = Vec::new();
-        for &node in cst.nodes(node) {
-            if cst.kind(node) == NK::decl {
-                let mut nodes_iter = cst.nodes(node);
+        for &node in nodes.iter() {
+            let mut nodes_iter = cst.nodes(node);
 
-                let name_token = self.find_token(cst, node, |tk| tk == TK::ident).unwrap();
-                let name = self.get_token_string(name_token);
+            let name_token = self.find_token(cst, node, |tk| tk == TK::ident).unwrap();
+            let name = self.get_token_string(name_token);
 
-                // Check if it has been defined before, and report acordingly
-                for decl in decls.iter() {
-                    if name != decl.name {
-                        continue;
-                    }
-                    self.report(|| {
-                        let name = &self.map.strings[name];
-                        Report::builder()
-                            .error()
-                            .span(self.get_token_span(name_token))
-                            .message(format!("the name `{}` is defined multiple times", name))
-                            .short(format!("`{}` redefined here", name))
-                            .sub_report(
-                                Report::builder()
-                                    .note()
-                                    .span(self.get_token_span(decl.name_token))
-                                    .message(format!(
-                                        "previous definition of the value `{}` here",
-                                        name,
-                                    ))
-                                    .short(format!("`{}` first defined here", name)),
-                            )
-                    })
+            // Check if it has been defined before, and report accordingly
+            for decl in decls.iter() {
+                if name != decl.name {
+                    continue;
                 }
-
-                let decl_kind = *nodes_iter.next().unwrap();
-                debug_assert!(nodes_iter.next().is_none());
-
-                let tag = match cst.kind(decl_kind) {
-                    NK::decl_func => scope::DeclDescTag::Func,
-                    _ => todo!(),
-                };
-                trace!(?name, ?tag, "Seeded decl");
-
-                decls.push(scope::DeclDesc {
-                    name,
-                    name_token,
-                    tag,
-                    node,
-                });
+                self.report(|| {
+                    let name = &self.map.strings[name];
+                    Report::builder()
+                        .error()
+                        .span(self.get_token_span(name_token))
+                        .message(format!("the name `{}` is defined multiple times", name))
+                        .short(format!("`{}` redefined here", name))
+                        .sub_report(
+                            Report::builder()
+                                .note()
+                                .span(self.get_token_span(decl.name_token))
+                                .message(format!(
+                                    "previous definition of the value `{}` here",
+                                    name,
+                                ))
+                                .short(format!("`{}` first defined here", name)),
+                        )
+                })
             }
+
+            let decl_kind = *nodes_iter.next().unwrap();
+            debug_assert!(nodes_iter.next().is_none());
+
+            let tag = match cst.kind(decl_kind) {
+                NK::decl_func => scope::DeclDescTag::Func,
+                _ => todo!(),
+            };
+            trace!(?name, ?tag, "Seeded decl");
+
+            decls.push(scope::DeclDesc {
+                name,
+                name_token,
+                tag,
+                node,
+            });
+
+            self.progress_inc();
         }
 
         let decls = self
             .map
-            .with(|map| map.scope.decls.push_range(decls.into_iter()));
+            .mutate(|map| map.scope.decls.push_range(decls.into_iter()));
 
         self.map
-            .with(|map| map.scope.scopes[self.current.scope].set_decls(decls));
+            .mutate(|map| map.scope.scopes[self.current.scope].set_decls(decls));
     }
 
-    fn gen_file(&self) -> AstFile {
+    fn gen_file(&self) {
         let _s = trace_span!("Gen file").entered();
         trace!(file = ?self.current.file);
 
+        self.progress_inc_out_of(1);
+
         let cst = &self.current_cst_no_trivia();
 
+        let nodes = cst.nodes(cst.root()).cloned().collect::<Box<[_]>>();
+        self.progress_inc_out_of(nodes.len());
+
         let mut decls = Vec::new();
-        for &node in cst.nodes(cst.root()) {
+        for &node in nodes.iter() {
             match cst.kind(node) {
                 NK::decl => decls.push(self.gen_decl(cst, node)),
                 _ => unreachable!(),
             }
+
+            self.progress_inc();
         }
 
         let decls = self.alloc_decls_and_descs(decls);
 
-        AstFile {
+        let ast_file = AstFile {
             node: cst.root(),
             scope: self.current.scope,
-            file: self.current.file,
             decls,
-        }
+        };
+
+        self.progress_inc();
+
+        self.files
+            .mutate(|files| files.insert(self.current.file, ast_file));
     }
 
-    fn gen_decl(&self, cst: &Cst, node: NodeId) -> (decl::Decl, scope::DeclDescId) {
+    fn gen_decl(&self, cst: &Cst, node: NodeId) -> (Decl, scope::DeclDescId) {
         let _s = trace_span!("Gen decl").entered();
         trace!(?node);
+
+        self.progress_inc_out_of(1);
 
         let mut nodes_iter = cst.nodes(node);
 
@@ -294,66 +304,73 @@ impl<'s> Generator<'s> {
         let kind = match cst.kind(decl) {
             NK::decl_func => {
                 let scope = scope::Scope::new_func();
-                let scope = self.map.with(|map| map.scope.scopes.push(scope));
+                let scope = self.map.mutate(|map| map.scope.scopes.push(scope));
 
                 self.append_child_to_current_scope(scope);
 
                 let old_scope = self.current.scope;
-                self.current.with(|current| current.scope = scope);
+                self.current.mutate(|current| current.scope = scope);
 
                 let mut nodes_iter = cst.nodes(decl);
 
                 let sig = *nodes_iter.next().unwrap();
                 debug_assert!(cst.kind(sig) == NK::func_sig);
                 let sig = self.gen_ty_func(cst, sig);
-                let sig = self.map.with(|map| map.ty_funcs.push(sig));
+                let sig = self.map.mutate(|map| map.ty_funcs.push(sig));
 
                 let body = nodes_iter
                     .find(|&&e| cst.kind(e) == NK::decl_func_body)
                     .map(|&body| {
                         let expr = *cst.nodes(body).next().unwrap();
                         let expr = self.gen_expr(cst, expr);
-                        self.map.with(|map| map.exprs.push(expr))
+                        self.map.mutate(|map| map.exprs.push(expr))
                     });
 
                 let func = decl::Func { sig, body };
-                let func = self.map.with(|map| map.decl_funcs.push(func));
+                let func = self.map.mutate(|map| map.decl_funcs.push(func));
 
-                self.current.with(|current| current.scope = old_scope);
+                self.current.mutate(|current| current.scope = old_scope);
 
                 decl::Kind::Func(func)
             }
             _ => todo!(),
         };
 
-        (decl::Decl { node, kind }, desc)
+        self.progress_inc();
+
+        (Decl { node, kind }, desc)
     }
 
-    fn alloc_decls_and_descs(&self, vec: Vec<(decl::Decl, scope::DeclDescId)>) -> Range<DeclId> {
+    fn alloc_decls_and_descs(&self, vec: Vec<(Decl, scope::DeclDescId)>) -> Range<DeclId> {
         let (decls, decl_descs): (Vec<_>, Vec<_>) = vec.into_iter().unzip();
 
-        let decls = self.map.with(|map| map.decls.push_range(decls.into_iter()));
+        let decls = self
+            .map
+            .mutate(|map| map.decls.push_range(decls.into_iter()));
 
         for (decl, desc) in index::indices_of_range(&decls).into_iter().zip(decl_descs) {
-            self.map.with(|map| map.scope.decls_map.insert(decl, desc));
+            self.map
+                .mutate(|map| map.scope.decls_map.insert(decl, desc));
         }
 
         decls
     }
 
-    fn gen_expr(&self, cst: &Cst, node: NodeId) -> expr::Expr {
+    fn gen_expr(&self, cst: &Cst, node: NodeId) -> Expr {
         let _s = trace_span!("Gen expr").entered();
         trace!(?node);
+
+        self.progress_inc_out_of(1);
 
         let kind = match cst.kind(node) {
             NK::expr_block => {
                 let scope = scope::Scope::new_block();
-                let scope = self.map.with(|map| map.scope.scopes.push(scope));
+                let scope = self.map.mutate(|map| map.scope.scopes.push(scope));
 
                 self.append_child_to_current_scope(scope);
 
                 let old_scope = self.current.scope;
-                self.current.with(|current| current.scope = scope);
+                self.current.mutate(|current| current.scope = scope);
 
                 self.seed_decls_from_node(node);
 
@@ -379,8 +396,10 @@ impl<'s> Generator<'s> {
                     .collect::<Vec<_>>();
                 let end = end.map(|node| self.gen_expr(cst, *cst.nodes(node).next().unwrap()));
 
-                let exprs = self.map.with(|map| map.exprs.push_range(exprs.into_iter()));
-                let end = end.map(|end| self.map.with(|map| map.exprs.push(end)));
+                let exprs = self
+                    .map
+                    .mutate(|map| map.exprs.push_range(exprs.into_iter()));
+                let end = end.map(|end| self.map.mutate(|map| map.exprs.push(end)));
 
                 let block = expr::Block {
                     node,
@@ -390,9 +409,9 @@ impl<'s> Generator<'s> {
                     end,
                 };
 
-                self.current.with(|current| current.scope = old_scope);
+                self.current.mutate(|current| current.scope = old_scope);
 
-                let block = self.map.with(|map| map.expr_blocks.push(block));
+                let block = self.map.mutate(|map| map.expr_blocks.push(block));
                 expr::Kind::Block(block)
             }
 
@@ -447,7 +466,7 @@ impl<'s> Generator<'s> {
 
                 let (lhs, rhs) = self
                     .map
-                    .with(|map| (map.exprs.push(lhs), map.exprs.push(rhs)));
+                    .mutate(|map| (map.exprs.push(lhs), map.exprs.push(rhs)));
 
                 let op = *cst.tokens(op).next().unwrap();
 
@@ -459,11 +478,13 @@ impl<'s> Generator<'s> {
 
                 let callee = *nodes_iter.next().unwrap();
                 let callee = self.gen_expr(cst, callee);
-                let callee = self.map.with(|map| map.exprs.push(callee));
+                let callee = self.map.mutate(|map| map.exprs.push(callee));
 
                 let args = nodes_iter.map(|&id| self.gen_expr(cst, id));
                 let args = args.collect::<Vec<_>>(); // just passing args was triggering the RefCell
-                let args = self.map.with(|map| map.exprs.push_range(args.into_iter()));
+                let args = self
+                    .map
+                    .mutate(|map| map.exprs.push_range(args.into_iter()));
 
                 expr::Kind::Call(expr::Call { callee, args })
             }
@@ -479,7 +500,7 @@ impl<'s> Generator<'s> {
 
                 let (ty, expr) = if cst.kind(next) == NK::expr_let_ty {
                     let ty = self.gen_ty(cst, next);
-                    let ty = self.map.with(|map| map.tys.push(ty));
+                    let ty = self.map.mutate(|map| map.tys.push(ty));
 
                     let expr = *nodes_iter.next().unwrap();
                     let expr = self.gen_expr(cst, expr);
@@ -489,13 +510,13 @@ impl<'s> Generator<'s> {
                     let expr = self.gen_expr(cst, next);
                     (None, expr)
                 };
-                let expr = self.map.with(|map| map.exprs.push(expr));
+                let expr = self.map.mutate(|map| map.exprs.push(expr));
 
                 let binding = expr::LetBasic { ident, ty, expr };
-                let binding = self.map.with(|map| map.expr_basic_lets.push(binding));
+                let binding = self.map.mutate(|map| map.expr_basic_lets.push(binding));
 
                 self.map
-                    .with(|map| map.scope.scopes[self.current.scope].push_local(binding));
+                    .mutate(|map| map.scope.scopes[self.current.scope].push_local(binding));
 
                 expr::Kind::LetBasic(binding)
             }
@@ -503,7 +524,9 @@ impl<'s> Generator<'s> {
             _ => todo!("more expr '{:?}'", cst.kind(node)),
         };
 
-        expr::Expr { node, kind }
+        self.progress_inc();
+
+        Expr { node, kind }
     }
 
     fn expr_resolve(&self, name: StringSymbol) -> Option<expr::res::Resolution> {
@@ -575,6 +598,8 @@ impl<'s> Generator<'s> {
         let _s = trace_span!("Gen ty").entered();
         trace!(?node);
 
+        self.progress_inc_out_of(1);
+
         let kind = match cst.kind(node) {
             NK::path => {
                 // @TODO: Multiple path segments
@@ -603,13 +628,15 @@ impl<'s> Generator<'s> {
             }
             NK::func_sig => {
                 let func = self.gen_ty_func(cst, node);
-                let func = self.map.with(|map| map.ty_funcs.push(func));
+                let func = self.map.mutate(|map| map.ty_funcs.push(func));
                 ty::Kind::Func(func)
             }
             _ => todo!(),
         };
 
-        ty::Ty { node, kind }
+        self.progress_inc();
+
+        Ty { node, kind }
     }
 
     fn gen_ty_func(&self, cst: &Cst, node: NodeId) -> ty::Func {
@@ -648,7 +675,7 @@ impl<'s> Generator<'s> {
 
                             let ty = *cst.nodes(node).next().unwrap();
                             let ty = self.gen_ty(cst, ty);
-                            let ty = self.map.with(|map| map.tys.push(ty));
+                            let ty = self.map.mutate(|map| map.tys.push(ty));
 
                             ty::FuncParam {
                                 name,
@@ -663,10 +690,10 @@ impl<'s> Generator<'s> {
 
                 let params = self
                     .map
-                    .with(|map| map.ty_func_params.push_range(params.into_iter()));
+                    .mutate(|map| map.ty_func_params.push_range(params.into_iter()));
 
                 self.map
-                    .with(|map| map.scope.scopes[self.current.scope].set_args(params.clone()));
+                    .mutate(|map| map.scope.scopes[self.current.scope].set_args(params.clone()));
 
                 params
             });
@@ -677,7 +704,7 @@ impl<'s> Generator<'s> {
             .map(|&node| {
                 let ty = *cst.nodes(node).next().unwrap();
                 let ty = self.gen_ty(cst, ty);
-                self.map.with(|map| map.tys.push(ty))
+                self.map.mutate(|map| map.tys.push(ty))
             });
 
         ty::Func { params, ret }

@@ -5,6 +5,7 @@ use super::{
 use crate::{
     report::{self, Report},
     source_map::{SourceFileId, SourceMap},
+    util::progress::Progress,
 };
 use std::{
     cell::RefCell,
@@ -67,7 +68,7 @@ pub fn parse(map: &mut SourceMap, file_id: SourceFileId) -> Vec<Report> {
     //     .filter(|((_, kind), _)| !kind.is_trivia());
 
     let mut parser = Parser {
-        token_indicies: &token_indicies,
+        token_indices: &token_indicies,
         tokens: &tokens,
         ranges: &ranges,
 
@@ -76,6 +77,8 @@ pub fn parse(map: &mut SourceMap, file_id: SourceFileId) -> Vec<Report> {
 
         panicking: false,
         reports: Vec::new(),
+
+        progress: Progress::new("parsing", tokens.len() - 1),
     };
 
     PARSER_PTR.with(|ptr| {
@@ -105,7 +108,7 @@ pub fn parse(map: &mut SourceMap, file_id: SourceFileId) -> Vec<Report> {
 }
 
 struct Parser<'s> {
-    token_indicies: &'s [cst::TokenIndex],
+    token_indices: &'s [cst::TokenIndex],
     tokens: &'s [TokenKind],
     ranges: &'s [Range<usize>],
 
@@ -114,6 +117,8 @@ struct Parser<'s> {
 
     panicking: bool,
     reports: Vec<report::Builder>,
+
+    progress: Progress<&'static str>,
 }
 
 #[derive(Debug, Clone)]
@@ -137,8 +142,11 @@ impl PNode {
         let parser = unsafe { get_thread_parser() };
         parser
             .cst
-            .push_child_token(self.node, parser.token_indicies[parser.cursor]);
+            .push_child_token(self.node, parser.token_indices[parser.cursor]);
         parser.cursor += 1;
+
+        parser.progress.inc();
+        eprint!("{}", parser.progress);
     }
 
     pub fn parent(mut self, parent: NodeId) -> Self {
