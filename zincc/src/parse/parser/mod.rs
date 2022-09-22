@@ -5,7 +5,6 @@ use super::{
 use crate::{
     report::{self, Report},
     source_map::{SourceFileId, SourceMap},
-    util::progress::Progress,
 };
 use std::{
     cell::RefCell,
@@ -77,8 +76,6 @@ pub fn parse(map: &mut SourceMap, file_id: SourceFileId) -> Vec<Report> {
 
         panicking: false,
         reports: Vec::new(),
-
-        progress: Progress::new("parsing", tokens.len() - 1),
     };
 
     PARSER_PTR.with(|ptr| {
@@ -117,8 +114,6 @@ struct Parser<'s> {
 
     panicking: bool,
     reports: Vec<report::Builder>,
-
-    progress: Progress<&'static str>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,9 +139,6 @@ impl PNode {
             .cst
             .push_child_token(self.node, parser.token_indices[parser.cursor]);
         parser.cursor += 1;
-
-        parser.progress.inc();
-        eprint!("{}", parser.progress);
     }
 
     pub fn parent(mut self, parent: NodeId) -> Self {
