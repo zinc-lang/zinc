@@ -10,7 +10,7 @@ use crate::{
     util::{
         index::{self, StringSymbol},
         mut_cell::MutCell,
-        progress::Progress,
+        // progress::Progress,
     },
 };
 use std::collections::HashMap;
@@ -29,8 +29,10 @@ struct Generator<'s> {
     map: MutCell<AstMap>,
     current: MutCell<Current>,
     reports: MutCell<Vec<Report>>,
-    progress: MutCell<Progress<&'static str>>,
     files: MutCell<HashMap<SourceFileId, AstFile>>,
+    // progress: MutCell<Progress<&'static str>>,
+    // thread: std::thread::JoinHandle<()>,
+    // thread_sender: std::sync::mpsc::Sender<String>,
 }
 
 struct Current {
@@ -43,13 +45,25 @@ impl<'s> Generator<'s> {
         let map = AstMap::default();
         let scope = map.scope.root;
 
+        // let (tx, rx) = std::sync::mpsc::channel();
+
+        // let thread = std::thread::spawn(move || loop {
+        //     match rx.try_recv() {
+        //         Ok(str) => eprint!("{str}"),
+        //         Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+        //         Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        //     }
+        // });
+
         Self {
             source_map,
             map: MutCell::new(map),
             current: MutCell::new(Current { file, scope }),
             reports: Default::default(),
-            progress: MutCell::new(Progress::new("ast-gen", 1)),
             files: Default::default(),
+            // progress: MutCell::new(Progress::new("ast-gen", 1)),
+            // thread,
+            // thread_sender: tx,
         }
     }
 
@@ -61,6 +75,9 @@ impl<'s> Generator<'s> {
 
         self.progress_inc();
 
+        // drop(self.thread_sender);
+        // self.thread.join().unwrap();
+
         (
             self.map.into_inner(),
             self.reports.into_inner(),
@@ -68,18 +85,20 @@ impl<'s> Generator<'s> {
         )
     }
 
-    fn print_progress(&self) {
-        eprint!("{}", self.progress);
-    }
+    // fn print_progress(&self) {
+    //     self.thread_sender
+    //         .send(format!("{}", self.progress))
+    //         .unwrap();
+    // }
 
     fn progress_inc(&self) {
-        self.progress.mutate(|prog| prog.inc());
-        self.print_progress();
+        // self.progress.mutate(|prog| prog.inc());
+        // self.print_progress();
     }
 
-    fn progress_inc_out_of(&self, by: usize) {
-        self.progress.mutate(|prog| prog.inc_out_of(by));
-        self.print_progress();
+    fn progress_inc_out_of(&self, _by: usize) {
+        // self.progress.mutate(|prog| prog.inc_out_of(by));
+        // self.print_progress();
     }
 
     fn report(&self, func: impl FnOnce() -> report::Builder) {
