@@ -1,6 +1,6 @@
 use std::fmt::{self, Display};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Progress<M: Display> {
     pub message: M,
     done: usize,
