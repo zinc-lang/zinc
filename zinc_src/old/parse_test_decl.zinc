@@ -1,0 +1,30 @@
+// :: main fn {}
+
+:: empty_block fn {}
+// :: return_type fn uint {}
+// :: single_expr fn => {};
+// :: single_expr_return_type fn uint => {};
+ 
+// :: get_true fn bool => true;
+// :: get_false fn bool => false;
+// 
+// :: param fn (a uint,) {}
+// :: params fn (a uint, b bool,) {}
+// :: param_default_value fn (a uint = 3) {}
+// // :: param_triple_dot fn (a uint...) {}
+// 
+// :: generic_param fn [T] {}
+// :: generic_params fn [K, V] {}
+// :: generic_param_default_value fn [T = bool] {}
+// :: generic_param_constrained fn [T SomeTrait] {}
+// :: generic_param_constrained_multiple fn [T SomeTrait + SomeOtherTrait] {}
+// // :: generic_param_triple_dot fn [T...] {}
+// 
+// :: generic_param_value fn [N! uint] {}
+// :: generic_param_value_default_value fn [N! uint = 3] {}
+// 
+// :: generic_params_and_normal_params fn
+//     [T, R] (foo T, bar bool) R {}
+// 
+// :: generic_params_and_normal_params_ex fn
+//     [T, R = void, N! uint, B! bool = false,] (foo T = T::FOO, bar bool,) R {}

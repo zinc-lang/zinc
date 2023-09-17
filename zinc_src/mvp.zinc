@@ -54,3 +54,20 @@
     };
     ret
 }
+
+
+// Named parameters
+:: named_params fn (param int, param2: int, param3 parm: int) {
+    //
+}
+
+// // named not required
+// foo int
+// // name required
+// foo: int
+// // external (required) name
+// foo bar: int
+
+:: call_named_params fn {
+    named_params(1, param2 = 2, param3 = 3)
+}

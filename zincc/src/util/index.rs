@@ -5,6 +5,10 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::Range;
 
+use super::nvec;
+
+// use std::cmp::PartialOrd
+
 /// Dry macro for creating simple NewType structs that implement [`Idx`].
 ///
 /// # Examples
@@ -39,6 +43,7 @@ macro_rules! define_idx {
         #[derive(Clone, Copy, PartialEq, Eq, Hash)]
         $vis struct $IndexTypeName($T);
 
+        #[allow(clippy::redundant_closure_call)]
         impl $crate::util::index::Idx for $IndexTypeName {
             fn new(idx: usize) -> Self {
                 Self($blk_new(idx))
@@ -57,6 +62,34 @@ macro_rules! define_idx {
                     stringify!($IndexTypeName),
                     $crate::util::index::Idx::index(*self)
                 )
+            }
+        }
+
+        impl PartialOrd for $IndexTypeName {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                let this = $crate::util::index::Idx::index(*self);
+                let other = $crate::util::index::Idx::index(*other);
+                this.partial_cmp(&other)
+            }
+        }
+
+        impl std::iter::Step for $IndexTypeName {
+            fn steps_between(start: &Self, end: &Self) -> Option<usize> {
+                let start = $crate::util::index::Idx::index(*start);
+                let end = $crate::util::index::Idx::index(*end);
+                Some(start - end)
+            }
+
+            fn forward_checked(start: Self, count: usize) -> Option<Self> {
+                let start = $crate::util::index::Idx::index(start);
+                let ret = $crate::util::index::Idx::new(start + count);
+                Some(ret)
+            }
+
+            fn backward_checked(start: Self, count: usize) -> Option<Self> {
+                let start = $crate::util::index::Idx::index(start);
+                let ret = $crate::util::index::Idx::new(start - count);
+                Some(ret)
             }
         }
     };
@@ -89,16 +122,16 @@ macro_rules! define_idx {
 }
 pub use define_idx;
 
-pub fn indices_of_range<I: Idx>(range: &Range<I>) -> impl Iterator<Item = I> {
-    (range.start.index()..range.end.index())
-        .into_iter()
-        .map(|i| I::new(i))
-}
+// pub fn indices_of_range<I: Idx>(range: &Range<I>) -> impl Iterator<Item = I> {
+//     (range.start.index()..range.end.index())
+//         .into_iter()
+//         .map(|i| I::new(i))
+// }
 
-pub fn empty_range<I: Idx>() -> Range<I> {
-    let zero = I::new(0);
-    zero..zero
-}
+// pub fn empty_range<I: Idx>() -> Range<I> {
+//     let zero = I::new(0);
+//     zero..zero
+// }
 
 pub trait Idx: 'static + Copy + Eq + Hash {
     /// Instantiate this object given a [`usize`]
@@ -106,6 +139,21 @@ pub trait Idx: 'static + Copy + Eq + Hash {
 
     /// Get the index of this object as a [`usize`]
     fn index(self) -> usize;
+
+    fn empty_range() -> Range<Self> {
+        let zero = Self::new(0);
+        zero..zero
+    }
+}
+
+pub trait IndexingVec: Default {
+    type Internal;
+    type Index: Idx;
+    type Item;
+
+    fn new() -> Self;
+
+    fn from_raw(raw: Self::Internal) -> Self;
 }
 
 #[derive(Clone)]
@@ -113,6 +161,22 @@ pub struct IndexVec<I: Idx, T> {
     raw: Vec<T>,
     _m: PhantomData<I>,
 }
+
+// impl<I: Idx, T> IndexingVec for IndexVec<I, T> {
+//     type Internal = Vec<T>;
+
+//     type Index = I;
+
+//     type Item = T;
+
+//     fn new() -> Self {
+//         todo!()
+//     }
+
+//     fn from_raw(raw: Self::Internal) -> Self {
+//         todo!()
+//     }
+// }
 
 impl<I: Idx, T: Debug> Debug for IndexVec<I, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -165,11 +229,19 @@ impl<I: Idx, T> std::ops::Deref for IndexVec<I, T> {
 
 impl<I: Idx, T> IndexVec<I, T> {
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self::from_raw(Vec::new())
     }
 
     #[inline]
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::from_raw(Vec::with_capacity(capacity))
+    }
+
+    #[inline]
+    #[must_use]
     pub fn from_raw(raw: Vec<T>) -> Self {
         Self {
             raw,
@@ -216,6 +288,234 @@ impl<I: Idx, T> IndexVec<I, T> {
 
     pub fn indices(&self) -> impl Iterator<Item = I> + '_ {
         self.raw.iter().enumerate().map(|(idx, _)| I::new(idx))
+    }
+}
+
+#[derive(Clone)]
+pub struct IndexVec2<I: Idx, T1, T2> {
+    raw: nvec::Vec2<T1, T2>,
+    _m: PhantomData<I>,
+}
+
+impl<I: Idx, T1: Debug, T2: Debug> Debug for IndexVec2<I, T1, T2> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map()
+            .entries(self.raw.iter().enumerate().map(|(k, v)| (k, v)))
+            .finish()
+    }
+}
+
+impl<I: Idx, T1, T2> IndexVec2<I, T1, T2> {
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::from_vec(nvec::Vec2::new())
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::from_vec(nvec::Vec2::with_capacity(capacity))
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn from_vec(raw: nvec::Vec2<T1, T2>) -> Self {
+        Self {
+            raw,
+            _m: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub fn vec(&self) -> &nvec::Vec2<T1, T2> {
+        &self.raw
+    }
+
+    #[inline]
+    pub fn raw(&self) -> &nvec::Vec2<T1, T2> {
+        &self.raw
+    }
+
+    #[inline]
+    pub fn raw_mut(&mut self) -> &mut nvec::Vec2<T1, T2> {
+        &mut self.raw
+    }
+
+    #[inline]
+    pub fn push(&mut self, a: T1, b: T2) -> I {
+        let idx = I::new(self.raw.len());
+        self.raw.push(a, b);
+        idx
+    }
+
+    pub fn push_range(&mut self, iter: impl Iterator<Item = (T1, T2)>) -> Range<I> {
+        let start = I::new(self.raw.len());
+        iter.for_each(|(a, b)| self.raw.push(a, b));
+        let end = I::new(self.raw.len());
+
+        start..end
+    }
+
+    #[inline]
+    pub fn get(&self, index: I) -> Option<(&T1, &T2)> {
+        self.raw.get(index.index())
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self, index: I) -> Option<(&mut T1, &mut T2)> {
+        self.raw.get_mut(index.index())
+    }
+
+    #[inline]
+    pub fn get_a(&self, index: I) -> Option<&T1> {
+        self.raw.get_a(index.index())
+    }
+
+    #[inline]
+    pub fn get_a_mut(&mut self, index: I) -> Option<&mut T1> {
+        self.raw.get_a_mut(index.index())
+    }
+
+    #[inline]
+    pub fn get_b(&self, index: I) -> Option<&T2> {
+        self.raw.get_b(index.index())
+    }
+
+    #[inline]
+    pub fn get_b_mut(&mut self, index: I) -> Option<&mut T2> {
+        self.raw.get_b_mut(index.index())
+    }
+
+    /// # Safety
+    /// UB if it is not a valid index.
+    #[inline]
+    pub unsafe fn get_unchecked(&self, index: I) -> (&T1, &T2) {
+        self.get(index).unwrap_unchecked()
+    }
+
+    pub fn indices(&self) -> impl Iterator<Item = I> + '_ {
+        self.raw.iter().enumerate().map(|(idx, _)| I::new(idx))
+    }
+}
+
+impl<I: Idx, T1, T2> Default for IndexVec2<I, T1, T2> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone)]
+pub struct IndexVec3<I: Idx, T1, T2, T3> {
+    raw: nvec::Vec3<T1, T2, T3>,
+    _m: PhantomData<I>,
+}
+
+impl<I: Idx, T1: Debug, T2: Debug, T3: Debug> Debug for IndexVec3<I, T1, T2, T3> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map()
+            .entries(self.raw.iter().enumerate().map(|(k, v)| (k, v)))
+            .finish()
+    }
+}
+
+impl<I: Idx, T1, T2, T3> IndexVec3<I, T1, T2, T3> {
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::from_raw(nvec::Vec3::new())
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::from_raw(nvec::Vec3::with_capacity(capacity))
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn from_raw(raw: nvec::Vec3<T1, T2, T3>) -> Self {
+        Self {
+            raw,
+            _m: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub fn raw(&self) -> &nvec::Vec3<T1, T2, T3> {
+        &self.raw
+    }
+
+    #[inline]
+    pub fn push(&mut self, a: T1, b: T2, c: T3) -> I {
+        let idx = I::new(self.raw.len());
+        self.raw.push(a, b, c);
+        idx
+    }
+
+    pub fn push_range(&mut self, iter: impl Iterator<Item = (T1, T2, T3)>) -> Range<I> {
+        let start = I::new(self.raw.len());
+        iter.for_each(|(a, b, c)| self.raw.push(a, b, c));
+        let end = I::new(self.raw.len());
+
+        start..end
+    }
+
+    #[inline]
+    pub fn get(&self, index: I) -> Option<(&T1, &T2, &T3)> {
+        self.raw.get(index.index())
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self, index: I) -> Option<(&mut T1, &mut T2, &mut T3)> {
+        self.raw.get_mut(index.index())
+    }
+
+    #[inline]
+    pub fn get_a(&self, index: I) -> Option<&T1> {
+        self.raw.get_a(index.index())
+    }
+
+    #[inline]
+    pub fn get_a_mut(&mut self, index: I) -> Option<&mut T1> {
+        self.raw.get_a_mut(index.index())
+    }
+
+    #[inline]
+    pub fn get_b(&self, index: I) -> Option<&T2> {
+        self.raw.get_b(index.index())
+    }
+
+    #[inline]
+    pub fn get_b_mut(&mut self, index: I) -> Option<&mut T2> {
+        self.raw.get_b_mut(index.index())
+    }
+
+    #[inline]
+    pub fn get_c(&self, index: I) -> Option<&T3> {
+        self.raw.get_c(index.index())
+    }
+
+    #[inline]
+    pub fn get_c_mut(&mut self, index: I) -> Option<&mut T3> {
+        self.raw.get_c_mut(index.index())
+    }
+
+    /// # Safety
+    /// UB if it is not a valid index.
+    #[inline]
+    pub unsafe fn get_unchecked(&self, index: I) -> (&T1, &T2, &T3) {
+        self.get(index).unwrap_unchecked()
+    }
+
+    pub fn indices(&self) -> impl Iterator<Item = I> + '_ {
+        self.raw.iter().enumerate().map(|(idx, _)| I::new(idx))
+    }
+}
+
+impl<I: Idx, T1, T2, T3> Default for IndexVec3<I, T1, T2, T3> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

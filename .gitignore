@@ -3,3 +3,5 @@ target
 scratch
 cmake-build-debug
 .idea
+.vscode
+build

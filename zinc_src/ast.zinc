@@ -1,0 +1,26 @@
+:: main fn {
+    foo
+    (foo)
+    !bar;
+    foo + bar
+
+    bar()
+    foo(foo, bar)
+    bar(bar, bar = foo)
+
+    12
+    12.3
+    false
+
+    "foo bar"
+
+    end
+}
+
+:: foo fn (foo int, bar int = 2);
+:: foo2 fn (foo int, foo1 []int, foo2 ?int, foo3 []?int, foo4 ?[]int, foo5 [3]int);
+:: bar fn (
+    foo: int
+    bar baz: int
+    biz buz: int = 4
+);

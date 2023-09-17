@@ -1,151 +1,192 @@
+#![feature(step_trait)]
+#![feature(alloc_layout_extra)]
+
 #[macro_use]
 extern crate tracing;
-
 extern crate ansi_escapes as ansi;
 
 pub mod util;
 
 mod ast;
 mod debug;
+mod options;
 mod parse;
 mod report;
 mod source_map;
 
-use source_map::{SourceFile, SourceFileId, SourceMap};
+use options::{DumpOption, Options};
+use source_map::{SourceFile, SourceMap};
 
-// @TODO: Look into using https://github.com/zesterer/ariadne
-// @TODO: Typer
-// @TODO: Semantics checking
-// @TODO: Code-gen
+// @TODO: Document
 
 fn main() {
-    let options = Options::get();
+    let options = Options::get_from_os_args();
 
-    if options.log {
-        setup_logger().expect("logger should have been setup");
+    if options.log_level != log::LevelFilter::Off {
+        setup_logger(
+            std::io::stderr(),
+            options.log_level,
+            options.log_target_filter,
+        )
+        .expect("logger should be able to setup");
     }
 
-    let mut source_map = SourceMap::new(SourceFile::new(options.path).unwrap());
+    let source_file_path = std::path::Path::new(&options.path);
 
-    let file_id = source_map.root;
-
-    read_file_source(&mut source_map, file_id).unwrap();
-
-    let mut timer = util::time::Timer::new();
-    let stderr = &mut std::io::stderr();
-
-    {
-        // Lex
-        let reports = info_span!("Lexer")
-            .in_scope(|| timer.spanned("lexer", || parse::lex(&mut source_map, file_id)));
-        eprint!("{}{}", ansi::CursorLeft, ansi::EraseLine);
-
-        if options.dumps.contains(&DumpOption::tokens) {
-            let source = &source_map.sources[&file_id];
-
-            source_map.lex_data[&file_id]
-                .zip()
-                .for_each(|(&tk, range)| {
-                    if !tk.is_trivia() {
-                        debug::write_token(stderr, source, tk, range, options.color).unwrap();
-                        eprintln!();
-                    }
-                });
-
-            eprintln!();
+    let mut source_file = match SourceFile::new(source_file_path) {
+        Ok(ok) => ok,
+        Err(err) => {
+            eprintln!("{}", err);
+            eprintln!(
+                "Failed to open file of path '{}'",
+                source_file_path.display()
+            );
+            std::process::exit(1);
         }
+    };
 
-        // As of currently the lexer only produces errors
-        if !reports.is_empty() {
-            reports
-                .iter()
-                .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
-
-            eprintln!();
-            eprintln!("Aborting due to errors");
+    match source_file.read_source() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!("{}", err);
+            eprintln!(
+                "Failed to read file of path '{}'",
+                source_file_path.display()
+            );
             std::process::exit(1);
         }
     }
 
-    {
-        // Parse
-        let reports = info_span!("Parser")
-            .in_scope(|| timer.spanned("parser", || parse::parse(&mut source_map, file_id)));
+    let mut source_map = SourceMap::new(source_file);
+    let file_id = source_map.root();
 
-        if options.dumps.contains(&DumpOption::cst) {
-            let source = &source_map.sources[&file_id];
-            let lex_data = &source_map.lex_data[&file_id];
-            let cst = &source_map.csts[&file_id];
+    let mut timer = util::time::Timer::new();
 
-            debug::write_cst(
+    let stderr = &mut std::io::stderr();
+
+    // Lex
+    let tokens = {
+        let file = &mut source_map[file_id];
+
+        let (lex_data, reports) = info_span!("Lexer").in_scope(|| {
+            let source = file.source();
+            timer.spanned("lexer", || parse::lex(source))
+        });
+
+        file.set_line_offsets(lex_data.line_offsets);
+
+        let reports = reports
+            .into_iter()
+            .map(|r| r.file(file_id))
+            .collect::<Vec<_>>();
+
+        if options.dumps.contains(&DumpOption::tokens) {
+            let source = file.source();
+
+            eprintln!("Dumping Tokens:");
+            debug::write_tokens(
                 stderr,
-                cst,
+                options.color,
+                !options.show_trivia,
+                !options.show_newlines,
                 source,
                 &lex_data.tokens,
-                &lex_data.ranges,
+            )
+            .expect("stderr should be able to be written to");
+            eprintln!();
+        }
+
+        #[cfg(debug_assertions)]
+        debug::verify_tokens(&lex_data.tokens);
+
+        if !reports.is_empty() {
+            for report in reports {
+                report::write_report(stderr, &report, &source_map)
+                    .expect("stderr should be able to be written to");
+            }
+
+            eprintln!("Aborting due to errors");
+            std::process::exit(1);
+        }
+
+        print_reports(stderr, reports, &source_map, || {
+            eprintln!("Aborting due to errors");
+            std::process::exit(1);
+        })
+        .expect("stderr should be able to be written to");
+
+        lex_data.tokens
+    };
+
+    // Parse
+    {
+        let (cst, reports) =
+            info_span!("Parser").in_scope(|| timer.spanned("parser", || parse::parse(tokens)));
+
+        let reports = reports
+            .into_iter()
+            .map(|r| r.file(file_id))
+            .collect::<Vec<_>>();
+
+        let file = &mut source_map[file_id];
+        file.set_cst(cst);
+
+        if options.dumps.contains(&DumpOption::cst) {
+            let source = file.source();
+            let cst = file.cst();
+
+            eprintln!("Dumping CST:");
+            debug::write_cst_from_root(
+                stderr,
                 options.color,
+                !options.show_trivia,
+                !options.show_newlines,
+                source,
+                cst,
             )
             .unwrap();
             eprintln!();
         }
 
-        let (errors, unimpls) = report::split(reports);
-
-        let mut had_errors = false;
-
-        if !unimpls.is_empty() {
-            had_errors = true;
-            unimpls
-                .iter()
-                .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
+        // Do verification only after dumping cst so we can inspect in the case
+        // of an error
+        #[cfg(debug_assertions)]
+        {
+            let cst = file.cst();
+            debug::verify_cst(cst);
         }
 
-        if !errors.is_empty() {
-            had_errors = true;
-            errors
-                .iter()
-                .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
-        }
-
-        if had_errors {
+        print_reports(stderr, reports, &source_map, || {
             eprintln!("Aborting due to errors");
             std::process::exit(1);
-        }
+        })
+        .expect("stderr should be able to be written to");
     }
 
-    {
-        // Ast gen
-        let (ast, reports) = info_span!("AstGen")
-            .in_scope(|| timer.spanned("ast-gen", || ast::gen(&mut source_map, file_id)));
-        eprint!("{}{}", ansi::CursorLeft, ansi::EraseLine);
+    let strings = util::index::StringInterningVec::new();
+
+    // Ast Generation
+    let strings = {
+        let mut gen = ast::gen::AstGen::new(strings);
+
+        let ast = info_span!("AstGen")
+            .in_scope(|| timer.spanned("ast-gen", || gen.generate_ast_file(file_id, &source_map)));
+
+        let file = &mut source_map[file_id];
+        file.set_ast(ast);
+
+        let strings = gen.strings;
 
         if options.dumps.contains(&DumpOption::ast) {
+            dbg!(&strings);
+            let ast = file.ast();
             dbg!(ast);
         }
 
-        let (errors, unimpls) = report::split(reports);
+        strings
+    };
 
-        let mut had_errors = false;
-
-        if !unimpls.is_empty() {
-            had_errors = true;
-            unimpls
-                .iter()
-                .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
-        }
-
-        if !errors.is_empty() {
-            had_errors = true;
-            errors
-                .iter()
-                .for_each(|report| report::format_report(stderr, report, &source_map).unwrap());
-        }
-
-        if had_errors {
-            eprintln!("Aborting due to errors");
-            std::process::exit(1);
-        }
-    }
+    let _ = strings;
 
     if options.print_times {
         eprintln!("Times:");
@@ -153,7 +194,36 @@ fn main() {
     }
 }
 
-fn setup_logger() -> Result<(), fern::InitError> {
+fn print_reports(
+    f: &mut impl std::io::Write,
+    mut reports: Vec<report::Report>,
+    source_map: &SourceMap,
+    on_fatal: impl Fn(),
+) -> std::io::Result<()> {
+    if reports.is_empty() {
+        return Ok(());
+    }
+
+    reports.sort_by_key(|a| a.get_level());
+
+    for report in reports.iter() {
+        report::write_report(f, report, source_map)?;
+    }
+
+    let fatal = true; // Currently all reports are fatal
+
+    if fatal {
+        on_fatal()
+    }
+
+    Ok(())
+}
+
+fn setup_logger(
+    output: impl Into<fern::Output>,
+    level: log::LevelFilter,
+    target_filter: Option<regex::Regex>,
+) -> Result<(), fern::InitError> {
     use fern::colors::Color;
 
     let colors = fern::colors::ColoredLevelConfig::new()
@@ -173,99 +243,17 @@ fn setup_logger() -> Result<(), fern::InitError> {
                 message
             ))
         })
-        .chain(std::io::stderr())
+        .level(level)
+        .chain(
+            if let Some(target_filter) = target_filter {
+                fern::Dispatch::new()
+                    .filter(move |metadata| target_filter.is_match(metadata.target()))
+            } else {
+                fern::Dispatch::new()
+            }
+            .chain(output),
+        )
         .apply()?;
-    Ok(())
-}
-
-fn read_file_source(map: &mut SourceMap, file_id: SourceFileId) -> std::io::Result<()> {
-    debug_assert!(!map.sources.contains_key(&file_id));
-
-    let file = &map.files[file_id];
-
-    let source = util::read_file_to_string(file.path()).map(|s| s + "\n\0")?;
-    map.sources.insert(file_id, source);
 
     Ok(())
-}
-
-#[derive(Debug)]
-pub struct Options {
-    path: String,
-    print_times: bool,
-    dumps: Vec<DumpOption>,
-    color: bool,
-    log: bool,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, strum::EnumString, strum::EnumVariantNames)]
-#[allow(non_camel_case_types)]
-pub enum DumpOption {
-    tokens,
-    cst,
-    ast,
-}
-
-impl Options {
-    pub fn get() -> Self {
-        use clap::{builder::PossibleValuesParser, Arg, ArgAction, Command};
-        use std::str::FromStr;
-        use strum::VariantNames;
-
-        let matches = Command::new("zincc")
-            .arg(
-                Arg::new("FILE")
-                    .required(true)
-                    .value_hint(clap::ValueHint::FilePath),
-            )
-            .arg(
-                Arg::new("print_times")
-                    .short('T')
-                    .help("Print how long processes took"),
-            )
-            .arg(
-                Arg::new("dump")
-                    .long("dump")
-                    .short('D')
-                    .takes_value(true)
-                    .value_parser(PossibleValuesParser::new(DumpOption::VARIANTS))
-                    .action(ArgAction::Append),
-            )
-            .arg(
-                Arg::new("color")
-                    .long("color")
-                    .takes_value(true)
-                    .value_name("WHEN")
-                    .value_parser(PossibleValuesParser::new(["auto", "always", "never"])),
-            )
-            .arg(Arg::new("log").long("log").help("Print logs"))
-            .get_matches();
-
-        let path = matches.value_of("FILE").unwrap().to_string();
-
-        let print_times = matches.contains_id("print_times");
-
-        let dumps = matches
-            .get_many::<String>("dump")
-            .unwrap_or_default()
-            .map(|s| DumpOption::from_str(s).unwrap())
-            .collect();
-
-        let color = match matches.value_of("color").unwrap_or("auto") {
-            "auto" => atty::is(atty::Stream::Stdout),
-            "always" => true,
-            "never" => false,
-            _ => unreachable!(),
-        };
-
-        let log = matches.contains_id("log");
-
-        Self {
-            path,
-            dumps,
-            print_times,
-            color,
-            log,
-        }
-    }
 }

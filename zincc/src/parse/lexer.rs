@@ -1,44 +1,44 @@
-use super::TK;
+use super::{TokenKind, Tokens, TK};
 use crate::{
-    report::{self, Report},
-    source_map::{self, SourceFileId, SourceMap},
+    report::{Label, Report},
+    util::index::IndexVec2,
 };
 use std::ops::Range;
 
-pub fn lex(map: &mut SourceMap, file_id: SourceFileId) -> Vec<Report> {
-    debug_assert!(map.sources.contains_key(&file_id));
-    debug_assert!(!map.lex_data.contains_key(&file_id));
+// @TODO: Should we move to interning the strings here and now in the lexer,
+//        using string references instead of ranges for lexemes.
 
-    let source = &map.sources[&file_id];
+#[derive(Debug)]
+pub struct LexData {
+    pub tokens: Tokens,
+    pub line_offsets: Box<[usize]>,
+}
+
+pub fn lex(source: &str) -> (LexData, Vec<Report>) {
     debug_assert!(source.ends_with("\n\0"));
 
     let mut lexer = Lexer::new(source);
     lexer.do_lex();
 
-    let lex_data = source_map::LexData {
-        tokens: lexer.tokens.into_boxed_slice(),
-        ranges: lexer.ranges.into_boxed_slice(),
+    // For some reason our implementation of shrink_to_fit is broken
+    // lexer.tokens.raw_mut().shrink_to_fit();
+
+    let lex_data = LexData {
+        tokens: lexer.tokens,
         line_offsets: lexer.line_offsets.into_boxed_slice(),
     };
-    map.lex_data.insert(file_id, lex_data);
 
-    lexer
-        .reports
-        .into_iter()
-        .map(|rep| rep.file(file_id).build())
-        .collect::<Vec<_>>()
+    (lex_data, lexer.reports)
 }
 
 struct Lexer<'s> {
     ascii: &'s [u8],
     range: Range<usize>,
 
-    tokens: Vec<TK>,
-    ranges: Vec<Range<usize>>,
+    tokens: Tokens,
     line_offsets: Vec<usize>,
 
-    // errors: Vec<LexError>,
-    reports: Vec<report::Builder>,
+    reports: Vec<Report>,
 }
 
 impl<'s> Lexer<'s> {
@@ -46,10 +46,8 @@ impl<'s> Lexer<'s> {
         Self {
             ascii: source.as_bytes(),
             range: 0..0,
-            tokens: Vec::new(),
-            ranges: Vec::new(),
+            tokens: IndexVec2::new(),
             line_offsets: Vec::new(),
-            // errors: Vec::new(),
             reports: Vec::new(),
         }
     }
@@ -62,7 +60,7 @@ impl Lexer<'_> {
 
             match ch {
                 b'\n' => {
-                    self.tok(TK::tr_whitespace);
+                    self.tok(TK![newline]);
                     self.line_offsets.push(self.range.start);
                 }
                 b' ' | b'\r' => {
@@ -70,56 +68,56 @@ impl Lexer<'_> {
                     while matches!(self.peek(), b' ' | b'\r') {
                         self.advance_anz();
                     }
-                    self.tok(TK::tr_whitespace);
+                    self.tok(TK![tr whitespace]);
                 }
 
                 b'\t' => {
                     todo!()
                 }
 
-                b'(' => self.tok(TK::brkt_paren_open),
-                b')' => self.tok(TK::brkt_paren_close),
-                b'{' => self.tok(TK::brkt_brace_open),
-                b'}' => self.tok(TK::brkt_brace_close),
-                b'[' => self.tok(TK::brkt_square_open),
-                b']' => self.tok(TK::brkt_square_close),
+                b'(' => self.tok(TK!['(']),
+                b')' => self.tok(TK![')']),
+                b'{' => self.tok(TK!['{']),
+                b'}' => self.tok(TK!['}']),
+                b'[' => self.tok(TK!['[']),
+                b']' => self.tok(TK![']']),
 
-                b'&' => self.tok(TK::punct_ampersand),
-                b'!' => self.tok_if_match(b'=', TK::punct_bangEq, TK::punct_bang),
-                b':' => self.tok_if_match(b':', TK::punct_doubleColon, TK::punct_colon),
-                b';' => self.tok(TK::punct_semicolon),
-                b',' => self.tok(TK::punct_comma),
+                b'&' => self.tok(TK![&]),
+                b'!' => self.tok_if_match(b'=', TK![!=], TK![!]),
+                b':' => self.tok_if_match(b':', TK![::], TK![:]),
+                b';' => self.tok(TK![;]),
+                b',' => self.tok(TK![,]),
 
                 b'.' => {
                     if self.eat(b'.') {
                         if self.eat(b'.') {
-                            self.tok(TK::punct_tripleDot); // ...
+                            self.tok(TK![...]);
                         } else {
-                            self.tok(TK::punct_doubleDot); // ..
+                            self.tok(TK![..]);
                         }
                     } else {
-                        self.tok(TK::punct_dot); // .
+                        self.tok(TK![.]);
                     }
                 }
 
                 b'=' => {
                     if self.eat(b'=') {
-                        self.tok(TK::punct_eqEq);
+                        self.tok(TK![==]);
                     } else if self.eat(b'>') {
-                        self.tok(TK::punct_fatArrow);
+                        self.tok(TK![=>]);
                     } else {
-                        self.tok(TK::punct_eq);
+                        self.tok(TK![=]);
                     }
                 }
 
-                b'>' => self.tok_if_match(b'=', TK::punct_greaterThanEq, TK::punct_greaterThan),
-                b'<' => self.tok_if_match(b'=', TK::punct_lessThanEq, TK::punct_lessThan),
+                b'>' => self.tok_if_match(b'=', TK![>=], TK![>]),
+                b'<' => self.tok_if_match(b'=', TK![<=], TK![<]),
 
-                b'-' => self.tok_if_match(b'>', TK::punct_rThinArrow, TK::punct_minus),
-                b'|' => self.tok(TK::punct_pipe),
-                b'+' => self.tok(TK::punct_plus),
-                b'?' => self.tok(TK::punct_question),
-                b'*' => self.tok(TK::punct_star),
+                b'-' => self.tok_if_match(b'>', TK![->], TK![-]),
+                b'|' => self.tok(TK![|]),
+                b'+' => self.tok(TK![+]),
+                b'?' => self.tok(TK![?]),
+                b'*' => self.tok(TK![*]),
 
                 b'/' => {
                     if self.eat(b'/') {
@@ -128,9 +126,10 @@ impl Lexer<'_> {
                         while self.peek() != b'\n' {
                             self.advance_anz();
                         }
-                        self.tok(TK::tr_comment);
+                        // self.advance_anz();
+                        self.tok(TK![tr comment]);
                     } else {
-                        self.tok(TK::punct_slash)
+                        self.tok(TK![/])
                     }
                 }
 
@@ -150,9 +149,9 @@ impl Lexer<'_> {
 
                 b'0' => {
                     match self.peek() {
-                        b'x' => self.lex_number_generic(TK::int_hex, is_char::number_hex),
-                        b'b' => self.lex_number_generic(TK::int_bin, is_char::number_binary),
-                        b'o' => self.lex_number_generic(TK::int_oct, is_char::number_octal),
+                        b'x' => self.lex_number_generic(TK![int hex], is_char::number_hex),
+                        b'b' => self.lex_number_generic(TK![int bin], is_char::number_binary),
+                        b'o' => self.lex_number_generic(TK![int oct], is_char::number_octal),
                         _ => self.lex_number(),
                     }
                     // self.lex_literal_suffix();
@@ -168,60 +167,68 @@ impl Lexer<'_> {
                             // self.lex_literal_suffix();
                         }
                         _ => {
-                            self.report(Report::builder().error().message("unexpected character"));
-                            self.tok(TK::err);
+                            let range = self.range.end - 1..self.range.end;
+                            self.report(|r| {
+                                r.message("unexpected character").label(
+                                    Label::new()
+                                        .range(range.clone())
+                                        .message("unknown character"),
+                                )
+                            });
+                            self.tok(TK![err]);
                         }
                     }
                 }
             }
         }
 
-        self.range.start -= 1;
-        self.range.end -= 1;
-        self.tok(TK::eof);
+        // self.range.start -= 1;
+        // self.range.end -= 1;
+        // self.range = 0..0;
+        self.tok(TK![eof]);
         self.line_offsets
             .push(self.line_offsets[self.line_offsets.len() - 1]);
     }
 
-    fn tok(&mut self, kind: TK) {
+    fn tok(&mut self, kind: TokenKind) {
         let range = self.range.start..self.range.end;
         self.range.start = self.range.end;
-
-        self.tokens.push(kind);
-        self.ranges.push(range);
+        self.tokens.push(kind, range);
     }
 
-    fn report(&mut self, report: report::Builder) {
-        self.reports
-            .push(report.maybe_set_span(|| self.range.end - 1..self.range.end))
+    fn report(&mut self, mut func: impl FnMut(Report) -> Report) {
+        let report = func(Report::new().error().offset(self.range.end - 1));
+        self.reports.push(report);
     }
 
     #[must_use]
     #[inline]
     fn advance(&mut self) -> u8 {
+        let ch = self.ascii[self.range.end];
         self.range.end += 1;
-        self.ascii[self.range.end - 1]
+        // self.ascii[self.range.end - 1]
+        ch
     }
 
     /// Advance Assert No Zero
     #[inline]
     fn advance_anz(&mut self) {
-        assert_ne!(self.advance(), 0);
+        assert!(self.advance() != 0);
     }
 
     #[inline]
-    fn peek_raw(&self, n: usize) -> u8 {
+    fn peek_nth(&self, n: usize) -> u8 {
         self.ascii[self.range.end + n]
     }
 
     #[inline]
     fn peek(&self) -> u8 {
-        self.peek_raw(0)
+        self.peek_nth(0)
     }
 
     #[inline]
     fn peek_next(&self) -> u8 {
-        self.peek_raw(1)
+        self.peek_nth(1)
     }
 
     #[inline]
@@ -239,17 +246,17 @@ impl Lexer<'_> {
     }
 
     #[inline]
-    fn tok_if_match(&mut self, expect: u8, r#if: TK, r#else: TK) {
+    fn tok_if_match(&mut self, expect: u8, matched: TokenKind, unmatched: TokenKind) {
         let m = self.eat(expect);
         if m {
-            self.tok(r#if);
+            self.tok(matched);
         } else {
-            self.tok(r#else);
+            self.tok(unmatched);
         }
     }
 
     #[inline]
-    fn lex_number_generic(&mut self, kind: TK, condition: fn(u8) -> bool) {
+    fn lex_number_generic(&mut self, kind: TokenKind, condition: fn(u8) -> bool) {
         self.advance_anz();
         self.lex_while_condition(condition);
         self.tok(kind);
@@ -263,14 +270,14 @@ impl Lexer<'_> {
     }
 
     fn lex_string(&mut self) {
-        self.tok(TK::string_open);
+        self.tok(TK![string open]);
         let start_range = self.range.start - 1..self.range.start;
 
         let mut p = self.peek();
         while p != b'\"' && p != b'\0' && p != b'\n' {
             if p == b'\\' {
                 if self.range.start != self.range.end {
-                    self.tok(TK::string_literal);
+                    self.tok(TK![string literal]);
                 }
 
                 self.advance_anz();
@@ -281,49 +288,72 @@ impl Lexer<'_> {
             p = self.peek();
         }
         if self.range.start != self.range.end {
-            self.tok(TK::string_literal);
+            self.tok(TK![string literal]);
         }
         if !self.eat(b'\"') {
-            self.report(
-                Report::builder()
-                    .error()
-                    .span(start_range)
-                    .message("unterminated string")
-                    .short("starts here"),
-            );
+            // self.report(
+            //     Report::new()
+            //         .error()
+            //         .span(start_range)
+            //         .message("unterminated string")
+            //         .short("starts here"),
+            // );
+            self.report(|r| {
+                r.message("unterminated string")
+                    .offset(start_range.start)
+                    .label(
+                        Label::new()
+                            .range(start_range.clone())
+                            .message("starts here"),
+                    )
+            })
         }
 
-        self.tok(TK::string_close);
+        self.tok(TK![string close]);
     }
 
     fn lex_escape(&mut self) {
         let kind = match self.advance() {
-            b'n' => TK::esc_char_newline,
-            b'r' => TK::esc_char_return,
-            b't' => TK::esc_char_tab,
-            b'\\' => TK::esc_char_backslash,
-            b'\"' => TK::esc_char_doubleQuote,
-            b'\'' => TK::esc_char_singleQuote,
+            b'n' => TK![esc char newline],
+            b'r' => TK![esc char return],
+            b't' => TK![esc char tab],
+            b'\\' => TK![esc char backslash],
+            b'\"' => TK![esc char doubleQuote],
+            b'\'' => TK![esc char singleQuote],
             b'x' => {
                 let mut lex_char = || {
                     if !is_char::number_hex(self.advance()) {
-                        self.report(Report::builder().error().message(
-                            "expected hexidecimal character in ascii escape starting with '\\x'",
-                        ))
+                        // self.report(Report::new().error().message(
+                        //     "expected hexidecimal character in ascii escape starting with '\\x'",
+                        // ))
+                        let range = self.range.end - 1..self.range.end;
+                        self.report(|r| {
+                            r.message("expected hexadecimal character in ascii escape")
+                                .label(Label::new().range(range.clone()).message("not hexadecimal"))
+                        })
                     }
                 };
                 lex_char();
                 lex_char();
 
-                TK::esc_asciicode
+                TK![esc asciicode]
             }
             b'u' => {
                 if self.advance() != b'{' {
-                    self.report(
-                        Report::builder()
-                            .error()
-                            .message("expected '{' in unicode escape after '\\u'"),
-                    )
+                    // self.report(
+                    //     Report::new()
+                    //         .error()
+                    //         .message("expected '{' in unicode escape after '\\u'"),
+                    // )
+                    let range = self.range.end - 1..self.range.end;
+                    self.report(|r| {
+                        r.message("expected a '{' after 'u' in unicode escape ")
+                            .label(
+                                Label::new()
+                                    .range(range.clone())
+                                    .message("expected '{' here"),
+                            )
+                    })
                 }
 
                 let mut count = 0;
@@ -336,11 +366,20 @@ impl Lexer<'_> {
                     count += 1;
 
                     if !is_char::number_hex(self.advance()) {
-                        self.report(
-                            Report::builder()
-                                .error()
-                                .message("expected hexideciaml charactor in unicode escape"),
-                        );
+                        // self.report(
+                        //     Report::new()
+                        //         .error()
+                        //         .message("expected hexideciaml charactor in unicode escape"),
+                        // );
+                        let range = self.range.end - 1..self.range.end;
+                        self.report(|r| {
+                            r.message("expected hexadecimal character in unicode escape")
+                                .label(
+                                    Label::new()
+                                        .range(range.clone())
+                                        .message("expected hexadecimal character here"),
+                                )
+                        });
                         break;
                     }
 
@@ -350,39 +389,59 @@ impl Lexer<'_> {
                 }
 
                 if !self.eat(b'}') {
-                    self.report(
-                        Report::builder()
-                            .error()
-                            .message("expected '}' after unicode escape"),
-                    )
+                    // self.report(
+                    //     Report::new()
+                    //         .error()
+                    //         .message("expected '}' after unicode escape"),
+                    // )
+                    let range = self.range.end - 1..self.range.end;
+                    self.report(|r| {
+                        r.message("expected '}' at the end of unicode escape")
+                            .label(
+                                Label::new()
+                                    .range(range.clone())
+                                    .message("expected '}' after here"),
+                            )
+                    })
                 }
 
-                TK::esc_unicode
+                TK![esc unicode]
             }
-            _ => TK::esc_char_other,
+            _ => TK![esc char other],
         };
         self.tok(kind);
     }
 
     fn lex_number(&mut self) {
-        let mut kind = TK::int_dec;
+        let mut kind = TK![int dec];
 
         self.lex_while_condition(is_char::number_mid);
 
         if self.at(b'.') && is_char::number_mid(self.peek_next()) {
-            kind = TK::float;
+            kind = TK![float];
             self.advance_anz();
 
             self.lex_while_condition(is_char::number_mid);
             if self.eat(b'E') {
                 match self.peek() {
                     b'+' | b'-' => self.advance_anz(),
-                    _ => self.report(
-                        Report::builder()
-                            .error()
-                            .message("expected '+' or '-' after 'E' in float literal")
-                            .short("help: place a '+' or '-' after here"),
-                    ),
+                    // _ => self.report(
+                    //     Report::new()
+                    //         .error()
+                    //         .message("expected '+' or '-' after 'E' in float literal")
+                    //         .short("help: place a '+' or '-' after here"),
+                    // ),
+                    _ => {
+                        let range = self.range.end - 1..self.range.end;
+                        self.report(|r| {
+                            r.message("expected '+' or '-' after 'E' in exponential float literal")
+                                .label(
+                                    Label::new()
+                                        .range(range.clone())
+                                        .message("expected '+' or '-' after here"),
+                                )
+                        })
+                    }
                 }
                 self.lex_while_condition(is_char::number_mid);
             }
@@ -400,83 +459,93 @@ impl Lexer<'_> {
             // class
             // const
             b'c' if slice.len() > 1 => match slice[1] {
-                b'l' if &slice[2..] == b"ass" => TK::kw_class,
-                b'o' if &slice[2..] == b"nst" => TK::kw_const,
-                _ => TK::ident,
+                b'l' if &slice[2..] == b"ass" => TK![class],
+                b'o' if &slice[2..] == b"nst" => TK![const],
+                _ => TK![ident],
             },
 
             // else
             // enum
             b'e' if slice.len() > 1 => match slice[1] {
-                b'l' if &slice[2..] == b"se" => TK::kw_else,
-                b'n' if &slice[2..] == b"um" => TK::kw_enum,
-                _ => TK::ident,
+                b'l' if &slice[2..] == b"se" => TK![else],
+                b'n' if &slice[2..] == b"um" => TK![enum],
+                _ => TK![ident],
             },
 
             // false
             // fn
             b'f' if slice.len() > 1 => match slice[1] {
-                b'a' if &slice[2..] == b"lse" => TK::kw_false,
-                b'n' if slice.len() == 2 => TK::kw_fn,
-                _ => TK::ident,
+                b'a' if &slice[2..] == b"lse" => TK![false],
+                b'n' if slice.len() == 2 => TK![fn],
+                _ => TK![ident],
             },
 
             // if
             // impl
             // import
             b'i' if slice.len() > 1 => match slice[1] {
-                b'f' if slice.len() == 2 => TK::kw_if,
+                b'f' if slice.len() == 2 => TK![if],
                 b'm' if slice.len() > 2 && slice[2] == b'p' => match slice[3] {
-                    b'l' if slice.len() == 4 => TK::kw_impl,
-                    b'o' if slice.len() > 4 && &slice[4..] == b"rt" => TK::kw_import,
-                    _ => TK::ident,
+                    b'l' if slice.len() == 4 => TK![impl],
+                    b'o' if slice.len() > 4 && &slice[4..] == b"rt" => TK![import],
+                    _ => TK![ident],
                 },
-                _ => TK::ident,
+                _ => TK![ident],
             },
 
             // let
-            b'l' if slice.len() > 1 && &slice[1..] == b"et" => TK::kw_let,
+            b'l' if slice.len() > 1 && &slice[1..] == b"et" => TK![let],
 
             // mixin
             // module
             // mut
             b'm' if slice.len() > 1 => match slice[1] {
-                b'i' if &slice[2..] == b"xin" => TK::kw_mixin,
-                b'o' if &slice[2..] == b"dule" => TK::kw_module,
-                b'u' if &slice[2..] == b"t" => TK::kw_mut,
-                _ => TK::ident,
+                b'i' if &slice[2..] == b"xin" => TK![mixin],
+                b'o' if &slice[2..] == b"dule" => TK![module],
+                b'u' if &slice[2..] == b"t" => TK![mut],
+                _ => TK![ident],
             },
 
             // pub
-            b'p' if slice.len() > 1 && &slice[1..] == b"ub" => TK::kw_pub,
+            b'p' if slice.len() > 1 && &slice[1..] == b"ub" => TK![pub],
 
             // return
-            b'r' if slice.len() > 1 && &slice[1..] == b"eturn" => TK::kw_return,
+            b'r' if slice.len() > 1 && &slice[1..] == b"eturn" => TK![return],
 
+            // self
             // set
             // struct
             b's' if slice.len() > 1 => match slice[1] {
-                b'e' if &slice[2..] == b"t" => TK::kw_set,
-                b't' if &slice[2..] == b"ruct" => TK::kw_struct,
-                _ => TK::ident,
+                b'e' if slice.len() > 2 => match slice[2] {
+                    b'l' if slice.len() == 4 && slice[3] == b'f' => TK![self],
+                    b't' if slice.len() == 3 => TK![set],
+                    _ => TK![ident],
+                },
+                b't' if &slice[2..] == b"ruct" => TK![struct],
+                _ => TK![ident],
             },
 
             // trait
             // true
             b't' if slice.len() > 1 && slice[1] == b'r' => match slice[2] {
-                b'a' if slice.len() > 3 && &slice[3..] == b"it" => TK::kw_trait,
-                b'u' if slice.len() > 3 && &slice[3..] == b"e" => TK::kw_true,
-                _ => TK::ident,
+                b'a' if slice.len() > 3 && &slice[3..] == b"it" => TK![trait],
+                b'u' if slice.len() > 3 && &slice[3..] == b"e" => TK![true],
+                _ => TK![ident],
             },
 
             // union
-            b'u' if slice.len() > 1 && &slice[1..] == b"nion" => TK::kw_union,
+            b'u' if slice.len() > 1 && &slice[1..] == b"nion" => TK![union],
 
-            _ => TK::ident,
+            _ => TK![ident],
         };
 
         self.tok(kind);
     }
+
+    // #[cfg(test)]
+    // fn has_reports(&self) -> bool {
+    //     !self.reports.is_empty()
+    // }
 
     // fn lex_literal_suffix(&mut self) {
     //     debug_assert!(self.ws_len == 0);
@@ -501,7 +570,7 @@ mod is_char {
 
     #[inline(always)]
     pub fn number_start(ch: u8) -> bool {
-        matches!(ch, b'0'..=b'9')
+        ch.is_ascii_digit()
     }
 
     #[inline(always)]
@@ -524,3 +593,61 @@ mod is_char {
         matches!(ch, b'0'..=b'7' | b'_')
     }
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+//     fn lex(src: impl ToString) -> Result<LexData, ()> {
+//         let mut source = src.to_string();
+//         source.push_str("\n\0");
+
+//         let mut lexer = Lexer::new(&source);
+//         lexer.do_lex();
+
+//         if lexer.has_reports() {
+//             return Err(());
+//         }
+
+//         let lex_data = LexData {
+//             tokens: lexer.tokens.into_boxed_slice(),
+//             ranges: lexer.ranges.into_boxed_slice(),
+//             line_offsets: lexer.line_offsets.into_boxed_slice(),
+//         };
+
+//         Ok(lex_data)
+//     }
+
+//     fn ensure_tokens(src: impl ToString, tokens: &[TokenKind]) -> Result<(), ()> {
+//         let src_str = src.to_string();
+//         let result = lex(src)?;
+
+//         let result = &result.tokens.as_ref()[..1];
+//         eprintln!("--------------------------------------");
+//         eprintln!("src: {:?}", src_str);
+//         eprintln!("result: {result:?}");
+//         eprintln!("tokens: {tokens:?}");
+
+//         // ignore last inherit newline
+//         if result == tokens {
+//             Ok(())
+//         } else {
+//             Err(())
+//         }
+//     }
+
+//     #[test]
+//     fn whitespace() -> Result<(), ()> {
+//         ensure_tokens(" ", &[TK![tr whitespace]])?;
+//         ensure_tokens("  ", &[TK![tr whitespace]])?;
+//         ensure_tokens("   ", &[TK![tr whitespace]])?;
+//         ensure_tokens("\n", &[TK![tr whitespace]])?;
+//         ensure_tokens("\n\n", &[TK![tr whitespace]])?;
+//         ensure_tokens("\n\n\n", &[TK![tr whitespace]])?;
+//         ensure_tokens(" \n", &[TK![tr whitespace]])?;
+//         ensure_tokens(" \n \n", &[TK![tr whitespace]])?;
+//         ensure_tokens(" \n \n \n", &[TK![tr whitespace]])?;
+
+//         Ok(())
+//     }
+// }

@@ -1,109 +1,80 @@
-use std::num::{NonZeroU32, NonZeroUsize};
+use crate::{define_idx, util::index::IndexVec2};
 
-use super::TokenKind;
+use super::{TokenIndex, TokenKind, Tokens};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId(NonZeroU32);
-
-impl NodeId {
-    fn new(index: usize) -> Self {
-        Self(NonZeroU32::new(index as u32 + 1).unwrap())
-    }
-
-    pub fn index(self) -> usize {
-        self.0.get() as usize - 1
-    }
-}
-
-impl std::fmt::Debug for NodeId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NodeId({})", self.index())
-    }
-}
+define_idx! { pub struct NodeId: u32 != 0 }
 
 #[derive(Debug)]
 pub struct Cst {
-    elements: Vec<Vec<Element>>,
-    kinds: Vec<NodeKind>,
-}
-
-impl Default for Cst {
-    fn default() -> Self {
-        Self::new()
-    }
+    nodes: IndexVec2<NodeId, NodeKind, Vec<Element>>,
+    tokens: Tokens,
 }
 
 impl Cst {
-    pub fn new() -> Self {
-        Self {
-            elements: vec![Vec::new()],
-            kinds: vec![NodeKind::root],
-        }
+    pub fn new(tokens: Tokens) -> Self {
+        let mut nodes = IndexVec2::new();
+        let _ = nodes.push(NodeKind::root, Vec::new());
+        Self { nodes, tokens }
     }
 
     pub fn root(&self) -> NodeId {
-        NodeId::new(0)
+        crate::util::index::Idx::new(0)
     }
 
-    pub fn trivia_removed(&self, tokens: &[TokenKind]) -> Cst {
-        let elements = self
-            .elements
-            .clone()
-            .into_iter()
-            .map(|vec| {
-                vec.into_iter()
-                    .filter(|elem| match elem {
-                        Element::Node(_) => true,
-                        Element::Token(i) => !tokens[i.get()].is_trivia(),
-                    })
-                    .collect()
-            })
-            .collect();
-        Cst {
-            elements,
-            kinds: self.kinds.clone(),
-        }
+    pub fn tokens(&self) -> &Tokens {
+        &self.tokens
     }
 
     pub fn set_kind(&mut self, node: NodeId, kind: NodeKind) {
-        self.kinds[node.index()] = kind;
+        *self.nodes.get_a_mut(node).unwrap() = kind;
     }
 
     pub fn kind(&self, node: NodeId) -> NodeKind {
-        self.kinds[node.index()]
+        *self.nodes.get_a(node).unwrap()
     }
 
     pub fn elements(&self, node: NodeId) -> impl Iterator<Item = &Element> {
-        self.elements[node.index()].iter()
+        self.nodes.get_b(node).unwrap().iter()
     }
 
-    pub fn tokens(&self, node: NodeId) -> impl Iterator<Item = &TokenIndex> {
-        self.elements[node.index()].iter().filter_map(|e| match e {
-            Element::Token(i) => Some(i),
-            _ => None,
-        })
+    pub fn token_indices(&self, node: NodeId) -> impl Iterator<Item = &TokenIndex> {
+        self.elements(node).filter_map(|e| e.as_token())
     }
 
-    pub fn nodes(&self, node: NodeId) -> impl Iterator<Item = &NodeId> {
-        self.elements[node.index()].iter().filter_map(|e| match e {
-            Element::Node(id) => Some(id),
-            _ => None,
-        })
+    pub fn tokens_with_indices(
+        &self,
+        node: NodeId,
+    ) -> impl Iterator<Item = (TokenKind, TokenIndex)> + '_ {
+        self.token_indices(node)
+            .map(|&idx| (*self.tokens.get_a(idx).unwrap(), idx))
+    }
+
+    pub fn node_indices(&self, node: NodeId) -> impl Iterator<Item = &NodeId> {
+        self.elements(node).filter_map(|e| e.as_node())
+    }
+
+    pub fn nodes_with_indices(
+        &self,
+        node: NodeId,
+    ) -> impl Iterator<Item = (NodeKind, NodeId)> + '_ {
+        self.node_indices(node)
+            .map(|&idx| (*self.nodes.get_a(idx).unwrap(), idx))
     }
 
     pub fn alloc(&mut self) -> NodeId {
-        let id = NodeId::new(self.elements.len());
-        self.elements.push(vec![]);
-        self.kinds.push(NodeKind::err);
-        id
+        self.nodes.push(NodeKind::unknown, Vec::new())
+    }
+
+    fn push_element(&mut self, node: NodeId, element: Element) {
+        self.nodes.get_b_mut(node).unwrap().push(element)
     }
 
     pub fn push_child_node(&mut self, node: NodeId, child: NodeId) {
-        self.elements[node.index()].push(Element::Node(child))
+        self.push_element(node, Element::Node(child))
     }
 
     pub fn push_child_token(&mut self, node: NodeId, token: TokenIndex) {
-        self.elements[node.index()].push(Element::Token(token));
+        self.push_element(node, Element::Token(token))
     }
 }
 
@@ -113,63 +84,82 @@ pub enum Element {
     Node(NodeId),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TokenIndex(NonZeroUsize);
-
-impl TokenIndex {
-    #[inline(always)]
-    pub fn new(idx: usize) -> Self {
-        TokenIndex(NonZeroUsize::new(idx + 1).unwrap())
+impl Element {
+    pub fn as_token(&self) -> Option<&TokenIndex> {
+        match self {
+            Element::Token(token) => Some(token),
+            Element::Node(_) => None,
+        }
     }
 
-    #[inline(always)]
-    pub fn get(self) -> usize {
-        self.0.get() - 1
-    }
-}
-
-impl std::fmt::Debug for TokenIndex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TokenIndex({})", self.get())
+    pub fn as_node(&self) -> Option<&NodeId> {
+        match self {
+            Element::Node(node) => Some(node),
+            Element::Token(_) => None,
+        }
     }
 }
 
+#[allow(unused)] // @TODO: Remove
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(non_camel_case_types)]
 #[repr(u8)]
 pub enum NodeKind {
     root,
     err,
+    unknown, // used in parsing for nodes for which the type is not yet known
 
     //
-    integer,
-    float,
-    string,
-    boolean,
+    lit_integer,
+    lit_float,
+    lit_boolean,
+    lit_string,
 
     /// `path := ident ( '::' ident )*`
     path,
 
-    /// `'::' ident | func | module | struct | enum | union`
+    /// `'::' (ident func | module | struct | enum | union) | typealias | import`
     decl,
 
     /// `func := sig ( ';' | body )`
     decl_func,
+    /// `'fn' genericsList? paramsList? ret?`
+    decl_func_sig,
+    /// `ty`
+    decl_func_sig_ret,
     /// `body := ( '=>' expr ) | block`
     decl_func_body,
 
+    /// `'typealias' ident '=' ty`
+    decl_typealias,
+
+    // /// `'import' tree`
+    // decl_import,
+    // decl_import_tree,
+
     //
     /// `'fn' genericsList? paramsList? ty?`
+    #[deprecated]
     func_sig,
+    #[deprecated]
     func_sig_ret,
 
-    /// `'(' param ( ',' param )* ','? ')'`
+    /// `'(' param ( ( ',' | {NL} ) param )* ','? ')'`
     paramsList,
-    /// `ident ty default?`
+    /// `ident? ident ':'? ty default?`
     param_param,
+    param_param_named,
+    param_param_namedInternal,
+    // /// `ident ':' ty default?`
+    // param_paramNamed,
+    // /// `ident ident ':' ty default?`
+    // param_paramNamedExternal,
+    /// `ty`
+    param_param_ty,
     /// `'=' expr`
     param_param_default,
-    // @TODO: Named
+    /// `self`
+    param_self,
 
     //
     /// `'[' genericParam ( ',' genericParam )* ','? ']'`
@@ -193,30 +183,38 @@ pub enum NodeKind {
     pattern_path,
     // /// `'_'`
     // pattern_wildcard,
-    // /// `'(' pattern ( ',' pattern )* ','? ')'`
+    // /// `'(' pattern ( ( ',' | {NL} ) pattern )* ','? ')'`
     // pattern_tuple,
 
     //
-    /// `'{' ( expr ';' )* end? '}'
+    /// `'{' ( expr ( ';' | {NL} ) )* end? '}'
     expr_block,
     /// `expr`
     expr_block_end,
 
+    /// `'(' expr ')'`
+    expr_grouping,
+
     /// `op expr`
     expr_prefix,
-    /// `'not' | '!' | '-' | '&'`
+    /// `'!' | '-' | '&'`
     expr_prefix_op,
 
     /// `'let' ident ty? '=' expr`
+    #[deprecated]
     expr_let_basic,
     /// `'let' pattern ty? '=' expr`
+    #[deprecated]
     expr_let_pattern,
     /// `ty`
+    #[deprecated]
     expr_let_ty,
 
     /// `'set' expr '=' expr`
+    #[deprecated]
     expr_set,
 
+    //
     /// `expr op expr`
     ///
     expr_infix,
@@ -224,23 +222,25 @@ pub enum NodeKind {
     /// | '+' | '-' | '*' | '/' | '='
     /// | '==' | '!='
     /// | '>' | '<' | '>=' | '<='
-    /// | 'and' | 'or'
+    /// | '||' | '&&'
     /// ```
-    // @TODO: Should we have a separate `op` for each operator?
     expr_infix_op,
 
     /// `expr '(' args? ')'`
     expr_call,
-    // /// `expr (',' expr) ','?`
-    // expr_call_args,
+    /// `expr ( ( ',' | {NL} ) expr ) ','?`
+    expr_call_args,
+    /// `ident = expr`
+    expr_call_arg_named,
 
     //
+    /// `expr '.' expr`
+    expr_field,
+
     /// `'[]' ty`
     ty_slice,
-    /// `'[' expr ']' ty`
+    /// `'[' expr ']' ty `
     ty_array,
     /// `'?' ty`
     ty_nullable,
 }
-
-pub type NK = NodeKind;

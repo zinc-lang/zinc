@@ -1,0 +1,95 @@
+:: f fn {
+    foo
+    bar
+    foo +
+    bar
+
+    {
+        foo
+        bar
+    }
+
+    foo
+    bar
+}
+
+:: f fn(
+    foo int
+    bar bool
+) int {
+    foo
+    bar
+
+    foo.bar
+
+    foo
+        .bar
+
+    foo +
+        bar
+
+    foo.bar.baz
+
+    foo.bar + baz.qux
+    
+    bar
+}
+
+:: f fn {
+    foo + bar
+    foo * bar
+    foo + bar * baz
+    foo * bar + baz
+    foo + bar + baz
+    foo * bar * baz
+
+    foo.f + bar.f == baz.f * qux.f + biz.f
+
+    foo() + bar()
+
+    foo.bar() + baz.quz()
+
+    (foo.bar)()
+
+    foo(foo, bar)
+    foo(
+        foo
+            .bar
+        bar + baz
+    )
+
+    end
+}
+
+:: f fn (
+    self
+    foo int
+    bar int = foo
+) {
+    !foo
+    -foo
+    &foo
+}
+
+:: f fn (
+    foo: int
+    bar foo2: int
+);
+
+// %
+
+:: f fn {
+    f(
+        foo = bar
+        bar = foo
+    )
+
+    // f(foo = )
+}
+
+:: f fn (
+    foo int
+    foo ?int
+    foo []int
+    foo [bar]int
+);

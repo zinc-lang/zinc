@@ -1,0 +1,15 @@
+:: literals fn {
+    1
+    2
+
+    2.3
+    23.23
+
+    "foo bar"
+    "baz quux"
+
+    " \x42 \u{2345} \n \r \t \\ \' \" \g "
+
+    true
+    false
+}

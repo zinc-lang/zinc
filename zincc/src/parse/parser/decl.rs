@@ -1,97 +1,126 @@
-use super::*;
+use super::{
+    expr::{parse_expr, parse_expr_block},
+    ty::parse_ty,
+    Parser,
+};
+use crate::{
+    parse::cst::{NodeId, NodeKind},
+    TK,
+};
 
-/// Parse decl
-impl Parser<'_> {
-    pub fn parse_decl(&mut self, parent: NodeId) {
-        let mut decl = self.pnode(NK::decl).parent(parent);
+pub fn parse_decl(p: &mut Parser, parent: NodeId) {
+    let decl = p.node(NodeKind::decl).parent(parent);
 
-        decl.expect(TK::punct_doubleColon);
+    decl.expect(TK![::]);
+    decl.eat_newlines();
 
-        match decl.peek() {
-            TK::ident => {
-                decl.push_token();
+    match p.peek() {
+        TK![ident] => {
+            decl.eat_current();
+            decl.eat_newlines();
 
-                match decl.peek() {
-                    TK::kw_fn => self.parse_decl_func(*decl),
-                    TK::kw_struct => {
-                        // @TODO
-                        self.report_unimpl(|| Report::builder().message("struct declaration"));
+            match p.peek() {
+                TK![fn] => {
+                    parse_decl_func(p, *decl);
+                }
+                _ => p.report(|r| r.unimpl().message("TODO other decl types")),
+            }
+        }
+        _ => p.report(|r| r.error().message("expected ident after '::'")),
+    }
+}
+
+fn parse_decl_func(p: &mut Parser, parent: NodeId) {
+    let func = p.node(NodeKind::decl_func).parent(parent);
+
+    func.expect(TK![fn]);
+    func.eat_newlines();
+
+    {
+        let sig = p.node(NodeKind::decl_func_sig).parent(*func);
+
+        if sig.eat(TK!['(']) {
+            let params = p.node(NodeKind::paramsList).parent(*sig);
+            params.eat_newlines();
+
+            while !p.at(TK![')']) {
+                {
+                    match p.peek() {
+                        TK![ident] => {
+                            let param = p.node(NodeKind::param_param).parent(*params);
+
+                            param.expect(TK![ident]);
+                            param.eat_newlines();
+
+                            if p.at(TK![ident]) && p.at_next(TK![:]) {
+                                let internal =
+                                    p.node(NodeKind::param_param_namedInternal).parent(*param);
+                                internal.eat_current();
+                                internal.eat_current();
+                            }
+
+                            if p.at(TK![:]) {
+                                let named = p.node(NodeKind::param_param_named).parent(*param);
+                                named.eat_current();
+                            }
+
+                            {
+                                let ty = p.node(NodeKind::param_param_ty).parent(*param);
+                                parse_ty(p, *ty);
+                            }
+
+                            if p.at_skipping_newlines(TK![=]) {
+                                let default = p.node(NodeKind::param_param_default).parent(*param);
+
+                                default.eat_newlines();
+                                default.eat_current();
+                                default.eat_newlines();
+
+                                parse_expr(p, *default);
+                            }
+                        }
+                        TK![self] => {
+                            let param = p.node(NodeKind::param_self).parent(*params);
+                            param.eat_current();
+                        }
+                        _ => todo!(),
                     }
-                    TK::kw_enum => {
-                        // @TODO
-                        self.report_unimpl(|| Report::builder().message("enum declaration"));
-                    }
-                    TK::kw_union => {
-                        // @TODO
-                        self.report_unimpl(|| Report::builder().message("union declaration"));
-                    }
-                    TK::kw_trait => {
-                        // @TODO
-                        self.report_unimpl(|| Report::builder().message("trait declaration"));
-                    }
-                    TK::kw_mixin => {
-                        // @TODO
-                        self.report_unimpl(|| Report::builder().message("mixin declaration"));
-                    }
-                    TK::kw_class => {
-                        // @TODO
-                        self.report_unimpl(|| Report::builder().message("class declaration"));
-                    }
-                    _ => self.report(|| {
-                        Report::builder().error().message(
-                            "expected declcaration kind; 'fn', 'struct', 'enum', 'union', 'trait', 'mixin' or 'class'",
-                        )
-                    }),
+                }
+
+                if params.eat(TK![,]) || params.eat(TK![newline]) {
+                    params.eat_newlines();
+                } else {
+                    break;
                 }
             }
-            TK::kw_import => {
-                // @TODO
-                self.report_unimpl(|| Report::builder().message("import delcaration"));
-            }
-            TK::kw_impl => {
-                // @TODO
-                self.report_unimpl(|| Report::builder().message("impl declaration"));
-            }
-            TK::kw_module => {
-                // @TODO
-                self.report_unimpl(|| Report::builder().message("module declaration"));
-            }
-            _ => self.report(|| {
-                Report::builder()
-                    .error()
-                    .message("expected declcaration; identifer, keyword 'import', keyword 'impl' or keyword 'module'")
-            }),
+
+            params.expect(TK![')']);
+            params.eat_newlines();
+        }
+
+        if !p.at_one_of(&[TK!['{'], TK![=>], TK![;]]) {
+            let ret = p.node(NodeKind::decl_func_sig_ret).parent(*sig);
+            parse_ty(p, *ret)
         }
     }
 
-    fn parse_decl_func(&mut self, parent: NodeId) {
-        let mut func = self.pnode(NK::decl_func).parent(parent);
-
-        {
-            let mut sig = self.parse_ty_func_wo_return();
-            sig.parent = Some(*func);
-
-            if !func.at_one_of(&[TK::brkt_brace_open, TK::punct_fatArrow, TK::punct_semicolon]) {
-                self.parse_ty_func_return(*sig);
-            }
+    match p.peek() {
+        TK![;] => {
+            func.eat_current();
         }
+        TK![=>] => {
+            let body = p.node(NodeKind::decl_func_body).parent(*func);
 
-        match func.peek() {
-            TK::punct_fatArrow => {
-                let mut body = self.pnode(NK::decl_func_body).parent(*func);
+            body.eat_current();
+            body.eat_newlines();
 
-                body.push_token();
-                self.parse_expr(*body);
-                body.expect(TK::punct_semicolon);
-            }
-            TK::punct_semicolon => {
-                func.push_token();
-            }
-            _ => {
-                let body = self.pnode(NK::decl_func_body).parent(*func);
-                let mut block = self.parse_expr_block();
-                block.parent = Some(*body);
-            }
+            parse_expr(p, *body);
+            body.expect(TK![;]);
         }
+        TK!['{'] => {
+            let body = p.node(NodeKind::decl_func_body).parent(*func);
+            let _ = parse_expr_block(p).parent(*body);
+        }
+        _ => todo!(),
     }
 }
