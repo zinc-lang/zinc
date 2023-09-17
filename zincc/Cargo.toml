@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-clap = "3.2"
+clap = { version = "4.3", features = ["derive"] }
 
-llvm = { path = "../llvm-rs/llvm-rs" }
+#llvm = { path = "../llvm-rs/llvm-rs" }
 
 log = { version = "0.4", features = ["release_max_level_off"] }
 tracing = { version = "0.1", features = ["release_max_level_off", "log"] }
@@ -16,17 +16,26 @@ colored = "2.0"
 atty = "0.2"
 ansi-escapes = "0.1"
 
-strum = { version = "0.24", features = ["derive"] }
+# strum = { version = "0.25", features = ["derive"] }
 pathdiff = "0.2"
 chrono = "0.4"
+regex = "1.9.3"
+itertools = "0.11.0"
+thin-vec = "0.2.12"
+
+# tracy-client = { version = "0.16.2", default-features = false, features = ["enable"] }
+
+# ariadne = "0.3.0"
 
 # thiserror = "1.0"
 
 [profile.dev]
 incremental = true
 # opt-level = 1
-overflow-checks = false
+overflow-checks = true
 
 [profile.release]
 incremental = true
 overflow-checks = false
+lto = true
+opt-level = 3

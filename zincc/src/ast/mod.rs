@@ -1,469 +1,207 @@
+//! # AST
+//!
+//! ## TODO
+//!
+//! Documentation
+//!
+//! ## Idea - lazy ast
+//!
+//! With the way the cst works it could make sense to create an ast of the same
+//! structure as this one but with lazy evaluation of the properties and
+//! children items.
+
 use crate::{
-    parse::cst::{NodeId, TokenIndex},
-    util::index::{define_idx, IndexVec, StringInterningVec, StringSymbol},
+    parse::{cst::NodeId, TokenIndex},
+    source_map::SourceFileId,
+    util::index::StringSymbol,
 };
-use std::ops::Range;
+use thin_vec::ThinVec;
 
-mod gen;
+pub mod gen;
 
-pub use gen::gen;
+pub struct P<T: ?Sized> {
+    ptr: Box<T>,
+}
 
-pub use {
-    decl::{Decl, DeclId},
-    expr::{Expr, ExprId},
-    scope::ScopeId,
-    ty::{Ty, TyId},
-};
+#[allow(non_snake_case)]
+pub fn P<T: 'static>(value: T) -> P<T> {
+    P {
+        ptr: Box::new(value),
+    }
+}
 
-#[derive(Debug, Default)]
-pub struct AstMap {
-    pub strings: StringInterningVec,
+impl<T: std::fmt::Debug> std::fmt::Debug for P<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // f.debug_struct("P").field("ptr", &self.ptr).finish()
+        write!(f, "P@")?;
+        std::fmt::Debug::fmt(&self.ptr, f)
+    }
+}
 
-    pub decls: IndexVec<DeclId, Decl>,
-    pub decl_funcs: IndexVec<decl::FuncId, decl::Func>,
+#[allow(unused)] // @TODO: Remove
+impl<T: 'static> P<T> {
+    /// Move out of the pointer
+    pub fn and_then<U>(self, f: impl FnOnce(T) -> U) -> U {
+        f(*self.ptr)
+    }
 
-    pub tys: IndexVec<TyId, Ty>,
-    pub ty_funcs: IndexVec<ty::FuncId, ty::Func>,
-    pub ty_func_params: IndexVec<ty::FuncParamId, ty::FuncParam>,
+    /// Equivalent to `and_then(|x| x)`
+    pub fn into_inner(self) -> T {
+        *self.ptr
+    }
 
-    pub exprs: IndexVec<ExprId, Expr>,
-    pub expr_basic_lets: IndexVec<expr::LetBasicId, expr::LetBasic>,
-    pub expr_blocks: IndexVec<expr::BlockId, expr::Block>,
+    /// Producce a new `P<T>` from `self` without reallocating
+    pub fn map(mut self, f: impl FnOnce(T) -> T) -> P<T> {
+        let x = f(*self.ptr);
+        *self.ptr = x;
 
-    pub scope: scope::Map,
+        self
+    }
+
+    /// Optionally produce a new `P<T>` from `self` without reallocating
+    pub fn filter_map(mut self, f: impl FnOnce(T) -> Option<T>) -> Option<P<T>> {
+        *self.ptr = f(*self.ptr)?;
+        Some(self)
+    }
 }
 
 #[derive(Debug)]
 pub struct AstFile {
+    pub file_id: SourceFileId,
+    pub decls: ThinVec<P<Decl>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Ident {
+    pub name: StringSymbol,
+    pub token_index: TokenIndex,
+}
+
+#[derive(Debug)]
+pub struct Path {
     pub node: NodeId,
-    pub scope: ScopeId,
-
-    pub decls: Range<DeclId>,
+    pub segments: ThinVec<PathSegment>,
 }
 
-pub mod decl {
-    use super::*;
-
-    define_idx! { pub struct DeclId: u32 != 0 }
-    define_idx! { pub struct FuncId: u32 }
-
-    #[derive(Debug)]
-    pub struct Decl {
-        pub node: NodeId,
-        // // pub name: TokenIndex,
-        // pub desc: scope::DeclDescId,
-        pub kind: Kind,
-    }
-
-    #[derive(Debug)]
-    pub enum Kind {
-        Func(FuncId),
-    }
-
-    #[derive(Debug)]
-    pub struct Func {
-        pub sig: ty::FuncId,
-        pub body: Option<ExprId>,
-    }
+#[derive(Debug)]
+pub struct PathSegment {
+    pub ident: Ident,
+    // pub args // @TODO: comptime args
 }
 
-pub mod ty {
-    use super::*;
-
-    define_idx! { pub struct TyId: u32 != 0 }
-    define_idx! { pub struct FuncId: u32 }
-    define_idx! { pub struct FuncParamId: u32 != 0 }
-
-    #[derive(Debug)]
-    pub struct Ty {
-        pub node: NodeId,
-        pub kind: Kind,
-    }
-
-    #[derive(Debug)]
-    pub enum Kind {
-        Res(res::Resolution),
-        Func(FuncId),
-    }
-
-    pub mod res {
-        // use super::*;
-
-        #[derive(Debug)]
-        pub enum Resolution {
-            Primitive(Primitive),
-            Err,
-        }
-
-        #[derive(Debug)]
-        pub enum Primitive {
-            Integer(IntegerPrimitive),
-            // Bool,
-            Void,
-        }
-
-        #[derive(Debug, Clone)]
-        pub enum IntegerPrimitive {
-            Sint,
-            Uint,
-            // SintSized(bool, u8),
-            // UintSized(bool, u8),
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct Func {
-        pub params: Option<Range<FuncParamId>>,
-        pub ret: Option<TyId>,
-    }
-
-    #[derive(Debug)]
-    pub struct FuncParam {
-        pub name: StringSymbol,
-        pub name_token: TokenIndex,
-        pub ty: TyId,
-    }
+#[derive(Debug)]
+pub struct Decl {
+    pub node: NodeId,
+    pub kind: DeclKind,
 }
 
-pub mod expr {
-    use super::*;
-
-    define_idx! { pub struct ExprId: u32 != 0 }
-    define_idx! { pub struct BlockId: u32 }
-    define_idx! { pub struct LetBasicId: u32 }
-
-    #[derive(Debug)]
-    pub struct Expr {
-        pub node: NodeId,
-        pub kind: Kind,
-    }
-
-    #[derive(Debug)]
-    pub enum Kind {
-        Res(res::Resolution),
-        Literal(Literal),
-        LetBasic(LetBasicId),
-        // LetPattern(LetPattern),
-        Block(BlockId),
-        Call(Call),
-        Infix(Infix),
-    }
-
-    pub mod res {
-        use super::*;
-
-        #[derive(Debug)]
-        pub enum Resolution {
-            Decl(scope::DeclDescId),
-            Arg(ty::FuncParamId),
-            Local(LetBasicId),
-            Err,
-        }
-    }
-
-    #[derive(Debug)]
-    pub enum Literal {
-        // String(StringSymbol),
-        Integer(u64),
-        // Float(f64),
-        // Boolean(bool),
-    }
-
-    #[derive(Debug)]
-    pub struct LetBasic {
-        pub ident: StringSymbol,
-        pub ty: Option<TyId>,
-        pub expr: ExprId,
-    }
-
-    #[derive(Debug)]
-    pub struct LetPattern {
-        pub pattern: pattern::Pattern,
-        pub ty: Option<TyId>,
-        pub expr: ExprId,
-    }
-
-    // #[derive(Debug)]
-    // pub struct Set {}
-
-    #[derive(Debug)]
-    pub struct Block {
-        pub node: NodeId,
-        pub scope: ScopeId,
-        pub decls: Range<DeclId>,
-        pub exprs: Range<ExprId>,
-        pub end: Option<ExprId>,
-    }
-
-    #[derive(Debug)]
-    pub struct Call {
-        pub callee: ExprId,
-        pub args: Range<ExprId>,
-    }
-
-    #[derive(Debug)]
-    pub struct Infix {
-        pub lhs: ExprId,
-        pub rhs: ExprId,
-        pub op: TokenIndex, // @TODO: Multiple tokens
-    }
+#[derive(Debug)]
+pub enum DeclKind {
+    Function(DeclFunction),
 }
 
-pub mod pattern {
-    use super::*;
-
-    #[derive(Debug)]
-    pub struct Pattern {
-        pub node: NodeId,
-        pub kind: Kind,
-    }
-
-    #[derive(Debug)]
-    pub enum Kind {
-        // Ident(NodeId),
-        // @TODO: More
-    }
+#[derive(Debug)]
+pub struct DeclFunction {
+    pub ident: Ident,
+    // @TODO: comptime arguments
+    pub params: Option<ThinVec<P<DeclFunctionParam>>>,
+    pub return_ty: Option<P<Ty>>,
+    pub body: Option<P<Expr>>,
 }
 
-pub mod scope {
-    use super::*;
-    use crate::util::index::{self, StringSymbol};
-    use std::collections::HashMap;
+#[derive(Debug)]
+pub struct DeclFunctionParam {
+    pub ident: Ident,
+    pub named: bool,
+    pub external_name: Option<Ident>,
+    pub ty: P<Ty>,
+    pub default: Option<P<Expr>>,
+}
 
-    define_idx! { pub struct ScopeId: u32 != 0 }
-    define_idx! { pub struct DeclDescId: u32 }
-    // define_idx! { pub struct BlockId: u32 }
-    define_idx! { pub struct ArgId: u32 }
-    define_idx! { pub struct LocalId: u32 }
+/// A type as it appears lexically in the source code
+#[derive(Debug)]
+pub struct Ty {
+    pub node: NodeId,
+    pub kind: TyKind,
+}
 
-    #[derive(Debug)]
-    pub struct Map {
-        pub root: ScopeId,
-        pub scopes: IndexVec<ScopeId, Scope>,
-        pub parents: HashMap<ScopeId, ScopeId>,
+#[derive(Debug)]
+pub enum TyKind {
+    // Infer, // @TODO: Do we need this?
+    Err,
+    Path(Path),
+    Slice(P<Ty>),
+    Array(P<Ty>, P<Expr>),
+    Nullable(P<Ty>),
+}
 
-        pub decls: IndexVec<DeclDescId, DeclDesc>,
-        // pub decls_map: HashMap<DeclDescId, DeclId>,
-        pub decls_map: HashMap<DeclId, DeclDescId>,
-        // pub blocks: IndexSet<BlockId>,
+#[derive(Debug)]
+pub struct Expr {
+    pub node: NodeId,
+    // @TODO: attributes
+    pub kind: ExprKind,
+}
 
-        //
-        // pub locals: IndexVec<LocalId, Local>,
-    }
+#[derive(Debug)]
+pub enum ExprKind {
+    Err,
+    Path(Path),
+    Block(ExprBlock),
+    Grouping(P<Expr>),
+    Prefix(ExprPrefix),
+    Infix(ExprInfix),
+    Call(ExprCall),
+    Literal(Literal),
+}
 
-    impl Default for Map {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
+#[derive(Debug)]
+pub struct ExprBlock {
+    pub node: NodeId,
+    pub decls: ThinVec<P<Decl>>,
+    pub exprs: ThinVec<P<Expr>>,
+    pub end: Option<P<Expr>>,
+}
 
-    impl Map {
-        pub fn new() -> Self {
-            let mut scopes = IndexVec::new();
-            // let root = scopes.push(Scope::new(Kind::Root));
-            let root = scopes.push(Scope::new_root());
-            Self {
-                root,
-                scopes,
-                parents: HashMap::new(),
+#[derive(Debug)]
+pub struct ExprPrefix {
+    pub node: NodeId,
+    pub op: ThinVec<TokenIndex>,
+    pub rhs: P<Expr>,
+}
 
-                decls: IndexVec::new(),
-                decls_map: HashMap::new(),
-                // locals: IndexVec::new(),
-            }
-        }
-    }
+#[derive(Debug)]
+pub struct ExprInfix {
+    pub node: NodeId,
+    pub lhs: P<Expr>,
+    pub rhs: P<Expr>,
+    pub op: ThinVec<TokenIndex>,
+}
 
-    // #[derive(Debug)]
-    // pub struct Scope {
-    //     pub kind: Kind,
-    //     // Due to how and when children get added to this, we cannot use a range, same for locals
-    //     pub children: Vec<scope::Id>,
-    //     pub decls: Range<DeclDescId>,
-    //     pub args: Range<ty::FuncParamId>,
-    //     pub locals: Vec<expr::LetBasicId>,
-    // }
+#[derive(Debug)]
+pub struct ExprCall {
+    pub node: NodeId,
+    pub callee: P<Expr>,
+    pub args: Option<ThinVec<P<ExprCallArg>>>,
+}
 
-    // impl Scope {
-    //     pub fn new(kind: Kind) -> Self {
-    //         Self {
-    //             kind,
-    //             children: Vec::new(),
-    //             decls: util::index::empty_range(),
-    //             args: util::index::empty_range(),
-    //             locals: Vec::new(),
-    //         }
-    //     }
-    // }
+#[derive(Debug)]
+pub struct ExprCallArg {
+    pub node: NodeId,
+    pub expr: P<Expr>,
+    pub named: Option<Ident>,
+}
 
-    // #[derive(Debug)]
-    // pub enum Kind {
-    //     Root,
-    //     Block,
-    // }
+#[derive(Debug)]
+pub struct Literal {
+    pub node: NodeId,
+    pub kind: LiteralKind,
+}
 
-    #[derive(Debug)]
-    #[non_exhaustive]
-    pub enum Scope {
-        Root(RootScope),
-        Block(BlockScope),
-        Func(FuncScope),
-    }
-
-    impl Scope {
-        pub(self) fn new_root() -> Self {
-            Self::Root(RootScope {
-                children: Vec::new(),
-                decls: index::empty_range(),
-            })
-        }
-
-        pub fn new_block() -> Self {
-            Self::Block(BlockScope {
-                children: Vec::new(),
-                decls: index::empty_range(),
-                locals: Vec::new(),
-            })
-        }
-
-        pub fn new_func() -> Self {
-            Self::Func(FuncScope {
-                child: None,
-                args: index::empty_range(),
-            })
-        }
-
-        pub fn set_decls(&mut self, decls: Range<DeclDescId>) {
-            match self {
-                Scope::Root(root) => {
-                    debug_assert!(root.decls == index::empty_range());
-                    root.decls = decls;
-                }
-                Scope::Block(block) => {
-                    debug_assert!(block.decls == index::empty_range());
-                    block.decls = decls;
-                }
-                Scope::Func(_) => unreachable!("Cannot add decls to a function scope"),
-            }
-        }
-
-        pub fn set_args(&mut self, args: Range<ty::FuncParamId>) {
-            match self {
-                Scope::Root(_) => unreachable!("Cannot set args in root scope"),
-                Scope::Block(_) => unreachable!("Cannot set args in block scope"),
-                Scope::Func(func) => {
-                    debug_assert!(func.args == index::empty_range());
-                    func.args = args;
-                }
-            }
-        }
-
-        pub fn push_child(&mut self, child: ScopeId) {
-            match self {
-                Scope::Root(root) => root.children.push(child),
-                Scope::Block(block) => block.children.push(child),
-                Scope::Func(func) => {
-                    if func.child.is_none() {
-                        func.child = Some(child)
-                    } else {
-                        unreachable!("Cannot append more than one child to a function scope")
-                    }
-                }
-            }
-        }
-
-        pub fn push_local(&mut self, local: expr::LetBasicId) {
-            match self {
-                Scope::Block(block) => block.locals.push(local),
-                Scope::Root(_) => unreachable!("Cannot push local to root scope"),
-                Scope::Func(_) => unreachable!("Cannot push local to function scope"),
-            }
-        }
-
-        pub fn get_decls(&self) -> &Range<DeclDescId> {
-            match self {
-                Scope::Root(root) => &root.decls,
-                Scope::Block(block) => &block.decls,
-                Scope::Func(_) => unreachable!(),
-            }
-        }
-
-        pub fn get_locals(&self) -> &[expr::LetBasicId] {
-            match self {
-                Scope::Block(block) => block.locals.as_slice(),
-                Scope::Root(_) => &[],
-                Scope::Func(_) => &[],
-            }
-        }
-
-        pub fn get_args(&self) -> &Range<ty::FuncParamId> {
-            match self {
-                Scope::Func(func) => &func.args,
-                Scope::Root(_) => unreachable!(),
-                Scope::Block(_) => unimplemented!(),
-            }
-        }
-
-        /// Returns `true` if the scope is [`Root`].
-        ///
-        /// [`Root`]: Scope::Root
-        #[must_use]
-        pub fn is_root(&self) -> bool {
-            matches!(self, Self::Root(..))
-        }
-
-        /// Returns `true` if the scope is [`Block`].
-        ///
-        /// [`Block`]: Scope::Block
-        #[must_use]
-        pub fn is_block(&self) -> bool {
-            matches!(self, Self::Block(..))
-        }
-
-        /// Returns `true` if the scope is [`Func`].
-        ///
-        /// [`Func`]: Scope::Func
-        #[must_use]
-        pub fn is_func(&self) -> bool {
-            matches!(self, Self::Func(..))
-        }
-
-        pub fn can_search_up(&self) -> bool {
-            !self.is_root()
-            // @TODO: && !self.is_module()
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct RootScope {
-        children: Vec<ScopeId>,
-        decls: Range<DeclDescId>,
-    }
-
-    #[derive(Debug)]
-    pub struct BlockScope {
-        children: Vec<ScopeId>,
-        decls: Range<DeclDescId>,
-        locals: Vec<expr::LetBasicId>,
-    }
-
-    #[derive(Debug)]
-    pub struct FuncScope {
-        child: Option<ScopeId>,
-        args: Range<ty::FuncParamId>,
-    }
-
-    #[derive(Debug)]
-    pub struct DeclDesc {
-        pub name: StringSymbol,
-        pub name_token: TokenIndex,
-        pub tag: DeclDescTag,
-        pub node: NodeId,
-    }
-
-    #[derive(Debug, PartialEq, Eq)]
-    pub enum DeclDescTag {
-        Func,
-        // @TODO: More
-    }
+#[derive(Debug)]
+pub enum LiteralKind {
+    Integer(StringSymbol),
+    Float(StringSymbol),
+    Bool(bool),
+    String(ThinVec<TokenIndex>),
+    // Err,
 }

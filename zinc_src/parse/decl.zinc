@@ -1,0 +1,18 @@
+:: main fn;
+
+:: foo fn (foo int, bar int);
+
+:: bar fn (
+    foo int,
+    bar int,
+);
+
+:: baz fn (
+    foo int
+    bar int
+);
+ 
+:: f fn => foo;
+:: f fn => 
+    foo + 
+        bar;

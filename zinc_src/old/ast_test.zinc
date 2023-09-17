@@ -1,0 +1,35 @@
+// Decl tests
+
+:: main fn {}
+
+:: empty_block fn {}
+:: return_type fn uint {}
+:: single_expr fn => {};
+:: single_expr_return_type fn uint => {};
+
+:: void_return fn void {}
+:: sint_return fn sint {}
+:: uint_return fn uint {}
+
+:: params_1 fn (arg1 uint) {}
+:: params_2 fn (arg1 uint, arg2 sint,) {}
+:: params_3 fn (arg1 uint, arg2 sint, arg3 void) {}
+
+:: func_type_1 fn (foo fn void) {}
+:: func_type_2 fn (foo fn (arg1 uint) void) {}
+:: func_type_3 fn (foo fn (arg1 uint, arg2 sint) void) {}
+
+// Expr tests
+
+:: exprs1 fn {
+    1; // single expr
+    1 + 2; // binary expr
+    1 + 2 + 3; // binary binary expr
+
+    foo();
+    bar();
+    foo(bar());
+}
+
+:: foo fn {}
+:: bar fn {}

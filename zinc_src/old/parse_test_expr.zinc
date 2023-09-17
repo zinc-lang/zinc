@@ -45,7 +45,7 @@
 
     // let* baz = 3;
     // let mut baz = 3;
-    set baz = bar;
+    // set baz = bar;
 }
 
 :: infix_expr fn {

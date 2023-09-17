@@ -1,245 +1,353 @@
-use super::*;
+use std::ops::Range;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+use super::{decl::parse_decl, parse::parse_path, ParseNode, Parser, Report};
+use crate::{
+    parse::{
+        cst::{NodeId, NodeKind},
+        TokenKind,
+    },
+    report::Label,
+    TK,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 enum Precedence {
     None = 0,
-    SetLet, // Assignment or binding
-    // LogicalOr,  // || or
-    // LogicalAnd, // && and
+    // SetLet, // Assignment or binding
+    // LogicalOr,  // ||
+    // LogicalAnd, // &&
     Equality, // == !=
-    // Order,      // < <= > >=
-    Sum,        // + -
-    Product,    // * /
-    CastPrefix, // as not !
-    Suffix,     // () ? .
+    Order,    // < <= > >=
+    Sum,      // + -
+    Product,  // * /
+    // CastPrefix, // as not !
+    // Index, // []
+    Suffix, // ?
+    Field,  // .
+    Call,   // ()
 }
 
 impl Precedence {
-    fn of(kind: TK) -> Self {
-        match kind {
-            // TK::kw_or => Self::LogicalOr,
-            // TK::kw_and => Self::LogicalAnd,
+    fn of(kind: TokenKind) -> Option<Self> {
+        let prec = match kind {
+            TK![==] | TK![!=] => Self::Equality,
 
-            //
-            TK::punct_eqEq | TK::punct_bangEq => Self::Equality,
+            TK![>] | TK![>=] | TK![<] | TK![<=] => Self::Order,
 
-            TK::punct_plus | TK::punct_minus => Self::Sum,
-            TK::punct_star | TK::punct_slash => Self::Product,
-            // TK::brkt_paren_open => Self::Call,
+            TK![+] | TK![-] => Self::Sum,
+            TK![*] | TK![/] => Self::Product,
 
-            //
-            TK::brkt_paren_open | TK::punct_question | TK::punct_dot => Self::Suffix,
-            _ => Self::None,
+            TK![?] => Self::Suffix,
+            TK![.] => Self::Field,
+            TK!['('] => Self::Call,
+
+            _ => return None,
+        };
+        Some(prec)
+    }
+
+    fn associativity(self) -> Associativity {
+        match self {
+            Self::None => Associativity::None,
+            Self::Equality
+            | Self::Sum
+            | Self::Product
+            | Self::Order
+            | Self::Call
+            | Self::Suffix => Associativity::Left,
+            Self::Field => Associativity::Right,
+        }
+    }
+
+    fn binding_power(self) -> (u8, u8) {
+        let associativity = self.associativity();
+        let int = self as u8 * 2;
+        match associativity {
+            Associativity::None => (int, int),
+            Associativity::Left => (int, int + 1),
+            Associativity::Right => (int, int - 1),
         }
     }
 }
 
-/// Parse expr
-impl Parser<'_> {
-    pub fn parse_expr(&mut self, parent: NodeId) {
-        self.parse_expr_precedence(Precedence::None, parent);
-    }
+#[derive(Debug, Clone, Copy)]
+enum Associativity {
+    None,
+    Left,
+    Right,
+}
 
-    fn try_parse_expr(&mut self) -> Option<PNode> {
-        self.try_parse_expr_precedence(Precedence::None)
-    }
+#[inline]
+pub fn parse_expr(p: &mut Parser, parent: NodeId) {
+    parse_expr_binding_power(p, 0, parent);
+}
 
-    fn parse_expr_precedence(&mut self, prec: Precedence, parent: NodeId) {
-        if let Some(mut expr) = self.try_parse_expr_precedence(prec) {
-            expr.parent = Some(parent)
+#[inline]
+fn try_parse_expr<'p>(p: &mut Parser<'p>) -> Option<ParseNode<'p>> {
+    try_parse_expr_binding_power(p, 0)
+}
+
+fn parse_expr_binding_power(p: &mut Parser, min_binding_power: u8, parent: NodeId) {
+    if let Some(expr) = try_parse_expr_binding_power(p, min_binding_power) {
+        let _ = expr.parent(parent);
+    } else {
+        let range = p.prev_token_range().clone();
+        p.report(|r| report_expr_error(r, range.clone()));
+    }
+}
+
+fn try_parse_expr_binding_power<'p>(
+    p: &mut Parser<'p>,
+    min_binding_power: u8,
+) -> Option<ParseNode<'p>> {
+    let mut lhs = try_parse_expr_single(p)?;
+
+    loop {
+        let (peeked, skipped_newlines, infix_prec) = get_precedence(p);
+        let (left_binding_power, right_binding_power) = infix_prec.binding_power();
+
+        if left_binding_power < min_binding_power {
+            break;
+        }
+
+        if let Some((node, stop)) =
+            try_parse_expr_compound(p, peeked, skipped_newlines, lhs, right_binding_power)
+        {
+            lhs = node;
+            if stop {
+                break;
+            }
         } else {
-            self.report(report_expr_error)
+            // @NOTE: If we reach this then there is an inconsistency with how this function
+            //        determines how and when to continue parsing.
+            unreachable!("BUG: Middle of expression failed to parse when precedence allowed it");
         }
     }
 
-    fn try_parse_expr_precedence(&mut self, prec: Precedence) -> Option<PNode> {
-        let mut lhs = self.try_parse_expr_start()?;
+    // todo!()
+    Some(lhs)
+}
 
-        let init_prec = prec;
-        let mut p = self.peek();
-        let mut infix_prec = Precedence::of(p);
+fn get_precedence(p: &mut Parser) -> (TokenKind, bool, Precedence) {
+    let mut peeked = p.peek();
+    let mut skipped_newlines = false;
+    let prec = Precedence::of(peeked).unwrap_or_else(|| {
+        peeked = p.peek_skipping_newlines();
+        skipped_newlines = true;
+        Precedence::of(peeked).unwrap_or(Precedence::None)
+    });
+    (peeked, skipped_newlines, prec)
+}
 
-        while init_prec < infix_prec {
-            if let Some(e) = self.try_parse_expr_middle(p, lhs, infix_prec) {
-                lhs = e;
-            } else {
-                // @NOTE:...
-                // If we reach this then there is an inconsistency with how this function determines
-                // how and when to continue parsing.
-                unreachable!("middle of expression failed to parse when precedence allowed it");
+fn try_parse_expr_single<'p>(p: &mut Parser<'p>) -> Option<ParseNode<'p>> {
+    let peek = p.peek();
+    let node = match peek {
+        TK![ident] => parse_path(p),
+
+        TK![int dec] | TK![int hex] | TK![int oct] | TK![int bin] => {
+            parse_basic_literal(p, NodeKind::lit_integer)
+        }
+        TK![float] => parse_basic_literal(p, NodeKind::lit_float),
+        TK![true] | TK![false] => parse_basic_literal(p, NodeKind::lit_boolean),
+
+        TK![string open] => {
+            let str = p.node(NodeKind::lit_string);
+
+            str.expect(TK![string open]);
+
+            while p.at_one_of(&[
+                TK![string literal],
+                TK![esc asciicode],
+                TK![esc unicode],
+                TK![esc char newline],
+                TK![esc char return],
+                TK![esc char tab],
+                TK![esc char backslash],
+                TK![esc char doubleQuote],
+                TK![esc char singleQuote],
+                TK![esc char other],
+            ]) {
+                str.eat_current();
             }
 
-            p = self.peek();
-            infix_prec = Precedence::of(p);
+            str.expect(TK![string close]);
+
+            str
         }
 
-        Some(lhs)
+        TK!['{'] => parse_expr_block(p),
+
+        TK!['('] => {
+            let group = p.node(NodeKind::expr_grouping);
+
+            group.expect(TK!['(']);
+            parse_expr(p, *group);
+            group.expect(TK![')']);
+
+            group
+        }
+
+        TK![!] | TK![-] | TK![&] => {
+            let prefix = p.node(NodeKind::expr_prefix);
+
+            let op = p.node(NodeKind::expr_prefix_op).parent(*prefix);
+            op.eat_current();
+            op.eat_newlines();
+            drop(op);
+
+            parse_expr(p, *prefix);
+
+            prefix
+        }
+
+        _ => return None,
+    };
+
+    fn parse_basic_literal<'p>(p: &mut Parser<'p>, kind: NodeKind) -> ParseNode<'p> {
+        let lit = p.node(kind);
+        lit.eat_current();
+        lit
     }
 
-    fn try_parse_expr_start(&mut self) -> Option<PNode> {
-        let expr = match self.peek() {
-            TK::ident => self.parse_path(),
-            TK::string_open => self.parse_string(),
+    Some(node)
+}
 
-            TK::int_dec | TK::int_hex | TK::int_bin | TK::int_oct => self.parse_int(),
-            TK::float => self.parse_float(),
+fn try_parse_expr_compound<'p>(
+    p: &mut Parser<'p>,
+    peeked: TokenKind,
+    skipped_newlines: bool,
+    lhs: ParseNode<'p>,
+    right_binding_power: u8,
+) -> Option<(ParseNode<'p>, bool)> {
+    let node = match peeked {
+        TK![+]
+        | TK![-]
+        | TK![*]
+        | TK![/]
+        | TK![==]
+        | TK![!=]
+        | TK![>]
+        | TK![>=]
+        | TK![<]
+        | TK![<=]
+            if !skipped_newlines =>
+        {
+            let infix = p.node(NodeKind::expr_infix);
 
-            TK::kw_false | TK::kw_true => self.parse_bool(),
+            // lhs
+            let _ = lhs.parent(*infix);
 
-            TK::brkt_brace_open => self.parse_expr_block(),
+            // op
+            let op = p.node(NodeKind::expr_infix_op).parent(*infix);
+            op.eat_current();
+            op.eat_newlines();
+            drop(op);
 
-            // @TODO
-            TK::brkt_paren_open => {
-                self.report_unimpl(|| Report::builder().message("paren expression"))
-            }
+            // rhs
+            parse_expr_binding_power(p, right_binding_power, *infix);
 
-            // @TODO
-            TK::kw_return => self.report_unimpl(|| Report::builder().message("return expression")),
+            infix
+        }
 
-            // @TODO
-            TK::kw_if => self.report_unimpl(|| Report::builder().message("if expression")),
+        TK!['('] if !skipped_newlines => {
+            let call = p.node(NodeKind::expr_call);
 
-            // @TODO
-            TK::kw_fn => self.report_unimpl(|| Report::builder().message("fn expression")),
+            let _ = lhs.parent(*call);
 
-            TK::kw_let => {
-                let mut bind = self.pnode(NK::expr_let_basic);
+            call.expect(TK!['(']);
+            call.eat_newlines();
 
-                bind.push_token(); // 'let'
+            if !p.at(TK![')']) {
+                let args = p.node(NodeKind::expr_call_args).parent(*call);
 
-                let pattern_ident = self.parse_pattern(*bind);
-                if !pattern_ident {
-                    bind.kind = NK::expr_let_pattern;
-                }
+                while !p.at(TK![')']) {
+                    if p.at(TK![ident]) && p.at_next(TK![=]) {
+                        let named = p.node(NodeKind::expr_call_arg_named).parent(*args);
 
-                if !bind.at(TK::punct_eq) {
-                    // ty?
-                    let ty = self.pnode(NK::expr_let_ty).parent(*bind);
-                    self.parse_ty(*ty);
-                }
+                        named.expect(TK![ident]);
+                        named.expect(TK![=]);
+                        named.eat_newlines();
 
-                bind.expect(TK::punct_eq); // '='
+                        parse_expr(p, *named);
+                    } else {
+                        parse_expr(p, *args);
+                    }
 
-                self.parse_expr_precedence(Precedence::SetLet, *bind);
-
-                bind
-            }
-
-            TK::kw_set => {
-                let mut set = self.pnode(NK::expr_set);
-
-                set.push_token(); // 'set'
-                self.parse_expr(*set); // expr
-                set.expect(TK::punct_eq); // '='
-                self.parse_expr(*set); // expr
-
-                set
-            }
-
-            TK::punct_minus | TK::punct_bang | TK::punct_ampersand => {
-                let prefix = self.pnode(NK::expr_prefix);
-
-                {
-                    let mut op = self.pnode(NK::expr_prefix_op).parent(*prefix);
-                    op.push_token();
-                }
-
-                self.parse_expr_precedence(Precedence::CastPrefix, *prefix);
-
-                prefix
-            }
-
-            _ => return None,
-        };
-        Some(expr)
-    }
-
-    fn try_parse_expr_middle(&mut self, p: TK, mut lhs: PNode, prec: Precedence) -> Option<PNode> {
-        let node = match p {
-            TK::punct_plus
-            | TK::punct_minus
-            | TK::punct_star
-            | TK::punct_slash
-            | TK::punct_eqEq
-            | TK::punct_bangEq => {
-                let infix = self.pnode(NK::expr_infix);
-
-                // lhs
-                lhs.parent = Some(*infix);
-                drop(lhs);
-
-                // op
-                {
-                    let mut op = self.pnode(NK::expr_infix_op).parent(*infix);
-                    // @TODO: parse multiple operators
-                    op.push_token();
-                }
-
-                // rhs
-                self.parse_expr_precedence(prec, *infix);
-
-                infix
-            }
-            TK::brkt_paren_open => {
-                let mut call = self.pnode(NK::expr_call);
-
-                // callee
-                lhs.parent = Some(*call);
-                drop(lhs);
-
-                call.push_token(); // '('
-
-                // args
-                while !call.at(TK::brkt_paren_close) {
-                    self.parse_expr(*call);
-                    if !call.eat(TK::punct_comma) {
+                    if args.eat(TK![,]) || args.eat(TK![newline]) {
+                        args.eat_newlines();
+                    } else {
                         break;
                     }
                 }
-
-                call.expect(TK::brkt_paren_close);
-
-                call
             }
-            _ => return None,
-        };
-        Some(node)
-    }
 
-    pub fn parse_expr_block(&mut self) -> PNode {
-        let mut block = self.pnode(NK::expr_block);
+            call.expect(TK![')']);
 
-        block.expect(TK::brkt_brace_open);
-
-        while !block.at(TK::brkt_brace_close) {
-            if block.at(TK::punct_doubleColon) {
-                self.parse_decl(*block);
-            } else if let Some(mut expr) = self.try_parse_expr() {
-                if block.at(TK::brkt_brace_close) {
-                    let end = self.pnode(NK::expr_block_end).parent(*block);
-                    expr.parent = Some(*end);
-                    break;
-                } else {
-                    expr.parent = Some(*block);
-                    drop(expr);
-                    if self.tokens[self.cursor - 1] != TK::brkt_brace_close {
-                        block.expect(TK::punct_semicolon);
-                    } else {
-                        let _ = block.eat(TK::punct_semicolon);
-                    }
-                }
-            } else {
-                self.report(report_expr_error)
-            }
+            call
         }
 
-        block.expect(TK::brkt_brace_close);
+        TK![.] => {
+            let field = p.node(NodeKind::expr_field);
 
-        block
-    }
+            // lhs
+            let _ = lhs.parent(*field);
+
+            // '.'
+            field.eat_newlines();
+            field.eat_current();
+            field.eat_newlines();
+
+            // rhs
+            parse_expr_binding_power(p, right_binding_power, *field);
+
+            field
+        }
+
+        _ if !skipped_newlines => return None,
+
+        _ => return Some((lhs, true)),
+    };
+
+    Some((node, false))
 }
 
-fn report_expr_error() -> report::Builder {
-    Report::builder().error().message("expected expression")
+pub fn parse_expr_block<'p>(p: &mut Parser<'p>) -> ParseNode<'p> {
+    let block = p.node(NodeKind::expr_block);
+
+    block.expect(TK!['{']);
+    block.eat_newlines();
+
+    while !p.at(TK!['}']) {
+        if p.at(TK![::]) {
+            parse_decl(p, *block);
+        } else if let Some(expr) = try_parse_expr(p) {
+            if p.at_skipping_newlines(TK!['}']) {
+                let end = p.node(NodeKind::expr_block_end).parent(*block);
+                let _ = expr.parent(*end);
+                end.eat_newlines();
+                break;
+            }
+            let _ = expr.parent(*block);
+
+            if block.eat(TK![;]) || block.eat(TK![newline]) {
+                block.eat_newlines();
+            } else {
+                break;
+            }
+        } else {
+            let range = p.prev_token_range().clone();
+            p.report(|r| report_expr_error(r, range.clone()));
+        }
+    }
+
+    block.expect(TK!['}']);
+
+    block
+}
+
+fn report_expr_error(r: Report, range: Range<usize>) -> Report {
+    r.error()
+        .message("expected expression")
+        .label(Label::new().range(range).message("after here"))
 }

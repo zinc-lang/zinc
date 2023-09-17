@@ -1,731 +1,494 @@
-use super::*;
-use crate::{
-    ast::scope::DeclDesc,
-    parse::{
-        cst::{Cst, NK},
-        TK,
-    },
-    report::{self, Report},
-    source_map::{SourceFileId, SourceMap},
-    util::{
-        index::{self, StringSymbol},
-        mut_cell::MutCell,
-        // progress::Progress,
-    },
+use super::{
+    AstFile, Decl, DeclFunctionParam, Expr, ExprBlock, ExprCall, ExprKind, Ident, Path,
+    PathSegment, Ty, TyKind, P,
 };
-use std::collections::HashMap;
+use crate::{
+    ast::{DeclFunction, DeclKind, ExprCallArg, ExprInfix, ExprPrefix, Literal, LiteralKind},
+    parse::{
+        cst::{Cst, NodeId, NodeKind},
+        TokenIndex,
+        TokenKind,
+    },
+    source_map::{SourceFileId, SourceMap},
+    util::index::StringInterningVec,
+    TK,
+};
+use thin_vec::ThinVec;
 
-pub fn gen(source_map: &mut SourceMap, file: SourceFileId) -> (AstMap, Vec<Report>) {
-    let gen = Generator::new(source_map, file);
-    let (map, reports, files) = gen.generate();
-
-    source_map.set_ast_files(files);
-
-    (map, reports)
+pub struct File<'s> {
+    pub source: &'s str,
+    pub cst: &'s Cst,
 }
 
-struct Generator<'s> {
-    source_map: &'s SourceMap,
-    map: MutCell<AstMap>,
-    current: MutCell<Current>,
-    reports: MutCell<Vec<Report>>,
-    files: MutCell<HashMap<SourceFileId, AstFile>>,
-    // progress: MutCell<Progress<&'static str>>,
-    // thread: std::thread::JoinHandle<()>,
-    // thread_sender: std::sync::mpsc::Sender<String>,
-}
+impl<'s> File<'s> {
+    pub fn of(file_id: SourceFileId, source_map: &'s SourceMap) -> Self {
+        let file = &source_map[file_id];
+        let source = file.source();
+        let cst = file.cst();
+        Self { source, cst }
+    }
 
-struct Current {
-    file: SourceFileId,
-    scope: ScopeId,
-}
+    pub fn find_node(&self, node: NodeId, nk: NodeKind) -> Option<NodeId> {
+        let find = nk;
+        self.cst
+            .nodes_with_indices(node)
+            .find_map(|(nk, idx)| if nk == find { Some(idx) } else { None })
+    }
 
-impl<'s> Generator<'s> {
-    fn new(source_map: &'s SourceMap, file: SourceFileId) -> Self {
-        let map = AstMap::default();
-        let scope = map.scope.root;
+    pub fn find_token(&self, node: NodeId, tk: TokenKind) -> Option<TokenIndex> {
+        let find = tk;
+        self.cst
+            .tokens_with_indices(node)
+            .find_map(|(tk, idx)| if tk == find { Some(idx) } else { None })
+    }
 
-        // let (tx, rx) = std::sync::mpsc::channel();
+    pub fn find_ident(&self, node: NodeId) -> Option<(&'s str, TokenIndex)> {
+        self.find_token(node, TokenKind::ident).map(|idx| {
+            let str = &self.source[self.cst.tokens().get_b(idx).unwrap().clone()];
+            (str, idx)
+        })
+    }
 
-        // let thread = std::thread::spawn(move || loop {
-        //     match rx.try_recv() {
-        //         Ok(str) => eprint!("{str}"),
-        //         Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-        //         Err(std::sync::mpsc::TryRecvError::Empty) => {}
-        //     }
-        // });
-
-        Self {
-            source_map,
-            map: MutCell::new(map),
-            current: MutCell::new(Current { file, scope }),
-            reports: Default::default(),
-            files: Default::default(),
-            // progress: MutCell::new(Progress::new("ast-gen", 1)),
-            // thread,
-            // thread_sender: tx,
+    pub fn get_only_child_node(&self, node: NodeId) -> Option<NodeId> {
+        let mut nodes = self.cst.node_indices(node);
+        let ret = nodes.next();
+        if nodes.next().is_some() {
+            return None;
         }
+        ret.cloned()
     }
 
-    fn generate(self) -> (AstMap, Vec<Report>, HashMap<SourceFileId, AstFile>) {
-        let _s = trace_span!("Generate").entered();
-
-        self.seed_file();
-        self.gen_file();
-
-        self.progress_inc();
-
-        // drop(self.thread_sender);
-        // self.thread.join().unwrap();
-
-        (
-            self.map.into_inner(),
-            self.reports.into_inner(),
-            self.files.into_inner(),
-        )
-    }
-
-    // fn print_progress(&self) {
-    //     self.thread_sender
-    //         .send(format!("{}", self.progress))
-    //         .unwrap();
-    // }
-
-    fn progress_inc(&self) {
-        // self.progress.mutate(|prog| prog.inc());
-        // self.print_progress();
-    }
-
-    fn progress_inc_out_of(&self, _by: usize) {
-        // self.progress.mutate(|prog| prog.inc_out_of(by));
-        // self.print_progress();
-    }
-
-    fn report(&self, func: impl FnOnce() -> report::Builder) {
-        self.reports.mutate(|reports| {
-            reports.push(
-                self.maybe_map_sub_report(func().maybe_set_file(|| self.current.file))
-                    .build(),
-            )
-        })
-    }
-
-    fn maybe_map_sub_report(&self, report: report::Builder) -> report::Builder {
-        report.map_sub_report(|rep| {
-            self.maybe_map_sub_report(rep.maybe_set_file(|| self.current.file))
-        })
-    }
-
-    fn get_node_span(&self, cst: &Cst, node: NodeId) -> Range<usize> {
-        fn iterate(cst: &Cst, node: NodeId) -> (Option<&TokenIndex>, Option<&TokenIndex>) {
-            let mut first = cst.tokens(node).next();
-            let mut last = cst.tokens(node).last();
-
-            for &node in cst.nodes(node) {
-                let (a, b) = iterate(cst, node);
-
-                if first.is_none() {
-                    first = a;
-                }
-
-                last = b;
+    pub fn get_only_child_token(&self, node: NodeId) -> Option<TokenIndex> {
+        let mut tokens = self.cst.tokens_with_indices(node).filter_map(|(tk, idx)| {
+            if tk.is_trivia() || tk == TK![newline] {
+                None
+            } else {
+                Some(idx)
             }
-
-            (first, last)
-        }
-
-        let (first, last) = iterate(cst, node);
-
-        let ranges = &self.source_map.lex_data[&self.current.file].ranges;
-
-        let start = &ranges[first.unwrap().get()];
-        let end = &ranges[last.unwrap().get()];
-
-        start.start..end.end
-    }
-
-    fn current_cst_no_trivia(&self) -> Cst {
-        let tokens = &self.source_map.lex_data[&self.current.file].tokens;
-        self.source_map.csts[&self.current.file].trivia_removed(tokens)
-    }
-
-    fn seed_file(&self) {
-        let _s = trace_span!("Seed file").entered();
-        trace!(file = ?self.current.file);
-
-        let cst = self.current_cst_no_trivia();
-        self.seed_decls_from_node(cst.root());
-    }
-
-    fn find_token(
-        &self,
-        cst: &Cst,
-        node: NodeId,
-        mut predicate: impl FnMut(TK) -> bool,
-    ) -> Option<TokenIndex> {
-        let mut tokens_iter = cst.tokens(node);
-        let file_tokens = &self.source_map.lex_data[&self.current.file].tokens;
-        tokens_iter
-            .find(|&&i| predicate(file_tokens[i.get()]))
-            .copied()
-    }
-
-    fn get_token_span(&self, token: TokenIndex) -> Range<usize> {
-        self.source_map.lex_data[&self.current.file].ranges[token.get()].clone()
-    }
-
-    fn get_token_lexeme(&self, token: TokenIndex) -> &str {
-        &self.source_map.sources[&self.current.file][self.get_token_span(token)]
-    }
-
-    fn get_token_string(&self, token: TokenIndex) -> StringSymbol {
-        let str = self.get_token_lexeme(token);
-        self.map.mutate(|map| map.strings.str_get_or_intern(str))
-    }
-
-    fn append_child_to_current_scope(&self, child: ScopeId) {
-        self.map.mutate(|map| {
-            let parent = &mut map.scope.scopes[self.current.scope];
-            parent.push_child(child);
-
-            map.scope.parents.insert(child, self.current.scope);
         });
+        let ret = tokens.next();
+        if tokens.next().is_some() {
+            return None;
+        }
+        ret
+    }
+}
+
+pub struct AstGen {
+    pub strings: StringInterningVec,
+}
+
+impl AstGen {
+    pub fn new(strings: StringInterningVec) -> Self {
+        Self { strings }
     }
 
-    /// Iterating over the `decl`s in the node found within `self.current_file`
-    /// get its name and kind then append it to `self.current_scope`
-    fn seed_decls_from_node(&self, node: NodeId) {
-        let _s = trace_span!("Seed decls from node").entered();
-        trace!(scope = ?self.current.scope, ?node);
+    fn find_ident(&mut self, file: &File, node: NodeId) -> Option<Ident> {
+        file.find_ident(node).map(|(str, idx)| Ident {
+            name: self.strings.str_get_or_intern(str),
+            token_index: idx,
+        })
+    }
 
-        let cst = &self.current_cst_no_trivia();
+    fn gen_ident(&mut self, file: &File, index: TokenIndex) -> Ident {
+        let str = &file.source[file.cst.tokens().get_b(index).unwrap().clone()];
+        let name = self.strings.str_get_or_intern(str);
+        Ident {
+            name,
+            token_index: index,
+        }
+    }
 
-        let nodes = cst
-            .nodes(node)
-            .filter(|&&n| cst.kind(n) == NK::decl)
-            .cloned()
-            .collect::<Box<[_]>>();
+    pub fn generate_ast_file(&mut self, file_id: SourceFileId, source_map: &SourceMap) -> AstFile {
+        let file = File::of(file_id, source_map);
 
-        self.progress_inc_out_of(nodes.len());
+        let decls = self.gen_decls(&file, file.cst.root());
 
-        let mut decls: Vec<DeclDesc> = Vec::new();
-        for &node in nodes.iter() {
-            let mut nodes_iter = cst.nodes(node);
+        AstFile { file_id, decls }
+    }
 
-            let name_token = self.find_token(cst, node, |tk| tk == TK::ident).unwrap();
-            let name = self.get_token_string(name_token);
+    fn gen_decls(&mut self, file: &File, node: NodeId) -> ThinVec<P<Decl>> {
+        let mut decls = ThinVec::new();
 
-            // Check if it has been defined before, and report accordingly
-            for decl in decls.iter() {
-                if name != decl.name {
-                    continue;
+        for (kind, node_id) in file.cst.nodes_with_indices(node) {
+            match kind {
+                NodeKind::decl => {
+                    let decl = self.gen_decl(file, node_id);
+                    decls.push(decl);
                 }
-                self.report(|| {
-                    let name = &self.map.strings[name];
-                    Report::builder()
-                        .error()
-                        .span(self.get_token_span(name_token))
-                        .message(format!("the name `{}` is defined multiple times", name))
-                        .short(format!("`{}` redefined here", name))
-                        .sub_report(
-                            Report::builder()
-                                .note()
-                                .span(self.get_token_span(decl.name_token))
-                                .message(format!(
-                                    "previous definition of the value `{}` here",
-                                    name,
-                                ))
-                                .short(format!("`{}` first defined here", name)),
-                        )
-                })
+                _ => {
+                    warn!("seeing node {kind:?} when looking for decls in gen_decls");
+                }
             }
-
-            let decl_kind = *nodes_iter.next().unwrap();
-            debug_assert!(nodes_iter.next().is_none());
-
-            let tag = match cst.kind(decl_kind) {
-                NK::decl_func => scope::DeclDescTag::Func,
-                _ => todo!(),
-            };
-            trace!(?name, ?tag, "Seeded decl");
-
-            decls.push(scope::DeclDesc {
-                name,
-                name_token,
-                tag,
-                node,
-            });
-
-            self.progress_inc();
-        }
-
-        let decls = self
-            .map
-            .mutate(|map| map.scope.decls.push_range(decls.into_iter()));
-
-        self.map
-            .mutate(|map| map.scope.scopes[self.current.scope].set_decls(decls));
-    }
-
-    fn gen_file(&self) {
-        let _s = trace_span!("Gen file").entered();
-        trace!(file = ?self.current.file);
-
-        self.progress_inc_out_of(1);
-
-        let cst = &self.current_cst_no_trivia();
-
-        let nodes = cst.nodes(cst.root()).cloned().collect::<Box<[_]>>();
-        self.progress_inc_out_of(nodes.len());
-
-        let mut decls = Vec::new();
-        for &node in nodes.iter() {
-            match cst.kind(node) {
-                NK::decl => decls.push(self.gen_decl(cst, node)),
-                _ => unreachable!(),
-            }
-
-            self.progress_inc();
-        }
-
-        let decls = self.alloc_decls_and_descs(decls);
-
-        let ast_file = AstFile {
-            node: cst.root(),
-            scope: self.current.scope,
-            decls,
-        };
-
-        self.progress_inc();
-
-        self.files
-            .mutate(|files| files.insert(self.current.file, ast_file));
-    }
-
-    fn gen_decl(&self, cst: &Cst, node: NodeId) -> (Decl, scope::DeclDescId) {
-        let _s = trace_span!("Gen decl").entered();
-        trace!(?node);
-
-        self.progress_inc_out_of(1);
-
-        let mut nodes_iter = cst.nodes(node);
-
-        let decl = *nodes_iter.next().unwrap();
-        debug_assert!(nodes_iter.next().is_none());
-
-        let name = self.find_token(cst, node, |tk| tk == TK::ident).unwrap();
-        let name = self.get_token_string(name);
-
-        let desc = index::indices_of_range(self.map.scope.scopes[self.current.scope].get_decls())
-            .find(|&s| self.map.scope.decls[s].name == name)
-            .unwrap();
-
-        let kind = match cst.kind(decl) {
-            NK::decl_func => {
-                let scope = scope::Scope::new_func();
-                let scope = self.map.mutate(|map| map.scope.scopes.push(scope));
-
-                self.append_child_to_current_scope(scope);
-
-                let old_scope = self.current.scope;
-                self.current.mutate(|current| current.scope = scope);
-
-                let mut nodes_iter = cst.nodes(decl);
-
-                let sig = *nodes_iter.next().unwrap();
-                debug_assert!(cst.kind(sig) == NK::func_sig);
-                let sig = self.gen_ty_func(cst, sig);
-                let sig = self.map.mutate(|map| map.ty_funcs.push(sig));
-
-                let body = nodes_iter
-                    .find(|&&e| cst.kind(e) == NK::decl_func_body)
-                    .map(|&body| {
-                        let expr = *cst.nodes(body).next().unwrap();
-                        let expr = self.gen_expr(cst, expr);
-                        self.map.mutate(|map| map.exprs.push(expr))
-                    });
-
-                let func = decl::Func { sig, body };
-                let func = self.map.mutate(|map| map.decl_funcs.push(func));
-
-                self.current.mutate(|current| current.scope = old_scope);
-
-                decl::Kind::Func(func)
-            }
-            _ => todo!(),
-        };
-
-        self.progress_inc();
-
-        (Decl { node, kind }, desc)
-    }
-
-    fn alloc_decls_and_descs(&self, vec: Vec<(Decl, scope::DeclDescId)>) -> Range<DeclId> {
-        let (decls, decl_descs): (Vec<_>, Vec<_>) = vec.into_iter().unzip();
-
-        let decls = self
-            .map
-            .mutate(|map| map.decls.push_range(decls.into_iter()));
-
-        for (decl, desc) in index::indices_of_range(&decls).into_iter().zip(decl_descs) {
-            self.map
-                .mutate(|map| map.scope.decls_map.insert(decl, desc));
         }
 
         decls
     }
 
-    fn gen_expr(&self, cst: &Cst, node: NodeId) -> Expr {
-        let _s = trace_span!("Gen expr").entered();
-        trace!(?node);
+    fn gen_decl(&mut self, file: &File, node: NodeId) -> P<Decl> {
+        let decl_node_id = node;
 
-        self.progress_inc_out_of(1);
+        let (kind, node_id) = file
+            .cst
+            .nodes_with_indices(decl_node_id)
+            .next()
+            .expect("decl should have node child");
 
-        let kind = match cst.kind(node) {
-            NK::expr_block => {
-                let scope = scope::Scope::new_block();
-                let scope = self.map.mutate(|map| map.scope.scopes.push(scope));
+        let kind = match kind {
+            NodeKind::decl_func => {
+                let func_node_id = node_id;
+                let ident = self
+                    .find_ident(file, decl_node_id)
+                    .expect("decl should have ident");
 
-                self.append_child_to_current_scope(scope);
+                let (params, return_ty) = file
+                    .find_node(func_node_id, NodeKind::decl_func_sig)
+                    .map(|sig| {
+                        let params = file.find_node(sig, NodeKind::paramsList).map(|node| {
+                            file.cst
+                                .nodes_with_indices(node)
+                                .map(|(kind, node)| match kind {
+                                    NodeKind::param_param => {
+                                        let ident = self
+                                            .find_ident(file, node)
+                                            .expect("param should have ident");
 
-                let old_scope = self.current.scope;
-                self.current.mutate(|current| current.scope = scope);
+                                        // let named = file.find_node(node, NodeKind::param_param_named).is_some();
+                                        let (named, internal_name) = if let Some(node) = file.find_node(node, NodeKind::param_param_namedInternal) {
+                                            let name = self.find_ident(file, node).expect("");
+                                            (true, Some(name))
+                                        } else {
+                                            (file.find_node(node, NodeKind::param_param_named).is_some(), None)
+                                        };
 
-                self.seed_decls_from_node(node);
+                                        let ty = self.gen_ty(
+                                            file,
+                                            file.get_only_child_node(
+                                                file.find_node(node, NodeKind::param_param_ty)
+                                                .expect("param should have type node"),
+                                            )
+                                            .expect("param type should have single child node")
+                                        );
 
-                let mut decls = Vec::new();
-                let mut exprs = Vec::new();
-                let mut end = None;
-                for &node in cst.nodes(node) {
-                    match cst.kind(node) {
-                        NK::decl => decls.push(self.gen_decl(cst, node)),
-                        NK::expr_block_end => {
-                            end = Some(node);
-                            break;
-                        }
-                        _ => exprs.push(node),
-                    }
-                }
+                                        let default = file
+                                            .find_node(node, NodeKind::param_param_default)
+                                            .map(|node| {
+                                                self.gen_expr(
+                                                    file,
+                                                    file.get_only_child_node(node)
+                                                        .expect("param default should have single child node")
+                                                )
+                                            });
+                                        
+                                        let (ident, external_name) = internal_name
+                                            .map(|internal| (internal, Some(ident.clone())))
+                                            .unwrap_or_else(|| (ident, None));
 
-                let decls = self.alloc_decls_and_descs(decls);
-
-                let exprs = exprs
-                    .into_iter()
-                    .map(|node| self.gen_expr(cst, node))
-                    .collect::<Vec<_>>();
-                let end = end.map(|node| self.gen_expr(cst, *cst.nodes(node).next().unwrap()));
-
-                let exprs = self
-                    .map
-                    .mutate(|map| map.exprs.push_range(exprs.into_iter()));
-                let end = end.map(|end| self.map.mutate(|map| map.exprs.push(end)));
-
-                let block = expr::Block {
-                    node,
-                    scope,
-                    decls,
-                    exprs,
-                    end,
-                };
-
-                self.current.mutate(|current| current.scope = old_scope);
-
-                let block = self.map.mutate(|map| map.expr_blocks.push(block));
-                expr::Kind::Block(block)
-            }
-
-            NK::path => {
-                let lex_data = &self.source_map.lex_data[&self.current.file];
-                let file_tokens = &lex_data.tokens;
-                let mut tokens = cst.tokens(node);
-                let name_token = *tokens.find(|i| file_tokens[i.get()] == TK::ident).unwrap();
-                let name = self.get_token_string(name_token);
-
-                let res = self.expr_resolve(name).unwrap_or_else(|| {
-                    self.report(|| {
-                        Report::builder()
-                            .error()
-                            .span(lex_data.ranges[name_token.get()].clone())
-                            .message(format!(
-                                "could not find `{}` in this scope",
-                                self.map.strings[name]
-                            ))
-                            .short("not found is this scope")
-                    });
-                    expr::res::Resolution::Err
-                });
-                expr::Kind::Res(res)
-            }
-
-            NK::integer => {
-                let index = self
-                    .find_token(cst, node, |tk| {
-                        matches!(tk, TK::int_dec | TK::int_bin | TK::int_oct | TK::int_hex)
-                    })
-                    .unwrap();
-                let lex_data = &self.source_map.lex_data[&self.current.file];
-                let range = &lex_data.ranges[index.get()];
-                let source = &self.source_map.sources[&self.current.file];
-                let str = &source[range.clone()];
-
-                let integer = str.parse::<u64>().unwrap();
-
-                expr::Kind::Literal(expr::Literal::Integer(integer))
-            }
-
-            NK::expr_infix => {
-                let mut nodes_iter = cst.nodes(node);
-
-                let lhs = *nodes_iter.next().unwrap();
-                let op = *nodes_iter.next().unwrap();
-                let rhs = *nodes_iter.next().unwrap();
-
-                let lhs = self.gen_expr(cst, lhs);
-                let rhs = self.gen_expr(cst, rhs);
-
-                let (lhs, rhs) = self
-                    .map
-                    .mutate(|map| (map.exprs.push(lhs), map.exprs.push(rhs)));
-
-                let op = *cst.tokens(op).next().unwrap();
-
-                expr::Kind::Infix(expr::Infix { lhs, rhs, op })
-            }
-
-            NK::expr_call => {
-                let mut nodes_iter = cst.nodes(node);
-
-                let callee = *nodes_iter.next().unwrap();
-                let callee = self.gen_expr(cst, callee);
-                let callee = self.map.mutate(|map| map.exprs.push(callee));
-
-                let args = nodes_iter.map(|&id| self.gen_expr(cst, id));
-                let args = args.collect::<Vec<_>>(); // just passing args was triggering the RefCell
-                let args = self
-                    .map
-                    .mutate(|map| map.exprs.push_range(args.into_iter()));
-
-                expr::Kind::Call(expr::Call { callee, args })
-            }
-
-            NK::expr_let_basic => {
-                let mut nodes_iter = cst.nodes(node);
-
-                let ident = *nodes_iter.next().unwrap();
-                let ident = *cst.tokens(ident).next().unwrap();
-                let ident = self.get_token_string(ident);
-
-                let next = *nodes_iter.next().unwrap();
-
-                let (ty, expr) = if cst.kind(next) == NK::expr_let_ty {
-                    let ty = self.gen_ty(cst, next);
-                    let ty = self.map.mutate(|map| map.tys.push(ty));
-
-                    let expr = *nodes_iter.next().unwrap();
-                    let expr = self.gen_expr(cst, expr);
-
-                    (Some(ty), expr)
-                } else {
-                    let expr = self.gen_expr(cst, next);
-                    (None, expr)
-                };
-                let expr = self.map.mutate(|map| map.exprs.push(expr));
-
-                let binding = expr::LetBasic { ident, ty, expr };
-                let binding = self.map.mutate(|map| map.expr_basic_lets.push(binding));
-
-                self.map
-                    .mutate(|map| map.scope.scopes[self.current.scope].push_local(binding));
-
-                expr::Kind::LetBasic(binding)
-            }
-
-            _ => todo!("more expr '{:?}'", cst.kind(node)),
-        };
-
-        self.progress_inc();
-
-        Expr { node, kind }
-    }
-
-    fn expr_resolve(&self, name: StringSymbol) -> Option<expr::res::Resolution> {
-        let _p = trace_span!("Resoving expr");
-        trace!(?name);
-
-        // search for local
-        {
-            let mut id = self.current.scope;
-            let mut scope = &self.map.scope.scopes[id];
-            loop {
-                if !scope.is_block() {
-                    break;
-                }
-
-                for &local in scope.get_locals().iter().rev() {
-                    if self.map.expr_basic_lets[local].ident == name {
-                        return Some(expr::res::Resolution::Local(local));
-                    }
-                }
-
-                id = self.map.scope.parents[&id];
-                scope = &self.map.scope.scopes[id];
-            }
-        };
-
-        // search for arg
-        let nearest_function = {
-            let mut id = self.current.scope;
-            let mut scope = &self.map.scope.scopes[id];
-            while !scope.is_func() {
-                id = self.map.scope.parents[&id];
-                scope = &self.map.scope.scopes[id];
-            }
-            scope
-        };
-
-        for arg in index::indices_of_range(nearest_function.get_args()) {
-            if self.map.ty_func_params[arg].name == name {
-                return Some(expr::res::Resolution::Arg(arg));
-            }
-        }
-
-        {
-            let mut id = self.current.scope;
-            let mut scope = &self.map.scope.scopes[id];
-            loop {
-                if !scope.is_func() {
-                    for decl in index::indices_of_range(scope.get_decls()) {
-                        if self.map.scope.decls[decl].name == name {
-                            return Some(expr::res::Resolution::Decl(decl));
-                        }
-                    }
-                }
-
-                if !scope.can_search_up() {
-                    break;
-                }
-
-                id = self.map.scope.parents[&id];
-                scope = &self.map.scope.scopes[id];
-            }
-        }
-
-        None
-    }
-
-    fn gen_ty(&self, cst: &Cst, node: NodeId) -> ty::Ty {
-        let _s = trace_span!("Gen ty").entered();
-        trace!(?node);
-
-        self.progress_inc_out_of(1);
-
-        let kind = match cst.kind(node) {
-            NK::path => {
-                // @TODO: Multiple path segments
-                let ident = self.find_token(cst, node, |tk| tk == TK::ident).unwrap();
-                let ident = self.get_token_lexeme(ident);
-
-                let res = match ident {
-                    "sint" => ty::res::Resolution::Primitive(ty::res::Primitive::Integer(
-                        ty::res::IntegerPrimitive::Sint,
-                    )),
-                    "uint" => ty::res::Resolution::Primitive(ty::res::Primitive::Integer(
-                        ty::res::IntegerPrimitive::Uint,
-                    )),
-                    "void" => ty::res::Resolution::Primitive(ty::res::Primitive::Void),
-                    _ => {
-                        self.report(|| {
-                            Report::builder()
-                                .unimpl()
-                                .span(self.get_node_span(cst, node))
-                                .message("todo type")
-                        });
-                        ty::res::Resolution::Err
-                    }
-                };
-                ty::Kind::Res(res)
-            }
-            NK::func_sig => {
-                let func = self.gen_ty_func(cst, node);
-                let func = self.map.mutate(|map| map.ty_funcs.push(func));
-                ty::Kind::Func(func)
-            }
-            _ => todo!(),
-        };
-
-        self.progress_inc();
-
-        Ty { node, kind }
-    }
-
-    fn gen_ty_func(&self, cst: &Cst, node: NodeId) -> ty::Func {
-        let _s = trace_span!("Gen ty func").entered();
-        trace!(?node);
-
-        let params = cst
-            .nodes(node)
-            .find(|&&node| cst.kind(node) == NK::paramsList)
-            .map(|&node| {
-                let mut params: Vec<ty::FuncParam> = Vec::new();
-                for &node in cst.nodes(node) {
-                    let param = match cst.kind(node) {
-                        NK::param_param => {
-                            let name_token =
-                                self.find_token(cst, node, |tk| tk == TK::ident).unwrap();
-                            let name = self.get_token_string(name_token);
-
-                            // Check if param has been defined before, and report accordingly
-                            for param in params.iter() {
-                                if name != param.name {
-                                    continue;
-                                }
-                                self.report(|| {
-                                    let name = &self.map.strings[name];
-                                    Report::builder()
-                                        .error()
-                                        .span(self.get_token_span(name_token))
-                                        .message(format!(
-                                            "indenifier `{}` is used more than once as a parameter",
-                                            name
-                                        ))
-                                        .short("used as a parameter more than once")
+                                        P(DeclFunctionParam {
+                                            ident,
+                                            named,
+                                            external_name,
+                                            ty,
+                                            default,
+                                        })
+                                    }
+                                    NodeKind::param_self => todo!(),
+                                    _ => todo!(),
                                 })
-                            }
+                                .collect::<ThinVec<_>>()
+                        });
 
-                            let ty = *cst.nodes(node).next().unwrap();
-                            let ty = self.gen_ty(cst, ty);
-                            let ty = self.map.mutate(|map| map.tys.push(ty));
+                        let ret_ty = file
+                            .find_node(sig, NodeKind::decl_func_sig_ret)
+                            .map(|node| self.gen_ty(file, node));
 
-                            ty::FuncParam {
-                                name,
-                                name_token,
-                                ty,
-                            }
-                        }
-                        _ => todo!(),
-                    };
-                    params.push(param);
+                        (params, ret_ty)
+                    })
+                    .unwrap_or((None, None));
+
+                let body = file
+                    .find_node(func_node_id, NodeKind::decl_func_body)
+                    .map(|node| {
+                        self.gen_expr(
+                            file,
+                            file.get_only_child_node(node)
+                                .expect("body of function should have one child"),
+                        )
+                    });
+
+                DeclKind::Function(DeclFunction {
+                    ident,
+                    params,
+                    return_ty,
+                    body,
+                })
+            }
+            _ => {
+                todo!()
+            }
+        };
+
+        P(Decl { node, kind })
+    }
+
+    fn gen_expr(&mut self, file: &File, node: NodeId) -> P<Expr> {
+        let kind = match file.cst.kind(node) {
+            NodeKind::path => {
+                let path = self.gen_path(file, node);
+                ExprKind::Path(path)
+            }
+
+            NodeKind::expr_block => {
+                let mut decls = ThinVec::new();
+                let mut exprs = ThinVec::new();
+
+                for (kind, node_id) in file.cst.nodes_with_indices(node) {
+                    match kind {
+                        NodeKind::expr_block_end => break,
+                        NodeKind::decl => decls.push(self.gen_decl(file, node_id)),
+                        _ => exprs.push(self.gen_expr(file, node_id)),
+                    }
                 }
 
-                let params = self
-                    .map
-                    .mutate(|map| map.ty_func_params.push_range(params.into_iter()));
+                let end = file.find_node(node, NodeKind::expr_block_end).map(|node| {
+                    self.gen_expr(
+                        file,
+                        file.get_only_child_node(node)
+                            .expect("end of block should have one child"),
+                    )
+                });
 
-                self.map
-                    .mutate(|map| map.scope.scopes[self.current.scope].set_args(params.clone()));
+                ExprKind::Block(ExprBlock {
+                    node,
+                    exprs,
+                    decls,
+                    end,
+                })
+            }
 
-                params
-            });
+            NodeKind::expr_grouping => {
+                let node = file
+                    .get_only_child_node(node)
+                    .expect("grouping should have one child");
 
-        let ret = cst
-            .nodes(node)
-            .find(|&&node| cst.kind(node) == NK::func_sig_ret)
-            .map(|&node| {
-                let ty = *cst.nodes(node).next().unwrap();
-                let ty = self.gen_ty(cst, ty);
-                self.map.mutate(|map| map.tys.push(ty))
-            });
+                ExprKind::Grouping(self.gen_expr(file, node))
+            }
 
-        ty::Func { params, ret }
+            NodeKind::expr_prefix => {
+                let mut nodes = file.cst.node_indices(node);
+
+                let op = *nodes.next().expect("prefix expr should have op");
+                let rhs = *nodes.next().expect("prefix expr should have rhs");
+
+                debug_assert!(nodes.next().is_none());
+                debug_assert!(file.cst.kind(op) == NodeKind::expr_prefix_op);
+
+                let rhs = self.gen_expr(file, rhs);
+
+                let op = file
+                    .cst
+                    .tokens_with_indices(op)
+                    .filter_map(|(tk, idx)| match tk {
+                        TK![newline] | TK![string open] | TK![string close] => None,
+                        _ if tk.is_trivia() => None,
+                        _ => Some(idx),
+                    })
+                    .collect::<ThinVec<_>>();
+
+                ExprKind::Prefix(ExprPrefix { node, op, rhs })
+            }
+
+            NodeKind::expr_infix => {
+                let mut nodes = file.cst.node_indices(node);
+
+                let lhs = *nodes.next().expect("infix expr should have lhs");
+                let op = *nodes.next().expect("infix expr should have op");
+                let rhs = *nodes.next().expect("infix expr should have rhs");
+
+                debug_assert!(nodes.next().is_none());
+                debug_assert!(file.cst.kind(op) == NodeKind::expr_infix_op);
+
+                let lhs = self.gen_expr(file, lhs);
+                let rhs = self.gen_expr(file, rhs);
+
+                let op = file
+                    .cst
+                    .tokens_with_indices(op)
+                    .filter_map(|(tk, idx)| {
+                        if tk.is_trivia() || tk == TK![newline] {
+                            None
+                        } else {
+                            Some(idx)
+                        }
+                    })
+                    .collect::<ThinVec<_>>();
+
+                ExprKind::Infix(ExprInfix { node, lhs, rhs, op })
+            }
+
+            NodeKind::expr_call => {
+                let callee = file
+                    .cst
+                    .node_indices(node)
+                    .next()
+                    .cloned()
+                    .expect("call expr should have callee node");
+                let callee = self.gen_expr(file, callee);
+
+                let args = file.find_node(node, NodeKind::expr_call_args).map(|node| {
+                    file.cst
+                        .nodes_with_indices(node)
+                        .map(|(kind, node)| {
+                            let (expr, named) = if kind == NodeKind::expr_call_arg_named {
+                                let name = self
+                                    .find_ident(file, node)
+                                    .expect("named should have ident");
+
+                                let expr = self.gen_expr(
+                                    file,
+                                    file.get_only_child_node(node)
+                                        .expect("named should have one child node"),
+                                );
+
+                                (expr, Some(name))
+                            } else {
+                                let expr = self.gen_expr(file, node);
+                                (expr, None)
+                            };
+                            P(ExprCallArg { node, expr, named })
+                        })
+                        .collect::<ThinVec<_>>()
+                });
+
+                ExprKind::Call(ExprCall { node, callee, args })
+            }
+
+            NodeKind::lit_integer => {
+                let lit_tk = file
+                    .get_only_child_token(node)
+                    .expect("integer literal should have single token child");
+
+                let str = &file.source[file.cst.tokens().get_b(lit_tk).cloned().unwrap()];
+                let symbol = self.strings.str_get_or_intern(str);
+
+                ExprKind::Literal(Literal {
+                    node,
+                    kind: LiteralKind::Integer(symbol),
+                })
+            }
+            NodeKind::lit_float => {
+                let lit_tk = file
+                    .get_only_child_token(node)
+                    .expect("float literal should have single token child");
+
+                let str = &file.source[file.cst.tokens().get_b(lit_tk).cloned().unwrap()];
+                let symbol = self.strings.str_get_or_intern(str);
+
+                ExprKind::Literal(Literal {
+                    node,
+                    kind: LiteralKind::Float(symbol),
+                })
+            }
+            NodeKind::lit_boolean => {
+                let lit_tk = file
+                    .get_only_child_token(node)
+                    .expect("float literal should have single token child");
+
+                let bool = match file.cst.tokens().get_a(lit_tk).unwrap() {
+                    TK![true] => true,
+                    TK![false] => false,
+                    _ => todo!(),
+                };
+
+                ExprKind::Literal(Literal {
+                    node,
+                    kind: LiteralKind::Bool(bool),
+                })
+            }
+            NodeKind::lit_string => {
+                let tokens = file
+                    .cst
+                    .tokens_with_indices(node)
+                    .filter_map(|(tk, idx)| {
+                        if tk.is_trivia() || tk == TK![newline] {
+                            None
+                        } else {
+                            Some(idx)
+                        }
+                    })
+                    .collect::<ThinVec<_>>();
+
+                ExprKind::Literal(Literal {
+                    node,
+                    kind: LiteralKind::String(tokens),
+                })
+            }
+
+            _ => ExprKind::Err,
+        };
+
+        P(Expr { node, kind })
+    }
+
+    fn gen_ty(&mut self, file: &File, node: NodeId) -> P<Ty> {
+        let kind = match file.cst.kind(node) {
+            NodeKind::path => TyKind::Path(self.gen_path(file, node)),
+            NodeKind::ty_slice => {
+                let ty = self.gen_ty(
+                    file,
+                    file.get_only_child_node(node)
+                        .expect("slice ty should have single node child"),
+                );
+                TyKind::Slice(ty)
+            }
+            NodeKind::ty_array => {
+                let mut nodes = file.cst.node_indices(node);
+
+                let expr = *nodes.next().expect("array ty should have expr node");
+                let ty = *nodes.next().expect("array ty should have ty node");
+
+                debug_assert!(nodes.next().is_none());
+
+                let expr = self.gen_expr(file, expr);
+                let ty = self.gen_ty(file, ty);
+
+                TyKind::Array(ty, expr)
+            }
+            NodeKind::ty_nullable => {
+                let ty = self.gen_ty(
+                    file,
+                    file.get_only_child_node(node)
+                        .expect("slice ty should have single node child"),
+                );
+                TyKind::Nullable(ty)
+            }
+            _ => TyKind::Err,
+        };
+
+        P(Ty { node, kind })
+    }
+
+    fn gen_path(&mut self, file: &File, node: NodeId) -> Path {
+        debug_assert!(file.cst.kind(node) == NodeKind::path);
+
+        let mut segments = ThinVec::new();
+
+        for (kind, index) in file.cst.tokens_with_indices(node) {
+            if kind.is_trivia() || kind == TK![newline] {
+                continue;
+            }
+
+            match kind {
+                TK![ident] => {
+                    let ident = self.gen_ident(file, index);
+                    let segment = PathSegment { ident };
+                    segments.push(segment);
+                }
+                TK![::] => {}
+                _ => todo!(),
+            }
+        }
+
+        Path { node, segments }
     }
 }

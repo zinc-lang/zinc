@@ -1,0 +1,25 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "llvm-rs/llvm_c_2-sys/llvm_c_2"
+		},
+		{
+			"path": "llvm-rs/llvm_c_2-sys"
+		},
+		{
+			"path": "llvm-rs"
+		},
+		{
+			"path": "zincc"
+		},
+		{
+			"path": "zinc_src"
+		}
+	],
+	"settings": {
+		"rust-analyzer.checkOnSave": true,
+	}
+}

@@ -1,0 +1,59 @@
+// The `str` type should not be a part of the language core,
+// instead it should be implemented as a standard type.
+// 
+// In rust a `str` is effectively the same as a `[u8]`, but with
+// type specialization.
+// We should do something similar
+
+// This could also be implemented as a struct holding a `[]u8`
+:: typealias distinct str = []u8
+
+:: impl str {
+
+    :: from_utf8_unchecked fn const unsafe (v: &[]u8) &str 
+        => v as &str
+
+    :: impl Deref {
+        :: typealias Target = []u8
+
+        :: deref fn (&self) &Target 
+            => self as []u8
+    }
+}
+
+:: String struct {
+    private arr Array[u8]
+
+    :: Self fn => Self { arr = Array() }
+
+    :: impl Deref {
+        :: typealias Target = str
+
+        :: deref fn (&self) &Target
+            => unsafe std::from_utf8_unchecked(&self.arr)
+    }
+}
+
+:: Array struct [T] {
+    private data ptr[T]
+    private capacity uintptr
+    private length uintptr
+
+    :: Self fn {
+        Self {
+            data = ptr::null()
+            capacity = 0
+            length = 0
+        }
+    }
+
+    //
+}
+
+// Don't know if this a good idea, it helps remove the idea of pointers in the language, especially when using LLVM
+:: ptr struct [@Unused T] {
+    private address uintptr
+
+    :: null fn Self
+        => Self { address = 0 }
+}
