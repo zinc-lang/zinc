@@ -1,0 +1,76 @@
+use super::ast::{SyntaxNode, LibOrExe, SyntaxTree, Qualifier, QualifierList, DeclNode, StatementNode, PatternNode, TypeNode, ExpressionNode, DummySyntaxNode};
+use super::super::source_code::{SourceLoc, SourceSpan};
+use super::lexer::{Lexer, LexerMode};
+use super::token::{Token, TokenKind, KeywordKind};
+use super::super::diagnostic::DiagnosticEngine;
+use super::super::source_code::SourceManager;
+
+pub mod decl;
+pub mod expr;
+pub mod stmt;
+pub mod pattern;
+pub mod ty;
+
+pub struct FileParser {
+    file_id: UInt,
+    lexer: *Lexer,
+
+    ignore_sub_mod: Bool, // 当读取 import 进来的 mod 的时候，不去查找它的子 mod 了
+
+    parse_expr_recursion_depth: UInt,
+    parse_type_recursion_depth: UInt,
+    parse_pattern_recursion_depth: UInt,
+}
+
+impl FileParser {
+    pub fn new(file_id: UInt, source_code: String) -> *FileParser {
+        let lexer = Lexer::new(file_id, move source_code);
+
+        return box {
+            .file_id = file_id,
+            .lexer = move lexer,
+            .ignore_sub_mod = false,
+            .parse_expr_recursion_depth = 0,
+            .parse_type_recursion_depth = 0,
+            .parse_pattern_recursion_depth = 0,
+        }: FileParser;
+    }
+
+    pub fn parse(&mut self) -> SyntaxTree {
+        let m = self.parse_mod_file();
+
+        let tree = {
+            .root_file_id = self.file_id,
+            .top_mod = m,
+            .kind = LibOrExe::Unknown,
+        }: SyntaxTree;
+        return tree;
+    }
+
+    pub fn expect_token(&mut self, expected: TokenKind) -> Token {
+        let t = self.lexer.next();
+        if t.token_kind.ne(&expected) {
+            DiagnosticEngine::get().emit_unexpected_token(t.span(), t.raw_str());
+        }
+        return t;
+    }
+
+    pub fn expect_token(&mut self, mode: LexerMode, expected: TokenKind) -> Token {
+        let t = self.lexer.next(mode);
+        if t.token_kind.ne(&expected) {
+            DiagnosticEngine::get().emit_unexpected_token(t.span(), t.raw_str());
+        }
+        return t;
+    }
+
+    fn dummy(&self) -> *DummySyntaxNode {
+        let loc = self.lexer.cur_loc();
+        let node: *DummySyntaxNode = box {
+            .source_span = {
+                .start = loc,
+                .end = loc,
+            }: SourceSpan
+        }: DummySyntaxNode;
+        return node;
+    }
+}

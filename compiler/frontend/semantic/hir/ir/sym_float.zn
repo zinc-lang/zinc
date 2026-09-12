@@ -1,0 +1,150 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::source_code::*;
+
+use std::cmp::{PartialOrd, PartialEq, Ordering, Ord, Eq};
+
+unsafe static mut G_F32_SYMBOL: Option<*FloatSymbol> = None;
+unsafe static mut G_F64_SYMBOL: Option<*FloatSymbol> = None;
+
+impl FloatSymbol {
+    pub fn new(k: FloatKind) -> *Self {
+        match k {
+            FloatKind::F32 => unsafe {
+                if G_F32_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: FloatSymbol;
+                    G_F32_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+            FloatKind::F64 => unsafe {
+                if G_F64_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: FloatSymbol;
+                    G_F64_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+        }
+    }
+
+}
+
+impl Symbol for FloatSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = SourceSpan::empty()
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        match self.kind {
+            FloatKind::F32 => return "F32".to_string();
+            FloatKind::F64 => return "F64".to_string();
+        }
+    }
+
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+
+    fn export_value(&self) -> String {
+        return self.short_name();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+unsafe static mut G_F64_STYPE: Option<*SType> = None;
+unsafe static mut G_F32_STYPE: Option<*SType> = None;
+
+impl TypeSymbol for FloatSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        return self.short_name();
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return self.all_impls;
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        return self.to_sty();
+    }
+    fn to_sty(*self) -> *SType {
+        match self.kind {
+            FloatKind::F32 => unsafe {
+                if G_F32_STYPE is Some(t) {
+                    return t;
+                } else {
+                    let sty = box {
+                        .type_symbol = self as *FloatSymbol as *TypeSymbol,
+                        .args = GenericArgs::new(),
+                    }: SType;
+                    G_F32_STYPE = Some(sty);
+                    return sty;
+                }
+            }
+            FloatKind::F64 => unsafe {
+                if G_F64_STYPE is Some(t) {
+                    return t;
+                } else {
+                    let sty = box {
+                        .type_symbol = self as *FloatSymbol as *TypeSymbol,
+                        .args = GenericArgs::new(),
+                    }: SType;
+                    G_F64_STYPE = Some(sty);
+                    return sty;
+                }
+            }
+        }
+    }
+}
+
+impl PartialEq for FloatKind {
+    fn eq(&self, other: &Self) -> Bool {
+        return *self as UInt == *other as UInt;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return *self as UInt != *other as UInt;
+    }
+}
+
+impl PartialOrd for FloatKind {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        let a = *self as UInt;
+        let b = *other as UInt;
+        return a.partial_cmp(&b);
+    }
+
+    // Provided methods
+    fn lt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Less);
+    }
+    fn le(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Greater));
+    }
+    fn gt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Greater);
+    }
+    fn ge(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Less));
+    }
+}

@@ -1,0 +1,38 @@
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::DiagnosticEngine;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::semantic::hir::ir::*;
+
+use super::*;
+
+impl ConstValue for ByteCValue {
+    fn span(&self) -> SourceSpan {
+        return self.token.source_span;
+    }
+
+    fn structural_eq(&self, other: &ConstValue) -> Bool {
+        if other is o: &ByteCValue {
+            return self.value == o.value;
+        } else {
+            return false;
+        }
+    }
+
+    fn to_string(&self) -> String {
+        return self.value.to_string();
+    }
+}
+
+impl ByteCValue {
+    fn new(t: Token) -> Self {
+        let c = CharCValue::new(t);
+        if c.codepoint > 0xFF_u32 {
+            DiagnosticEngine::get().emit_byte_out_of_range(t.source_span);
+        }
+        return {
+            .token = move t,
+            .value = c.codepoint as UInt8,
+        }: ByteCValue;
+    }
+}

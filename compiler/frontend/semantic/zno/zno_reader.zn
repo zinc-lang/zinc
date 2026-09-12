@@ -1,0 +1,189 @@
+use super::*;
+use ::self::frontend::source_code::*;
+
+struct ItemKindAndSource {
+    kind: SymbolKind,
+    source: String,
+    file_id: UInt,
+}
+
+struct ZnoReader {
+    file_path: String,
+    db: *raw (),
+    cache_item: HashMap<ExportKey, ItemKindAndSource>,
+    cache_impl: HashMap<ExportKey, ItemKindAndSource>,
+}
+
+extern fn zno_open_db(ptr: *raw UInt8, len: UInt) -> *raw ();
+extern fn zno_close_db(ptr: *raw ());
+extern fn zno_read_dependency(db: *raw (), name: *raw UInt8, len: UInt) -> *raw UInt8;
+extern fn zno_read_item_exact(db: *raw (), key: *raw UInt8, key_len: UInt, out_kind: *raw mut UInt8) -> *raw UInt8;
+extern fn zno_read_item_similar(db: *raw (), name: *raw UInt8, len: UInt) -> *raw UInt8;
+extern fn zno_read_impls_by_type(db: *raw (), name: *raw UInt8, len: UInt) -> *raw UInt8;
+extern fn zno_read_impls_by_trait(db: *raw (), name: *raw UInt8, len: UInt) -> *raw UInt8;
+extern fn zno_free_string(s: *raw UInt8);
+
+impl ZnoReader {
+    fn open_exist(path: Str) -> Option<*ZnoReader> {
+        let db = unsafe(zno_open_db(path.raw_ptr(), path.len()));
+        if db as UInt == 0 {
+            return None;
+        }
+        return Some(box {
+            .file_path = path.to_string(),
+            .db = db,
+            .cache_item = (type HashMap<ExportKey, ItemKindAndSource>)::new(),
+            .cache_impl = (type HashMap<ExportKey, ItemKindAndSource>)::new(),
+        }: ZnoReader);
+    }
+
+    // 输入依赖项的名称，返回 zno file name
+    fn read_dependency(&self, name: String) -> String {
+        unsafe {
+            let cstr = zno_read_dependency(self.db, name.raw_ptr(), name.len());
+            let str = Str::from_cstr(cstr);
+            let s = str.to_string();
+            zno_free_string(cstr);
+            return s;
+        }
+    }
+
+    // 输入item，返回源码
+    fn read_item_exact(&mut self, key: &ExportKey) -> ItemKindAndSource {
+        if self.cache_item.at(key) is Some(s) {
+            return s;
+        }
+        unsafe {
+            let mut name = key.to_string();
+            name.push(0_u8);
+            let mut kind: UInt8 = 0;
+            let cstr = zno_read_item_exact(self.db, name.raw_ptr(), name.len()-1, &mut kind as *raw mut UInt8);
+            let str = Str::from_cstr(cstr);
+            let s = str.to_string();
+            zno_free_string(cstr);
+
+            let mut sym_kind = SymbolKind::None;
+            if kind == b'm' {
+                sym_kind = SymbolKind::Mod;
+            } else if kind == b'g' {
+                sym_kind = SymbolKind::Global;
+            } else if kind == b'f' {
+                sym_kind = SymbolKind::Func;
+            } else if kind == b'i' {
+                sym_kind = SymbolKind::Impl;
+            } else if kind == b't' {
+                sym_kind = SymbolKind::Type;
+            }
+            let fid = SourceManager::get().add_imported_file(move name, s);
+            let res = {
+                .kind = sym_kind,
+                .source = move s,
+                .file_id = fid,
+            }: ItemKindAndSource;
+
+            if !res.is_empty() {
+                self.cache_item.insert(*key, res);
+            }
+            return res;
+        }
+    }
+
+    // 包括所有重载版本
+    fn read_item_similar(&mut self, key: &ExportKey) -> ItemKindAndSource {
+        if self.cache_item.at(key) is Some(s) {
+            return s;
+        }
+        unsafe {
+            let name = key.to_string();
+            let cstr = zno_read_item_similar(self.db, name.raw_ptr(), name.len());
+            let str = Str::from_cstr(cstr);
+            let s = str.to_string();
+            zno_free_string(cstr);
+            
+            if !s.is_empty() {
+                let fid = SourceManager::get().add_imported_file(move name, s);
+                let res = {
+                    .kind = SymbolKind::Func,
+                    .source = move s,
+                    .file_id = fid,
+                }: ItemKindAndSource;
+                if !res.is_empty() {
+                    self.cache_item.insert(*key, res);
+                }
+                return res;
+            }
+            else {
+                return ItemKindAndSource::new();
+            }
+        }
+    }
+
+    fn read_impls_by_type(&mut self, key: &ExportKey) -> ItemKindAndSource {
+        if self.cache_impl.at(key) is Some(s) {
+            return s;
+        }
+        unsafe {
+            let name = key.to_string();
+
+            let cstr = zno_read_impls_by_type(self.db, name.raw_ptr(), name.len());
+            let str = Str::from_cstr(cstr);
+            let s = str.to_string();
+            zno_free_string(cstr);
+
+            if !s.is_empty() {
+                let mut key_in_sm = key.to_string();
+                key_in_sm.push_str(".impl");
+                let fid = SourceManager::get().add_imported_file(key_in_sm, s);
+                let res = {
+                    .kind = SymbolKind::Impl,
+                    .source = move s,
+                    .file_id = fid,
+                }: ItemKindAndSource;
+                if !res.is_empty() {
+                    self.cache_item.insert(*key, res);
+                }
+
+                return res;
+            }
+            else {
+                return ItemKindAndSource::new();
+            }
+        }
+    }
+
+    // fn read_impls_by_trait(&self, key: ExportKey) -> String {
+    //     unsafe {
+    //         let name = key.to_string();
+    //         let cstr = zno_read_impls_by_trait(self.db, name.raw_ptr(), name.len());
+    //         let str = Str::from_cstr(cstr);
+    //         let s = str.to_string();
+    //         zno_free_string(cstr);
+    //         return s;
+    //     }
+    // }
+
+}
+
+impl UnSized for ZnoReader {}
+
+impl Drop for ZnoReader {
+    fn drop(&mut self) {
+        unsafe {
+            zno_close_db(self.db);
+        }
+    }
+}
+
+impl ItemKindAndSource {
+    fn new() -> Self {
+        return {
+            .kind = SymbolKind::None,
+            .source = String::new(),
+            .file_id = (-1i) as UInt,
+        }: ItemKindAndSource;
+    }
+
+    fn is_empty(&self) -> Bool {
+        return self.kind is SymbolKind::None;
+    }
+}

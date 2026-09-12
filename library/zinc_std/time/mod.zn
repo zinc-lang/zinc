@@ -1,0 +1,37 @@
+
+pub struct Duration {
+
+}
+
+pub struct Instant {
+    tv_sec: UInt64,
+    tv_nsec: UInt64,
+}
+
+extern fn zinc_core_instance_now(p: &mut Instant);
+extern fn zinc_core_instance_elapsed(from: &Instant) -> Int64;
+
+impl Instant {
+    pub fn now() -> Instant {
+        let mut time = {
+            .tv_sec = 0,
+            .tv_nsec = 0,
+        }: Instant;
+        unsafe {
+            zinc_core_instance_now(&mut time);
+        }
+        return time;
+    }
+
+    // 后续替换成 Duration
+    pub fn elapsed_ms(&self) -> UInt64 {
+        unsafe {
+            let r: Int64 = zinc_core_instance_elapsed(self);
+            if r < 0 {
+                return 0;
+            } else {
+                return r as UInt64;
+            }
+        }
+    }
+}

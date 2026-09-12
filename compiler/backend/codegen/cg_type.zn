@@ -1,0 +1,341 @@
+use super::*;
+use super::data_structures::*;
+
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+
+impl CodeGenerator {
+
+    // 编译时未知大小的类型返回 None
+    fn cgtype_of(&mut self, sty: *SType) -> Option<CgType> {
+        let sty_addr = sty as *raw SType as UInt;
+        if self.sty_to_cgty.at(&sty_addr) is Some(t) {
+            return t;
+        }
+
+        let ty = self.calc_cgtype_of(move sty);
+        self.sty_to_cgty.insert(sty_addr, ty);
+        return ty;
+    }
+
+    fn size_of_stype(&mut self, sty: *SType, ctx: *CgContext) -> CgValue {
+        if self.cgtype_of(sty) is Some(cgtype) {
+            let s = self.llds.storage_size_of(cgtype);
+            return self.llds.get_const_int64(s as UInt64).as_value();
+        } else {
+            let tm = self.rt_typemeta_of(sty, ctx);
+            return self.access_typemeta_size(tm);
+        }
+    }
+
+    fn calc_cgtype_of(&mut self, sty: *SType) -> Option<CgType> {
+        match sty.type_symbol {
+            type *InvalidSymbol => panic;
+            // 以下这些分支未实现或者是 UnSized
+            type *TypeParamSymbol => return None;
+            type *TraitSymbol => return None;
+            type *FnUpperTypeSymbol => return None;
+            type *FnUpperMutTypeSymbol => return None;
+            type *ExternTypeSymbol => return None;
+            type *LambdaSymbol => return None;
+            type *FuncSymbol => return None;
+
+            assoc: *AssociatedTypeSymbol => {
+                return self.cgtype_of(assoc.target_sty);
+            }
+            alias: *TypeAliasSymbol => return self.cgtype_of(alias.target_sty);
+
+            // builtins
+            type *BoolSymbol => return Some(self.llds.type_int1());
+            type *CharSymbol => return Some(self.llds.type_int32());
+            int_sym: *IntegerSymbol => {
+                match int_sym.kind {
+                    IntegerKind::I8 => return Some(self.llds.type_int8());
+                    IntegerKind::I16 => return Some(self.llds.type_int16());
+                    IntegerKind::I32 => return Some(self.llds.type_int32());
+                    IntegerKind::I64 => return Some(self.llds.type_int64());
+                    IntegerKind::Isize => return Some(self.llds.type_int64());
+                    IntegerKind::Ishort => return Some(self.llds.type_int32());
+                    IntegerKind::U8 => return Some(self.llds.type_int8());
+                    IntegerKind::U16 => return Some(self.llds.type_int16());
+                    IntegerKind::U32 => return Some(self.llds.type_int32());
+                    IntegerKind::U64 => return Some(self.llds.type_int64());
+                    IntegerKind::Usize => return Some(self.llds.type_int64());
+                    IntegerKind::Ushort => return Some(self.llds.type_int32());
+                }
+            }
+            float_sym: *FloatSymbol => {
+                match float_sym.kind {
+                    FloatKind::F32 => return Some(self.llds.type_f32());
+                    FloatKind::F64 => return Some(self.llds.type_f64());
+                }
+            }
+
+            // Compound
+            struct_sym: *StructSymbol => {
+                let mut mappings = TypeMapping::new();
+                mappings.unify(struct_sym.to_sty(), sty);
+                let mut elements: Vec<CgType> = (type Vec<CgType>)::new();
+                for field in struct_sym.fields {
+                    let actual_field_sty = mappings.subst(field.stype);
+                    if self.cgtype_of(move actual_field_sty) is Some(t) {
+                        elements.push(move t);
+                    } else {
+                        return None;
+                    }
+                }
+                return Some(self.llds.type_struct(&elements));
+            }
+            enum_sym: *EnumSymbol => {
+                // todo 目前的 tag 统一是 int64, 简化代码编写。这里显然有优化机会
+                // Option 类型特殊处理
+                if enum_sym.export_key().as_str().deref().eq(&"::std::primitives::option::Option") {
+                    let arg = sty.args.ty_arg(0);
+                    return self.calc_typeof_builtin_option(arg);
+                }
+
+                let mut mappings = TypeMapping::new();
+                mappings.unify(enum_sym.to_sty(), sty);
+                let mut payload_size: UInt = 0;
+                for ev in enum_sym.variants {
+                    let mut elements: Vec<CgType> = (type Vec<CgType>)::new();
+                    for field in ev.fields {
+                        let actual_field_sty = mappings.subst(field);
+                        if self.cgtype_of(move actual_field_sty) is Some(t) {
+                            elements.push(move t);
+                        } else {
+                            return None;
+                        }
+                    }
+                    let struct_ty = self.llds.type_struct(&elements);
+                    let ev_size = self.llds.storage_size_of(struct_ty);
+                    if ev_size > payload_size {
+                        payload_size = ev_size;
+                    }
+                }
+
+                let payload = self.llds.type_byte_array(payload_size);
+                let mut tag_and_payload = (type Vec<CgType>)::new();
+                tag_and_payload.push(self.llds.type_int64());
+                tag_and_payload.push(move payload);
+                return Some(self.llds.type_struct(&tag_and_payload));
+            }
+            union_sym: *UnionSymbol => {
+                let mut max_size: UInt = 0;
+                for field in union_sym.fields {
+                    if self.cgtype_of(field.stype) is Some(t) {
+                        let field_size = self.llds.storage_size_of(t);
+                        if field_size > max_size {
+                            max_size = field_size;
+                        }
+                    } else {
+                        return None;
+                    }
+                }
+                return Some(self.llds.type_byte_array(max_size));
+            }
+            tuple_sym: *TupleSymbol => {
+                let mut elements: Vec<CgType> = (type Vec<CgType>)::new();
+                for field in sty.args.ty_args {
+                    if self.cgtype_of(move field) is Some(t) {
+                        elements.push(move t);
+                    } else {
+                        return None;
+                    }
+                }
+                return Some(self.llds.type_struct(&elements));
+            }
+            array_sym: *ArraySymbol => {
+                if sty.args.ty_args.is_empty() {
+                    return Some(self.llds.type_empty_struct());
+                }
+                let elem_sty = sty.args.ty_arg(0);
+                if self.cgtype_of(elem_sty) is Some(t) {
+                    return Some(self.llds.type_array_of(t, sty.args.ty_args.len()));
+                } else {
+                    return None;
+                }
+            }
+
+            // pointers
+            type *PointerLikeSymbol => {
+                let pointee = sty.args.ty_arg(0);
+                if pointee.type_symbol is type *TraitSymbol ||
+                    pointee.type_symbol is type *FnUpperTypeSymbol ||
+                    pointee.type_symbol is type *FnUpperMutTypeSymbol {
+                    return Some(self.llds.type_fat_ptr());
+                } else {
+                    return Some(self.llds.type_thin_ptr());
+                }
+            }
+
+            _ => return Some(self.llds.type_empty_struct());
+        }
+    }
+
+    fn can_option_niche_opt(&self, arg: *SType) -> Bool {
+        let ty_sym = arg.type_symbol;
+        if ty_sym is type *ArcPointerSymbol ||
+            ty_sym is type *WeakPointerSymbol ||
+            ty_sym is type *BorrowMutSymbol ||
+            ty_sym is type *BorrowImmutSymbol {
+
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    // todo Niche 优化还能覆盖更多场景
+    fn calc_typeof_builtin_option(&mut self, arg: *SType) -> Option<CgType> {
+        let ty_sym = arg.type_symbol;
+        if ty_sym is type *ArcPointerSymbol ||
+            ty_sym is type *WeakPointerSymbol ||
+            ty_sym is type *BorrowMutSymbol ||
+            ty_sym is type *BorrowImmutSymbol {
+
+            let pointee: *SType = arg.args.ty_arg(0);
+            if pointee.type_symbol is type *TraitSymbol ||
+                pointee.type_symbol is type *FnUpperTypeSymbol ||
+                pointee.type_symbol is type *FnUpperMutTypeSymbol {
+                return Some(self.llds.type_fat_ptr());
+            } else {
+                return Some(self.llds.type_thin_ptr());
+            }
+        } else {
+            if self.cgtype_of(move arg) is Some(payload) {
+                let mut tag_and_payload = (type Vec<CgType>)::new();
+                tag_and_payload.push(self.llds.type_int64());
+                tag_and_payload.push(move payload);
+                return Some(self.llds.type_struct(&tag_and_payload));
+            } else {
+                return None;
+            }
+        }
+    }
+
+    fn rt_typemeta_of(&mut self, sty: *SType, ctx: *CgContext) -> CgValue {
+        match sty.type_symbol {
+            assoc: *AssociatedTypeSymbol => {
+                if assoc.is_self_ty() {
+                    // 特殊处理 Self 类型, 从函数参数中获得
+                    let idx = ctx.signature.index_of_typemeta();
+                    return self.llds.get_arg(ctx.ll_func, idx);
+                } else {
+                    return self.rt_typemeta_of(sty.canonical(), ctx);
+                }
+            }
+            alias: *TypeAliasSymbol => {
+                return self.rt_typemeta_of(sty.canonical(), ctx);
+            }
+            tp: *TypeParamSymbol => {
+                // 泛型参数有两种来源:
+                // 一种是直接携带的, fn f<T>() 这种; 第二种是包含在 Self 类型中的, impl<T> S<T> { fn f(&self) {} }
+                if ctx.signature.index_of_type_param(tp) is Some(i) {
+                    return self.llds.get_arg(ctx.ll_func, i);
+                } else {
+                    // todo 这里假设了泛型参数就是 Self 类型的直接参数而不是 S<Option<T>> 这种, 后续继续改进支持更多情况
+                    let mut self_sty = ctx.self_sty().get_or_panic();
+                    if self_sty.type_symbol is assoc: *AssociatedTypeSymbol {
+                        self_sty = assoc.target_sty;
+                    }
+                    let mut idx: UInt = 0;
+                    for a in self_sty.args.ty_args {
+                        if a.type_symbol as *raw TypeSymbol as UInt == tp as *raw TypeParamSymbol as UInt {
+                            let self_ty_idx = ctx.signature.index_of_typemeta();
+                            let self_tymeta = self.llds.get_arg(ctx.ll_func, self_ty_idx);
+                            return self.access_typemeta_argv_of(self_tymeta, idx);
+                        }
+                        idx += 1;
+                    }
+                    let tp_name = tp.short_name();
+                    let fname = ctx.sym.mangle_name();
+                    let self_sty_str = self_sty.to_string();
+                    let msg = f"BUG: TypeParamSymbol $(tp_name) is not found in $(fname), self sty: $(self_sty_str)";
+                    panic msg.as_str().deref();
+                }
+            }
+            // 这个是不看泛型实参个数的, 统一用 instantiated_typemeta
+            tup: *TupleSymbol => {
+                return self.instantiated_typemeta(sty, ctx);
+            }
+            arr: *ArraySymbol => {
+                // 针对 Array 类型做点小优化, 如果 Array 的 size 较大会生成大量的指令划不来, 应该生成循环
+                let sty_int = sty as *raw SType as UInt;
+                if ctx.cached_instantiated.at(&sty_int) is Some(v) {
+                    return v;
+                }
+
+                let saved_insert_point = self.llds.save_ip();
+
+                let generic_typemeta = self.cg_generic_typemeta(arr as *TypeSymbol).as_value();
+                let len = sty.args.ty_args.len();
+                let argc = self.llds.get_const_int8(len as UInt8).as_value();
+
+                if len == 0 {
+                    let argv = self.llds.get_const_null().as_value();
+                    let callee = self.llds.get_ext_fn_in_core("zinc_core_instantiate_array");
+                    let result = self.llds.create_call(callee, &[generic_typemeta, argc, argv] as Slice<CgValue>);
+                    ctx.cached_instantiated.insert(sty_int, result);
+                    self.llds.restore_ip(saved_insert_point);
+                    return result;
+                } else {
+                    let arg_sty = sty.args.ty_arg(0);
+                    let argv = self.rt_typemeta_of(arg_sty, ctx);
+                    let callee = self.llds.get_ext_fn_in_core("zinc_core_instantiate_array");
+                    let result = self.llds.create_call(callee, &[generic_typemeta, argc, argv] as Slice<CgValue>);
+                    ctx.cached_instantiated.insert(sty_int, result);
+                    self.llds.restore_ip(saved_insert_point);
+                    return result;
+                }
+            }
+            _ => {
+                if sty.args.ty_args.is_empty() {
+                    return self.get_typemeta_global(sty.type_symbol).as_value();
+                } else {
+                    return self.instantiated_typemeta(sty, ctx);
+                }
+            }
+        }
+        panic;
+    }
+
+    // 假设 sty 是包含泛型参数的
+    // todo: 这里是对每个函数做一个缓存, 其实可以做一个全局缓存。
+    // 对于编译时所有泛型参数都是已知具体类型的情况下, 可以把这个类型的 TypeMeta 保存成一个internal linkage全局变量
+    fn instantiated_typemeta(&mut self, sty: *SType, ctx: *CgContext) -> CgValue {
+        // 查缓存
+        let sty_int = sty as *raw SType as UInt;
+        if ctx.cached_instantiated.at(&sty_int) is Some(v) {
+            return v;
+        }
+
+        let saved_insert_point = self.llds.save_ip();
+
+        self.llds.set_ip_for_instantiate(ctx.ll_func);
+
+        let generic_typemeta = self.cg_generic_typemeta(sty.type_symbol).as_value();
+        let len = sty.args.ty_args.len();
+        let argc = self.llds.get_const_int8(len as UInt8).as_value();
+        let argv = self.llds.create_alloca_sized(self.llds.type_ptr_array(len));
+
+        let mut i: UInt32 = 0;
+        for arg in sty.args.ty_args {
+            let a = self.rt_typemeta_of(arg, ctx);
+            let elem_ptr = self.llds.create_gep(
+                self.llds.type_thin_ptr(),
+                argv,
+                self.llds.get_const_int32(i).as_value()
+            );
+            self.llds.create_store(a, elem_ptr);
+            i += 1;
+        }
+
+        let callee = self.llds.get_ext_fn_in_core("zinc_core_instantiated");
+        let result = self.llds.create_call(callee, &[generic_typemeta, argc, argv] as Slice<CgValue>);
+        ctx.cached_instantiated.insert(sty_int, result);
+
+        self.llds.restore_ip(saved_insert_point);
+        return result;
+    }
+}

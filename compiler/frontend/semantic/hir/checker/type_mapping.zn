@@ -1,0 +1,135 @@
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::*;
+
+struct TypeMapping {
+    ty_mapping: HashMap<UInt, *SType>, // key 是 *TypeParamSymbol 或者 *LifetimeSymbol
+}
+
+impl TypeMapping {
+    fn new() -> Self {
+        return {
+            .ty_mapping = (type HashMap<UInt, *SType>)::new(),
+        }: TypeMapping;
+    }
+
+    fn unify(&mut self, formal: *SType, actual: *SType) -> Bool {
+        if actual as *raw SType as UInt == formal as *raw SType as UInt {
+            return true;
+        }
+
+        if actual.is_invalid() || formal.is_invalid() {
+            return false;
+        }
+
+        let mut aty = actual.canonical();
+        if aty.type_symbol is assoc: *AssociatedTypeSymbol {
+            aty = assoc.target_sty;
+        }
+        let mut fty = formal.canonical();
+        if fty.type_symbol is assoc: *AssociatedTypeSymbol {
+            fty = assoc.target_sty;
+        }
+
+        if fty.type_symbol is ts: *TypeParamSymbol {
+            let key = ts as *raw TypeParamSymbol as UInt;
+            self.ty_mapping.insert(key, move aty);
+            return true;
+        }
+
+        if fty.type_symbol is assoc: *AssociatedTypeSymbol {
+            return self.unify(assoc.target_sty, actual);
+        }
+
+        if fty.type_symbol as *raw TypeSymbol as UInt == aty.type_symbol as *raw TypeSymbol as UInt {
+            if aty.args.ty_args.len() == fty.args.ty_args.len() {
+                let len = aty.args.ty_args.len();
+                let mut i: UInt = 0;
+                while i < len {
+                    let a = aty.args.ty_arg(i);
+                    let f = fty.args.ty_arg(i);
+                    let r = self.unify(f, a);
+                    if !r {
+                        return false;
+                    }
+                    i += 1;
+                }
+            }
+            return true;
+
+            // let len1 = aty.args.lt_args.len();
+            // let len2 = fty.args.lt_args.len();
+            // let mut j: UInt = 0;
+            // while j < len1 && j < len2 {
+            //     let a = aty.args.lt_arg(j);
+            //     let f = fty.args.lt_arg(j);
+            //     if f.is_named() {
+            //         self.lt_substs.insert(move f, move a);
+            //     }
+            // }
+        }
+        return false;
+    }
+
+    fn unify_all(&mut self, formal: &Vec<*TypeParamSymbol>, actual: &Vec<*SType>, span: SourceSpan) {
+        let actual_count = actual.len();
+        let formal_count = formal.len();
+        if actual_count != formal_count {
+            DiagnosticEngine::get().emit_generic_args_count_mismatch(f"fn call", formal_count, actual_count, span);
+            return;
+        }
+        let mut i: UInt = 0;
+        while i < actual_count {
+            let arg_ty: *SType = *actual.index(i).deref();
+            let param: *TypeParamSymbol = *formal.index(i).deref();
+            let param_ty = param.to_sty();
+            self.unify(param_ty, arg_ty);
+
+            i += 1;
+        }
+    }
+
+    // fn unify_lt(&mut self, formal: Lifetime, actual: Lifetime) -> Bool {
+    //     if formal.is_named() {
+    //         self.lt_substs.insert(move formal, move actual);
+    //         return true;
+    //     }
+    //     return false;
+    // }
+
+    fn subst(&self, sty: *SType) -> *SType {
+        if sty.type_symbol is ts: *TypeParamSymbol {
+            let key = ts as *raw TypeParamSymbol as UInt;
+            if self.ty_mapping.at(&key) is Some(r) {
+                return self.subst(r);
+            } else {
+                return sty;
+            }
+        }
+
+        if sty.type_symbol is assoc: *AssociatedTypeSymbol {
+            if assoc.is_self_ty() && assoc.target_sty.type_symbol is type *TraitSymbol {
+                return sty; // 在 trait 上下文中的 Self 类型, 不要做替换
+            }
+            return self.subst(assoc.target_sty);
+        }
+
+        let mut new_args = GenericArgs::new();
+        for t in sty.args.ty_args {
+            new_args.ty_args.push(self.subst(t));
+        }
+        // for l in sty.args.lt_args {
+        //     new_args.lt_args.push(self.subst_lt(l));
+        // }
+        return sty.type_symbol.to_sty(move new_args);
+    }
+
+    // fn subst_lt(&self, lt: Lifetime) -> Lifetime {
+    //     if self.lt_substs.at(&lt) is Some(r) {
+    //         return r;
+    //     } else {
+    //         return Lifetime::new();
+    //     }
+    // }
+
+}

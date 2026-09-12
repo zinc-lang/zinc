@@ -1,0 +1,91 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode, DummySyntaxNode};
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::source_code::*;
+use super::*;
+
+impl AddressofValue {
+    fn new(e: *UnaryExpr, operand: *RValue) -> *Self {
+        let mut kind = AddressofKind::Ref;
+        match e.kind {
+            UnaryExprKind::Ref => kind = AddressofKind::Ref;
+            UnaryExprKind::RefMut => kind = AddressofKind::RefMut;
+            UnaryExprKind::RefRaw => kind = AddressofKind::RefRaw;
+            UnaryExprKind::RefRawMut => kind = AddressofKind::RefRawMut;
+            _ => panic;
+        }
+
+        return box {
+            .expr = e as *ExpressionNode,
+            .kind = move kind,
+            .parent_node = None,
+            .operand = move operand,
+            .sty = SType::sty_invalid(e.span()),
+        }: AddressofValue;
+    }
+
+    fn create(span: SourceSpan, kind: AddressofKind, operand: *RValue) -> *Self {
+        let dummy = box {
+            .source_span = span,
+        }: DummySyntaxNode;
+
+        let mut sty = SType::sty_invalid(span);
+
+        if !operand.get_stype().is_invalid() {
+            let mut args = GenericArgs::new();
+            args.ty_args.push(operand.get_stype());
+
+            match kind {
+                AddressofKind::Ref => { sty = BorrowImmutSymbol::new().to_sty(move args); }
+                AddressofKind::RefMut => { sty = BorrowMutSymbol::new().to_sty(move args); }
+                AddressofKind::RefRaw => { sty = RawPointerImmutSymbol::new().to_sty(move args); }
+                AddressofKind::RefRawMut => { sty = RawPointerMutSymbol::new().to_sty(move args); }
+                _ => panic;
+            }
+        }
+
+        return box {
+            .expr = dummy as *ExpressionNode,
+            .kind = move kind,
+            .parent_node = None,
+            .operand = move operand,
+            .sty = move sty,
+        }: AddressofValue;
+    }
+}
+
+impl XValue for AddressofValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+        match self.kind {
+            AddressofKind::Ref => print("&(");
+            AddressofKind::RefMut => print("&mut(");
+            AddressofKind::RefRaw => print("&raw(");
+            AddressofKind::RefRawMut => print("&raw mut(");
+        }
+        self.operand.dump();
+        print(")");
+    }
+}
+
+impl RValue for AddressofValue {
+
+}

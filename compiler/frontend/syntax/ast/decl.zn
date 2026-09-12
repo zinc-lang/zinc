@@ -1,0 +1,1137 @@
+use super::super::token::*;
+use super::super::super::source_code::{SourceSpan, SourceManager};
+use super::{QualifierKind, QualifierList};
+use super::SyntaxNode;
+use super::{DeclNode, StatementNode, ExpressionNode, PatternNode, TypeNode};
+use super::stmt::BlockStmt;
+use super::visit::{SyntaxVisitor, VisitResult};
+
+use super::super::super::diagnostic::*;
+use super::super::super::source_code::*;
+
+use std::primitives::string::ToString;
+
+pub struct ModDecl {
+    parent_mod: Option<*weak ModDecl>,
+    qualifier_list: QualifierList,
+    kw_mod: Token,
+    name: Token,
+    items: Vec<*DeclNode>,
+}
+
+pub struct ExportDecl {
+    parent_node: *weak SyntaxNode,
+    kw_export: Token,
+    name: Token,
+}
+
+pub struct ImportDecl {
+    parent_node: *weak SyntaxNode,
+    kw_import: Token,
+    name: Token,
+}
+
+pub enum UseDeclSegPart {
+    Empty(Token),
+    Word(Token), // ident
+    WordAs(Token, Token), // ident + as-ident
+    Star(Token), // 代表 use foo::*
+    Brace(Token, Vec<UseDeclBody>, Token), // 代表 use foo::{a, b, c}
+}
+
+pub struct UseDeclBody {
+    children: Vec<*UseDeclSegPart>,
+}
+
+pub struct UseDecl {
+    parent_node: *weak SyntaxNode,
+    kw_use: Token,
+    use_decl_body: UseDeclBody,
+    desugared_paths: Vec<UseDeclPath>,
+}
+
+pub struct GenericTypeParamDecl {
+    parent_node: *weak SyntaxNode,
+    name: Token,
+    upper_bounds: Vec<*TypeNode>,
+}
+
+pub struct WhereCondDecl {
+    parent_node: *weak SyntaxNode,
+    lhs: *TypeNode,
+    upper_bounds: Vec<*TypeNode>,
+}
+
+pub struct ReceiverParamDecl {
+    punct: Token,
+    kind: ReceiverKind,
+    lifetime: Token,
+    modifier1: Token,
+    modifier2: Token,
+    kw_self: Token,
+}
+
+pub enum ReceiverKind {
+    Value, // self
+    Borrow, // &self
+    BorrowMut, // &mut self
+    Arc, // *self
+    Weak, // *weak self
+    Raw, // *raw self
+    RawMut, // *raw mut self
+}
+
+pub enum FnParamDeclKind {
+    Receiver(*ReceiverParamDecl),
+    Named(Token, *TypeNode, Option<*ExpressionNode>), // 命名参数
+    Normal(Token, *TypeNode, Option<*ExpressionNode>), // name, type, default value
+    Ellipsis(Token),
+}
+
+pub struct FnParamDecl {
+    parent_node: *weak SyntaxNode,
+    decl_kind: FnParamDeclKind,
+}
+
+impl FnParamDecl {
+    pub fn name(&self) -> String {
+        match self.decl_kind {
+            FnParamDeclKind::Receiver(_) => return "self".to_string();
+            FnParamDeclKind::Named(name1, _, _) => {
+                let n = name1.raw_str();
+                if n.as_str().deref().eq(&"_") { // 下划线跟空字符串都不算有效的参数名，直接当成没有名字
+                    return String::new();
+                } else {
+                    return n;
+                }
+            }
+            FnParamDeclKind::Normal(name2, _, _) => {
+                let n = name2.raw_str();
+                if n.as_str().deref().eq(&"_") { // 下划线跟空字符串都不算有效的参数名，直接当成没有名字
+                    return String::new();
+                } else {
+                    return n;
+                }
+            }
+            FnParamDeclKind::Ellipsis(_) => return String::new();
+        }
+    }
+
+    pub fn span(&self) -> SourceSpan {
+        match self.decl_kind {
+            FnParamDeclKind::Receiver(r) => return r.kw_self.source_span;
+            FnParamDeclKind::Named(name1, _, _) => return name1.source_span;
+            FnParamDeclKind::Normal(name2, _, _) => return name2.source_span;
+            FnParamDeclKind::Ellipsis(tok) => return tok.source_span;
+        }
+    }
+}
+
+pub struct FuncDecl {
+    parent_node: *weak SyntaxNode, // 后面支持函数内部内嵌函数，所以 parent 可能是 mod 或者 fn
+    qualifier_list: QualifierList,
+    kw_fn: Token,
+    name: Token,
+    generic_params: Vec<*GenericTypeParamDecl>,
+    params: Vec<*FnParamDecl>,
+    return_type: Option<*TypeNode>,
+    where_conds: Vec<*WhereCondDecl>,
+    body: Option<*BlockStmt>,
+}
+
+pub struct TypeAliasDecl {
+    parent_node: *weak SyntaxNode, // 可能是 mod 或者 impl
+    qualifier_list: QualifierList,
+    kw_type: Token,
+    name: Token,
+    generic_params: Vec<*GenericTypeParamDecl>,
+    where_conds: Vec<*WhereCondDecl>,
+    assign: Token,
+    target_ty: Option<*TypeNode>,
+}
+
+pub struct AssociatedTypeDecl {
+    parent_trait: *weak TraitDecl,
+    qualifier_list: QualifierList,
+    kw_type: Token,
+    name: Token,
+    generic_params: Vec<*GenericTypeParamDecl>,
+    where_conds: Vec<*WhereCondDecl>,
+    colon: Token,
+    upper_bounds: Vec<*TypeNode>,
+}
+
+pub struct VarDecl {
+    parent_node: *weak SyntaxNode, // 可能是 mod 或者 fn
+    qualifier_list: QualifierList,
+    kw_const: Token,
+    kw_static: Token,
+    kw_mut: Token,
+    name: Token,
+    ty: Option<*TypeNode>,
+    init_expr: Option<*ExpressionNode>,
+}
+
+pub struct StructDecl {
+    parent_node: *weak SyntaxNode, // 可能是 mod 或者 fn
+    qualifier_list: QualifierList,
+    kw_struct: Token,
+    name: Token,
+    generic_params: Vec<*GenericTypeParamDecl>,
+    where_conds: Vec<*WhereCondDecl>,
+    fields: Vec<*VarDecl>,
+}
+
+pub struct EnumVariantDecl {
+    parent_enum: *weak EnumDecl,
+    name: Token,
+    fields: Vec<*TypeNode>,
+    descriminant: Option<*ExpressionNode>,
+}
+
+pub struct EnumDecl {
+    parent_node: *weak SyntaxNode, // 可能是 mod 或者 fn
+    qualifier_list: QualifierList,
+    kw_enum: Token,
+    name: Token,
+    generic_params: Vec<*GenericTypeParamDecl>,
+    repr_int: Option<*TypeNode>,
+    where_conds: Vec<*WhereCondDecl>,
+    variants: Vec<*EnumVariantDecl>,
+}
+
+pub struct UnionDecl {
+    parent_node: *weak SyntaxNode, // 可能是 mod 或者 fn
+    qualifier_list: QualifierList,
+    kw_union: Token,
+    name: Token,
+    fields: Vec<*VarDecl>,
+}
+
+pub struct TraitDecl {
+    parent_node: *weak SyntaxNode, // 可能是 mod 或者 fn
+    qualifier_list: QualifierList,
+    kw_trait: Token,
+    name: Token,
+    generic_params: Vec<*GenericTypeParamDecl>,
+    inherits: Vec<*TypeNode>,
+    where_conds: Vec<*WhereCondDecl>,
+    body_items: Vec<*DeclNode>,
+}
+
+pub struct ImplDecl {
+    parent_node: *weak SyntaxNode, // 可能是 mod 或者 fn
+    qualifier_list: QualifierList,
+    kw_impl: Token,
+    generic_params: Vec<*GenericTypeParamDecl>,
+    bang: Token, // 可能的 ! 符号
+    trait_ty: Option<*TypeNode>,
+    target_ty: *TypeNode,
+    where_conds: Vec<*WhereCondDecl>,
+    body_items: Vec<*DeclNode>,
+}
+
+pub struct ReuseDecl {
+    parent_impl: *weak ImplDecl,
+    kw_reuse: Token,
+    kw_self: Token,
+    member_access_chain: Vec<Token>,
+}
+
+pub struct ExternBlockDecl {
+    parent_node: *weak SyntaxNode, // 可能是 mod 或者 fn
+    qualifier_list: QualifierList,
+    kw_extern: Token,
+    items: Vec<*DeclNode>,
+}
+
+impl DeclNode for ModDecl {
+    fn short_name(&self) -> String {
+        return self.name.raw_str();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return self.qualifier_list;
+    }
+}
+
+impl SyntaxNode for ModDecl {
+    fn span(&self) -> SourceSpan {
+        return self.name.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_mod(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+
+        let len = self.items.len();
+        for item in self.items {
+            all.push(move item as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        if self.parent_mod is Some(m){
+            return Some(m as *weak SyntaxNode);
+        } else {
+            return None;
+        }
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        if parent is p: *weak ModDecl {
+            self.parent_mod = Some(p);
+        }
+    }
+}
+
+impl DeclNode for ExportDecl {
+    fn short_name(&self) -> String {
+        return self.name.raw_str();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return QualifierList::new();
+    }
+}
+
+impl SyntaxNode for ExportDecl {
+    fn span(&self) -> SourceSpan {
+        return self.name.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_export(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        return (type Vec<*SyntaxNode>)::new();
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl DeclNode for ImportDecl {
+    fn short_name(&self) -> String {
+        return self.name.raw_str();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return QualifierList::new();
+    }
+}
+
+impl SyntaxNode for ImportDecl {
+    fn span(&self) -> SourceSpan {
+        return self.name.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_import(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        return (type Vec<*SyntaxNode>)::new();
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl DeclNode for UseDecl {
+    fn short_name(&self) -> String {
+        return String::new();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return QualifierList::new();
+    }
+}
+
+impl SyntaxNode for UseDecl {
+    fn span(&self) -> SourceSpan {
+        return self.kw_use.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_use(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        return (type Vec<*SyntaxNode>)::new();
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl UseDeclSegPart {
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            UseDeclSegPart::Empty(tok1) => return tok1.source_span;
+            UseDeclSegPart::Word(tok2) => return tok2.source_span;
+            UseDeclSegPart::WordAs(tok3, _) => return tok3.source_span;
+            UseDeclSegPart::Star(tok4) => return tok4.source_span;
+            UseDeclSegPart::Brace(lbrace, _, rbrace) => return lbrace.source_span;
+        }
+    }
+}
+
+pub struct UseDeclPath {
+    token_list: Vec<Token>,
+    as_ident: Token,
+}
+
+impl UseDeclPath {
+    fn starts_empty(&self) -> Bool {
+        if self.token_list.is_empty() {
+            return true;
+        } else {
+            let t = self.token_list.at(0).get_or_panic();
+            return t.token_kind is TokenKind::Punctuation(_);
+        }
+    }
+
+    fn slice(&self, i: UInt) -> UseDeclPath {
+        let mut tokens = (type Vec<Token>)::new();
+        let mut n = i;
+        while n < self.token_list.len() {
+            tokens.push(*self.token_list.index(n).deref());
+            n += 1;
+        }
+        return {
+            .token_list = move tokens,
+            .as_ident = self.as_ident,
+        }: UseDeclPath;
+    }
+
+    fn ends_with_star(&self) -> Bool {
+        if self.token_list.is_empty() {
+            return false;
+        } else {
+            let len = self.token_list.len();
+            let t = self.token_list.at(len - 1).get_or_panic();
+            return t.token_kind is TokenKind::Punctuation(PunctuationKind::Star);
+        }
+    }
+
+    fn last(&self) -> Option<Token> {
+        if self.token_list.is_empty() {
+            return None;
+        } else {
+            let len = self.token_list.len();
+            return self.token_list.at(len - 1);
+        }
+    }
+}
+
+impl ToString for UseDeclPath {
+    fn to_string_inplace(&self, s: &mut String) {
+        let mut i: UInt = 0;
+        let len = self.token_list.len();
+        for ref t in self.token_list {
+            if t.token_kind is TokenKind::Identifier {
+                s.push_str(t.raw_str().as_str().deref());
+            }
+            else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_LOWER) {
+                s.push_str("self");
+            }
+            else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_SUPER) {
+                s.push_str("super");
+            }
+            if i + 1 < len {
+                s.push_str("::");
+            }
+            i += 1;
+        }
+        if !(self.as_ident.token_kind is TokenKind::Invalid) {
+            s.push_str(" as ");
+            s.push_str(self.as_ident.raw_str().as_str().deref());
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl UseDecl {
+    pub fn desugar(&mut self) {
+        let paths = self.desugar_to_paths();
+        self.desugared_paths = paths;
+    }
+
+    fn desugar_to_paths(&self) -> Vec<UseDeclPath> {
+        let mut paths = (type Vec<UseDeclPath>)::new();
+        self.desugar_to_paths_helper(&mut paths, (type Vec<Token>)::new(), self.use_decl_body.children);
+        return paths;
+    }
+
+    fn desugar_to_paths_helper(&self, paths: &mut Vec<UseDeclPath>, prefix: Vec<Token>, seg_parts: Vec<*UseDeclSegPart>) {
+        let mut seg_parts = move seg_parts;
+        if seg_parts.is_empty() {
+            // 报错 UseDeclSegPart 不能为空
+            DiagnosticEngine::get().emit_invalid_use_decl(self.kw_use.source_span, "unexpected end of use declaration");
+            return;
+        }
+        let head = seg_parts.pop_front();
+        if head is Some(seg_part) {
+            match seg_part {
+                UseDeclSegPart::Empty(tok) => {
+                    if !prefix.is_empty() {
+                        // 报错 Empty seg_part 的前面如果已经存在其他 seg_part 了，那么这是不合法的
+                        DiagnosticEngine::get().emit_invalid_use_decl(tok.source_span, "unexpected `::` in use declaration");
+                        return;
+                    }
+                    if seg_parts.is_empty() {
+                        // 报错 Empty seg_part 后面一定要有其他 seg_part
+                        DiagnosticEngine::get().emit_invalid_use_decl(tok.source_span, "unexpected end of use declaration after `::`");
+                        return;
+                    }
+                    let mut new_prefix = prefix;
+                    new_prefix.push(tok);
+                    self.desugar_to_paths_helper(paths, new_prefix, move seg_parts);
+                    return;
+                }
+                UseDeclSegPart::WordAs(tok2, as_ident) => {
+                    let mut new_prefix = prefix;
+                    new_prefix.push(tok2);
+                    if seg_parts.is_empty() {
+                        let mut path: UseDeclPath = { .token_list = new_prefix, .as_ident = as_ident };
+                        paths.push(move path);
+                        return;
+                    } else {
+                        if !(as_ident.token_kind is TokenKind::Invalid) {
+                            // 报错 只有最后一个 segment 可以有 as-ident，其他的都不允许
+                            DiagnosticEngine::get().emit_invalid_use_decl(as_ident.source_span, "unexpected `as` in use declaration");
+                            return;
+                        }
+                        self.desugar_to_paths_helper(paths, new_prefix, move seg_parts);
+                        return;
+                    }
+                }
+                UseDeclSegPart::Word(tok3) => {
+                    let mut new_prefix = move prefix;
+                    new_prefix.push(tok3);
+                    if seg_parts.is_empty() {
+                        let mut path: UseDeclPath = { .token_list = new_prefix, .as_ident = Token::invalid(tok3.source_span) };
+                        paths.push(move path);
+                        return;
+                    } else {
+                        self.desugar_to_paths_helper(paths, new_prefix, move seg_parts);
+                        return;
+                    }
+                }
+                UseDeclSegPart::Star(tok4) => {
+                    if prefix.is_empty() {
+                        // 报错 Star seg_part 的前面如果没有其他 seg_part ，那么这是不合法的
+                        DiagnosticEngine::get().emit_invalid_use_decl(tok4.source_span, "unexpected `*` in use declaration");
+                        return;
+                    }
+                    let mut new_prefix = prefix;
+                    new_prefix.push(tok4);
+                    if seg_parts.is_empty() {
+                        let mut path: UseDeclPath = { .token_list = new_prefix, .as_ident = Token::invalid(tok4.source_span) };
+                        paths.push(move path);
+                        return;
+                    } else {
+                        // 报错 只有最后一个 segment 可以是 Star，其他的都不允许
+                        DiagnosticEngine::get().emit_invalid_use_decl(tok4.source_span, "unexpected `*` in use declaration");
+                        return;
+                    }
+                }
+                UseDeclSegPart::Brace(_, children, _) => {
+                    for ref child in children {
+                        self.desugar_to_paths_helper(paths, prefix, child.children);
+                    }
+                    if !seg_parts.is_empty() {
+                        // 报错 Brace的后面不能有别的 seg_parts
+                        DiagnosticEngine::get().emit_invalid_use_decl(seg_part.span(), "unexpected segment after `{}` in use declaration");
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl DeclNode for GenericTypeParamDecl {
+    fn short_name(&self) -> String {
+        return self.name.raw_str();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return QualifierList::new();
+    }
+}
+
+impl SyntaxNode for GenericTypeParamDecl {
+    fn span(&self) -> SourceSpan {
+        return self.name.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_generic_param(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        for c in self.upper_bounds {
+            all.push(move c as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl DeclNode for WhereCondDecl {
+    fn short_name(&self) -> String {
+        return String::new();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return QualifierList::new();
+    }
+}
+
+impl SyntaxNode for WhereCondDecl {
+    fn span(&self) -> SourceSpan {
+        return self.lhs.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_where(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::with_capacity(1 + self.upper_bounds.len());
+        all.push(self.lhs as *SyntaxNode);
+        for ub in self.upper_bounds {
+            all.push(move ub as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl DeclNode for FnParamDecl {
+    fn short_name(&self) -> String {
+        match self.decl_kind {
+            FnParamDeclKind::Receiver(_) => return "self".to_string();
+            FnParamDeclKind::Named(name1, _, _) => return name1.raw_str();
+            FnParamDeclKind::Normal(name2, _, _) => return name2.raw_str();
+            FnParamDeclKind::Ellipsis(_) => return "...".to_string();
+        }
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return QualifierList::new();
+    }
+}
+
+impl SyntaxNode for FnParamDecl {
+    fn span(&self) -> SourceSpan {
+        match self.decl_kind {
+            FnParamDeclKind::Receiver(r) => return r.kw_self.source_span;
+            FnParamDeclKind::Named(name1, _, _) => return name1.source_span;
+            FnParamDeclKind::Normal(name2, _, _) => return name2.source_span;
+            FnParamDeclKind::Ellipsis(tok) => return tok.source_span;
+        }
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_fn_param(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        match self.decl_kind {
+            FnParamDeclKind::Receiver(_) => {
+                return (type Vec<*SyntaxNode>)::new();
+            }
+            FnParamDeclKind::Named(_, ty1, _) => {
+                let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::with_capacity(1);
+                all.push(ty1 as *SyntaxNode);
+                return all;
+            }
+            FnParamDeclKind::Normal(_, ty2, _) => {
+                let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::with_capacity(1);
+                all.push(ty2 as *SyntaxNode);
+                return all;
+            }
+            FnParamDeclKind::Ellipsis(_) => {
+                return (type Vec<*SyntaxNode>)::new();
+            }
+        }
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl DeclNode for FuncDecl {
+    fn short_name(&self) -> String {
+        return self.name.raw_str();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return self.qualifier_list;
+    }
+}
+
+impl SyntaxNode for FuncDecl {
+    fn span(&self) -> SourceSpan {
+        return self.name.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_fn(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        for p in self.generic_params {
+            all.push(p as *SyntaxNode);
+        }
+
+        for p in self.params {
+            all.push(move p as *SyntaxNode);
+        }
+        if self.return_type is Some(rt) {
+            all.push(rt as *SyntaxNode);
+        }
+        for wc in self.where_conds {
+            all.push(move wc as *SyntaxNode);
+        }
+        if self.body is Some(body) {
+            all.push(body as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl FuncDecl {
+    fn is_extern(&self) -> Bool {
+        return self.qualifier_list.get(QualifierKind::Extern) is Some(_);
+    }
+}
+
+impl DeclNode for TypeAliasDecl {
+    fn short_name(&self) -> String {
+        return self.name.raw_str();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return self.qualifier_list;
+    }
+}
+
+impl SyntaxNode for TypeAliasDecl {
+    fn span(&self) -> SourceSpan {
+        return self.name.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_typealias(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::with_capacity(2 + self.generic_params.len() + self.where_conds.len());
+        for p in self.generic_params {
+            all.push(move p as *SyntaxNode);
+        }
+        for wc in self.where_conds {
+            all.push(move wc as *SyntaxNode);
+        }
+        if self.target_ty is Some(t) {
+            all.push(move t as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl DeclNode for AssociatedTypeDecl {
+    fn short_name(&self) -> String {
+        return self.name.raw_str();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return QualifierList::new();
+    }
+}
+
+impl SyntaxNode for AssociatedTypeDecl {
+    fn span(&self) -> SourceSpan {
+        return self.name.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_associated_type(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        for ub in self.upper_bounds {
+            all.push(move ub as *SyntaxNode);
+        }
+        for p in self.generic_params {
+            all.push(move p as *SyntaxNode);
+        }
+        for wc in self.where_conds {
+            all.push(move wc as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_trait as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        if parent is t: *weak TraitDecl {
+            self.parent_trait = move t;
+        }
+    }
+}
+
+impl DeclNode for VarDecl {
+    fn short_name(&self) -> String {
+        return self.name.raw_str();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return self.qualifier_list;
+    }
+}
+
+
+impl SyntaxNode for VarDecl {
+    fn span(&self) -> SourceSpan {
+        return self.name.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_var_decl(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        if self.ty is Some(t) {
+            all.push(t as *SyntaxNode);
+        }
+        if self.init_expr is Some(ie) {
+            all.push(ie as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl DeclNode for StructDecl {
+    fn short_name(&self) -> String {
+        return self.name.raw_str();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return self.qualifier_list;
+    }
+}
+
+impl SyntaxNode for StructDecl {
+    fn span(&self) -> SourceSpan {
+        return self.name.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_struct(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        for p in self.generic_params {
+            all.push(move p as *SyntaxNode);
+        }
+        for f in self.fields {
+            all.push(move f as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl DeclNode for EnumVariantDecl {
+    fn short_name(&self) -> String {
+        return self.name.raw_str();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return QualifierList::new();
+    }
+}
+
+impl SyntaxNode for EnumVariantDecl {
+    fn span(&self) -> SourceSpan {
+        return self.name.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_enum_variant(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::with_capacity(self.fields.len() + 1);
+        for f in self.fields {
+            all.push(move f as *SyntaxNode);
+        }
+        if self.descriminant.is Some(de) {
+            all.push(de as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_enum as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        if parent is p: *weak EnumDecl {
+            self.parent_enum = move p;
+        }
+    }
+}
+
+impl DeclNode for EnumDecl {
+    fn short_name(&self) -> String {
+        return self.name.raw_str();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return self.qualifier_list;
+    }
+}
+
+impl SyntaxNode for EnumDecl {
+    fn span(&self) -> SourceSpan {
+        return self.name.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_enum(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::with_capacity(2 + self.generic_params.len() + self.where_conds.len() + self.variants.len());
+        for p in self.generic_params {
+            all.push(move p as *SyntaxNode);
+        }
+        if self.repr_int.is Some(ri) {
+            all.push(move ri as *SyntaxNode);
+        }
+        for wc in self.where_conds {
+            all.push(move wc as *SyntaxNode);
+        }
+        for v in self.variants {
+            all.push(move v as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl DeclNode for UnionDecl {
+    fn short_name(&self) -> String {
+        return self.name.raw_str();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return self.qualifier_list;
+    }
+}
+
+impl SyntaxNode for UnionDecl {
+    fn span(&self) -> SourceSpan {
+        return self.name.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_union(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        for f in self.fields {
+            all.push(move f as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl DeclNode for TraitDecl {
+    fn short_name(&self) -> String {
+        return self.name.raw_str();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return self.qualifier_list;
+    }
+}
+
+impl SyntaxNode for TraitDecl {
+    fn span(&self) -> SourceSpan {
+        return self.name.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_trait(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        for p in self.generic_params {
+            all.push(move p as *SyntaxNode);
+        }
+        for inh in self.inherits {
+            all.push(move inh as *SyntaxNode);
+        }
+        for wc in self.where_conds {
+            all.push(move wc as *SyntaxNode);
+        }
+        for bi in self.body_items {
+            all.push(move bi as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl DeclNode for ImplDecl {
+    fn short_name(&self) -> String {
+        return String::new();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return self.qualifier_list;
+    }
+}
+
+impl SyntaxNode for ImplDecl {
+    fn span(&self) -> SourceSpan {
+        return self.kw_impl.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_impl(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::with_capacity(2 + self.generic_params.len() + self.where_conds.len() + self.body_items.len());
+        for p in self.generic_params {
+            all.push(move p as *SyntaxNode);
+        }
+        if self.trait_ty is Some(tt) {
+            all.push(move tt as *SyntaxNode);
+        }
+        all.push(self.target_ty as *SyntaxNode);
+        for wc in self.where_conds {
+            all.push(move wc as *SyntaxNode);
+        }
+        for bi in self.body_items {
+            all.push(move bi as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl DeclNode for ReuseDecl {
+    fn short_name(&self) -> String {
+        return String::new();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return QualifierList::new();
+    }
+}
+
+impl SyntaxNode for ReuseDecl {
+    fn span(&self) -> SourceSpan {
+        return self.kw_reuse.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_reuse(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        return (type Vec<*SyntaxNode>)::new();
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_impl as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        if parent is p: *weak ImplDecl {
+            self.parent_impl = move p;
+        }
+    }
+}
+
+impl DeclNode for ExternBlockDecl {
+    fn short_name(&self) -> String {
+        return String::new();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return self.qualifier_list;
+    }
+}
+
+impl SyntaxNode for ExternBlockDecl {
+    fn span(&self) -> SourceSpan {
+        return self.kw_extern.source_span;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_extern_block(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut all: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        for fi in self.items {
+            all.push(move fi as *SyntaxNode);
+        }
+        return all;
+    }
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node as *weak SyntaxNode);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}

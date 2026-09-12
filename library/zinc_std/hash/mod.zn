@@ -1,0 +1,44 @@
+use ::self::primitives::default::Default;
+
+pub trait Hash {
+    virtual fn hash(&self, state: &mut Hasher);
+}
+
+// 这个设计不对，自定义的 Hasher 无法对内置类型的哈希算法进行定制
+// 还是应该改成 Rust 的那套设计
+pub trait Hasher {
+    // Required methods
+    virtual fn finish(&self) -> UInt64;
+    virtual fn combine(&mut self, ahash: UInt64);
+}
+
+// 基于 c++ 的实现
+// template <typename T>
+// inline void hash_combine(std::size_t& seed, const T& v) {
+//     std::hash<T> hasher;
+//     seed ^= hasher(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+// }
+pub struct DefaultHasher {
+    hash: UInt64
+}
+
+impl Default for DefaultHasher {
+    fn default() -> DefaultHasher {
+        return { .hash = 0 }: DefaultHasher;
+    }
+}
+
+pub fn default_hasher() -> DefaultHasher {
+    return { .hash = 0 }: DefaultHasher;
+}
+
+impl Hasher for DefaultHasher {
+    fn finish(&self) -> UInt64 {
+        return self.hash;
+    }
+
+    fn combine(&mut self, ahash: UInt64) {
+        let h = ahash + 0x9e3779b9 + self.hash.bit_shl(6_u32) + self.hash.bit_shr(2_u32);
+        self.hash = self.hash.bit_xor(h);
+    }
+}

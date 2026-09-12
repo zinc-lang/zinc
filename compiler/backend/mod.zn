@@ -1,0 +1,12 @@
+
+// 后续应该把 cli, frontend, backend 拆分成三个 component
+// 其中 cli 生成可执行程序 zinc, frontend 和 backend 生成两个动态链接库
+// 供IDE使用的 LSP 等工具要链接 frontend 动态库
+
+// backend 动态库应该是被 zinc 可执行程序动态加载的, 允许用户通过中央仓库发布自己的 backend
+// 其他人可以通过命令行下载下来使用, 切换后端不用重新编译、或者安装整个工具链
+// 这样可以做到 zinc 的后端是不跟 LLVM 严格绑定的, 有利于 zinc 支持多种不同的后端实现
+//
+
+mod optimization;
+pub mod codegen;

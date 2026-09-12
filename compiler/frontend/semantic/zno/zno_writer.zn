@@ -1,0 +1,107 @@
+use super::*;
+
+struct ZnoWriter {
+    file_path: String,
+    db: *raw (),
+}
+
+extern fn zno_create_db(ptr: *raw UInt8, len: UInt) -> *raw ();
+extern fn zno_close_db(ptr: *raw ());
+extern fn zno_write_compilation(db: *raw (), key: *raw UInt8, value: *raw UInt8);
+extern fn zno_write_mod(db: *raw (), key: *raw UInt8, value: *raw UInt8);
+extern fn zno_write_global(db: *raw (), key: *raw UInt8, value: *raw UInt8);
+extern fn zno_write_func(db: *raw (), key: *raw UInt8, value: *raw UInt8);
+extern fn zno_write_type(db: *raw (), key: *raw UInt8, value: *raw UInt8);
+extern fn zno_write_impl(db: *raw (), key: *raw UInt8, v1: *raw UInt8, v2: *raw UInt8);
+
+impl ZnoWriter {
+    fn create_new(path_str: Str) -> Option<*ZnoWriter> {
+        let db = unsafe(zno_create_db(path_str.raw_ptr(), path_str.len()));
+        if db as UInt == 0 {
+            return None;
+        }
+        return Some(box {
+            .file_path = path_str.to_string(),
+            .db = db,
+        }: ZnoWriter);
+    }
+
+    fn write_compilation(&self, key: String, value: String) {
+        // 确保 key/value 都是以 '\0' 结尾，这样它就是符合 C 要求的字符串了
+        let mut key = move key;
+        key.push(0_u8);
+        let mut value = move value;
+        value.push(0_u8);
+
+        unsafe {
+            zno_write_compilation(self.db, key.raw_ptr(), value.raw_ptr());
+        }
+    }
+
+    fn write_mod(&self, key: String, value: String) {
+        let mut key = move key;
+        key.push(0_u8);
+        let mut value = move value;
+        value.push(0_u8);
+
+        unsafe {
+            zno_write_mod(self.db, key.raw_ptr(), value.raw_ptr());
+        }
+    }
+
+    fn write_global(&self, key: String, value: String) {
+        let mut key = move key;
+        key.push(0_u8);
+        let mut value = move value;
+        value.push(0_u8);
+
+        unsafe {
+            zno_write_global(self.db, key.raw_ptr(), value.raw_ptr());
+        }
+    }
+
+    fn write_func(&self, key: String, value: String) {
+        let mut key = move key;
+        key.push(0_u8);
+        let mut value = move value;
+        value.push(0_u8);
+
+        unsafe {
+            zno_write_func(self.db, key.raw_ptr(), value.raw_ptr());
+        }
+    }
+
+    fn write_type(&self, key: String, value: String) {
+        let mut key = move key;
+        key.push(0_u8);
+        let mut value = move value;
+        value.push(0_u8);
+
+        unsafe {
+            zno_write_type(self.db, key.raw_ptr(), value.raw_ptr());
+        }
+    }
+
+    fn write_impl(&self, key1: String, key2: String, v: String) {
+        let mut key1 = move key1;
+        key1.push(0_u8);
+        let mut key2 = move key2;
+        key2.push(0_u8);
+        let mut v = move v;
+        v.push(0_u8);
+
+        unsafe {
+            zno_write_impl(self.db, key1.raw_ptr(), key2.raw_ptr(), v.raw_ptr());
+        }
+    }
+}
+
+impl UnSized for ZnoWriter {}
+
+impl Drop for ZnoWriter {
+    fn drop(&mut self) {
+        unsafe {
+            zno_close_db(self.db);
+        }
+    }
+}

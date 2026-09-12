@@ -1,0 +1,249 @@
+use std::alloc::raw_alloc_n;
+use std::mem::size_of;
+
+// todo 后面应该直接用 std::collections::HashSet 取代
+struct UIntSet {
+    data: *(),
+    cap: UInt,
+    count: UInt,
+}
+
+impl UIntSet {
+    fn new() -> Self {
+        let data = unsafe(raw_alloc_n(size_of(<UInt>), 8_u) as *());
+        return {
+            .data = move data,
+            .cap = 8_u,
+            .count = 0_u,
+        }: UIntSet;
+    }
+
+    fn len(&self) -> UInt {
+        return self.count;
+    }
+
+    fn dump(&self) {
+        let data_ptr = unsafe(self.data as *raw () as *raw UInt);
+        let mut i: UInt = 0;
+        while i < self.cap {
+            let value = unsafe(*(data_ptr + i));
+            print(value);
+            print(" ");
+            i += 1_u;
+        }
+        println();
+    }
+
+    fn to_unique(&mut self) {
+        if !(std::ptr::is_unique(&self.data)) {
+            let new_data = unsafe(raw_alloc_n(size_of(<UInt>), self.cap) as *());
+
+            let data_ptr = unsafe(self.data as *raw () as *raw UInt);
+            let new_data_ptr = unsafe(new_data as *raw mut () as *raw mut UInt);
+
+            let mut i: UInt = 0;
+            while i < self.count {
+                let dst = new_data_ptr + i;
+                let src = data_ptr + i;
+                unsafe(*dst = *src);
+                i += 1_u;
+            }
+            self.data = move new_data;
+        }
+    }
+
+    fn reserve(&mut self, additional: UInt) {
+        let min_cap = self.count + additional;
+        if (self.cap >= min_cap) {
+            return;
+        }
+        self.to_unique();
+        let new_data = unsafe(raw_alloc_n(size_of(<UInt>), min_cap) as *());
+
+        let data_ptr = unsafe(self.data as *raw () as *raw UInt);
+        let new_data_ptr = unsafe(new_data as *raw mut () as *raw mut UInt);
+
+        let mut i: UInt = 0;
+        while i < self.count {
+            let dst = new_data_ptr + i;
+            let src = data_ptr + i;
+            unsafe(*dst = *src);
+            i += 1_u;
+        }
+        self.data = move new_data;
+        self.cap = min_cap;
+    }
+
+    fn insert(&mut self, value: UInt) {
+        if self.count == self.cap {
+            self.reserve(self.count);
+        }
+        self.to_unique();
+        // 二分查找
+        let start_ptr = unsafe(self.data as *raw mut () as *raw mut UInt);
+
+        let mut left = 0_u;
+        let mut right = self.count;
+        while left < right {
+            let mid = (left + right) / 2_u;
+            let mid_ptr = unsafe(start_ptr + mid);
+            let mid_value = unsafe(*mid_ptr);
+            if mid_value == value {
+                return;
+            } else if mid_value < value {
+                left = mid + 1_u;
+            } else {
+                right = mid;
+            }
+        }
+
+        // left 是插入位置
+        let insert_ptr = unsafe(start_ptr + left);
+        // 将插入位置之后的元素向后移动一位
+        let mut i = self.count;
+        while i > left {
+            let src_ptr = unsafe(start_ptr + i - 1_u);
+            let dst_ptr = unsafe(start_ptr + i);
+            unsafe(*dst_ptr = *src_ptr);
+            i -= 1_u;
+        }
+        unsafe(*insert_ptr = value);
+
+        self.count += 1_u;
+    }
+
+    fn remove(&mut self, value: UInt) {
+        // 二分查找
+        self.to_unique();
+        let start_ptr = unsafe(self.data as *raw mut () as *raw mut UInt);
+
+        let mut left = 0_u;
+        let mut right = self.count;
+        while left < right {
+            let mid = (left + right) / 2_u;
+            let mid_ptr = unsafe(start_ptr + mid);
+            let mid_value = unsafe(*mid_ptr);
+            if mid_value == value {
+                // 找到，删除
+                let mut i = mid;
+                while i < self.count - 1_u {
+                    let src_ptr = unsafe(start_ptr + i + 1_u);
+                    let dst_ptr = unsafe(start_ptr + i);
+                    unsafe(*dst_ptr = *src_ptr);
+                    i += 1_u;
+                }
+                let dst_ptr = unsafe(start_ptr + i);
+                unsafe(*dst_ptr = 0_u);
+                self.count -= 1_u;
+                return;
+            } else if mid_value < value {
+                left = mid + 1_u;
+            } else {
+                right = mid;
+            }
+        }
+    }
+
+    fn contains(&self, value: UInt) -> Bool {
+        // 二分查找
+        let start_ptr = unsafe(self.data as *raw () as *raw UInt);
+
+        let mut left = 0_u;
+        let mut right = self.count;
+        while left < right {
+            let mid = (left + right) / 2_u;
+            let mid_ptr = unsafe(start_ptr + mid);
+            let mid_value = unsafe(*mid_ptr);
+            if mid_value == value {
+                return true;
+            } else if mid_value < value {
+                left = mid + 1_u;
+            } else {
+                right = mid;
+            }
+        }
+        return false;
+    }
+
+    fn intersect_set(&mut self, other: &UIntSet) {
+        let mut res = UIntSet::new();
+        let mut i: UInt = 0;
+        let data_ptr = unsafe(self.data as *raw () as *raw UInt);
+        while i < self.count {
+            let value = unsafe(*(data_ptr + i));
+            if other.contains(value) {
+                res.insert(value);
+            }
+            i += 1_u;
+        }
+        *self = move res;
+    }
+
+    fn union_set(&mut self, other: &UIntSet) {
+        let mut j: UInt = 0;
+        let other_data_ptr = unsafe(other.data as *raw () as *raw UInt);
+        while j < other.count {
+            let value = unsafe(*(other_data_ptr + j));
+            self.insert(value);
+            j += 1_u;
+        }
+    }
+
+    fn is_superset_of(&self, other: &UIntSet) -> Bool {
+        let mut j: UInt = 0;
+        let other_data_ptr = unsafe(other.data as *raw () as *raw UInt);
+        while j < other.count {
+            let value = unsafe(*(other_data_ptr + j));
+            if !self.contains(value) {
+                return false;
+            }
+            j += 1_u;
+        }
+        return true;
+    }
+
+    fn is_subset_of(&self, other: &UIntSet) -> Bool {
+        let mut i: UInt = 0;
+        let data_ptr = unsafe(self.data as *raw () as *raw UInt);
+        while i < self.count {
+            let value = unsafe(*(data_ptr + i));
+            if !other.contains(value) {
+                return false;
+            }
+            i += 1_u;
+        }
+        return true;
+    }
+}
+
+struct UIntSetIter {
+    data: *(),
+    count: UInt,
+    index: UInt,
+}
+
+impl Iterable for UIntSet {
+    type Iter<'i> = UIntSetIter;
+
+    fn iter(&self) -> UIntSetIter {
+        return {
+            .data = self.data,
+            .count = self.count,
+            .index = 0_u,
+        }: UIntSetIter;
+    }
+}
+
+impl Iterator for UIntSetIter {
+    type Item = UInt;
+
+    fn next<'n>(&'n mut self) -> Option<&'n UInt> {
+        if self.index >= self.count {
+            return None;
+        }
+        let data_ptr = unsafe(self.data as *raw () as *raw UInt);
+        let item = unsafe((data_ptr + self.index) as &UInt);
+        self.index += 1_u;
+        return Some(item);
+    }
+}

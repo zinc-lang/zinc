@@ -1,0 +1,62 @@
+
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::source_code::*;
+use super::*;
+
+impl LocalVar {
+    fn new(e: *ExpressionNode, sym: *VarSymbol) -> *Self {
+        return box {
+            .expr = move e,
+            .sym_var = move sym,
+            .parent_node = None,
+        }: LocalVar;
+    }
+
+    fn create(span: SourceSpan, sym: *VarSymbol) -> *Self {
+        let dummy = box {
+            .source_span = move span
+        }: DummySyntaxNode;
+        return box {
+            .expr = move dummy as *ExpressionNode,
+            .sym_var = move sym,
+            .parent_node = None,
+        }: LocalVar;
+    }
+}
+
+impl XValue for LocalVar {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sym_var.stype;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sym_var.stype = move sty;
+    }
+
+    fn dump(&self) {
+        let n = self.sym_var.short_name();
+        if !n.is_empty() {
+            print(n);
+        } else {
+            print("Temp");
+            print(self.sym_var as *raw VarSymbol as UInt);
+        }
+    }
+}
+
+impl LValue for LocalVar {
+
+}

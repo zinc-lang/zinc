@@ -1,0 +1,158 @@
+mod values;
+mod terminators;
+
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::hir::constant::*;
+use ::self::frontend::syntax::ast::*;
+
+use ::self::frontend::source_code::*;
+
+use std::meta::Type;
+use std::collections::hashset::HashSet;
+
+struct Step {
+    value: *XValue,
+}
+
+trait Terminator {
+    virtual fn successors(&self) -> Vec<*BasicBlock>;
+    virtual fn dump(&self);
+}
+
+struct BasicBlock {
+    index: UInt,
+    debug_string: String,
+    outside_block: *BlockSentence,
+    steps: Vec<Step>,
+    terminator: Option<*Terminator>,
+    incomings: Vec<*BasicBlock>,
+}
+
+struct BrForward {
+    target: *BasicBlock,
+}
+
+struct BrBackward {
+    target: *BasicBlock,
+}
+
+struct BrBool {
+    cond: *RValue,
+    target_true: *BasicBlock,
+    target_false: *BasicBlock,
+}
+
+struct BrInt {
+    targets: HashMap<UInt, *BasicBlock>,
+}
+
+struct BrRet {
+    ret_val: Option<*RValue>,
+}
+
+struct BrPanic {
+    span: SourceSpan,
+    panic_var: Option<*RValue>,
+}
+
+struct CFG {
+    func_sym: *FuncSymbol,
+    basic_blocks: Vec<*BasicBlock>,
+}
+
+impl BasicBlock {
+    fn add_step(&mut self, v: *XValue) {
+        let step = {
+            .value = move v,
+        }: Step;
+        self.steps.push(move step);
+    }
+
+    fn dump(&self) {
+        print("bb");
+        print(self.index);
+        if !self.debug_string.is_empty() {
+            print("    ");
+            print(self.debug_string);
+        }
+        println(":");
+
+        for s in self.steps {
+            s.dump();
+        }
+        if self.terminator is Some(t) {
+            let meta = Type::of(&*t as &Terminator as &Any);
+            print("  {");
+            print(meta.short_name());
+            print("}  ");
+            t.dump();
+        }
+        println();
+    }
+
+}
+
+impl CFG {
+    fn dump(&self) {
+        print("CFG of "); println(self.func_sym.mangle_name());
+        for bb in self.basic_blocks {
+            bb.dump();
+        }
+    }
+}
+
+impl Step {
+    fn dump(&self) {
+        print("  [");
+        let meta = Type::of(&*self.value as &XValue as &Any);
+        print(meta.short_name());
+        print("]  ");
+
+        self.value.dump();
+        println();
+    }
+}
+
+// 新引入几个 RValue
+
+struct PhiValue {
+    expr: *ExpressionNode,
+    incoming: Vec<(*RValue, *BasicBlock)>,
+    for_alloca: Bool,
+}
+
+struct CompileTimeValue {
+    expr: *ExpressionNode,
+    value: *ConstValue,
+    stype: *SType,
+}
+
+struct DtorValue {
+    expr: *ExpressionNode,
+    src: *LValue,
+    // 有些时候需要在后面的阶段删掉多余的 DtorValue，但直接删比较麻烦，加一个标记位比较简单
+    no_need: Bool,
+}
+
+struct CopyValue {
+    expr: *ExpressionNode,
+    src: *RValue,
+}
+
+struct ReBorrowValue {
+    src: *RValue,
+    stype: *SType,
+}
+
+struct MovedValue {
+    expr: *ExpressionNode,
+    src: *RValue,
+}
+
+struct AllocaValue {
+    src: *RValue,
+}
+
+struct LoadValue {
+    src: *RValue,
+}

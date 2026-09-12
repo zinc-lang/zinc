@@ -1,0 +1,83 @@
+// 这些函数在编译器中都特殊处理过。不会生成下面的函数体，而是在调用处直接替换成对应的指令。
+
+fn size_of<T>() -> UInt {
+    panic "intrinsic size_of";
+}
+
+unsafe fn write_bytes(dst: *raw mut (), val: UInt8, count: UInt) {
+    panic "intrinsic write_bytes";
+}
+
+unsafe fn zeroed<U>() -> U {
+    panic "intrinsic zeroed";
+}
+
+fn reverse_bits<T>(num: T) -> T {
+    panic "intrinsic reverse_bits";
+}
+
+fn rotate_left<T>(num: T, n: UInt32) -> T {
+    panic "intrinsic rotate_left";
+}
+
+fn rotate_right<T>(num: T, n: UInt32) -> T {
+    panic "intrinsic rotate_right";
+}
+
+fn bit_and<T>(n1: T, n2: T) -> T {
+    panic "intrinsic bit_and";
+}
+
+fn bit_or<T>(n1: T, n2: T) -> T {
+    panic "intrinsic bit_or";
+}
+
+fn bit_xor<T>(n1: T, n2: T) -> T {
+    panic "intrinsic bit_xor";
+}
+
+fn bit_not<T>(n1: T) -> T {
+    panic "intrinsic bit_not";
+}
+
+fn bit_shl<T>(n1: T, n2: UInt32) -> T {
+    panic "intrinsic bit_shl";
+}
+
+fn bit_shr<T>(n1: T, n2: UInt32) -> T {
+    panic "intrinsic bit_shr";
+}
+
+unsafe fn destruct_in_place<T>(p: *raw mut T) {
+    panic "intrinsic destruct_in_place";
+}
+
+fn forget<T>(val: T) {
+    panic "intrinsic forget";
+}
+
+// 与 library/zinc_core/zinc_core_typemeta.h 中的定义一致
+struct RtTypeMeta {
+    name: *raw UInt8,
+    kind: UInt8,
+    ty_param_count: UInt8,
+    ty_argc: UInt8,
+    align: UInt8,
+    size: UInt,
+
+    copy_fn: *raw (),
+    dtor_fn: *raw (),
+
+    ty_argv: *raw (),
+    instantiated_from: *raw (),
+
+    impls: [UInt; 7],
+}
+
+fn type_of<T>() -> *raw RtTypeMeta {
+    panic "intrinsic type_of";
+}
+
+fn type_of_any(a: &Any) -> *raw RtTypeMeta {
+    panic "intrinsic type_of_any";
+}

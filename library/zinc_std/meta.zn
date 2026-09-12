@@ -1,0 +1,101 @@
+
+use ::self::intrinsic::RtTypeMeta;
+use ::self::primitives::string::ToString;
+use ::self::cmp::{Eq, PartialEq, PartialOrd, Ord, Ordering};
+use ::self::hash::{Hash, Hasher};
+use ::self::primitives::clone::Clone;
+use ::self::primitives::default::Default;
+
+pub struct Type {
+    rt_typemeta: *raw RtTypeMeta
+}
+
+pub fn type_of<T>() -> Type {
+    let p = ::self::intrinsic::type_of(<T>);
+    if p as UInt == 0 { panic; }
+    return { .rt_typemeta = p }: Type;
+}
+
+pub fn type_of(a: &Any) -> Type {
+    let p = ::self::intrinsic::type_of_any(a);
+    return  { .rt_typemeta = p }: Type;
+}
+
+impl Type {
+    // Type::of(<T>) 和 type_of(<T>) 是一样的意思
+    pub fn of<T>() -> Type {
+        return self::type_of(<T>);
+    }
+
+    pub fn of(a: &Any) -> Type {
+        return self::type_of(a);
+    }
+
+    pub fn size(&self) -> UInt {
+        return unsafe(self.rt_typemeta.size);
+    }
+
+    pub fn align(&self) -> UInt8 {
+        return unsafe(self.rt_typemeta.align);
+    }
+
+    pub fn kind(&self) -> UInt8 {
+        return unsafe(self.rt_typemeta.kind);
+    }
+
+    pub fn name(&self) -> Str<'static> {
+        return unsafe(Str::from_cstr(self.rt_typemeta.name));
+    }
+
+    // 忽略最后一个 :: 之前的所有内容
+    pub fn short_name(&self) -> Str<'static> {
+        let name = self.name();
+        let len = name.len();
+        let mut i = len;
+        while i > 0 {
+            i -= 1;
+            if name.index(i) == b':' {
+                break;
+            }
+        }
+        return name.sub_str(i+1);
+    }
+}
+
+impl ToString for Type {
+    fn to_string_inplace(&self, buf: &mut String) {
+        buf.push_str(self.name());
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> Bool {
+        return self.rt_typemeta == other.rt_typemeta;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return self.rt_typemeta != other.rt_typemeta;
+    }
+}
+
+impl Eq for Type {}
+
+
+impl Hash for Type {
+    fn hash(&self, state: &mut Hasher) {
+        let v: UInt64 = unsafe(self.rt_typemeta as UInt as UInt64);
+        state.combine(v);
+    }
+}
+
+impl Clone for Type {
+    fn clone(&self) -> Type {
+        return *self;
+    }
+}

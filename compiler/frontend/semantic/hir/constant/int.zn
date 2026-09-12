@@ -1,0 +1,193 @@
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::DiagnosticEngine;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::semantic::hir::ir::*;
+
+use super::*;
+
+impl ConstValue for IntegerCValue {
+    fn span(&self) -> SourceSpan {
+        return self.token.source_span;
+    }
+
+    fn structural_eq(&self, other: &ConstValue) -> Bool {
+        if other is o: &IntegerCValue {
+            return self.value == o.value;
+        } else {
+            return false;
+        }
+    }
+
+    fn to_string(&self) -> String {
+        return self.value.to_string();
+    }
+}
+
+impl IntegerCValue {
+    fn new(t: Token) -> Self {
+        let mut tok_str = t.raw_str().as_str().deref();
+
+        // 处理负号
+        let mut sign = true;
+        if tok_str.starts_with("-") {
+            sign = false;
+            tok_str = tok_str.sub_str(1);
+        }
+
+        // 处理进制
+        let mut numeral: UInt32 = 10;
+        if tok_str.len() > 1 && tok_str.index(0) == b'0' {
+            if tok_str.eq(&"0b") || tok_str.eq(&"0B") { numeral = 2; }
+            else if tok_str.eq(&"0o") || tok_str.eq(&"0O") { numeral = 8; }
+            else if tok_str.ne(&"0x") || tok_str.ne(&"0X") { numeral = 16; }
+            else {
+                DiagnosticEngine::get().emit_illegal_int_prefix(t.source_span);
+            }
+            tok_str = tok_str.sub_str(2);
+        }
+
+        let mut str = String::new();
+        let mut suffix = String::new();
+        // 删除所有的下划线, 这个函数应该写到标准库里面
+        {
+            let len = tok_str.len();
+            let mut i: UInt = 0;
+            while i < len {
+                let c = tok_str.index(i);
+                if c == b'i' {
+                    // 处理后缀
+                    suffix = tok_str.sub_str(i).to_string();
+                    break;
+                }
+                if c == b'u' {
+                    // 处理后缀
+                    suffix = tok_str.sub_str(i).to_string();
+                    break;
+                }
+                if c != b'_' {
+                    str.push(c);
+                }
+                i += 1;
+            }
+        }
+        let mut s: Str = str.as_str().deref();
+        // 后缀合法性在 lexer 里面已经判断过了
+
+        // 解析整数部分
+        let mut num: UInt64 = 0;
+        {
+            let len = s.len();
+            let mut i: UInt = 0;
+            while i < len {
+                let c = s.index(i);
+                if numeral == 2 {
+                    if c != b'0' && c != b'1' {
+                        DiagnosticEngine::get().emit_illegal_int_literal(t.source_span);
+                        break;
+                    }
+                    let v = (c - b'0') as UInt64;
+                    let temp_num = num * 2 + v;
+                    if temp_num < num {
+                        DiagnosticEngine::get().emit_int_literal_overflow(t.source_span);
+                        break;
+                    }
+                    num = temp_num;
+                }
+                else if numeral == 8 {
+                    if c < b'0' || c > b'7' {
+                        DiagnosticEngine::get().emit_illegal_int_literal(t.source_span);
+                        break;
+                    }
+                    let v = (c - b'0') as UInt64;
+                    let temp_num = num * 8 + v;
+                    if temp_num < num {
+                        DiagnosticEngine::get().emit_int_literal_overflow(t.source_span);
+                        break;
+                    }
+                    num = temp_num;
+                }
+                else if numeral == 10 {
+                    if c < b'0' || c > b'9' {
+                        DiagnosticEngine::get().emit_illegal_int_literal(t.source_span);
+                        break;
+                    }
+                    let v = (c - b'0') as UInt64;
+                    let temp_num = num * 10 + v;
+                    if temp_num < num {
+                        DiagnosticEngine::get().emit_int_literal_overflow(t.source_span);
+                        break;
+                    }
+                    num = temp_num;
+                }
+                else if numeral == 16 {
+                    let mut v: UInt64 = 0;
+                    if c >= b'0' && c <= b'9' { v = (c - b'0') as UInt64; }
+                    else if c >= b'a' && c <= b'f' { v = (c - b'a') as UInt64 + 10; }
+                    else if c >= b'A' && c <= b'F' { v = (c - b'A') as UInt64 + 10; }
+                    else {
+                        DiagnosticEngine::get().emit_illegal_int_literal(t.source_span);
+                        break;
+                    }
+                    let temp_num = num * 16 + v;
+                    if temp_num < num {
+                        DiagnosticEngine::get().emit_int_literal_overflow(t.source_span);
+                        break;
+                    }
+                    num = temp_num;
+                }
+                else {
+                    break;
+                }
+                i += 1;
+            }
+        }
+
+        // 类型检查阶段判断数字范围是否溢出
+
+        return {
+            .token = move t,
+            .sign = move sign,
+            .value = move num,
+            .suffix = move suffix,
+        }: IntegerCValue;
+    }
+
+    fn stype_from_suffix(&self) -> *SType {
+        let suffix = self.suffix.as_str().deref();
+
+        if suffix.eq(&"i") {
+            return IntegerSymbol::new(IntegerKind::Isize).to_sty();
+        }
+        else if suffix.eq(&"i8") {
+            return IntegerSymbol::new(IntegerKind::I8).to_sty();
+        }
+        else if suffix.eq(&"i16") {
+            return IntegerSymbol::new(IntegerKind::I16).to_sty();
+        }
+        else if suffix.eq(&"i32") {
+            return IntegerSymbol::new(IntegerKind::I32).to_sty();
+        }
+        else if suffix.eq(&"i64") {
+            return IntegerSymbol::new(IntegerKind::I64).to_sty();
+        }
+        else if suffix.eq(&"u") {
+            return IntegerSymbol::new(IntegerKind::Usize).to_sty();
+        }
+        else if suffix.eq(&"u8") {
+            return IntegerSymbol::new(IntegerKind::U8).to_sty();
+        }
+        else if suffix.eq(&"u16") {
+            return IntegerSymbol::new(IntegerKind::U16).to_sty();
+        }
+        else if suffix.eq(&"u32") {
+            return IntegerSymbol::new(IntegerKind::U32).to_sty();
+        }
+        else if suffix.eq(&"u64") {
+            return IntegerSymbol::new(IntegerKind::U64).to_sty();
+        }
+        else {
+            return SType::sty_invalid(self.token.source_span);
+        }
+    }
+}

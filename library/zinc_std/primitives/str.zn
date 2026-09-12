@@ -1,0 +1,198 @@
+use ::self::iter::Iterable;
+use ::self::iter::Iterator;
+use ::self::primitives::string::ToString;
+use ::self::cmp::{Eq, PartialEq};
+use ::self::collections::vec::Shared;
+
+pub struct Str<'a> {
+    pointer: &'a UInt8,
+    length: UInt,
+}
+
+unsafe impl<'a> Send for Str<'a> {}
+impl<'a> !Sync for Str<'a> {}
+
+impl<'a> Str<'a> {
+    pub fn as_bytes<'s>(&'s self) -> Slice<'s, UInt8> {
+        return {
+            .pointer = self.pointer,
+            .length = self.length,
+        }: Slice<'s, UInt8>;
+    }
+
+    pub fn raw_ptr(&self) -> *raw UInt8 {
+        return self.pointer as *raw UInt8;
+    }
+
+    pub fn len(&self) -> UInt {
+        return self.length;
+    }
+
+    pub fn is_empty(&self) -> Bool {
+        return self.length == 0;
+    }
+
+    // pub fn to_string(&self) -> String {
+    //     let mut s = String::with_capacity(self.length);
+    //     let mut dst = s.data.ptr as *raw Shared<UInt8> as *raw mut UInt8;
+    //     let mut src = self.pointer as *raw UInt8;
+    //     let mut i: UInt = 0;
+    //     while i < self.length {
+    //         unsafe {
+    //             *dst = *src;
+    //         }
+    //         i += 1;
+    //         dst = dst + 1;
+    //         src = src + 1;
+    //     }
+    //     return s;
+    // }
+
+    pub unsafe fn from_cstr(cs: *raw UInt8) -> Str<'static> {
+        let mut len: UInt = 0;
+        let mut p = cs + len;
+        while (p as UInt) != 0 && *p != 0_u8 {
+            len += 1;
+            p = cs + len;
+        }
+        return {
+            .pointer = cs as &UInt8,
+            .length = len,
+        }: Str<'static>;
+    }
+
+    pub fn starts_with(&self, prefix: Str) -> Bool {
+        if self.len() < prefix.len() {
+            return false;
+        }
+        let mut i: UInt = 0;
+        while i < prefix.length {
+            let c1 = unsafe(self.pointer as *raw UInt8 + i);
+            let c2 = unsafe(prefix.pointer as *raw UInt8 + i);
+            if unsafe(*c1 != *c2) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    pub fn ends_with(&self, suffix: Str) -> Bool {
+        if self.len() < suffix.len() {
+            return false;
+        }
+        let start = self.len() - suffix.len();
+        let mut i: UInt = 0;
+        while i < suffix.length {
+            let c1 = unsafe(self.pointer as *raw UInt8 + start + i);
+            let c2 = unsafe(suffix.pointer as *raw UInt8 + i);
+            if unsafe(*c1 != *c2) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    pub fn sub_str(&self, start: UInt) -> Str<'a> {
+        if start > self.len() {
+            panic("Index out of bounds in Str::sub_str method.");
+        }
+        return {
+            .pointer = unsafe((self.pointer as *raw UInt8 + start) as &'a UInt8),
+            .length = self.length - start,
+        }: Str<'a>;
+    }
+
+    pub fn sub_str(&self, start: UInt, length: UInt) -> Str<'a> {
+        if start > self.len() || start + length > self.len() {
+            panic("Index out of bounds in Str::sub_str method.");
+        }
+        return {
+            .pointer = unsafe((self.pointer as *raw UInt8 + start) as &'a UInt8),
+            .length = length,
+        }: Str<'a>;
+    }
+
+    pub fn index(&self, i: UInt) -> UInt8 {
+        if i >= self.len() {
+            panic("Index out of bounds in Str::index method.");
+        }
+        let c = unsafe(self.pointer as *raw UInt8 + i);
+        return unsafe(*c);
+    }
+
+    // todo 通过泛型让参数支持多种类型, 返回一个lazy执行的迭代器
+    pub fn split(&self, by: UInt8) -> Vec<String> {
+        let mut parts: Vec<String> = (type Vec<String>)::new();
+        let mut start: UInt = 0;
+        let mut i: UInt = 0;
+        while i < self.length {
+            let c = unsafe(self.pointer as *raw UInt8 + i);
+            if unsafe(*c == by) {
+                parts.push(String::from_str({
+                    .pointer = unsafe((self.pointer as *raw UInt8 + start) as &'a UInt8),
+                    .length = i - start,
+                }: Str));
+                start = i + 1;
+            }
+            i += 1;
+        }
+        return parts;
+    }
+}
+
+impl<'a> ToString for Str<'a> {
+    fn to_string_inplace(&self, buf: &mut String) {
+        buf.push_str(*self);
+    }
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl<'a> PartialEq for Str<'a> {
+    fn eq(&self, other: &Self) -> Bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        let mut i: UInt = 0;
+        while i < self.length {
+            let c1 = unsafe(self.pointer as *raw UInt8 + i);
+            let c2 = unsafe(other.pointer as *raw UInt8 + i);
+            if unsafe(*c1 != *c2) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl<'a> Eq for Str<'a> {}
+
+pub struct StrIter<'i> {
+    value: Char = '\0',
+}
+
+impl<'a> Iterable for Str<'a> {
+    type Iter<'i> = StrIter<'i>; // StrIter 不携带隐式生命周期参数
+    fn iter<'s>(&'s self) -> StrIter<'s> { // 返回的 VecIter 可以活得比 Vec 更长
+        return {
+            ...
+        }: StrIter<'s>;
+    }
+}
+
+impl<'s> Iterator for StrIter<'s> {
+    type Item = Char;
+
+    fn next<'n>(&'n mut self) -> Option<&'n Char> {
+        return None;
+    }
+}

@@ -1,0 +1,471 @@
+use super::*;
+use ::self::frontend::source_code::*;
+
+use std::cmp::{Eq, PartialEq};
+use std::hash::{Hash, Hasher};
+use std::primitives::string::ToString;
+use std::iter::{Iterable, Iterator};
+use std::collections::vec::VecIter;
+use std::collections::hashmap::{Entry};
+
+use ::self::frontend::diagnostic::*;
+
+impl SymbolTable {
+    pub fn new() -> Self {
+        return {
+            .symbols = (type HashMap<String, *Symbol>)::new(),
+            .named_use_symbol = (type HashMap<String, *Symbol>)::new(),
+            .star_use_symbol = (type HashMap<String, *Symbol>)::new(),
+        }: SymbolTable;
+    }
+    pub fn add_child(&mut self, sym: *Symbol) {
+        let name = sym.short_name();
+        if name.is_empty() || name.as_str().deref().eq(&"_") {
+            return;
+        }
+        // 注：impl symbol 也加进去，为了方便遍历
+        if sym is type *BlockSentence ||
+            sym is type *LambdaSymbol ||
+            sym is type *ReuseSymbol {
+            return;
+        }
+        if self.symbols.at(&name) is Some(existed) {
+            if sym is fsym: *FuncSymbol {
+                // 记录重载信息
+                if existed is e_fsym: *FuncSymbol {
+                    let mut cur = move e_fsym;
+                    while cur.next_overload is Some(f) {
+                        cur = move f;
+                    }
+                    cur.next_overload = Some(move fsym);
+                }
+            }
+            else if sym is ecsym: *EnumVariantSymbol {
+                // 记录重载信息
+                if existed is e_evsym: *EnumVariantSymbol {
+                    let mut cur = move e_evsym;
+                    while cur.next_overload is Some(f) {
+                        cur = move f;
+                    }
+                    cur.next_overload = Some(move ecsym);
+                }
+            }
+            else {
+                // 报错
+                DiagnosticEngine::get().emit_conflict_symbol_name(name, sym.syntax_node().span());
+            }
+        }
+        else {
+            self.symbols.insert(name, sym);
+        }
+    }
+
+    pub fn add_named_use(&mut self, name: String, sym: *Symbol) {
+        // todo 重复 use 的要报错
+        self.named_use_symbol.insert(name, sym);
+    }
+
+    pub fn add_star_use(&mut self, ss: *ScopeSymbol) {
+        // todo 重复 use 的要报错
+        self.star_use_symbol.merge(&ss.sym_table().symbols);
+    }
+
+    pub fn lookup(&self, name: &String) -> Option<*Symbol> {
+        if self.symbols.at(name) is Some(s) {
+            return Some(s); // 先找内部定义的名字
+        }
+        if self.named_use_symbol.at(name) is Some(s) {
+            return Some(s); // 再找 use 引入的名字
+        }
+        if self.star_use_symbol.at(name) is Some(s) {
+            return Some(s); // 最后找 use 星号引入的名字
+        }
+        return None;
+    }
+}
+
+impl Iterable for SymbolTable {
+    type Iter<'i> = SymTableIter<'i>;
+    fn iter<'a>(&'a self) -> SymTableIter<'a> {
+        let vec_iter = self.symbols.table.iter();
+        return {
+            .iter = move vec_iter,
+        }: SymTableIter;
+    }
+}
+
+struct SymTableIter<'a> {
+    iter: VecIter<'a, Entry<String, *Symbol>>,
+}
+
+impl<'a> Iterator for SymTableIter<'a> {
+    type Item = *Symbol;
+
+    fn next<'n>(&'n mut self) -> Option<&'n *Symbol> {
+        unsafe {
+            while true {
+                let entry: Option<&Entry<String, *Symbol>> = self.iter.next();
+                if entry is Some(e) {
+                    match e {
+                        Entry::Occupied(_, ref v, _) => {
+                            return Some(v);
+                        }
+                        Entry::Vacant => {
+                            continue;
+                        }
+                        _ => {
+                            continue;
+                        }
+                    }
+                }
+                return None;
+            }
+        }
+        return None;
+    }
+}
+
+impl GenericParams {
+    pub fn new() -> Self {
+        return {
+            .lt_params = (type Vec<*LifetimeSymbol>)::new(),
+            .ty_params = (type Vec<*TypeParamSymbol>)::new(),
+            .constraints = GenericConstraints::new(),
+        }: GenericParams;
+    }
+
+    pub fn is_empty(&self) -> Bool {
+        return self.lt_params.is_empty() && self.ty_params.is_empty();
+    }
+
+    pub fn to_generic_args(&self) -> GenericArgs {
+        let mut ga = GenericArgs::new();
+
+        for lt in self.lt_params {
+            let l = lt.to_lifetime();
+            ga.lt_args.push(move l);
+        }
+        for ty in self.ty_params {
+            let t = ty.to_sty();
+            ga.ty_args.push(move t);
+        }
+
+        return ga;
+    }
+
+    pub fn export_value(&self) -> String {
+        let mut res = String::new();
+        if self.lt_params.len() > 0 || self.ty_params.len() > 0 {
+            res.push_str("<");
+            let mut first = true;
+            for lt in self.lt_params {
+                if !first {
+                    res.push_str(", ");
+                }
+                let mut s: Str = "'_";
+                if lt.is_named() { s = lt.name.as_str().deref(); }
+                res.push_str(s);
+                first = false;
+            }
+            for tp in self.ty_params {
+                if !first {
+                    res.push_str(", ");
+                }
+                res.push_str(tp.short_name().as_str().deref());
+                first = false;
+            }
+            res.push_str(">");
+        }
+        return res;
+    }
+
+    pub fn export_constraints(&self) -> String {
+        let mut res = String::new();
+
+        for lt in self.lt_params {
+            let lt_int = lt as *raw LifetimeSymbol as UInt;
+            if self.constraints.constraints.at(&lt_int) is Some(v) {
+                let lt_name = lt.short_name().as_str().deref();
+                res.push_str(lt_name);
+                res.push_str(": ");
+
+                let mut is_first = true;
+                for upper in v {
+                    if is_first {
+                        is_first = false;
+                    } else {
+                        res.push_str(" + ");
+                    }
+                    let u = upper.to_string().as_str().deref();
+                    res.push_str(u);
+                }
+                res.push_str(", ");
+            }
+        }
+        for ty in self.ty_params {
+            let ty_int = ty as *raw TypeParamSymbol as UInt;
+            if self.constraints.constraints.at(&ty_int) is Some(v) {
+                let ty_name = ty.short_name().as_str().deref();
+                res.push_str(ty_name);
+                res.push_str(": ");
+                let mut is_first = true;
+                for upper in v {
+                    if is_first {
+                        is_first = false;
+                    } else {
+                        res.push_str(" + ");
+                    }
+                    let u = upper.to_string().as_str().deref();
+                    res.push_str(u);
+                }
+                res.push_str(", ");
+            }
+        }
+
+        if res.is_empty() {
+            return res;
+        } else {
+            let mut all = f" where ";
+            all.push_str(res.as_str().deref());
+            return all;
+        }
+    }
+
+    pub fn ty_param(&self, idx: UInt) -> *TypeParamSymbol {
+        return *self.ty_params.index(idx).deref();
+    }
+
+    pub fn lt_param(&self, idx: UInt) -> *LifetimeSymbol {
+        return *self.lt_params.index(idx).deref();
+    }
+
+    pub fn index_of_typaram(&self, tp: *TypeParamSymbol) -> Option<UInt> {
+        let tp_int = tp as *raw TypeParamSymbol as UInt;
+        let mut idx = 0_u;
+        for p in self.ty_params {
+            let p_int = p as *raw TypeParamSymbol as UInt;
+            if tp_int == p_int {
+                return Some(idx);
+            }
+            idx += 1;
+        }
+        return None;
+    }
+}
+
+impl GenericArgs {
+    pub fn new() -> Self {
+        return {
+            .lt_args = (type Vec<Lifetime>)::new(),
+            .ty_args = (type Vec<*SType>)::new(),
+        }: GenericArgs;
+    }
+
+    pub fn is_empty(&self) -> Bool {
+        return self.lt_args.is_empty() && self.ty_args.is_empty();
+    }
+
+    pub fn from1(a1: *SType) -> Self {
+        let mut ty_args = (type Vec<*SType>)::new();
+        ty_args.push(move a1);
+        return {
+            .lt_args = (type Vec<Lifetime>)::new(),
+            .ty_args = move ty_args,
+        }: GenericArgs;
+    }
+
+    pub fn from2(a1: *SType, a2: *SType) -> Self {
+        let mut ty_args = (type Vec<*SType>)::new();
+        ty_args.push(move a1);
+        ty_args.push(move a2);
+        return {
+            .lt_args = (type Vec<Lifetime>)::new(),
+            .ty_args = move ty_args,
+        }: GenericArgs;
+    }
+
+    pub fn from3(a1: *SType, a2: *SType, a3: *SType) -> Self {
+        let mut ty_args = (type Vec<*SType>)::new();
+        ty_args.push(move a1);
+        ty_args.push(move a2);
+        ty_args.push(move a3);
+        return {
+            .lt_args = (type Vec<Lifetime>)::new(),
+            .ty_args = move ty_args,
+        }: GenericArgs;
+    }
+
+    pub fn ty_arg(&self, idx: UInt) -> *SType {
+        if idx < self.ty_args.len() {
+            return *self.ty_args.index(idx).deref();
+        } else {
+            return SType::sty_invalid(SourceSpan::empty());
+        }
+    }
+
+    pub fn ty_arg(&self, idx: UInt, span: SourceSpan) -> *SType {
+        if idx < self.ty_args.len() {
+            return *self.ty_args.index(idx).deref();
+        } else {
+            return SType::sty_invalid(move span);
+        }
+    }
+
+    pub fn lt_arg(&self, idx: UInt) -> Lifetime {
+        if idx < self.lt_args.len() {
+            return *self.lt_args.index(idx).deref();
+        } else {
+            return Lifetime::unnamed();
+        }
+    }
+}
+
+impl PartialEq for GenericArgs {
+    fn eq(&self, other: &Self) -> Bool {
+        if self.lt_args.len() != other.lt_args.len() ||
+            self.ty_args.len() != other.ty_args.len() {
+            return false;
+        }
+        let mut i: UInt = 0;
+        let lifetime_args_len = self.lt_args.len();
+        while i < lifetime_args_len {
+            if self.lt_args.index(i).deref().ne(other.lt_args.index(i).deref()) {
+                return false;
+            }
+            i += 1;
+        }
+
+        i = 0;
+        let type_args_len = self.ty_args.len();
+        while i < type_args_len {
+            let lhs: *SType = *self.ty_args.index(i).deref();
+            let rhs: *SType = *other.ty_args.index(i).deref(); 
+            if lhs as *raw SType as UInt != rhs as *raw SType as UInt {
+                return false;
+            }
+            i += 1;
+        }
+        return true;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl Eq for GenericArgs { }
+
+impl Hash for GenericArgs {
+    fn hash(&self, state: &mut Hasher) {
+        for ref lt in self.lt_args {
+            lt.hash(state);
+        }
+        for ty in self.ty_args {
+            ty.hash(state);
+        }
+    }
+}
+
+impl ToString for GenericArgs {
+    fn to_string_inplace(&self, buf: &mut String) {
+        let mut res = String::new();
+        if self.lt_args.len() > 0 || self.ty_args.len() > 0 {
+            res.push_str("<");
+            let mut first = true;
+            for lt in &self.lt_args {
+                if !first {
+                    res.push_str(", ");
+                }
+                let s = if lt.is_named() then lt.token.raw_str().as_str().deref() else "'_";
+                res.push_str(s);
+                first = false;
+            }
+            for ty in self.ty_args {
+                if !first {
+                    res.push_str(", ");
+                }
+                res.push_str(ty.export_value().as_str().deref());
+                first = false;
+            }
+            res.push_str(">");
+        }
+        buf.push_str(res.as_str().deref());
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl GenericConstraints {
+    pub fn new() -> Self {
+        return {
+            .constraints = (type HashMap<UInt, Vec<*SType>>)::new(),
+        }: GenericConstraints;
+    }
+
+    pub fn add(&mut self, tps: *TypeParamSymbol, upper_bound: *SType) {
+        let key = tps as *raw TypeParamSymbol as UInt;
+
+        // 为了避免两次查找, 应该使用 entry API, 目前标准库还没提供
+        if !self.constraints.contains(&key) {
+            let mut vec = (type Vec<*SType>)::new();
+            vec.push(move upper_bound);
+            self.constraints.insert(key, move vec);
+        } else {
+            let value = self.constraints.get_mut(&key);
+            if value is Some(mut v) {
+                v.deref_mut().push(move upper_bound);
+            }
+        }
+    }
+
+    pub fn add_lt(&mut self, lt: *LifetimeSymbol, upper_bound: *LifetimeSymbol) {
+        let key = lt as *raw LifetimeSymbol as UInt;
+
+        // 为了避免两次查找, 应该使用 entry API, 目前标准库还没提供
+        if !self.constraints.contains(&key) {
+            let mut vec = (type Vec<*SType>)::new();
+            vec.push(upper_bound.to_sty());
+            self.constraints.insert(key, move vec);
+        } else {
+            let value = self.constraints.get_mut(&key);
+            if value is Some(mut v) {
+                v.deref_mut().push(upper_bound.to_sty());
+            }
+        }
+    }
+
+    pub fn merge(&mut self, another: &GenericConstraints) {
+        for ref kv in another.constraints {
+            let key: UInt = kv.0;
+            let value: Vec<*SType> = kv.1;
+
+            if !self.constraints.contains(&key) {
+                self.constraints.insert(key, move value);
+            } else {
+                let existed = self.constraints.get_mut(&key);
+                if existed is Some(mut v) {
+                    for new in value {
+                        v.deref_mut().push(move new);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn len(&self) -> UInt {
+        return self.constraints.len();
+    }
+
+    pub fn upper_bounds(&self, key: &UInt) -> Vec<*SType> {
+        let r = self.constraints.at(key);
+        if r is Some(v) {
+            return v;
+        } else {
+            return (type Vec<*SType>)::new();
+        }
+    }
+}

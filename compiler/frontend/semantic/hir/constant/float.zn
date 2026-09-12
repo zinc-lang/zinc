@@ -1,0 +1,107 @@
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::DiagnosticEngine;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::semantic::hir::ir::*;
+
+use super::*;
+
+impl ConstValue for FloatCValue {
+    fn span(&self) -> SourceSpan {
+        return self.token.source_span;
+    }
+
+    fn structural_eq(&self, other: &ConstValue) -> Bool {
+        if other is o: &FloatCValue {
+            if self.value.is_nan() && o.value.is_nan() {
+                return true;
+            }
+            return self.value == o.value;
+        } else {
+            return false;
+        }
+    }
+
+    fn to_string(&self) -> String {
+        return self.value.to_string();
+    }
+}
+
+impl FloatCValue {
+    fn new(t: Token) -> Self {
+        let mut tok_str = t.raw_str().as_str().deref();
+
+        // 处理负号
+        let mut sign = true;
+        if tok_str.starts_with("-") {
+            sign = false;
+            tok_str = tok_str.sub_str(1);
+        }
+
+        let mut str = String::new();
+        let mut suffix = String::new();
+        // 删除所有的下划线, 这个函数应该写到标准库里面
+        {
+            let len = tok_str.len();
+            let mut i: UInt = 0;
+            while i < len {
+                let c = tok_str.index(i);
+                if c == b'f' {
+                    // 处理后缀
+                    suffix = tok_str.sub_str(i).to_string();
+                    break;
+                }
+                if c != b'_' {
+                    str.push(c);
+                }
+                i += 1;
+            }
+        }
+        let mut s: Str = str.as_str().deref();
+
+        // 解析数字部分
+        let mut num: F64 = 0.0;
+        {
+            let len = tok_str.len();
+            let mut i: UInt = 0;
+            while i < len {
+                let c = tok_str.index(i);
+                if c == b'.' {
+                    i += 1;
+                    let mut n: F64 = 1.0;
+                    while i < len {
+                        let c = tok_str.index(i);
+                        n = n / 10.0;
+                        num += n * ((c - b'0') as F64);
+                        i += 1;
+                    }
+                    break;
+                }
+                else {
+                    let v = (c - b'0') as UInt64;
+                    num = num * 10.0 + v as F64;
+                }
+                i += 1;
+            }
+        }
+
+        return {
+            .token = move t,
+            .value = move num,
+            .suffix = move suffix,
+        }: FloatCValue;
+    }
+
+    fn stype_from_suffix(&self) -> *SType {
+        let suffix = self.suffix.as_str().deref();
+        if suffix.eq(&"f32") {
+            return FloatSymbol::new(FloatKind::F32).to_sty();
+        }
+        else if suffix.eq(&"f64") {
+            return FloatSymbol::new(FloatKind::F64).to_sty();
+        }
+        else {
+            return SType::sty_invalid(self.token.source_span);
+        }
+    }
+}

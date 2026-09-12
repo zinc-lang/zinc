@@ -1,0 +1,20 @@
+
+
+pub trait TryFrom<T> {
+    type Error;
+
+    fn try_from(value: T) -> Result<Self, Self::Error>
+}
+
+pub trait From<T> : TryFrom<T> {  // 它们应该有继承关系
+    type Error = Never;
+
+    fn from(value: T) -> Self;
+}
+
+// 对于变量 o: O 和 u: U：
+// 1. 如果 `U : From<O>`，则 o as U 可以编译通过
+// 2. 如果 `U : TryFrom<O>`，则 o as? U 可以编译通过
+// 3. 因为 `From` 继承了 `TryFrom`，如果 `U : From<O>`，则 `o as? U` 也能编译通过，只是表达式的类型是 `Result<U, Never>`
+
+

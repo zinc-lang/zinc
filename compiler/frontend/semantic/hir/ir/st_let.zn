@@ -1,0 +1,29 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::stmt::*;
+use ::self::frontend::source_code::*;
+
+impl LetSentence {
+    pub fn new(stmt: *LetStmt, local:*LocalVar, init: *RValue) -> *Self {
+        return box {
+            .stmt = move stmt,
+            .parent_stmt = None,
+            .local = move local,
+            .init = move init,
+        }: LetSentence;
+    }
+}
+
+impl Sentence for LetSentence {
+    fn stmt_node(&self) -> *StatementNode {
+        return self.stmt as *StatementNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_stmt;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_stmt = Some(ss);
+    }
+}

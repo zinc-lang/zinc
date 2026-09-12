@@ -1,0 +1,32 @@
+{
+  "name": "zinc",
+  "displayName": "zinc",
+  "description": "Zinc Language support",
+  "version": "0.0.1",
+  "publisher": "F001",
+  "icon": "./zinc-logo.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zinc-lang/zinc"
+  },
+  "engines": {
+    "vscode": "^1.8.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [{
+      "id": "zinc",
+      "aliases": ["zinc", "zinc"],
+      "extensions": [".zn"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "zinc",
+      "scopeName": "source.zinc",
+      "path": "./syntaxes/zinc.tmLanguage.json"
+    }]
+  }
+}

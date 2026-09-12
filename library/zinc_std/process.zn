@@ -1,0 +1,6 @@
+
+extern fn zinc_core_exit(code: Int32);
+
+pub fn exit(code: Int32) {
+    unsafe(zinc_core_exit(code));
+}

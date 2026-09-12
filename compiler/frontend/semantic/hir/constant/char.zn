@@ -1,0 +1,100 @@
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::DiagnosticEngine;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::semantic::hir::ir::*;
+
+use super::*;
+
+impl ConstValue for CharCValue {
+    fn span(&self) -> SourceSpan {
+        return self.token.source_span;
+    }
+
+    fn structural_eq(&self, other: &ConstValue) -> Bool {
+        if other is o: &CharCValue {
+            return self.codepoint == o.codepoint;
+        } else {
+            return false;
+        }
+    }
+
+    fn to_string(&self) -> String {
+        return (self.codepoint as Char).to_string();
+    }
+}
+
+impl CharCValue {
+    fn new(t: Token) -> Self {
+        let mut codepoint: UInt32 = 0;
+        let mut tok_str = t.raw_str().as_str().deref();
+        tok_str = trim_quotes(tok_str);
+        let len = tok_str.len();
+        
+        if len == 1 { // ascii
+            codepoint = tok_str.index(0) as UInt32;
+        }
+        else if tok_str.index(0) == b'\\' {
+            let second = tok_str.index(1);
+            if second == b't' { codepoint = '\t' as UInt32; }
+            else if second == b'r' { codepoint = '\r' as UInt32; }
+            else if second == b'n' { codepoint = '\n' as UInt32; }
+            else if second == b'0' { codepoint = 0; }
+            else if second == b'\\' { codepoint = '\\' as UInt32; }
+            else if second == b'\'' { codepoint = '\'' as UInt32; }
+            else {
+                DiagnosticEngine::get().emit_invalid_escape(t.source_span);
+            }
+        } else { // utf8
+            let first = tok_str.index(0);
+            let mut char_len: UInt = 0;
+            if first.bit_and(0x80_u8) == 0 {  // 0xxxxxxx (1字节)
+                char_len = 1;
+                codepoint = first as UInt32;
+            }
+            else if first.bit_and(0xE0_u8) == 0xC0 {  // 110xxxxx (2字节)
+                char_len = 2;
+                codepoint = first.bit_and(0x1F_u8) as UInt32;
+            } else if first.bit_and(0xF0_u8) == 0xE0 {  // 1110xxxx (3字节)
+                char_len = 3;
+                codepoint = first.bit_and(0x0F_u8) as UInt32;
+            } else if first.bit_and(0xF8_u8) == 0xF0 {  // 11110xxx (4字节)
+                char_len = 4;
+                codepoint = first.bit_and(0x07_u8) as UInt32;
+            }
+
+            if char_len > tok_str.len() {
+                DiagnosticEngine::get().emit_invalid_utf8(t.source_span);
+            }
+
+            let mut i: UInt = 1;
+            while i < char_len {
+                let byte: UInt8 = tok_str.index(i);
+                if byte.bit_and(0xC0_u8) != 0 {
+                    DiagnosticEngine::get().emit_invalid_utf8(t.source_span);
+                }
+                codepoint = (codepoint.bit_shl(6_u32)).bit_or(byte.bit_and(0x3F_u8) as UInt32);
+                i += 1;
+            }
+        }
+
+        return {
+            .token = move t,
+            .codepoint = move codepoint,
+        }: CharCValue;
+    }
+}
+
+// 去掉字符串首尾的单引号
+fn trim_quotes<'a>(s: Str<'a>) -> Str<'a> {
+    let mut start: UInt = 0;
+    let mut end = s.len();
+    if s.starts_with("'") {
+        start += 1;
+        end -= 1;
+    }
+    if s.ends_with("'") {
+        end -= 1;
+    }
+    return s.sub_str(start, end);
+}

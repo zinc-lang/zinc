@@ -1,0 +1,50 @@
+use super::ir::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::*;
+use ::self::frontend::semantic::hir::ir::*;
+
+mod liveness;
+mod loan;
+mod uint_set;
+
+use liveness::*;
+
+impl CFG {
+    fn check(*self) {
+        self.check_unterminated_bb();
+
+        self.check_liveness();
+    }
+
+    // 检查哪个 bb 没有 terminator
+    fn check_unterminated_bb(*self) {
+        let mut return_unit = true;
+        if self.func_sym.return_sty is Some(t) {
+            return_unit = t.is_unit();
+        }
+
+        for bb in self.basic_blocks {
+            if bb.terminator is None {
+                if return_unit {
+                    bb.terminator = Some(box {
+                        .ret_val = None
+                    }: BrRet as *Terminator);
+                } else {
+                    let mut span = self.func_sym.func_node.name.source_span;
+                    if !bb.steps.is_empty() {
+                        let last = *bb.steps.index(bb.steps.len() - 1).deref();
+                        span = last.value.expr_node().span();
+                    }
+                    DiagnosticEngine::get().emit_func_missing_return(move span);
+                }
+            }
+        }
+    }
+
+    fn check_liveness(*self) {
+        let mut liveness_checker = LivenessChecker::new(self);
+        liveness_checker.determine_local_liveness();
+        liveness_checker.check_lifetime();
+
+    }
+}

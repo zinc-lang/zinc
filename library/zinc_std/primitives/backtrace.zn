@@ -1,0 +1,24 @@
+
+pub struct BackTrace {
+
+}
+
+impl BackTrace {
+    pub fn capture() -> Self {
+
+    }
+}
+
+struct BackTraced<E> {
+    error: E,
+    backtrace: BackTrace,
+}
+
+impl<E> Error for BackTraced<E> where E: Error {}
+
+fn with_backtrace<E>(error: E) -> BackTraced<E> {
+    return BackTraced {
+        .error = error,
+        .backtrace = BackTrace::capture(),
+    };
+}

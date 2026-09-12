@@ -1,0 +1,28 @@
+
+/// &a[i] 翻译为 a.index(i)
+/// &mut a[i] 翻译为 a.index_mut(i)
+/// v = a[i]; 翻译为 v = *a.index(i)
+/// a[i] = v; 翻译为 *a.index_mut(i) = v
+
+
+// 跟 Rust 不同，这个成员函数返回的不是写死的 "借用指针"，而是一个 "类似借用指针的智能指针"，是对内置借用指针的一层额外封装:
+// 1. 它具备生命周期，编译器保证存活时间一定不会大于 self。这个约束是必须的，需要考虑有些情况下返回的指针是指向栈上而不是堆上。
+// 2. 它可以支持 deref 操作，deref 的 Target 是内置借用指针
+// 3. 它一般是一个结构体，除了包含一个真正的内置借用指针，还包含其它数据
+// 4. 如果这个 Output 指向的是堆上对象，那么它要支持析构函数，来保证引用计数的正确性。而内置借用指针类型是没有析构函数的
+// 对于自定义容器类型，如何 impl 这个 trait，请参考 Vec<T> 类型
+pub trait Index
+{
+    type Idx;
+    type Output<'a>;
+
+    fn index<'a>(&'a self, index: Idx) -> Self::Output<'a>;
+}
+
+
+pub trait IndexMut: Index
+{
+    type OutputMut<'a>;
+
+    fn index_mut<'a>(&'a mut self, index: Idx) -> Self::OutputMut<'a>;
+}

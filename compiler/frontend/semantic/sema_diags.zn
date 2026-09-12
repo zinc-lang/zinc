@@ -1,0 +1,679 @@
+use ::self::frontend::diagnostic::{Severity, DiagItem, DiagnosticEngine};
+use ::self::frontend::source_code::{SourceSpan, SourceLoc, SourceManager};
+
+impl DiagnosticEngine {
+    fn emit_path_do_not_exist(&mut self, path: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"路径没找到: $(path)",
+            .msg_en = f"path does not exist: $(path)",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_type_node(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型解析错误, 找不到类型 $(name)",
+            .msg_en = f"invalid type name $(name), resolution failed",
+        }: DiagItem);
+    }
+
+    fn emit_recursive_use_path(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不允许递归 use 路径",
+            .msg_en = f"recursive use path is not allowed",
+        }: DiagItem);
+    }
+
+    fn emit_negetive_trait_impl(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"只有 Send/Sync 可以用 impl !Send 和 impl !Sync 语法",
+            .msg_en = f"only Send/Sync allows `impl !Send` and `impl !Sync`",
+        }: DiagItem);
+    }
+
+    fn emit_trait_impl_missing_unsafe(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"这个 impl 必须用 unsafe 修饰",
+            .msg_en = f"the impl must be qualified by unsafe",
+        }: DiagItem);
+    }
+
+    fn emit_type_must_be_trait(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"这个类型必须是一个 trait",
+            .msg_en = f"the type must be a trait",
+        }: DiagItem);
+    }
+
+    fn emit_type_cannot_be_impl(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"这个类型不能被 impl",
+            .msg_en = f"the type cannot be implemented",
+        }: DiagItem);
+    }
+
+    fn emit_type_cannot_be_none(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"这个类型不能是 None",
+            .msg_en = f"the type cannot be None",
+        }: DiagItem);
+    }
+
+    fn emit_symbol_is_not_type(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"这个符号不是一个类型",
+            .msg_en = f"the symbol is not a type",
+        }: DiagItem);
+    }
+
+    fn emit_trait_only_inherit_trait(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"trait 只能继承 trait",
+            .msg_en = f"trait can only inherit trait",
+        }: DiagItem);
+    }
+
+    fn emit_recursive_trait_inherit(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"trait 继承不允许递归 ",
+            .msg_en = f"recursive trait inherit is not allowed",
+        }: DiagItem);
+    }
+
+    fn emit_duplicate_trait_inherit(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"trait 继承了重复的 trait",
+            .msg_en = f"trait inherits duplicate trait",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_self_type(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"Self 类型用在了不合法的位置",
+            .msg_en = f"Self type is used in an invalid position",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_type(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的类型",
+            .msg_en = f"invalid type",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_pattern(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的模式",
+            .msg_en = f"invalid pattern",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_lvalue(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的左值",
+            .msg_en = f"invalid lvalue",
+        }: DiagItem);
+    }
+
+    fn emit_immutable_as_lvalue(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不可变变量不能作为左值",
+            .msg_en = f"immutable variable cannot be used as lvalue",
+        }: DiagItem);
+    }
+
+    fn emit_type_pattern_missing_keyword(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型模式缺少关键字 type",
+            .msg_en = f"type pattern is missing keyword 'type'",
+        }: DiagItem);
+    }
+
+    fn emit_type_is_not_struct(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型不是 struct, 不能使用结构体模式匹配",
+            .msg_en = f"type is not a struct type, struct pattern is not allowed",
+        }: DiagItem);
+    }
+
+    fn emit_type_is_not_struct_union(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型不是 struct/union, 不能使用初始化器",
+            .msg_en = f"type is not a struct/union type, initializer is not allowed",
+        }: DiagItem);
+    }
+
+    fn emit_union_can_not_impl_drop(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"union 不能实现 Drop trait",
+            .msg_en = f"union can not impl Drop trait",
+        }: DiagItem);
+    }
+
+    fn emit_duplicate_struct_field(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"结构体模式中的成员变量名字重复",
+            .msg_en = f"duplicate field name in struct pattern",
+        }: DiagItem);
+    }
+
+    fn emit_missing_struct_field(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"结构体模式中漏了成员变量 $(name)",
+            .msg_en = f"missing field name $(name) in struct pattern",
+        }: DiagItem);
+    }
+
+    fn emit_overload_not_found(&mut self, span: SourceSpan, actual: UInt) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"重载函数没有匹配成功, 实际参数个数为 $(actual)",
+            .msg_en = f"overload function does not match, actual argument count is $(actual)",
+        }: DiagItem);
+    }
+
+    fn emit_irrefutable_pattern_only(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"在这个场景只能使用一定能匹配成功的模式",
+            .msg_en = f"only irrefutable pattern is allowed here",
+        }: DiagItem);
+    }
+
+    fn emit_illegal_int_literal(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的整数字面量",
+            .msg_en = f"illegal integer literal",
+        }: DiagItem);
+    }
+
+    fn emit_int_literal_overflow(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"整数字面量数值溢出了类型所表达的范围",
+            .msg_en = f"integer literal value overflow",
+        }: DiagItem);
+    }
+
+    fn emit_conflict_symbol_name(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"符号名冲突: $(name)",
+            .msg_en = f"symbol name conflict: $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_type_infer_failed(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"表达式类型推导失败, 请为表达式显式指定类型",
+            .msg_en = f"expression type infer failed, please specify type for expression",
+        }: DiagItem);
+    }
+
+    fn emit_generic_param_infer_failed(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"泛型参数 $(name) 类型推导失败",
+            .msg_en = f"type infer failed for generic param $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_return_must_inside_fn(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"return 语句必须在函数或者lambda内部",
+            .msg_en = f"return statement must be inside a function or a lambda",
+        }: DiagItem);
+    }
+
+    fn emit_return_type_mismatch(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"返回的表达式类型和函数的类型不匹配",
+            .msg_en = f"type of return expression does not match the function return type",
+        }: DiagItem);
+    }
+
+    fn emit_receiver_type_mismatch(&mut self, formal: String, actual: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"方法调用的 self 参数类型不匹配, 期望 $(formal) 实际 $(actual)",
+            .msg_en = f"self param type mismatch in method call, expect $(formal), actual $(actual)",
+        }: DiagItem);
+    }
+
+    fn emit_type_mismatch(&mut self, expected: String, actual: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型不匹配, 期望是 $(expected), 实际是 $(actual)",
+            .msg_en = f"mismatched types, expected: $(expected), actual: $(actual) ",
+        }: DiagItem);
+    }
+
+    fn emit_name_not_found(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"名字 $(name) 没有找到",
+            .msg_en = f"name $(name) is not found",
+        }: DiagItem);
+    }
+
+    fn emit_tuple_index_out_of_range(&mut self, max: UInt, idx: UInt, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"元组类型的索引超过了元素个数, 共计 $(max) 个元素, 索引是 $(idx)",
+            .msg_en = f"the index value is larger than tuple length, the length is $(max), the index is $(idx)",
+        }: DiagItem);
+    }
+
+    fn emit_tuple_len_not_match(&mut self, expect: UInt, actual: UInt, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"元组的长度与类型长度不匹配, 期望是 $(expect), 实际是 $(actual)",
+            .msg_en = f"the length of tuple doesn't match with type, expect $(expect), actual $(actual)",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_deref_lvalue(&mut self, ty: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型 $(ty) 没有修改权限, 不能解引用用于左值",
+            .msg_en = f"type $(ty) is not mutable, the deref expression is not allowed to be lvalue",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_deref_rvalue(&mut self, ty: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型 $(ty) 不能解引用",
+            .msg_en = f"type $(ty) is not allowed to be deref",
+        }: DiagItem);
+    }
+
+    fn emit_type_not_same(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"双目运算符左右两边的类型不一致",
+            .msg_en = f"type mismatch between the left and right operands of the binary operator",
+        }: DiagItem);
+    }
+
+    fn emit_unsupported_operator(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型不支持运算符",
+            .msg_en = f"the expression type do not support the operator",
+        }: DiagItem);
+    }
+
+    fn emit_expr_not_callable(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"该表达式不支持被当成函数调用",
+            .msg_en = f"the expression is not callable",
+        }: DiagItem);
+    }
+
+    fn emit_generic_args_count_mismatch(&mut self, ty_name: String, formal_count: UInt, actual_count: UInt, span:SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"$(ty_name) 的泛型实参和形参个数不匹配, 期望 $(formal_count) 个, 实际 $(actual_count) 个",
+            .msg_en = f"the actual generic arg count does not match with formal generic param count of $(ty_name), expect $(formal_count), actual $(actual_count) ",
+        }: DiagItem);
+    }
+
+    fn emit_multiple_candidate_methods(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"多个同名方法被找到, 重载解析失败, 请使用完全限定语法调用",
+            .msg_en = f"multiple methods are found, overload resolution fails. Please use fully-qualified-call syntax",
+        }: DiagItem);
+    }
+
+    fn emit_array_elem_count_mismatch(&mut self, expect: UInt, actual: UInt, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"数组类型长度和元素个数匹配失败, 期望 $(expect) 个, 实际 $(actual) 个",
+            .msg_en = f"length of array type does not match with element count, expect $(expect), actual $(actual)",
+        }: DiagItem);
+    }
+
+    fn emit_cast_error(&mut self, from: String, to: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的类型转换: 从 $(from) 到 $(to)",
+            .msg_en = f"illegal type cast: from $(from) to $(to)",
+        }: DiagItem);
+    }
+
+    fn emit_illegal_implicit_cast(&mut self, from: String, to: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不支持从类型 $(from) 到类型 $(to) 的隐式类型转换",
+            .msg_en = f"illegal implicit type cast from $(from) to $(to)",
+        }: DiagItem);
+    }
+
+    fn emit_illegal_lhs_of_constraint(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"只有泛型类型参数和生命周期参数可以用在泛型约束的左侧",
+            .msg_en = f"only generic type parameter and lifetime parameter can be used at left handside of constraints",
+        }: DiagItem);
+    }
+
+    fn emit_illegal_rhs_of_lifetime_upper_bound(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"只有生命周期参数可以作为生命周期的上界约束",
+            .msg_en = f"only lifetime parameters can be upper bounds of lifetime parameters",
+        }: DiagItem);
+    }
+
+    fn emit_not_iterable(&mut self, ty: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型 $(ty) 不满足 std::iter::Iterable 约束",
+            .msg_en = f"type $(ty) does not conform std::iter::Iterable",
+        }: DiagItem);
+    }
+
+    fn emit_not_iterator(&mut self, ty: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型 $(ty) 不满足 std::iter::Iterator 约束",
+            .msg_en = f"type $(ty) does not conform std::iter::Iterator",
+        }: DiagItem);
+    }
+
+    fn emit_not_tostring(&mut self, ty: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型 $(ty) 不满足 std::primitives::string::ToString 约束",
+            .msg_en = f"type $(ty) does not conform std::primitives::string::ToString",
+        }: DiagItem);
+    }
+
+    fn emit_not_const(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"常量模式中的名字必须是 const 常量",
+            .msg_en = f"name in const pattern must be const",
+        }: DiagItem);
+    }
+
+    fn emit_type_test_always_true(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型模式匹配结果总是为真",
+            .msg_en = f"pattern match for type is always true",
+        }: DiagItem);
+    }
+
+    fn emit_type_test_always_false(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型模式匹配结果总是为假",
+            .msg_en = f"pattern match for type is always false",
+        }: DiagItem);
+    }
+
+    fn emit_illegal_string_interpolation(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的插值字符串",
+            .msg_en = f"illegal string interpolation",
+        }: DiagItem);
+    }
+
+    fn emit_func_can_not_be_virtual(&mut self, reason: Str, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"函数不能是 virtual 函数, 因为 $(reason)",
+            .msg_en = f"function can not be virtual, because $(reason)",
+        }: DiagItem);
+    }
+
+    fn emit_func_missing_return(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"函数缺少了 return 语句",
+            .msg_en = f"missing return statement in function",
+        }: DiagItem);
+    }
+
+    fn emit_main_fn_params(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"main 函数不允许有形式参数列表",
+            .msg_en = f"the parameter list of main function must be empty",
+        }: DiagItem);
+    }
+
+    fn emit_main_fn_return_ty(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"main 函数返回类型只能是 () 类型",
+            .msg_en = f"the return type of main function must be ()",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_lifetime_ellision(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"返回类型省略的生命周期, 无法自动补充, 请将返回类型类型中的生命周期补充完整",
+            .msg_en = f"the anonymous lifetime in return type, can not be inferred, please specify the lifetime in return type",
+        }: DiagItem);
+    }
+
+    fn emit_not_subtype(&mut self, sub: String, base: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型 $(sub) 不是类型 $(base) 的子类型",
+            .msg_en = f"type $(sub) is not subtype of $(base)",
+        }: DiagItem);
+    }
+
+    fn emit_not_const_expr(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"表达式不是 常量表达式",
+            .msg_en = f"the expression is not const expression",
+        }: DiagItem);
+    }
+
+    fn emit_expr_cannot_move(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"这个表达式不能被 move",
+            .msg_en = f"this expression is not allowed to move",
+        }: DiagItem);
+    }
+
+    fn emit_use_after_dead(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不允许使用已经死亡的变量 $(name)",
+            .msg_en = f"using a dead variable is not allowed: $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_missing_associated_type(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"在 impl 中缺少了关联类型 $(name)",
+            .msg_en = f"the associated type $(name) is missing in impl",
+        }: DiagItem);
+    }
+
+    fn emit_missing_method(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"在 impl 中缺少了成员方法 $(name)",
+            .msg_en = f"the method $(name) is missing in impl",
+        }: DiagItem);
+    }
+
+    fn emit_mismatch_associated_type(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"在 impl 中的关联类型 $(name) 与 trait 中的定义不一致",
+            .msg_en = f"the associated type $(name) in impl is not consistent with the one defined in trait",
+        }: DiagItem);
+    }
+
+    fn emit_conflicting_trait_impl(&mut self, trait_name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"这个类型已经实现了 $(trait_name) trait, 不允许重复实现",
+            .msg_en = f"the type has already implemented trait $(trait_name), duplicate impl is not allowed",
+        }: DiagItem);
+    }
+
+    fn emit_global_var_must_be_init(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"全局变量或者常量必须被初始化",
+            .msg_en = f"global variable or const must be initialized",
+        }: DiagItem);
+    }
+
+    fn emit_global_var_must_be_send(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"没有 unsafe 修饰的全局变量必须满足 Send 约束",
+            .msg_en = f"global variable without unsafe qualifier must be Send type",
+        }: DiagItem);
+    }
+
+    fn emit_requires_unsafe_context(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"这个操作需要在 unsafe 上下文中",
+            .msg_en = f"this operation requires unsafe context",
+        }: DiagItem);
+    }
+
+    fn emit_typeparam_not_conform_constraint(&mut self, ty: String, upper: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"泛型实参类型 $(ty) 不满足约束条件 $(upper)",
+            .msg_en = f"generic argument $(ty) does not conform the constraint $(upper)",
+        }: DiagItem);
+    }
+
+    fn emit_write_to_immutable_variable(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不允许修改不可变变量 $(name)",
+            .msg_en = f"writing to immutable variable is not allowed: $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_lives_not_longer_enough(&mut self,span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"表达式活得不够长",
+            .msg_en = f"expression does not live long enough",
+        }: DiagItem);
+    }
+}

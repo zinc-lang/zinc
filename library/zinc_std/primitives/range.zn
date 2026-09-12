@@ -1,0 +1,34 @@
+use ::self::iter::Iterable;
+use ::self::iter::Iterator;
+
+pub struct RangeExclusive<T> {
+    pub start: T,
+    pub end: T,
+}
+
+pub struct RangeInclusive<T> {
+    pub start: T,
+    pub end: T,
+}
+
+trait Step: PartialOrd {
+    fn forward(self, count: UInt) -> Option<Self>;
+    fn backward(self, count: UInt) -> Option<Self>;
+}
+
+impl<T> Iterable for RangeExclusive<T> where T: Step {
+
+}
+
+impl<T> Iterable for RangeInclusive<T> where T: Step {
+
+}
+
+pub struct IterRangeExclusive<T> where T: Step {
+
+}
+
+pub struct IterRangeInclusive<T> where T: Step {
+
+}
+

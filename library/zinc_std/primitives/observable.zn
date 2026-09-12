@@ -1,0 +1,26 @@
+
+pub struct Observable<T> {
+    value: *T,
+    observers: Vec<*Fn(&T)>,
+}
+
+pub struct ObserveGuard<T> {
+    item: *T,
+}
+
+// todo: 怎么包装这个返回值?
+impl<T> Deref for ReadOnly<T> {
+    type Target<'a> = ObserveGuard<'a, T>;
+
+    fn deref<'a>(&'a self) -> ObserveGuard<'a, T> {
+        return ObserveGuard { .item = self.value };
+    }
+}
+
+impl<T> DerefMut for ReadOnly<T> {
+
+    fn deref_mut(&mut self) -> ObserveGuard<'a, T> {
+        return ObserveGuard { .item = self.value };
+    }
+}
+

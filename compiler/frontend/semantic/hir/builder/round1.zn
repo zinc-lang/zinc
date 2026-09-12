@@ -1,0 +1,222 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::syntax::ast::stmt::*;
+use ::self::frontend::syntax::ast::visit::*;
+use ::self::frontend::syntax::ast::ty::*;
+use ::self::frontend::syntax::ast::expr::*;
+
+use ::self::frontend::semantic::hir::ir::*;
+
+struct TopLevelAstVisitor1 {
+    syntax_to_symbol: HashMap<UInt, *Symbol>,
+    root_mod: Option<*ModSymbol>,
+}
+
+impl TopLevelAstVisitor1 {
+    fn new() -> Self {
+        return {
+            .syntax_to_symbol = (type HashMap<UInt, *Symbol>)::new(),
+            .root_mod = None,
+        }: TopLevelAstVisitor1;
+    }
+
+    fn corresponding_symbol(&self, node: *weak SyntaxNode) -> Option<*Symbol> {
+        let key = node as *raw SyntaxNode as UInt;
+        let r = self.syntax_to_symbol.at(&key);
+        return r;
+    }
+
+    fn mapping(&mut self, node: *SyntaxNode, sym: *Symbol) {
+        let key = node as *raw SyntaxNode as UInt;
+        self.syntax_to_symbol.insert(key, sym);
+    }
+
+    fn parent_sym(&mut self, node: *SyntaxNode) -> Option<*ScopeSymbol> {
+        if node.parent() is Some(pm) {
+            let mut parent_node = pm;
+            // 跳过 extern "C" block
+            while parent_node is pn: *weak ExternBlockDecl {
+                let pn1 = upgrade_syntaxnode(pn as *weak SyntaxNode);
+                if pn1 is Some(pn2) {
+                    if pn2.parent() is Some(pn3) {
+                        parent_node = pn3;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            let opt_psym = self.corresponding_symbol(parent_node as *weak SyntaxNode);
+            if opt_psym is Some(psym) {
+                if psym is ssym: *ScopeSymbol {
+                    return Some(move ssym);
+                }
+            }
+        }
+        return None;
+    }
+
+    // todo 需要处理 upper_bounds
+    fn build_generics(&mut self, params: &Vec<*GenericTypeParamDecl>, parent_scope: *ScopeSymbol) -> GenericParams {
+        let mut gp = GenericParams::new();
+        for p in params {
+            if p.name.is_lifetime() {
+                let lt_sym = LifetimeSymbol::new(p.name);
+                parent_scope.sym_table().add_child(lt_sym as *Symbol);
+                gp.lt_params.push(move lt_sym);
+            } else {
+                let tps = TypeParamSymbol::new(p);
+                tps.parent_sym = Some(parent_scope);
+                self.mapping(p, tps);
+                tps.set_parent_scope(parent_scope);
+                parent_scope.sym_table().add_child(tps as *Symbol);
+                gp.ty_params.push(move tps);
+            }
+        }
+        return gp;
+    }
+
+    fn build_fn_params(&mut self, params: &Vec<*FnParamDecl>, func: *FuncSymbol) -> Vec<*VarSymbol> {
+        let mut var_syms = (type Vec<*VarSymbol>)::new();
+        for p in params {
+            let gs = VarSymbol::new(p as *SyntaxNode);
+            gs.parent_sym = Some(func as *ScopeSymbol);
+            self.mapping(p, gs);
+            gs.set_parent_scope(func as *ScopeSymbol);
+            func.symbol_table.add_child(gs as *Symbol);
+            var_syms.push(move gs);
+        }
+        return var_syms;
+    }
+}
+
+impl SyntaxVisitor for TopLevelAstVisitor1 {
+
+    fn visit_mod(&mut self, node: *ModDecl) -> VisitResult {
+        let sym = ModSymbol::new(node);
+        self.mapping(node as *SyntaxNode, sym as *Symbol);
+        if self.parent_sym(node as *SyntaxNode) is Some(psym) {
+            sym.set_parent_scope(psym);
+            psym.sym_table().add_child(sym);
+        }
+
+        // 访问到的第一个 mod 当成 root_mod
+        if self.root_mod is None {
+            self.root_mod = Some(sym);
+        }
+
+        return VisitResult::Continue;
+    }
+    fn visit_fn(&mut self, node: *FuncDecl) -> VisitResult {
+        let fsym = FuncSymbol::new(node);
+
+        self.mapping(node as *SyntaxNode, fsym as *Symbol);
+        let parent_sym = self.parent_sym(node as *SyntaxNode).get_or_panic("parent symbol is None");
+        fsym.set_parent_scope(parent_sym);
+        parent_sym.sym_table().add_child(fsym);
+
+        fsym.generics = self.build_generics(&node.generic_params, fsym as *ScopeSymbol);
+
+        fsym.params = self.build_fn_params(&node.params, fsym);
+
+        return VisitResult::Continue;
+    }
+    fn visit_impl(&mut self, node: *ImplDecl) -> VisitResult {
+        let isym = ImplSymbol::new(node);
+        isym.self_ty.parent_sym = Some(isym as *ScopeSymbol);
+        self.mapping(node as *SyntaxNode, isym as *Symbol);
+        let parent_sym = self.parent_sym(node as *SyntaxNode).get_or_panic("parent symbol is None");
+        isym.set_parent_scope(parent_sym);
+        parent_sym.sym_table().add_child(isym);
+
+        isym.generics = self.build_generics(&node.generic_params, isym as *ScopeSymbol);
+
+        return VisitResult::Continue;
+    }
+    fn visit_struct(&mut self, node: *StructDecl) -> VisitResult {
+        let struct_sym = StructSymbol::new(node);
+        self.mapping(node as *SyntaxNode, struct_sym as *Symbol);
+        let parent_sym = self.parent_sym(node as *SyntaxNode).get_or_panic("parent symbol is None");
+        struct_sym.set_parent_scope(parent_sym);
+        parent_sym.sym_table().add_child(struct_sym);
+
+        struct_sym.generics = self.build_generics(&node.generic_params, struct_sym as *ScopeSymbol);
+
+        return VisitResult::Continue;
+    }
+    fn visit_enum(&mut self, node: *EnumDecl) -> VisitResult {
+        let enum_sym = EnumSymbol::new(node);
+        self.mapping(node as *SyntaxNode, enum_sym as *Symbol);
+        let parent_sym = self.parent_sym(node as *SyntaxNode).get_or_panic("parent symbol is None");
+        enum_sym.set_parent_scope(parent_sym);
+        parent_sym.sym_table().add_child(enum_sym);
+
+        enum_sym.generics = self.build_generics(&node.generic_params, enum_sym as *ScopeSymbol);
+
+        return VisitResult::Continue;
+    }
+    fn visit_enum_variant(&mut self, node: *EnumVariantDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_union(&mut self, node: *UnionDecl) -> VisitResult {
+        let union_sym = UnionSymbol::new(node);
+        self.mapping(node as *SyntaxNode, union_sym as *Symbol);
+        let parent_sym = self.parent_sym(node as *SyntaxNode).get_or_panic("parent symbol is None");
+        union_sym.set_parent_scope(parent_sym);
+        parent_sym.sym_table().add_child(union_sym);
+        return VisitResult::Continue;
+    }
+    fn visit_trait(&mut self, node: *TraitDecl) -> VisitResult {
+        let trait_sym = TraitSymbol::new(node);
+        trait_sym.self_ty.parent_sym = Some(trait_sym as *ScopeSymbol);
+        self.mapping(node as *SyntaxNode, trait_sym as *Symbol);
+        let parent_sym = self.parent_sym(node as *SyntaxNode).get_or_panic("parent symbol is None");
+        trait_sym.set_parent_scope(parent_sym);
+        parent_sym.sym_table().add_child(trait_sym);
+
+        trait_sym.generics = self.build_generics(&node.generic_params, trait_sym as *ScopeSymbol);
+        return VisitResult::Continue;
+    }
+    fn visit_typealias(&mut self, node: *TypeAliasDecl) -> VisitResult {
+        if node.qualifiers().get(QualifierKind::Extern) is Some(_) {
+            let tsym = ExternTypeSymbol::new(node);
+            self.mapping(node as *SyntaxNode, tsym as *Symbol);
+            let parent_sym = self.parent_sym(node as *SyntaxNode).get_or_panic("parent symbol is None");
+            tsym.set_parent_scope(parent_sym);
+            parent_sym.sym_table().add_child(tsym);
+            return VisitResult::Continue;
+        } else {
+            let tsym = TypeAliasSymbol::new(node);
+            self.mapping(node as *SyntaxNode, tsym as *Symbol);
+            let parent_sym = self.parent_sym(node as *SyntaxNode).get_or_panic("parent symbol is None");
+            tsym.set_parent_scope(parent_sym);
+            parent_sym.sym_table().add_child(tsym);
+            tsym.generics = self.build_generics(&node.generic_params, tsym as *ScopeSymbol);
+            return VisitResult::Continue;
+        }
+    }
+    fn visit_associated_type(&mut self, node: *AssociatedTypeDecl) -> VisitResult {
+        let asym = AssociatedTypeSymbol::new(node);
+        self.mapping(node as *SyntaxNode, asym as *Symbol);
+        let parent_sym = self.parent_sym(node as *SyntaxNode).get_or_panic("parent symbol is None");
+        asym.set_parent_scope(parent_sym);
+        parent_sym.sym_table().add_child(asym);
+        asym.generics = self.build_generics(&node.generic_params, asym as *ScopeSymbol);
+        return VisitResult::Continue;
+    }
+    fn visit_var_decl(&mut self, node: *VarDecl) -> VisitResult {
+        if !node.kw_const.is_invalid() || !node.kw_static.is_invalid() {
+            let var_sym = VarSymbol::new(node as *SyntaxNode);
+            self.mapping(node as *SyntaxNode, var_sym as *Symbol);
+            let parent_sym = self.parent_sym(node as *SyntaxNode).get_or_panic("parent symbol is None");
+            var_sym.set_parent_scope(parent_sym);
+            parent_sym.sym_table().add_child(var_sym);
+        }
+        return VisitResult::Continue;
+    }
+
+    fn visit_block(&mut self, node: *BlockStmt) -> VisitResult {
+        return VisitResult::SkipChildren;
+    }
+}

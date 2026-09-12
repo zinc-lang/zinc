@@ -1,0 +1,13 @@
+
+unsafe impl<T> Send for Owned<T> where T: Send {}
+unsafe impl<T> Sync for Owned<T> where T: Sync {}
+
+impl<T> Owned<T> {
+    pub fn new(p: *T) -> Option<Owned<T>> {
+        if (::self::ptr::is_unique(&p)) {
+            return Some({ .data = move p });
+        } else {
+            return None;
+        }
+    }
+}

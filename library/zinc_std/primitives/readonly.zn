@@ -1,0 +1,13 @@
+
+// 只实现 Deref, 不实现 DerefMut
+pub struct ReadOnly<T> {
+    value: T
+}
+
+impl<T> Deref for ReadOnly<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        return &self.value;
+    }
+}

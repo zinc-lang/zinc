@@ -1,0 +1,7 @@
+pub mod cli;
+pub mod frontend;
+pub mod backend;
+
+fn main() {
+    cli::run();
+}

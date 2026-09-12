@@ -1,0 +1,52 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use super::*;
+
+impl ReadValue {
+    fn new(e: *ExpressionNode, s: *VarSymbol) -> *Self {
+        let span = e.span();
+        let sty = s.stype;
+        return box {
+            .expr = move e,
+            .parent_node = None,
+            .sty = move sty,
+            .sym_var = move s,
+        }: ReadValue;
+    }
+}
+
+impl XValue for ReadValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+        let n = self.sym_var.short_name();
+        if !n.is_empty() {
+            print(n);
+        } else {
+            print("Temp");
+            print(self.sym_var as *raw VarSymbol as UInt);
+        }
+    }
+}
+
+impl RValue for ReadValue {
+
+}

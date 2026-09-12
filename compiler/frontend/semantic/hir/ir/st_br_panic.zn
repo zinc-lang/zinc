@@ -1,0 +1,28 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::stmt::*;
+use ::self::frontend::source_code::*;
+
+impl BranchPanic {
+    pub fn new(stmt: *PanicStmt, msg: Option<*RValue>) -> *Self {
+        return box {
+            .stmt = move stmt,
+            .parent_stmt = None,
+            .msg = move msg,
+        }: BranchPanic;
+    }
+}
+
+impl Sentence for BranchPanic {
+    fn stmt_node(&self) -> *StatementNode {
+        return self.stmt as *StatementNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_stmt;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_stmt = Some(ss);
+    }
+}

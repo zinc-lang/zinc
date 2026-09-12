@@ -1,0 +1,180 @@
+use ::self::iter::Iterable;
+use ::self::iter::Iterator;
+use ::self::cmp::PartialEq;
+
+extern fn zinc_core_set_strong_count(p: *raw (), val: UShort) -> UShort;
+
+pub struct Slice<'a, T> {
+    pointer: &'a T,
+    length: UInt,
+}
+
+pub struct SliceMut<'a, T> {
+    pointer: &'a mut T,
+    length: UInt,
+}
+
+impl<'a, T> Slice<'a, T> {
+    pub fn len(&self) -> UInt {
+        return self.length;
+    }
+
+    pub fn get<'s>(&'s self, index: UInt) -> Option<&'s T> {
+        if (index >= self.length) {
+            return None;
+        }
+        let raw_ptr = unsafe(((self.pointer as *raw T) + index) as &'s T);
+        return Some(raw_ptr);
+    }
+
+    pub unsafe fn get_unchecked<'s>(&'s self, index: UInt) -> &'s T {
+        return unsafe(((self.pointer as *raw T) + index) as &'s T);
+    }
+
+    pub fn raw_ptr(&self) -> *raw T {
+        return self.pointer as *raw T;
+    }
+
+    pub fn contains(&self, item: &T) -> Bool
+    where
+        T: PartialEq,
+    {
+        let mut i: UInt = 0;
+        while (i < self.length) {
+            let p = unsafe(((self.pointer as *raw T) + i) as &T);
+            if (p.eq(item)) {
+                return true;
+            }
+            i += 1;
+        }
+        return false;
+    }
+}
+
+impl<'a, T> SliceMut<'a, T> {
+    pub fn len(&self) -> UInt {
+        return self.length;
+    }
+
+    pub fn get<'s>(&'s self, index: UInt) -> Option<&'s T> {
+        if (index >= self.length) {
+            return None;
+        }
+        let raw_ptr = unsafe(((self.pointer as *raw T) + index) as &'s T);
+        return Some(raw_ptr);
+    }
+
+    pub unsafe fn get_unchecked<'s>(&'s self, index: UInt) -> &'s T {
+        return unsafe(((self.pointer as *raw T) + index) as &'s T);
+    }
+
+    pub fn get_mut<'s>(&'s mut self, index: UInt) -> Option<&'s mut T> {
+        if (index >= self.length) {
+            return None;
+        }
+        let raw_ptr = unsafe(((self.pointer as *raw mut T) + index) as &'s mut T);
+        return Some(raw_ptr);
+    }
+
+    pub unsafe fn get_unchecked_mut<'s>(&'s mut self, index: UInt) -> &'s mut T {
+        return unsafe(((self.pointer as *raw mut T) + index) as &'s mut T);
+    }
+
+    pub fn raw_ptr(&self) -> *raw mut T {
+        return self.pointer as *raw mut T;
+    }
+
+    pub fn contains(&self, item: &T) -> Bool
+    where
+        T: PartialEq,
+    {
+        let mut i: UInt = 0;
+        while (i < self.length) {
+            let p = unsafe(((self.pointer as *raw T) + i) as &T);
+            if (p.eq(item)) {
+                return true;
+            }
+            i += 1;
+        }
+        return false;
+    }
+}
+
+
+pub struct SliceIter<'i, T> {
+    pointer: &'i T,
+    length: UInt,
+    index: UInt,
+}
+
+impl<'a, T> Iterable for Slice<'a, T> {
+    type Iter<'i> = SliceIter<'i, T>;
+    fn iter<'s>(&'s self) -> SliceIter<'s, T> {
+        return {
+            .pointer = self.pointer,
+            .length = self.length,
+            .index = 0,
+        }: SliceIter<'s, T>;
+    }
+}
+
+impl<'s, T> Iterator for SliceIter<'s, T> {
+    type Item = T;
+
+    fn next<'n>(&'n mut self) -> Option<&'n T> {
+        if (self.index >= self.length) {
+            return None;
+        } else {
+            let r = unsafe((self.pointer as *raw T + self.index) as &T);
+            self.index += 1;
+            return Some(r);
+        }
+    }
+}
+
+
+// 它直接具备修改能力，通过 DerefMut<T> 实现。copy on write 在 Vec 其它修改函数中做。
+pub struct ItemRefMut<'a, T> {
+    ptr: *(),
+    size: UInt, // size 是有必要的，因为析构的时候需要释放 data 里面的数据
+    item: &'a mut T, // 这里也可以用裸指针，但是从使用的角度来看，借用更合理。 ItemRefMut 是携带隐式生命周期参数的类型
+}
+
+impl<'a, T> Drop for ItemRefMut<'a, T> {
+    fn drop(&mut self) {
+        unsafe {
+            zinc_core_set_strong_count(self.ptr as *raw (), 2);
+        }
+    }
+}
+
+impl<'a, T> Deref for ItemRefMut<'a, T> {
+    type Target<'t> = &'t T;
+
+    fn deref(&self) -> &T {
+        return unsafe(self.item as &T);
+    }
+}
+
+impl<'a, T> DerefMut for ItemRefMut<'a, T> {
+    type TargetMut<'t> = &'t mut T;
+
+    fn deref_mut(&mut self) -> &mut T {
+        return unsafe(self.item as &mut T);
+    }
+}
+
+
+pub struct ItemRef<'a, T> {
+    ptr: *(),
+    size: UInt,
+    item: &'a T, // 这里也可以用裸指针，但是从使用的角度来看，借用更合理。 ItemRef 是携带隐式生命周期参数的类型
+}
+
+impl<'a, T> Deref for ItemRef<'a, T> {
+    type Target<'t> = &'t T;
+
+    fn deref(&self) -> &T {
+        return unsafe(self.item as &T);
+    }
+}

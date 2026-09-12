@@ -1,0 +1,126 @@
+use ::self::primitives::string::ToString;
+use ::self::cmp::{Eq, PartialEq, PartialOrd, Ord, Ordering};
+use ::self::hash::{Hash, Hasher};
+use ::self::primitives::clone::Clone;
+use ::self::primitives::default::Default;
+
+impl UInt32 {
+    pub fn reverse_bits(self) -> UInt32 {
+        return ::self::intrinsic::reverse_bits(<UInt32>, self);
+    }
+
+    pub fn rotate_left(self, n: UInt32) -> UInt32 {
+        return ::self::intrinsic::rotate_left(<UInt32>, self, n);
+    }
+
+    pub fn rotate_right(self, n: UInt32) -> UInt32 {
+        return ::self::intrinsic::rotate_right(<UInt32>, self, n);
+    }
+
+    pub fn bit_and(self, n: UInt32) -> UInt32 {
+        return ::self::intrinsic::bit_and(<UInt32>, self, n);
+    }
+
+    pub fn bit_or(self, n: UInt32) -> UInt32 {
+        return ::self::intrinsic::bit_or(<UInt32>, self, n);
+    }
+
+    pub fn bit_xor(self, n: UInt32) -> UInt32 {
+        return ::self::intrinsic::bit_xor(<UInt32>, self, n);
+    }
+
+    pub fn bit_not(self) -> UInt32 {
+        return ::self::intrinsic::bit_not(<UInt32>, self);
+    }
+
+    pub fn bit_shl(self, n: UInt32) -> UInt32 {
+        return ::self::intrinsic::bit_shl(<UInt32>, self, n);
+    }
+
+    pub fn bit_shr(self, n: UInt32) -> UInt32 {
+        return ::self::intrinsic::bit_shr(<UInt32>, self, n);
+    }
+}
+
+impl ToString for UInt32 {
+    fn to_string_inplace(&self, buf: &mut String) {
+        let m = *self as UInt64;
+        m.to_string_inplace(buf);
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl PartialEq for UInt32 {
+    fn eq(&self, other: &Self) -> Bool {
+        return *self == *other;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return *self != *other;
+    }
+}
+
+impl Eq for UInt32 {}
+
+impl PartialOrd for UInt32 {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if *self < *other {
+            return Some(Ordering::Less);
+        }
+        else if *self == *other {
+            return Some(Ordering::Equal);
+        }
+        else {
+            return Some(Ordering::Greater);
+        }
+    }
+    fn lt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Less);
+    }
+    fn le(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Greater));
+    }
+    fn gt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Greater);
+    }
+    fn ge(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Less));
+    }
+}
+
+impl Ord for UInt32 {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if *self < *other {
+            return Ordering::Less;
+        }
+        else if *self == *other {
+            return Ordering::Equal;
+        }
+        else {
+            return Ordering::Greater;
+        }
+    }
+}
+
+impl Hash for UInt32 {
+    fn hash(&self, state: &mut Hasher) {
+        state.combine(*self as UInt64);
+    }
+}
+
+impl Clone for UInt32 {
+    fn clone(&self) -> UInt32 {
+        return *self;
+    }
+}
+
+impl Default for UInt32 {
+    fn default() -> UInt32 {
+        return 0;
+    }
+}

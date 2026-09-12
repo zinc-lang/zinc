@@ -1,0 +1,91 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::diagnostic::*;
+use super::*;
+
+impl VarBindingPattern {
+    fn new(n: *IdentPatternNode, sty: Option<*SType>) -> *Self {
+        return box {
+            .node = n,
+            .var_sym = VarSymbol::new(n as *SyntaxNode),
+            .pat_sty = move sty,
+            .matches_with = None,
+        }: VarBindingPattern;
+    }
+}
+
+impl Pattern for VarBindingPattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+        self.matches_with = Some(expr);
+
+        if self.pat_sty is Some(psty) {
+            self.var_sym.stype = psty;
+            self.var_sym.init = Some(move expr);
+        } else {
+            self.var_sym.init = Some(move expr);
+        }
+
+        if is_refutable {
+            let df = VarSymbol::create(self.var_sym.var_node.span(), SType::sty_bool());
+            self.var_sym.drop_flag = Some(move df);
+        }
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        let mut v = (type Vec<*VarSymbol>)::with_capacity(1);
+        v.push(self.var_sym);
+        return v;
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        let mw = self.matches_with.get_or_panic("BUG: pattern does not know what expression it matches with");
+        let span = self.var_sym.var_node.span();
+        let expr_ty = ctx.infer(mw);
+
+        if expr_ty.is_invalid() {
+            if self.pat_sty is Some(pat_sty) {
+                ctx.check_value(move mw, pat_sty);
+                self.var_sym.stype = pat_sty;
+            } else {
+                DiagnosticEngine::get().emit_type_infer_failed(self.node.span());
+            }
+        } else {
+            if self.pat_sty is Some(pat_sty) {
+                if !(ensure_type_valid(expr_ty, span)) {
+                    return;
+                }
+                if !(ensure_type_valid(pat_sty, span)) {
+                    return;
+                }
+
+                // todo 在 cg_pattern_match 那边用这个 TypeTestKind 似乎更合理一点
+                let test_kind = resolve_type_test_kind(expr_ty, pat_sty);
+                if test_kind is TypeTestKind::AlwaysTrue {
+                    DiagnosticEngine::get().emit_type_test_always_true(self.node.span());
+                }
+                if test_kind is TypeTestKind::AlwaysFalse {
+                    DiagnosticEngine::get().emit_type_test_always_false(self.node.span());
+                }
+
+                let k = resolve_type_cast_kind(expr_ty, pat_sty);
+                if k is ResolvedCastKind::Err {
+                    DiagnosticEngine::get().emit_cast_error(expr_ty.to_string(), pat_sty.to_string(), span);
+                    return;
+                }
+                let mut cast = CastValue::create(move mw, pat_sty);
+                cast.resolved_kind = move k;
+                cast.is_refutable = false;
+                self.var_sym.init = Some(move cast as *RValue);
+                self.var_sym.stype = move pat_sty;
+            } else {
+                self.var_sym.stype = move expr_ty;
+                self.var_sym.init = Some(move mw as *RValue);
+            }
+        }
+    }
+}

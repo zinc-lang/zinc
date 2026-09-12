@@ -1,0 +1,86 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::source_code::*;
+
+unsafe static mut G_BOOL_SYMBOL: Option<*BoolSymbol> = None;
+
+impl BoolSymbol {
+    pub fn new() -> *Self {
+        unsafe {
+            if G_BOOL_SYMBOL is Some(s) {
+                return s;
+            } else {
+                let sym = box {
+                    .all_impls = (type Vec<*ImplSymbol>)::new(),
+                }: BoolSymbol;
+                G_BOOL_SYMBOL = Some(sym);
+                return sym;
+            }
+        }
+    }
+
+}
+
+impl Symbol for BoolSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = SourceSpan::empty()
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return f"Bool";
+    }
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+    fn export_value(&self) -> String {
+        return self.short_name();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+unsafe static mut G_BOOL_STYPE: Option<*SType> = None;
+
+impl TypeSymbol for BoolSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        return self.short_name();
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return self.all_impls;
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        return self.to_sty();
+    }
+    fn to_sty(*self) -> *SType {
+        unsafe {
+            if G_BOOL_STYPE is Some(t) {
+                return t;
+            } else {
+                let sty = box {
+                    .type_symbol = self as *BoolSymbol as *TypeSymbol,
+                    .args = GenericArgs::new(),
+                }: SType;
+                G_BOOL_STYPE = Some(sty);
+                return sty;
+            }
+        }
+    }
+}
+

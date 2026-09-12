@@ -1,0 +1,761 @@
+use ::self::frontend::diagnostic::{Severity, DiagItem, DiagnosticEngine};
+use ::self::frontend::source_code::{SourceSpan, SourceLoc, SourceManager};
+
+impl DiagnosticEngine {
+    fn emit_invalid_char_or_lifetime(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的字符字面量或生命周期",
+            .msg_en = f"Invalid character literal or lifetime",
+        }: DiagItem);
+    }
+
+    fn emit_keyword_as_lifetime(&mut self, span: SourceSpan, kw: Str) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"关键字 ($(kw)) 不能作为生命周期名称",
+            .msg_en = f"Keyword ($(kw)) cannot be used as lifetime name",
+        }: DiagItem);
+    }
+
+    fn emit_illegal_int_prefix(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的整数字面量前缀, 以0开头的整数字面量, 只能是 0b 0o 0x 前缀",
+            .msg_en = f"Illegal integer literal prefix, integer literal starts with 0 only support one of the prefixes: 0b 0o 0x",
+        }: DiagItem);
+    }
+
+    fn emit_illegal_int_suffix(&mut self, span: SourceSpan, suffix: UInt64) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的整数字面量后缀: $(suffix)",
+            .msg_en = f"Illegal integer literal suffix: $(suffix)",
+        }: DiagItem);
+    }
+
+    fn emit_int_out_of_range(&mut self, span: SourceSpan, ty: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"整数字面量值超出范围, 期望类型是: $(ty)",
+            .msg_en = f"Integer literal value out of range, expected type is: $(ty)",
+        }: DiagItem);
+    }
+
+    fn emit_byte_out_of_range(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"字节字面量值超出范围, 期望值在0到255之间",
+            .msg_en = f"Byte literal value out of range, expected value is between 0 and 255",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_float_suffix(&mut self, span: SourceSpan, suffix: UInt64) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的浮点数字面量后缀: $(suffix)",
+            .msg_en = f"Invalid float literal suffix: $(suffix)",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_escape(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的转义序列",
+            .msg_en = f"Invalid escape sequence",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_utf8(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的 utf8 编码的字节序列",
+            .msg_en = f"Invalid utf8 byte sequence",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_syntax_node(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的语法节点",
+            .msg_en = f"Invalid syntax node",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_top_level_item(&mut self, span: SourceSpan, msg: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的顶层声明: $(msg)",
+            .msg_en = f"Invalid top-level item: $(msg)",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_impl_item(&mut self, span: SourceSpan, msg: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的 impl item: $(msg)",
+            .msg_en = f"Invalid impl item: $(msg)",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_trait_item(&mut self, span: SourceSpan, msg: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的 trait item: $(msg)",
+            .msg_en = f"Invalid trait item: $(msg)",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_token(&mut self, span: SourceSpan, msg: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的词元: $(msg)",
+            .msg_en = f"Invalid token: $(msg)",
+        }: DiagItem);
+    }
+
+    fn emit_compiler_recursion_exceed_limit(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"编译器递归深度超过限制",
+            .msg_en = f"Compiler recursion depth exceed limit",
+        }: DiagItem);
+    }
+
+    fn emit_param_count_exceed_limit(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"参数数量超过限制",
+            .msg_en = f"Parameter count exceed limit",
+        }: DiagItem);
+    }
+
+    fn emit_unexpected_token(&mut self, span: SourceSpan, actual: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非预期的词元: $(actual)",
+            .msg_en = f"Unexpect token: $(actual)",
+        }: DiagItem);
+    }
+
+    fn emit_unexpected_qualifier(&mut self, span: SourceSpan, decl: String, qualifier: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"$(decl) 不支持修饰符: $(qualifier)",
+            .msg_en = f"$(decl) does not accept qualifier: $(qualifier)",
+        }: DiagItem);
+    }
+
+    fn emit_qualifier_in_trait_only(&mut self, span: SourceSpan, qualifier: Str) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"$(qualifier) 修饰符只能用在 trait 内部",
+            .msg_en = f"$(qualifier) qualifier can only be used in trait items",
+        }: DiagItem);
+    }
+
+    fn emit_unexpected_character(&mut self, span: SourceSpan, ch: Char) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不合法的字符: '$(ch)'",
+            .msg_en = f"Unexpected character: '$(ch)'",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_escape(&mut self, span: SourceSpan, ch: Char) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的转义序列 '\\$(ch)'",
+            .msg_en = f"Invalid escape sequence '\\$(ch)'",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_unicode_escape(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的Unicode字符",
+            .msg_en = f"Invalid unicode character",
+        }: DiagItem);
+    }
+
+    fn emit_unclosed_brackets(&mut self, span: SourceSpan, open: Char, close: Char) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"未闭合的括号: '$(open)' 期望匹配的括号是 '$(close)'",
+            .msg_en = f"Unclosed brackets: '$(open)', expected matching brackets is '$(close)'",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_ident_name(&mut self, span: SourceSpan, name: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的标识符名称: $(name)",
+            .msg_en = f"Invalid identifier name: $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_duplicate_qualifier(&mut self, span: SourceSpan, qualifier: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"重复的修饰符: $(qualifier)",
+            .msg_en = f"Duplicate qualifier: $(qualifier)",
+        }: DiagItem);
+    }
+
+    fn emit_duplicate_sub_mod(&mut self, span: SourceSpan, name: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"重复的模块名字: $(name)",
+            .msg_en = f"Duplicate module name: $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_pub_inner_decl(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"函数内部定义的 item 不能用 pub 修饰",
+            .msg_en = f"pub qualifier cannot be applied to inner items",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_inner_decl(&mut self, span: SourceSpan, msg: Str) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"代码块内部不允许定义 $(msg)",
+            .msg_en = f"Invalid inner declaration, $(msg) is not allowed inside a block",
+        }: DiagItem);
+    }
+
+    fn emit_fn_without_body(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"函数必须有函数体",
+            .msg_en = f"function must have a function body",
+        }: DiagItem);
+    }
+
+    fn emit_sub_mod_file_not_found(&mut self, span: SourceSpan, file_name: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"子模块文件未找到: $(file_name)",
+            .msg_en = f"Sub module file not found: $(file_name)",
+        }: DiagItem);
+    }
+
+    fn emit_unknown_expression(&mut self, span: SourceSpan, expr: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不认识的表达式: $(expr)",
+            .msg_en = f"Unknown expression: $(expr)",
+        }: DiagItem);
+    }
+
+    fn emit_unknown_pattern(&mut self, span: SourceSpan, pat: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不认识的模式: $(pat)",
+            .msg_en = f"Unknown pattern: $(pat)",
+        }: DiagItem);
+    }
+
+    fn emit_unknown_type(&mut self, span: SourceSpan, ty: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不认识的类型: $(ty)",
+            .msg_en = f"Unknown type: $(ty)",
+        }: DiagItem);
+    }
+
+    fn emit_unknown_stmt(&mut self, span: SourceSpan, stmt: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不认识的语句: $(stmt)",
+            .msg_en = f"Unknown statement: $(stmt)",
+        }: DiagItem);
+    }
+
+    fn emit_unknown_capture_pattern(&mut self, span: SourceSpan, pat: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不认识的捕获模式: $(pat)",
+            .msg_en = f"Unknown capture pattern: $(pat)",
+        }: DiagItem);
+    }
+
+    fn emit_duplicate_capture(&mut self, span: SourceSpan, name: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"重复的捕获变量: $(name)",
+            .msg_en = f"Duplicate capture variable: $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_decl_in_mod_only(&mut self, span: SourceSpan, item: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"$(item) 只能在模块中定义",
+            .msg_en = f"$(item) can only be defined in a module",
+        }: DiagItem);
+    }
+
+    fn emit_decl_in_top_mod_only(&mut self, span: SourceSpan, item: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"$(item) 只能在顶层模块中定义",
+            .msg_en = f"$(item) can only be defined in the top-level module",
+        }: DiagItem);
+    }
+
+    fn emit_mut_arc(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"Arc类型不能有 mut 修饰",
+            .msg_en = f"Arc type do not support mut qualifier",
+        }: DiagItem);
+    }
+
+    fn emit_decl_ahead_of_other_than(&mut self, span: SourceSpan, item: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"$(item) 必须在其它声明的前面",
+            .msg_en = f"$(item) must be declared ahead of other declarations",
+        }: DiagItem);
+    }
+
+    fn emit_import_in_std(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"std 组件中不允许使用import声明",
+            .msg_en = f"Import declaration is not allowed in std component",
+        }: DiagItem);
+    }
+
+    fn emit_duplicate_export(&mut self, span: SourceSpan, name: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"重复的export声明: $(name)",
+            .msg_en = f"Duplicate export declaration: $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_import_self(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"组件不能 import 自己",
+            .msg_en = f"Import declaration cannot import itself",
+        }: DiagItem);
+    }
+
+    fn emit_import_std(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"std 组件是自动导入的, 不能显式 import std",
+            .msg_en = f"std component is automatically imported, cannot explicitly import std",
+        }: DiagItem);
+    }
+
+    fn emit_duplicate_import(&mut self, span: SourceSpan, name: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"重复的import声明: $(name)",
+            .msg_en = f"Duplicate import declaration: $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_use_decl_invalid_parent(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"use声明只能出现在模块中或者语句块里面",
+            .msg_en = f"use declaration can only appear in a mod or a block",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_use_decl(&mut self, span: SourceSpan, msg: Str) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的use声明: $(msg)",
+            .msg_en = f"Invalid use declaration: $(msg)",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_nested_if_stmt(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不合法的嵌套if语句",
+            .msg_en = f"Invalid nested if statement",
+        }: DiagItem);
+    }
+
+    fn emit_named_param_not_allowed(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不允许使用命名参数",
+            .msg_en = f"Named parameters are not allowed",
+        }: DiagItem);
+    }
+
+    fn emit_named_param_invalid_name(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"命名参数名字非法",
+            .msg_en = f"The name of a named parameter is invalid",
+        }: DiagItem);
+    }
+
+    fn emit_named_args_position(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"命名参数必须在位置参数之后",
+            .msg_en = f"Named parameters must be after positional parameters",
+        }: DiagItem);
+    }
+
+    fn emit_ellipsis_param_position(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"省略参数必须在所有其他参数的最后",
+            .msg_en = f"Ellipsis parameter must be the last of all parameters",
+        }: DiagItem);
+    }
+
+    fn emit_only_extern_can_have_ellipsis_param(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"只有extern函数可以允许省略号参数",
+            .msg_en = f"Only extern functions can have ellipsis parameter",
+        }: DiagItem);
+    }
+
+    fn emit_extern_fn_must_be_global(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"extern函数必须是全局函数",
+            .msg_en = f"Extern functions must be global functions",
+        }: DiagItem);
+    }
+
+    fn emit_extern_fn_has_body(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"extern函数不能有函数体",
+            .msg_en = f"Extern functions cannot have a function body",
+        }: DiagItem);
+    }
+
+    fn emit_extern_fn_has_generic(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"extern函数不能有泛型参数",
+            .msg_en = f"Extern functions cannot have generic parameters",
+        }: DiagItem);
+    }
+
+    fn emit_extern_type_has_target(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"extern类型不能是另外一个类型的别名",
+            .msg_en = f"extern type is not allowed to be an alias of another type",
+        }: DiagItem);
+    }
+
+    fn emit_extern_type_has_generic(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"extern类型不能有泛型参数",
+            .msg_en = f"Extern types cannot have generic parameters",
+        }: DiagItem);
+    }
+
+    fn emit_param_not_allow_default_value(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"参数不允许有默认值",
+            .msg_en = f"Parameters are not allowed to have default values",
+        }: DiagItem);
+    }
+
+     fn emit_default_value_only_const(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"参数默认值必须是常量表达式",
+            .msg_en = f"Parameter default value must be a constant expression",
+        }: DiagItem);
+    }
+
+    fn emit_generic_param_list_empty(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"泛型参数列表不能为空",
+            .msg_en = f"Generic parameter list cannot be empty",
+        }: DiagItem);
+    }
+
+     fn emit_generic_param_invalid_name(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"泛型参数名字非法",
+            .msg_en = f"Generic parameter name is invalid",
+        }: DiagItem);
+    }
+
+    fn emit_generic_param_name_duplicate(&mut self, span: SourceSpan, name: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"泛型参数名字与外层泛型参数名字重复: $(name)",
+            .msg_en = f"Generic parameter name duplicate with outer side generic parameter: $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_param_name_duplicate(&mut self, span: SourceSpan, name: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"参数名字重复: $(name)",
+            .msg_en = f"Parameter name duplicate: $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_duplicate_main_fn(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"重复的main函数",
+            .msg_en = f"Duplicate main function",
+        }: DiagItem);
+    }
+
+    fn emit_union_donot_support_generic(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"联合体不支持泛型参数",
+            .msg_en = f"Union type do not support generic parameters",
+        }: DiagItem);
+    }
+
+    fn emit_global_must_specify_type(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"全局变量和常量目前不支持类型推导, 必须指定类型",
+            .msg_en = f"Global variables must specify a type",
+        }: DiagItem);
+    }
+
+    fn emit_static_mut_must_be_unsafe(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"mut 修饰的 static 变量, 必须用 unsafe 修饰",
+            .msg_en = f"static mut variables must be qualified by unsafe",
+        }: DiagItem);
+    }
+
+    fn emit_array_len_only_support_literal(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"数组长度目前只支持字面量, 后续支持常量表达式",
+            .msg_en = f"Array length only support literals",
+        }: DiagItem);
+    }
+
+     fn emit_array_len_literal_must_be_uint(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"数组长度字面量必须是 UInt 类型",
+            .msg_en = f"Array length literal must be of UInt type",
+        }: DiagItem);
+    }
+
+    fn emit_global_must_init(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"全局变量和常量必须初始化",
+            .msg_en = f"Global variables and constants must be initialized",
+        }: DiagItem);
+    }
+
+    fn emit_lifetime_must_before_type_arg(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"生命周期参数必须在类型参数之前",
+            .msg_en = f"Lifetime parameters must be before type parameters",
+        }: DiagItem);
+    }
+
+    fn emit_receiver_param_not_first(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"self参数必须是第一个参数",
+            .msg_en = f"Self parameter must be the first parameter",
+        }: DiagItem);
+    }
+
+    fn emit_where_clause_not_allowed(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不允许使用 where 子句",
+            .msg_en = f"Where clause is not allowed",
+        }: DiagItem);
+    }
+
+    fn emit_string_interpolation_inner_expr(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"未完成特性: 目前插值字符串内部表达式只支持一个变量名不支持复杂表达式",
+            .msg_en = f"incomplete feature: expression in string interpolation only surpport a single identifier for now",
+        }: DiagItem);
+    }
+
+    fn emit_duplicate_name(&mut self, span: SourceSpan, name: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"重复的名字: $(name)",
+            .msg_en = f"Duplicate name: $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_jump_not_in_loop(&mut self, span: SourceSpan, name: Str) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"$(name)语句只能出现在循环内部",
+            .msg_en = f"$(name) statement can only appear inside a loop",
+        }: DiagItem);
+    }
+
+    fn emit_default_init_position(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"初始化表达式中的默认值只能在最后一个",
+            .msg_en = f"the default initializer must be the last one inside struct initializer",
+        }: DiagItem);
+    }
+
+    fn emit_name_not_ident_pattern(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"名字模式只能是一个标识符",
+            .msg_en = f"Name pattern can only be an identifier",
+        }: DiagItem);
+    }
+
+    fn emit_rest_pattern_position(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"剩余模式必须在模式列表的最后",
+            .msg_en = f"Rest pattern must be the last one in the pattern list",
+        }: DiagItem);
+    }
+
+    fn emit_pattern_must_be_ident(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"此处只能是标识符模式",
+            .msg_en = f"This pattern must be identifier pattern",
+        }: DiagItem);
+    }
+
+    fn emit_ref_pattern_disallowed(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"enum variant 模式中不允许使用 ref 模式匹配",
+            .msg_en = f"ref pattern is not allowed in enum variant pattern",
+        }: DiagItem);
+    }
+
+    fn emit_conflict_export_and_main(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"一个组件不能既是库也是可执行程序, 但是在顶层模块中同时发现了 export 声明和 main 函数",
+            .msg_en = f"a component can not be a library and an executable at the same time, but an export decl and a main function both exist",
+        }: DiagItem);
+    }
+
+    fn emit_neither_lib_nor_exe(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"一个组件必须是库或者可执行程序, 但是在顶层模块中既没有 export 声明也没有 main 函数",
+            .msg_en = f"a component must be a library or an executable, but neither export decl nor main function is found",
+        }: DiagItem);
+    }
+
+}

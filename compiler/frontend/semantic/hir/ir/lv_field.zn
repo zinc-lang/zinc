@@ -1,0 +1,80 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode, DummySyntaxNode};
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::syntax::token::*;
+use super::*;
+
+impl FieldLValue {
+    fn new(ma: *MemberAccessExpr, base: *XValue) -> *Self {
+        return box {
+            .expr = ma as *ExpressionNode,
+            .parent_node = None,
+            .base = move base,
+            .field = ma.member,
+            .field_resolved = (type Option<*VarSymbol>)::None,
+            .sty = SType::sty_invalid(ma.span()),
+        }: FieldLValue;
+    }
+
+    fn create(span: SourceSpan, member: Token, base: *XValue) -> *Self {
+        let dummy = box {
+            .source_span = span,
+        }: DummySyntaxNode;
+
+        return box {
+            .expr = dummy as *ExpressionNode,
+            .parent_node = None,
+            .base = move base,
+            .field = member,
+            .field_resolved = (type Option<*VarSymbol>)::None,
+            .sty = SType::sty_invalid(span),
+        }: FieldLValue;
+    }
+
+    fn index_of_field(&self) -> UInt {
+        if self.base.get_stype().strip_pointer().type_symbol is struct_sym: *StructSymbol {
+            let r = self.field_resolved.get_or_panic();
+            let ri = r as *raw VarSymbol as UInt;
+            let mut idx: UInt = 0;
+            for f in struct_sym.fields {
+                if f as *raw VarSymbol as UInt == ri {
+                    return idx;
+                }
+                idx += 1;
+            }
+        }
+        panic;
+    }
+}
+
+impl XValue for FieldLValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+        self.base.dump();
+        print(".");
+        print(self.field.raw_str());
+    }
+}
+
+impl LValue for FieldLValue {
+
+}

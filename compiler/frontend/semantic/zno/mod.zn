@@ -1,0 +1,357 @@
+mod zno_reader;
+mod zno_writer;
+mod export_key;
+
+use std::fs::File;
+use std::fs::Path;
+use std::collections::hashset::HashSet;
+
+use super::*;
+use super::hir::ir::*;
+use zno_reader::*;
+use zno_writer::{ZnoWriter};
+
+use ::self::cli::options::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::semantic::hir::ir::is_builtin_type_symbol;
+
+pub struct ExportKey {
+    segmented_parts: Vec<String>
+}
+
+pub struct Importer {
+    component_name: String, // 当前 component name
+    imports: Vec<String>, // 当前 component 声明过的所有的 imports
+    dependencies: HashMap<String, *ZnoReader>,
+}
+
+pub struct Exporter {
+    semantic_model: *SemanticModel,
+    options: &'static CliOptions,
+    visited: HashSet<UInt>,
+    is_std: Bool,
+}
+
+pub enum SymbolKind {
+    None, Mod, Func, Impl, Type, Global,
+}
+
+unsafe static mut G_IMPORTER: Option<*Importer> = None;
+
+impl Importer {
+    pub fn get() -> *Importer {
+        unsafe {
+            if G_IMPORTER is Some(i) {
+                return i;
+            } else {
+                let i = box {
+                    .component_name = String::new(),
+                    .imports = (type Vec<String>)::new(),
+                    .dependencies = (type HashMap<String, *ZnoReader>)::new(),
+                }: Importer;
+                G_IMPORTER = Some(i);
+                return i;
+            }
+        }
+    }
+
+    pub fn source_code_of(&mut self, item: &ExportKey) -> ItemKindAndSource {
+
+        // 本组件不应该调用这个函数
+        let item_comp = item.first();
+
+        if item.is_primitive() {
+            return ItemKindAndSource::new();
+        }
+
+        let reader = self.zno_reader_of(item_comp);
+        if reader is Some(r) {
+            let try1 = r.read_item_exact(item);
+            if !try1.is_empty() {
+                return try1;
+            }
+            let try2 = r.read_item_similar(item);
+
+            return try2;
+        } else {
+            let msg = f"zno file is not found for component: $(item_comp). Please specify search path via compiler's option '-L'.";
+            panic msg.as_str().deref();
+        }
+
+    }
+
+    pub fn source_code_of_impls(&mut self, item: &ExportKey) -> ItemKindAndSource {
+        // 本组件不应该调用这个函数
+        let item_comp = item.first();
+
+        let reader = self.zno_reader_of(item_comp);
+        if reader is Some(r) {
+            return r.read_impls_by_type(item);
+        } else {
+            let msg = f"zno file is not found for component: $(item_comp). Please specify search path via compiler's option '-L'.";
+            panic msg.as_str().deref();
+        }
+    }
+
+    pub fn source_code_of_builtin_impls(&mut self, item: &ExportKey) -> ItemKindAndSource {
+        
+        let reader = self.zno_reader_of(f"std");
+        if reader is Some(r) {
+            return r.read_impls_by_type(item);
+        } else {
+            let msg = f"zno file is not found for component: std. Please specify search path via compiler's option '-L'.";
+            panic msg.as_str().deref();
+        }
+    }
+
+    fn zno_reader_of(&mut self, comp: String) -> Option<*ZnoReader> {
+
+        // 首先 在 imports 列表中包含了这个 comp
+        let mut found = false;
+        for ref i in self.imports {
+            if comp.eq(i) {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return None;
+        }
+
+        // 然后查找缓存
+        if self.dependencies.at(&comp) is Some(p) {
+            return Some(p);
+        }
+
+        if comp.as_str().deref().eq(&"std") {
+            if std::env::current_exe() is Some(p) {
+                let mut std_path = p.parent();
+                std_path.join("../lib/std.zno");
+                if !std_path.exists() {
+                    panic "std.zno file is not found";
+                }
+
+                let reader = ZnoReader::open_exist(std_path.as_str().deref());
+                if reader is Some(r) {
+                    self.dependencies.insert(comp, r);
+                    return Some(r);
+                } else {
+                    panic "ZnoReader::open_exist failed";
+                }
+            } else {
+                panic "std::env::current_exe() failed";
+            }
+        } else {
+            let options = ::self::cli::options::CliOptions::get();
+            for ref folder in options.search_paths {
+                let mut zno_file = Path::new(folder.as_str().deref());
+                zno_file.join(comp.as_str().deref());
+
+                let p = ZnoReader::open_exist(zno_file.as_str().deref());
+                if p is Some(r) {
+                    self.dependencies.insert(comp, r);
+                    return Some(r);
+                } else {
+                    panic "ZnoReader::open_exist failed";
+                }
+            }
+        }
+        return None;
+    }
+
+}
+
+impl Exporter {
+    pub fn new(sm: *SemanticModel, options: &'static CliOptions) -> Self {
+        let is_std = sm.syntax_tree.is_std();
+        return {
+            .semantic_model = move sm,
+            .options = options,
+            .visited = (type HashSet<UInt>)::new(),
+            .is_std = is_std,
+        }: Exporter;
+    }
+
+    pub fn export_all(&mut self) {
+        if !(self.semantic_model.syntax_tree.kind is LibOrExe::Lib(_)) {
+            return;
+        }
+
+        let out_dir_path = Path::new(self.options.out_dir.as_str().deref());
+        if !out_dir_path.exists() {
+            eprint("Output directory doesn't exist: "); eprintln(self.options.out_dir);
+            std::process::exit(1);
+        }
+
+        let mut file_name = self.semantic_model.syntax_tree.component_name();
+        file_name.push_str(".zno");
+
+        let mut out_file_path = out_dir_path;
+        out_file_path.join(file_name.as_str().deref());
+
+        let w = ZnoWriter::create_new(out_file_path.as_str().deref());
+        if w is Some(writer) {
+            writer.write_compilation(f"zinc_lang_version", f"0.0.1");
+            writer.write_compilation(f"zinc_compiler_version", f"0.0.1");
+
+            // todo 获取 llvm version, 记录下来
+            // llvm::VersionTuple version = llvm::VersionTuple();
+
+            // 是否需要记录 command line?
+
+            writer.write_compilation(f"component", self.semantic_model.syntax_tree.component_name());
+
+            // todo: component 的版本号, 由编译选项指定 还是用 attribute 写到源码里面?
+            writer.write_compilation(f"version", f"0.0.1");
+
+            self.visit_mod(self.semantic_model.root_mod_sym, move writer);
+        } else {
+            eprintln("Failed to create zno file!");
+            std::process::exit(1);
+        }
+    }
+
+    fn visit_sym(&mut self, sym: *Symbol, writer: *ZnoWriter) {
+        let addr = sym as *raw Symbol as UInt;
+        if self.visited.contains(&addr) {
+            return;
+        } else {
+            self.visited.insert(addr);
+        }
+
+        match sym {
+            mod_sym: *ModSymbol => self.visit_mod(move mod_sym, move writer);
+            impl_sym: *ImplSymbol => self.visit_impl(move impl_sym, move writer);
+            struct_sym: *StructSymbol => self.visit_struct(move struct_sym, move writer);
+            enum_sym: *EnumSymbol => self.visit_enum(move enum_sym, move writer);
+            union_sym: *UnionSymbol => self.visit_union(move union_sym, move writer);
+            trait_sym: *TraitSymbol => self.visit_trait(move trait_sym, move writer);
+            fn_sym: *FuncSymbol => self.visit_fn(move fn_sym, move writer);
+            alias_sym: *TypeAliasSymbol => self.visit_alias(move alias_sym, move writer);
+            var_sym: *VarSymbol => self.visit_global(move var_sym, move writer);
+            _ => {}
+        }
+    }
+
+    fn visit_mod(&mut self, mod_sym: *ModSymbol, writer: *ZnoWriter) {
+        if mod_sym.is_imported {
+            return;
+        }
+
+        writer.write_mod(mod_sym.export_key(), mod_sym.export_value());
+        for child in mod_sym.symbol_table {
+            if child is impl_sym: *ImplSymbol {
+                // target 或者 trait 任何一个不是 pub 都不能 export
+                let target_tsym = impl_sym.target_sty.type_symbol;
+                let mut target_is_pub = false;
+                if is_builtin_type_symbol(target_tsym) {
+                    target_is_pub = self.is_std;
+                } else {
+                    target_is_pub = target_tsym.visibility() is Some(_);
+                }
+
+                if !target_is_pub {
+                    continue;
+                }
+                if impl_sym.trait_sty is Some(trait_sty) {
+                    if trait_sty.type_symbol.visibility() is None {
+                        continue;
+                    }
+                }
+                self.visit_impl(move impl_sym, writer);
+            } else {
+                if child.visibility() is None {
+                    continue;
+                }
+                self.visit_sym(move child, writer);
+            }
+        }
+    }
+
+    fn visit_impl(&mut self, impl_sym: *ImplSymbol, writer: *ZnoWriter) {
+        let key1 = impl_sym.target_sty.type_symbol.export_key();
+        let mut key2 = String::new();
+        if impl_sym.trait_sty is Some(trait_sty) {
+            key2 = trait_sty.type_symbol.export_key();
+        }
+        let v = impl_sym.export_value();
+        writer.write_impl(move key1, move key2, move v);
+    }
+
+    fn visit_struct(&mut self, struct_sym: *StructSymbol, writer: *ZnoWriter) {
+        writer.write_type(struct_sym.export_key(), struct_sym.export_value());
+
+        // todo 类型检查的时候需要注意 import 进来的类型, 也可能是 private 的, 在当前组件中不能直接使用这个类型名
+        // 这种类型主要是用于代码生成的时候确定内存布局用的
+        for f in struct_sym.fields {
+            self.visit_stype(f.stype, writer);
+        }
+    }
+
+    fn visit_enum(&mut self, enum_sym: *EnumSymbol, writer: *ZnoWriter) {
+        writer.write_type(enum_sym.export_key(), enum_sym.export_value());
+
+        for ev in enum_sym.variants {
+            for f in ev.fields {
+                self.visit_stype(f, writer);
+            }
+        }
+    }
+
+    fn visit_union(&mut self, union_sym: *UnionSymbol, writer: *ZnoWriter) {
+        writer.write_type(union_sym.export_key(), union_sym.export_value());
+
+        for f in union_sym.fields {
+            self.visit_stype(f.stype, writer);
+        }
+    }
+
+    fn visit_trait(&mut self, trait_sym: *TraitSymbol, writer: *ZnoWriter) {
+        writer.write_type(trait_sym.export_key(), trait_sym.export_value());
+    }
+
+    fn visit_fn(&mut self, fn_sym: *FuncSymbol, writer: *ZnoWriter) {
+        writer.write_func(fn_sym.export_key(), fn_sym.export_value());
+
+        if fn_sym.next_overload is Some(o) {
+            self.visit_fn(move o, move writer);
+        }
+    }
+
+    fn visit_alias(&mut self, alias_sym: *TypeAliasSymbol, writer: *ZnoWriter) {
+        writer.write_type(alias_sym.export_key(), alias_sym.export_value());
+
+        self.visit_stype(alias_sym.target_sty, move writer);
+    }
+
+    fn visit_global(&mut self, var_sym: *VarSymbol, writer: *ZnoWriter) {
+        writer.write_global(var_sym.export_key(), var_sym.export_value());
+
+        self.visit_stype(var_sym.stype, move writer);
+    }
+
+    fn visit_stype(&mut self, sty: *SType, writer: *ZnoWriter) {
+        let sym = sty.type_symbol;
+
+        // 要看这个类型是否定义在当前组件内部
+        if !is_builtin_type_symbol(sym) &&
+            !SourceManager::get().is_imported(sym.syntax_node().span().start) {
+            self.visit_sym(sym as *Symbol, writer);
+        }
+
+        let mut parent = sty.type_symbol.parent_scope();
+        while parent is Some(p) {
+            if p is mp: *ModSymbol {
+                self.visit_mod(mp, writer);
+                parent = mp.parent_sym;
+            } else {
+                break;
+            }
+        }
+
+        for a in sty.args.ty_args {
+            self.visit_stype(a, writer);
+        }
+    }
+}

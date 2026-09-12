@@ -1,0 +1,52 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::diagnostic::*;
+
+use super::*;
+
+impl RefPattern {
+    fn new(n: *RefPatternNode, p: *Pattern) -> *Self {
+        return box {
+            .node = move n,
+            .inner = move p,
+            .matches_with = None,
+        }: RefPattern;
+    }
+
+    fn is_mut(&self) -> Bool {
+        return self.node.kw_mut.token_kind is TokenKind::Keyword(KeywordKind::KW_MUT);
+    }
+}
+
+impl Pattern for RefPattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+        self.matches_with = Some(expr);
+
+        let kind = if self.is_mut()
+                    then AddressofKind::RefMut
+                    else AddressofKind::Ref;
+
+        let addr_val = AddressofValue::create(self.pattern_node().span(), kind, expr);
+        self.inner.destructure(move addr_val, is_refutable);
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        return self.inner.collect_all_bindings();
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        let mw = self.matches_with.get_or_panic("BUG: pattern does not know what expression it matches with");
+        let expr_ty = ctx.infer(mw);
+        if !ensure_type_valid(expr_ty, mw.expr_node().span()) {
+            return;
+        }
+
+        self.inner.type_check(ctx);
+    }
+}

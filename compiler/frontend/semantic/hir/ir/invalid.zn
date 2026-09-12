@@ -1,0 +1,142 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+
+impl InvalidSymbol {
+
+    pub fn new(span: SourceSpan) -> *Self {
+        let s = box {
+            .source_span = span,
+            .is_lifetime = false,
+            .cache = None,
+        }: InvalidSymbol;
+        return s;
+    }
+
+}
+
+impl Symbol for InvalidSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = self.source_span
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return "<invalid>".to_string();
+    }
+
+    fn mangle_name(&self) -> String {
+        return "<invalid>".to_string();
+    }
+
+    fn export_key(&self) -> String {
+        return "<invalid>".to_string();
+    }
+
+    fn export_value(&self) -> String {
+        return "<invalid>".to_string();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl TypeSymbol for InvalidSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        return "<invalid>".to_string();
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        return self.to_sty();
+    }
+    fn to_sty(*self) -> *SType {
+        if self.cache is Some(cached) {
+            return cached;
+        } else {
+            let sty = box {
+                .type_symbol = self as *InvalidSymbol as *TypeSymbol,
+                .args = GenericArgs::new(),
+            }: SType;
+            self.cache = Some(sty);
+            return sty;
+        }
+    }
+}
+
+impl InvalidValue {
+    fn new(e: *ExpressionNode) -> *Self {
+        return box {
+            .expr = move e,
+        }: InvalidValue;
+    }
+}
+
+impl XValue for InvalidValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        
+    }
+
+    fn get_stype(&self) -> *SType {
+        return SType::sty_invalid(self.expr.span());
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+
+    }
+    fn dump(&self) {
+        print("<invalid>");
+    }
+}
+
+impl RValue for InvalidValue {
+
+}
+
+impl LValue for InvalidValue {
+
+}
+
+impl InvalidPattern {
+    fn new(n: *PatternNode) -> *Self {
+        return box {
+            .node = move n,
+        }: InvalidPattern;
+    }
+}
+
+impl Pattern for InvalidPattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        return (type Vec<*VarSymbol>)::new();
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+
+    }
+}

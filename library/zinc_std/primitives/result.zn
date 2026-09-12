@@ -1,0 +1,22 @@
+
+pub enum Result<T, E> {
+    Ok(T), Err(E)
+}
+
+// 不需要 is_ok / is_err 函数，用关键字 is 比这两个函数好
+impl<T, E> Result<T, E> {
+
+    pub fn get_or_panic(&self) -> T {
+        match self {
+            Result::Ok(x) => return x;
+            Result::Err(_) => panic "called `Result::get_or_panic()` on an `Err` value";
+        }
+    }
+
+    pub fn get_or_panic(&self, msg: Str) -> T {
+        match self {
+            Result::Ok(x) => return x;
+            Result::Err(_) => panic msg;
+        }
+    }
+}

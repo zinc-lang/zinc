@@ -1,0 +1,202 @@
+use super::*;
+use std::cmp::{Eq, PartialEq};
+use std::hash::{Hash, Hasher};
+
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::source_code::*;
+
+unsafe static mut G_STATIC_LIFETIME: Option<*LifetimeSymbol> = None;
+
+impl LifetimeSymbol {
+    pub fn new(t: Token) -> *Self {
+        if t.token_kind is TokenKind::Lifetime {
+            return box {
+                .token = t,
+                .name = t.raw_str(),
+                .parent_sym = None,
+                .cache = None,
+            }: LifetimeSymbol;
+        } else {
+            panic "LifetimeSymbol must be created from a Lifetime token";
+        }
+    }
+
+    pub fn create(fsym: *FuncSymbol) -> *Self {
+        let span = fsym.func_node.span();
+        return box {
+                .token = Token::invalid(span),
+                .name = String::new(),
+                .parent_sym = Some(move fsym as *ScopeSymbol),
+                .cache = None,
+            }: LifetimeSymbol;
+    }
+
+    pub fn static_lifetime() -> *Self {
+        unsafe {
+            if G_STATIC_LIFETIME is Some(s) {
+                return s;
+            } else {
+                let sym = box {
+                    .token = Token::invalid(SourceSpan::empty()),
+                    .name = f"'static",
+                    .parent_sym = None,
+                    .cache = None,
+                }: LifetimeSymbol;
+                G_STATIC_LIFETIME = Some(sym);
+                return sym;
+            }
+        }
+    }
+
+    pub fn is_static(&self) -> Bool {
+        return self.name.as_str().deref().eq(&"'static");
+    }
+
+    pub fn is_named(&self) -> Bool {
+        if self.name.is_empty() {
+            return false;
+        }
+        let start: UInt8 = self.name.index(0);
+        if start >= b'0' && start <= b'9' { // 有些生命周期是编译器自动生成的匿名生命周期，名字以数字开头
+            return false;
+        }
+        return true;
+    }
+
+    pub fn to_lifetime(*self) -> Lifetime {
+        return {
+            .token = self.token,
+            .resolved = Some(self),
+        }: Lifetime;
+    }
+}
+
+
+impl Symbol for LifetimeSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = self.token.source_span,
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return self.name;
+    }
+    fn mangle_name(&self) -> String {
+        return self.name;
+    }
+    fn export_key(&self) -> String {
+        return self.name;
+    }
+    fn export_value(&self) -> String {
+        return self.name;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl TypeSymbol for LifetimeSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        return self.name;
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        return self.to_sty();
+    }
+    fn to_sty(*self) -> *SType {
+        unsafe {
+            if self.cache is Some(t) {
+                return t;
+            } else {
+                let sty = box {
+                    .type_symbol = self as *LifetimeSymbol as *TypeSymbol,
+                    .args = GenericArgs::new(),
+                }: SType;
+                self.cache = Some(sty);
+                return sty;
+            }
+        }
+    }
+}
+
+impl Lifetime {
+    pub fn from_token(t: Token) -> Self {
+        return {
+            .token = t,
+            .resolved = None,
+        }: Lifetime;
+    }
+
+    pub fn new(t: Token, resolved: *LifetimeSymbol) -> Self {
+        return {
+            .token = t,
+            .resolved = Some(move resolved),
+        }: Lifetime;
+    }
+
+    pub fn unnamed() -> Self {
+        return {
+            .token = Token::invalid(SourceSpan::empty()),
+            .resolved = None,
+        }: Lifetime;
+    }
+
+    pub fn to_sty(&self) -> *SType {
+        if self.resolved is Some(sym) {
+            return sym.to_sty();
+        } else {
+            return SType::sty_invalid(self.token.source_span);
+        }
+    }
+
+    pub fn is_named(&self) -> Bool {
+        if self.resolved is Some(sym) {
+            return sym.is_named();
+        }
+        return false;
+    }
+}
+
+impl PartialEq for Lifetime {
+    fn eq(&self, other: &Self) -> Bool {
+        if self.resolved is Some(r1) && other.resolved is Some(r2) {
+            return r1 as *raw LifetimeSymbol as UInt ==
+                r2 as *raw LifetimeSymbol as UInt;
+        }
+        return false;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl Eq for Lifetime { }
+
+impl Hash for Lifetime {
+    fn hash(&self, state: &mut Hasher) {
+        if self.resolved is Some(r1) {
+            let i = r1 as *raw LifetimeSymbol as UInt;
+            i.hash(state);
+        }
+        else {
+            let s = self.token.raw_str();
+            s.hash(state);
+        }
+    }
+}

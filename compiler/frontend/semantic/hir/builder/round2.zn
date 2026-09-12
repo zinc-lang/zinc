@@ -1,0 +1,896 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::syntax::ast::stmt::*;
+use ::self::frontend::syntax::ast::visit::*;
+use ::self::frontend::syntax::ast::ty::*;
+use ::self::frontend::syntax::ast::expr::*;
+
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::semantic::zno::*;
+use ::self::frontend::diagnostic::{Severity, DiagItem, DiagnosticEngine};
+use ::self::frontend::source_code::{SourceSpan, SourceLoc, SourceManager};
+
+use super::resolver::*;
+use super::stmts::StmtTransformer;
+use super::super::checker::type_utils::*;
+
+struct TopLevelAstVisitor2 {
+    syntax_to_symbol: HashMap<UInt, *Symbol>,
+    root_mod: *ModSymbol,
+    component_name: String,
+    all_consts: Vec<*VarSymbol>,
+    all_statics: Vec<*VarSymbol>,
+    all_impls: Vec<*ImplSymbol>,
+    all_enums: Vec<*EnumSymbol>,
+    all_traits: Vec<*TraitSymbol>,
+    all_fns: Vec<*FuncSymbol>,
+}
+
+impl TopLevelAstVisitor2 {
+    fn new(m: *ModSymbol, name: String, map: HashMap<UInt, *Symbol>) -> Self {
+        return {
+            .root_mod = move m,
+            .syntax_to_symbol = move map,
+            .component_name = move name,
+            .all_consts = (type Vec<*VarSymbol>)::new(),
+            .all_statics = (type Vec<*VarSymbol>)::new(),
+            .all_impls = (type Vec<*ImplSymbol>)::new(),
+            .all_enums = (type Vec<*EnumSymbol>)::new(),
+            .all_traits = (type Vec<*TraitSymbol>)::new(),
+            .all_fns = (type Vec<*FuncSymbol>)::new(),
+        }: TopLevelAstVisitor2;
+    }
+
+    fn symbol_of(&self, node: Option<*weak SyntaxNode>) -> Option<*Symbol> {
+        if node is Some(n) {
+            let key = n as *raw SyntaxNode as UInt;
+            let r = self.syntax_to_symbol.at(&key);
+            return r;
+        }
+        return None;
+    }
+
+    fn resolver(&self) -> Resolver {
+        return {
+            .top_mod = self.root_mod,
+        }: Resolver;
+    }
+
+    fn mapping(&mut self, node: *SyntaxNode, sym: *Symbol, parent_sym: *ScopeSymbol) {
+        let key = node as *raw SyntaxNode as UInt;
+        self.syntax_to_symbol.insert(key, sym);
+
+        sym.set_parent_scope(parent_sym);
+        parent_sym.sym_table().add_child(sym);
+    }
+
+    fn build_constraints(&mut self, ctx: ResolveContext, conds: &Vec<*WhereCondDecl>) -> GenericConstraints {
+        let resolver = self.resolver();
+        let mut constraints = GenericConstraints::new();
+        for cond in conds {
+            let lhs = resolver.resolve_type_node(ctx, cond.lhs);
+            if lhs is Some(lhs_sty) {
+                if lhs_sty.type_symbol is tps: *TypeParamSymbol {
+                    for upper in cond.upper_bounds {
+                        let rhs = resolver.resolve_type_node(ctx, upper);
+                        if rhs is Some(rhs_sty) {
+                            constraints.add(tps, move rhs_sty);
+                        } else {
+                            DiagnosticEngine::get().emit_invalid_type_node(upper.to_string(), upper.span());
+                        }
+                    }
+                }
+                else if lhs_sty.type_symbol is lhs_lt: *LifetimeSymbol {
+                    for upper in cond.upper_bounds {
+                        let rhs = resolver.resolve_type_node(ctx, upper);
+                        if rhs is Some(rhs_sty) {
+                            if rhs_sty.type_symbol is rhs_lt: *LifetimeSymbol {
+                                constraints.add_lt(lhs_lt, rhs_lt);
+                            } else {
+                                DiagnosticEngine::get().emit_illegal_rhs_of_lifetime_upper_bound(upper.span());
+                            }
+                        } else {
+                            DiagnosticEngine::get().emit_invalid_type_node(upper.to_string(), upper.span());
+                        }
+                    }
+                }
+                else {
+                    DiagnosticEngine::get().emit_illegal_lhs_of_constraint(cond.lhs.span());
+                }
+            } else {
+                DiagnosticEngine::get().emit_invalid_type_node(cond.lhs.to_string(), cond.lhs.span());
+            }
+        }
+        return constraints;
+    }
+    
+    // 遍历完成后对每个 trait 执行检查，禁止出现递归继承
+    fn forbidden_recursive_inherit(&mut self, self_trait: *SType, base_trait: *SType, span: SourceSpan) {
+        if self_trait.type_symbol as *raw TypeSymbol as UInt == base_trait.type_symbol as *raw TypeSymbol as UInt {
+            DiagnosticEngine::get().emit_recursive_trait_inherit(span);
+            return;
+        }
+        if base_trait.type_symbol is t_sym: *TraitSymbol {
+            for parent in t_sym.inherit_traits {
+                self.forbidden_recursive_inherit(self_trait, parent, span);
+            }
+        }
+    }
+
+    // 禁止对同一个 trait symbol 继承多次, 不允许 trait R : RB<T1> + RB<T2>
+    fn forbidden_duplicate_inherit(&mut self, self_trait: *SType, all_bases: &mut HashMap<UInt, *SType>, span: SourceSpan) {
+        if self_trait.type_symbol is t_sym: *TraitSymbol {
+            for base_sty in t_sym.inherit_traits {
+                let key = base_sty.type_symbol as *raw TypeSymbol as UInt;
+                if (all_bases as &HashMap<UInt, *SType>).at(&key) is Some(existing) {
+                    if existing as *raw SType as UInt != base_sty as *raw SType as UInt {
+                        DiagnosticEngine::get().emit_duplicate_trait_inherit(span);
+                    }
+                } else {
+                    all_bases.insert(key, base_sty);
+                    self.forbidden_duplicate_inherit(self_trait, all_bases, span);
+                }
+            }
+        }
+    }
+
+    fn build_body(&mut self) {
+        // build fn body
+        for fsym in self.all_fns {
+            let mut strans = StmtTransformer::new(self.resolver(), move fsym);
+            strans.traverse();
+        }
+
+        // build global const/static init expr
+
+        // 检查 trait 继承是否合法
+        for trait_sym in self.all_traits {
+            let mut all_bases = (type HashMap<UInt, *SType>)::new();
+            let trait_sty = trait_sym.to_sty();
+            for base_sty in trait_sym.inherit_traits {
+                self.forbidden_recursive_inherit(trait_sty, base_sty, trait_sym.syntax_node().span());
+                self.forbidden_duplicate_inherit(trait_sty, &mut all_bases, trait_sym.syntax_node().span());
+            }
+        }
+        // 避免值类型递归导致 size 无限大
+
+
+        // 检查重载
+    }
+
+    fn resolve_lifetime_ellision(&mut self, f_sym: *FuncSymbol) {
+        let mut return_sty = SType::sty_unit();
+        if f_sym.return_sty is Some(rsty) {
+            return_sty = rsty;
+        }
+
+        let unnamed_in_ret = unnamed_lifetime_count(return_sty);
+        if unnamed_in_ret == 0 {
+            return; // 不需要补充生命周期信息
+        }
+
+        let span = f_sym.func_node.span();
+        if unnamed_in_ret > 1 {
+            DiagnosticEngine::get().emit_invalid_lifetime_ellision(span);
+            return;
+        }
+
+        let mut param: Option<*VarSymbol> = None;
+        if f_sym.receiver_sty() is Some(receiver_sty) &&
+            unnamed_lifetime_count(receiver_sty) == 1 {
+            // 1. 如果有 self 参数，且是借用类型，那么可以自动填充
+            param = Some(*f_sym.params.index(0).deref());
+        } else {
+            // 2. 如果没有 self 参数，且只有一个参数是借用，那么可以自动填充
+            let mut count: UInt = 0;
+            for p in f_sym.params {
+                let c = unnamed_lifetime_count(p.stype);
+                if c > 1 {
+                    DiagnosticEngine::get().emit_invalid_lifetime_ellision(span);
+                    return;
+                }
+                if c == 1 {
+                    count += 1;
+                    param = Some(move p);
+                }
+            }
+            if count > 1 {
+                DiagnosticEngine::get().emit_invalid_lifetime_ellision(span);
+                return;
+            }
+        }
+
+        if param is Some(p) {
+            let lt_sym = LifetimeSymbol::create(f_sym);
+            f_sym.generics.lt_params.push(lt_sym);
+
+            {
+                let lt_in_ret = {
+                    .token = Token::invalid(span),
+                    .resolved = Some(lt_sym),
+                }: Lifetime;
+                let mut ga = return_sty.args;
+                ga.lt_args.push(move lt_in_ret);
+                let new_ret_sty = return_sty.type_symbol.to_sty(move ga);
+                f_sym.return_sty = Some(move new_ret_sty);
+            }
+            {
+                let lt_in_param = {
+                    .token = Token::invalid(span),
+                    .resolved = Some(lt_sym),
+                }: Lifetime;
+                let mut ga = p.stype.args;
+                ga.lt_args.push(move lt_in_param);
+                let new_sty = p.stype.type_symbol.to_sty(move ga);
+                p.stype = move new_sty;
+            }
+            return;
+        }
+
+        // 报错
+        DiagnosticEngine::get().emit_invalid_lifetime_ellision(span);
+    }
+
+}
+
+impl SyntaxVisitor for TopLevelAstVisitor2 {
+
+    fn visit_use(&mut self, node: *UseDecl) -> VisitResult {
+        let parent = self.symbol_of(node.parent());
+        if parent is Some(ss: *ScopeSymbol) {
+            for ref p in node.desugared_paths {
+                let s = self.resolver().resolve_use_path(ss, p);
+                if s is Some(resolved) {
+                    if ss as *raw ScopeSymbol as UInt == resolved as *raw Symbol as UInt {
+                        DiagnosticEngine::get().emit_recursive_use_path(node.span());
+                        continue;
+                    }
+                    if p.ends_with_star() {
+                        if resolved is resolved_scope: *ScopeSymbol {
+                            ss.sym_table().add_star_use(resolved_scope);
+                        }
+                    }
+                    else if p.as_ident.token_kind is TokenKind::Identifier &&
+                            p.as_ident.raw_str().as_str().deref().ne(&"_") {
+                        ss.sym_table().add_named_use(p.as_ident.raw_str(), resolved);
+                    }
+                    else {
+                        ss.sym_table().add_named_use(resolved.short_name(), resolved);
+                    }
+                }
+            }
+        }
+        return VisitResult::Continue;
+    }
+    fn visit_fn(&mut self, node: *FuncDecl) -> VisitResult {
+        let fsym = self.symbol_of(Some(node as *SyntaxNode as *weak SyntaxNode))
+                .get_or_panic("BUG: symbol_of FuncDecl is None");
+
+        if fsym is f_sym: *FuncSymbol {
+            self.all_fns.push(f_sym);
+            let ctx1 = {
+                .entry_scope = f_sym as *ScopeSymbol,
+                .path_scope = f_sym as *ScopeSymbol,
+                .self_sty = None,
+            }: ResolveContext;
+            f_sym.generics.constraints = self.build_constraints(ctx1, &node.where_conds);
+
+            let mut scope: Option<*ScopeSymbol> = None;
+            let mut upper_self_sty: Option<*SType> = None;
+            if f_sym.parent_sym is Some(trait_sym: *TraitSymbol) {
+                trait_sym.methods.push(f_sym);
+                scope = Some(trait_sym as *ScopeSymbol);
+                upper_self_sty = Some(trait_sym.self_ty.to_sty());
+
+                f_sym.generics.constraints.merge(&trait_sym.generics.constraints);
+            }
+            if f_sym.parent_sym is Some(impl_sym: *ImplSymbol) {
+                impl_sym.methods.push(f_sym);
+                scope = Some(impl_sym as *ScopeSymbol);
+                upper_self_sty = Some(impl_sym.self_ty.to_sty());
+
+                f_sym.generics.constraints.merge(&impl_sym.generics.constraints);
+            }
+
+            // 处理参数和返回类型
+            let ctx = {
+                .entry_scope = f_sym as *ScopeSymbol,
+                .path_scope = f_sym as *ScopeSymbol,
+                .self_sty = upper_self_sty,
+            }: ResolveContext;
+
+            let mut i: UInt = 0;
+            for p in node.params {
+                match p.decl_kind {
+                    FnParamDeclKind::Receiver(r) => {
+                        let receiver_sym: *VarSymbol = *f_sym.params.index(0).deref();
+                        if upper_self_sty is Some(self_sty) {
+                            match r.kind {
+                                ReceiverKind::Value => receiver_sym.stype = self_sty;
+                                ReceiverKind::Borrow => {
+                                    let lt = self.resolver().resolve_lifetime(ctx, r.lifetime);
+                                    // todo lifetime
+                                    let mut args = GenericArgs::new();
+                                    if lt is Some(lt_sym) {
+                                        let lifetime = Lifetime::new(r.lifetime, move lt_sym);
+                                        args.lt_args.push(move lifetime);
+                                    }
+                                    args.ty_args.push(move self_sty);
+                                    let sty = BorrowImmutSymbol::new().to_sty(move args);
+                                    receiver_sym.stype = move sty;
+                                }
+                                ReceiverKind::BorrowMut => {
+                                    let lt = self.resolver().resolve_lifetime(ctx, r.lifetime);
+                                    // todo lifetime
+                                    let mut args = GenericArgs::new();
+                                    if lt is Some(lt_sym) {
+                                        let lifetime = Lifetime::new(r.lifetime, move lt_sym);
+                                        args.lt_args.push(move lifetime);
+                                    }
+                                    args.ty_args.push(move self_sty);
+                                    let sty = BorrowMutSymbol::new().to_sty(move args);
+                                    receiver_sym.stype = move sty;
+                                }
+                                ReceiverKind::Arc => {
+                                    let mut args = GenericArgs::new();
+                                    args.ty_args.push(move self_sty);
+                                    let sty = ArcPointerSymbol::new().to_sty(move args);
+                                    receiver_sym.stype = move sty;
+                                }
+                                ReceiverKind::Weak => {
+                                    let mut args = GenericArgs::new();
+                                    args.ty_args.push(move self_sty);
+                                    let sty = WeakPointerSymbol::new().to_sty(move args);
+                                    receiver_sym.stype = move sty;
+                                }
+                                ReceiverKind::Raw => {
+                                    let mut args = GenericArgs::new();
+                                    args.ty_args.push(move self_sty);
+                                    let sty = RawPointerImmutSymbol::new().to_sty(move args);
+                                    receiver_sym.stype = move sty;
+                                }
+                                ReceiverKind::RawMut => {
+                                    let mut args = GenericArgs::new();
+                                    args.ty_args.push(move self_sty);
+                                    let sty = RawPointerMutSymbol::new().to_sty(move args);
+                                    receiver_sym.stype = move sty;
+                                }
+                            }
+                        } else {
+                            DiagnosticEngine::get().emit_invalid_self_type(p.span());
+                        }
+                    }
+                    FnParamDeclKind::Named(_, ty1, _) => {
+                        let sty = self.resolver().resolve_type_node(ctx, ty1);
+                        if sty is Some(t) {
+                            let param_var: *VarSymbol = *f_sym.params.index(i).deref();
+                            param_var.stype = t;
+                        } else {
+                            DiagnosticEngine::get().emit_invalid_type_node(ty1.to_string(), ty1.span());
+                        }
+                    }
+                    FnParamDeclKind::Normal(_, ty2, _) => {
+                        let sty = self.resolver().resolve_type_node(ctx, ty2);
+                        if sty is Some(t) {
+                            let param_var: *VarSymbol = *f_sym.params.index(i).deref();
+                            param_var.stype = t;
+                        } else {
+                            DiagnosticEngine::get().emit_invalid_type_node(ty2.to_string(), ty2.span());
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+
+            if node.return_type is Some(rt) {
+                let sty = self.resolver().resolve_type_node(ctx, rt);
+                if sty is Some(_) {
+                    f_sym.return_sty = sty;
+                } else {
+                    DiagnosticEngine::get().emit_invalid_type_node(rt.to_string(), rt.span());
+                }
+            } else {
+                f_sym.return_sty = Some(SType::sty_unit());
+            }
+
+            self.resolve_lifetime_ellision(move f_sym);
+        } else {
+            panic "BUG: symbol of FuncDecl is not FuncSymbol";
+        }
+
+        return VisitResult::Continue;
+    }
+    fn visit_impl(&mut self, node: *ImplDecl) -> VisitResult {
+        let sym = self.symbol_of(Some(node as *SyntaxNode as *weak SyntaxNode))
+                .get_or_panic("BUG: symbol_of ImplDecl is None");
+
+        if sym is isym: *ImplSymbol {
+            insert_impl(&mut self.all_impls, isym);
+            let ctx = {
+                .entry_scope = isym as *ScopeSymbol,
+                .path_scope = isym as *ScopeSymbol,
+                .self_sty = None,
+            }: ResolveContext;
+
+            let target_sty = self.resolver().resolve_type_node(ctx, node.target_ty);
+            if target_sty is Some(tsty) {
+                isym.target_sty = tsty;
+                isym.self_ty.target_sty = tsty;
+                if tsty.type_symbol is st_sym: *StructSymbol {
+                    insert_impl(&mut st_sym.all_impls, isym);
+                } else if tsty.type_symbol is e_sym: *EnumSymbol {
+                    insert_impl(&mut e_sym.all_impls, isym);
+                } else if tsty.type_symbol is u_sym: *UnionSymbol {
+                    insert_impl(&mut u_sym.all_impls, isym);
+                } else if tsty.type_symbol is b_sym: *BoolSymbol {
+                    insert_impl(&mut b_sym.all_impls, isym);
+                } else if tsty.type_symbol is c_sym: *CharSymbol {
+                    insert_impl(&mut c_sym.all_impls, isym);
+                } else if tsty.type_symbol is i_sym: *IntegerSymbol {
+                    insert_impl(&mut i_sym.all_impls, isym);
+                } else if tsty.type_symbol is f_sym: *FloatSymbol {
+                    insert_impl(&mut f_sym.all_impls, isym);
+                } else {
+                    DiagnosticEngine::get().emit_type_cannot_be_impl(node.target_ty.span());
+                }
+            } else {
+                DiagnosticEngine::get().emit_invalid_type_node(node.target_ty.to_string(), node.target_ty.span());
+            }
+
+            if node.trait_ty is Some(ty) {
+                let trait_sty = self.resolver().resolve_type_node(ctx, ty);
+                if trait_sty is Some(tsty) {
+                    if tsty.type_symbol is type *TraitSymbol {
+                        isym.trait_sty = Some(tsty);
+                    } else {
+                        DiagnosticEngine::get().emit_type_must_be_trait(ty.span());
+                    }
+                } else {
+                    DiagnosticEngine::get().emit_invalid_type_node(ty.to_string(), ty.span());
+                }
+            }
+
+            isym.generics.constraints = self.build_constraints(ctx, &node.where_conds);
+
+            let send_key = "::std::marker::Send";
+            let sync_key = "::std::marker::Sync";
+
+            if isym.trait_sty is Some(trait_sty) {
+                if trait_sty.type_symbol.export_key().as_str().deref().eq(&send_key) {
+                    // impl Send 要加 unsafe
+                    if node.bang.is_invalid() && node.qualifiers().get(QualifierKind::Unsafe) is None {
+                        DiagnosticEngine::get().emit_trait_impl_missing_unsafe(node.kw_impl.span());
+                    }
+                } else if trait_sty.type_symbol.export_key().as_str().deref().eq(&sync_key) {
+                    // impl Sync 要加 unsafe
+                    if node.bang.is_invalid() && node.qualifiers().get(QualifierKind::Unsafe) is None {
+                        DiagnosticEngine::get().emit_trait_impl_missing_unsafe(node.kw_impl.span());
+                    }
+                } else {
+                    // 普通 trait impl 不允许 impl !Trait
+                    if !node.bang.is_invalid() {
+                        DiagnosticEngine::get().emit_negetive_trait_impl(node.bang.span());
+                    }
+                    // 普通 trait 如果 trait 本身有 unsafe 修饰，impl 也需要 unsafe 修饰
+                    if trait_sty.type_symbol.syntax_node() is trait_node: *TraitDecl {
+                        if trait_node.qualifiers().get(QualifierKind::Unsafe) is Some(_) {
+                            if node.qualifiers().get(QualifierKind::Unsafe) is None {
+                                DiagnosticEngine::get().emit_trait_impl_missing_unsafe(node.kw_impl.span());
+                            }
+                        }
+                    }
+                }
+            }
+
+        } else {
+            panic "BUG: symbol of ImplDecl is not ImplSymbol";
+        }
+
+        return VisitResult::Continue;
+    }
+
+    fn visit_struct(&mut self, node: *StructDecl) -> VisitResult {
+        let struct_sym = self.symbol_of(Some(node as *SyntaxNode as *weak SyntaxNode))
+                .get_or_panic("BUG: symbol_of StructDecl is None");
+
+        if struct_sym is st_sym: *StructSymbol {
+            let ctx = {
+                .entry_scope = st_sym as *ScopeSymbol,
+                .path_scope = st_sym as *ScopeSymbol,
+                .self_sty = None,
+            }: ResolveContext;
+
+            for f in node.fields {
+                if f.ty is Some(ty) {
+                    let resolver = self.resolver();
+                    let sty_opt = resolver.resolve_type_node(ctx, ty);
+                    let mut sty = SType::sty_invalid(ty.span());
+                    if sty_opt is Some(t) {
+                        sty = move t;
+                    } else {
+                        DiagnosticEngine::get().emit_invalid_type_node(ty.to_string(), ty.span());
+                    }
+                    let var_sym = VarSymbol::new(f as *SyntaxNode);
+                    var_sym.stype = move sty;
+                    if f.init_expr is Some(init) {
+                        // todo 应该使用 ExprTransformer 来生成 init 的 hir, 目前仅支持 literal
+                        if self.create_const_expr(init, ctx) is Some(i) {
+                            var_sym.init = Some(move i);
+                        } else {
+                            DiagnosticEngine::get().emit_unimplemented(init.span(), "non-literal initializer");
+                        }
+                    }
+                    st_sym.fields.push(var_sym);
+                    self.mapping(f as *SyntaxNode, var_sym as *Symbol, st_sym as *ScopeSymbol);
+                } else {
+                    DiagnosticEngine::get().emit_type_cannot_be_none(f.span());
+                }
+            }
+
+            st_sym.generics.constraints = self.build_constraints(ctx, &node.where_conds);
+
+        } else {
+            panic "BUG: symbol of StructDecl is not StructSymbol";
+        }
+        return VisitResult::Continue;
+    }
+
+    fn visit_enum(&mut self, node: *EnumDecl) -> VisitResult {
+        let enum_sym = self.symbol_of(Some(node as *SyntaxNode as *weak SyntaxNode))
+                .get_or_panic("BUG: symbol_of EnumDecl is None");
+
+        if enum_sym is e_sym: *EnumSymbol {
+            self.all_enums.push(e_sym);
+            let ctx = {
+                .entry_scope = e_sym as *ScopeSymbol,
+                .path_scope = e_sym as *ScopeSymbol,
+                .self_sty = Some(e_sym.to_sty()),
+            }: ResolveContext;
+
+            for ev in node.variants {
+                let ec_sym = EnumVariantSymbol::new(ev);
+                self.mapping(ev as *SyntaxNode, ec_sym as *Symbol, e_sym as *ScopeSymbol);
+                ec_sym.parent_enum = Some(e_sym);
+                e_sym.variants.push(ec_sym);
+
+                for ty in ev.fields {
+                    let sty = self.resolver().resolve_type_node(ctx, ty);
+                    if sty is Some(t) {
+                        ec_sym.fields.push(move t);
+                    } else {
+                        DiagnosticEngine::get().emit_invalid_type_node(ty.to_string(), ty.span());
+                    }
+                }
+            }
+
+            e_sym.generics.constraints = self.build_constraints(ctx, &node.where_conds);
+
+        } else {
+            panic "BUG: symbol of EnumDecl is not EnumSymbol";
+        }
+        return VisitResult::Continue;
+    }
+
+    fn visit_union(&mut self, node: *UnionDecl) -> VisitResult {
+        let union_sym = self.symbol_of(Some(node as *SyntaxNode as *weak SyntaxNode))
+                .get_or_panic("BUG: symbol_of UnionDecl is None");
+
+        if union_sym is u_sym: *UnionSymbol {
+
+            let ctx = {
+                .entry_scope = u_sym as *ScopeSymbol,
+                .path_scope = u_sym as *ScopeSymbol,
+                .self_sty = None,
+            }: ResolveContext;
+
+            for f in node.fields {
+                if f.ty is Some(ty) {
+                    let sty_opt = self.resolver().resolve_type_node(ctx, ty);
+
+                    let mut sty = SType::sty_invalid(ty.span());
+                    if sty_opt is Some(t) {
+                        sty = move t;
+                    } else {
+                        DiagnosticEngine::get().emit_invalid_type_node(ty.to_string(), ty.span());
+                    }
+
+                    let var_sym = VarSymbol::new(f as *SyntaxNode);
+                    var_sym.stype = sty;
+                    if f.init_expr is Some(init) {
+                        // todo 生成 init 的 hir
+                    }
+                    u_sym.fields.push(var_sym);
+                    self.mapping(f as *SyntaxNode, var_sym as *Symbol, u_sym as *ScopeSymbol);
+                } else {
+                    DiagnosticEngine::get().emit_type_cannot_be_none(f.span());
+                }
+            }
+
+            // todo 添加 constraints
+
+        } else {
+            panic "BUG: symbol of UnionDecl is not UnionSymbol";
+        }
+        return VisitResult::Continue;
+    }
+
+    fn visit_typealias(&mut self, node: *TypeAliasDecl) -> VisitResult {
+        let tsym = self.symbol_of(Some(node as *SyntaxNode as *weak SyntaxNode))
+                .get_or_panic("BUG: symbol_of TypeAliasDecl is None");
+
+        if tsym is t_sym: *TypeAliasSymbol {
+
+            let ctx = {
+                .entry_scope = t_sym as *ScopeSymbol,
+                .path_scope = t_sym as *ScopeSymbol,
+                .self_sty = None,
+            }: ResolveContext;
+
+            if node.target_ty is Some(ty) {
+                let sty = self.resolver().resolve_type_node(ctx, ty);
+                if sty is Some(t) {
+                    t_sym.target_sty = t;
+                } else {
+                    DiagnosticEngine::get().emit_invalid_type_node(ty.to_string(), ty.span());
+                }
+            } else {
+                DiagnosticEngine::get().emit_type_cannot_be_none(node.span());
+            }
+
+            if t_sym.parent_sym is Some(impl_sym: *ImplSymbol) {
+                impl_sym.associated_types.insert(t_sym.short_name(), t_sym);
+            }
+
+            t_sym.generics.constraints = self.build_constraints(ctx, &node.where_conds);
+        }
+        else if tsym is type *ExternTypeSymbol {
+
+        }
+        else {
+            panic "BUG: symbol of TypeAliasDecl is not TypeAliasSymbol or ExternTypeSymbol";
+        }
+        return VisitResult::Continue;
+    }
+
+    fn visit_associated_type(&mut self, node: *AssociatedTypeDecl) -> VisitResult {
+        let asym = self.symbol_of(Some(node as *SyntaxNode as *weak SyntaxNode))
+                .get_or_panic("BUG: symbol_of AssociatedTypeDecl is None");
+
+        if asym is a_sym: *AssociatedTypeSymbol {
+
+            let ctx = {
+                .entry_scope = a_sym as *ScopeSymbol,
+                .path_scope = a_sym as *ScopeSymbol,
+                .self_sty = None,
+            }: ResolveContext;
+
+            if std::ptr::upgrade(node.parent_trait) is Some(trait_node) {
+                let trait_sym = self.symbol_of(Some(trait_node as *SyntaxNode as *weak SyntaxNode))
+                        .get_or_panic("BUG: symbol_of parent_trait is None");
+                if trait_sym is t_sym: *TraitSymbol {
+                    t_sym.associated_types.push(a_sym);
+                } else {
+                    panic "BUG: symbol of parent_trait is not TraitSymbol";
+                }
+            } else {
+                panic "BUG: upgrade parent_trait failed";
+            }
+
+            for wc in node.where_conds {
+                for u in wc.upper_bounds {
+                    let ub_sty = self.resolver().resolve_type_node(ctx, u);
+                    if ub_sty is Some(t) {
+                        a_sym.upper_bounds.push(t);
+                    } else {
+                        DiagnosticEngine::get().emit_invalid_type_node(u.to_string(), u.span());
+                    }
+                }
+            }
+
+            a_sym.generics.constraints = self.build_constraints(ctx, &node.where_conds);
+
+        } else {
+            panic "BUG: symbol of AssociatedTypeDecl is not AssociatedTypeSymbol";
+        }
+        return VisitResult::Continue;
+    }
+
+    fn visit_trait(&mut self, node: *TraitDecl) -> VisitResult {
+        let trait_sym = self.symbol_of(Some(node as *SyntaxNode as *weak SyntaxNode))
+                .get_or_panic("BUG: symbol_of TraitDecl is None");
+
+        if trait_sym is t_sym: *TraitSymbol {
+            self.all_traits.push(t_sym);
+
+            t_sym.self_ty.target_sty = t_sym.to_sty();
+
+            let ctx = {
+                .entry_scope = t_sym as *ScopeSymbol,
+                .path_scope = t_sym as *ScopeSymbol,
+                .self_sty = None,
+            }: ResolveContext;
+
+            for tn in node.inherits {
+                let parent_trait_sty = self.resolver().resolve_type_node(ctx, tn);
+                if parent_trait_sty is Some(tsty) {
+                    if tsty.type_symbol is type *TraitSymbol {
+                        t_sym.inherit_traits.push(tsty);
+                    } else {
+                        DiagnosticEngine::get().emit_trait_only_inherit_trait(tn.span());
+                    }
+                } else {
+                    DiagnosticEngine::get().emit_invalid_type_node(tn.to_string(), tn.span());
+                }
+            }
+
+            // 添加 constraints
+            t_sym.generics.constraints = self.build_constraints(ctx, &node.where_conds);
+
+        } else {
+            panic "BUG: symbol of TraitDecl is not TraitSymbol";
+        }
+        return VisitResult::Continue;
+    }
+
+    fn visit_var_decl(&mut self, node: *VarDecl) -> VisitResult {
+        let var_sym = self.symbol_of(Some(node as *SyntaxNode as *weak SyntaxNode))
+                .get_or_panic("BUG: symbol_of VarDecl is None");
+
+        if var_sym is v_sym: *VarSymbol {
+            if v_sym.parent_sym is Some(pm) {
+                let ctx = {
+                    .entry_scope = pm as *ScopeSymbol,
+                    .path_scope = pm as *ScopeSymbol,
+                    .self_sty = None,
+                }: ResolveContext;
+
+                if node.ty is Some(ty) {
+                    let sty_opt = self.resolver().resolve_type_node(ctx, ty);
+
+                    let mut sty = SType::sty_invalid(ty.span());
+                    if sty_opt is Some(t) {
+                        sty = move t;
+                    } else {
+                        DiagnosticEngine::get().emit_invalid_type_node(ty.to_string(), ty.span());
+                    }
+
+                    v_sym.stype = move sty;
+                }
+
+                if node.init_expr is Some(init) {
+                    // todo 应该使用 ExprTransformer 来生成 init 的 hir, 目前仅支持 literal
+                    if self.create_const_expr(init, ctx) is Some(i) {
+                        v_sym.init = Some(move i);
+                    } else {
+                        DiagnosticEngine::get().emit_unimplemented(init.span(), "non-literal initializer");
+                    }
+                }
+
+                if !node.kw_const.is_invalid() {
+                    self.all_consts.push(v_sym);
+                }
+                if !node.kw_static.is_invalid() {
+                    self.all_statics.push(v_sym);
+                }
+
+                // FIXME 检查类型的合法性，比如必须是 'static，必须是 Send
+            }
+
+        } else {
+            panic "BUG: symbol of VarDecl is not VarSymbol";
+        }
+        return VisitResult::Continue;
+    }
+
+    fn visit_block(&mut self, node: *BlockStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+
+    fn create_const_expr(&mut self, init: *ExpressionNode, ctx: ResolveContext) -> Option<*RValue> {
+        if init is e: *LiteralExpr {
+            if e.token.token_kind is TokenKind::Literal(LiteralKind::LIT_STR_INTERPOLATION) {
+                DiagnosticEngine::get().emit_not_const_expr(e.token.source_span);
+            } else {
+                return Some(LiteralValue::new(move e) as *RValue);
+            }
+        } else if init is e_asc: *TypeAscriptionExpr {
+            return self.create_const_expr(e_asc.expr, ctx);
+        }
+         else if init is e_agg: *StructInitExpr {
+            let agg = AggregateValue::new(e_agg);
+            for f in e_agg.fields_init {
+                match f {
+                    FieldInitializer::Named(_, name, _, e1) => {
+                        let field_value = self.create_const_expr(move e1, ctx);
+                        if field_value is Some(value) {
+                            let field_name = name.raw_str();
+                            agg.named_init.insert(field_name, move value);
+                            agg.field_token.insert(move field_name, move name);
+                        } else {
+                            return None;
+                        }
+                    }
+                    FieldInitializer::Default(_, e2) => {
+                        if e2 is Some(de) {
+                            let default_value = self.create_const_expr(move de, ctx);
+                            if default_value is Some(dv) {
+                                agg.default_value = Some(move dv);
+                            } else {
+                                return None;
+                            }
+                        }
+                    }
+                }
+            }
+            return Some(move agg as *RValue);
+        } else if init is e_tup: *TupleLiteralExpr {
+            let tup = TupleValue::new(e_tup);
+            for elem in e_tup.elements {
+                let v = self.create_const_expr(elem, ctx);
+                if v is Some(elem) {
+                    tup.elements.push(move elem);
+                } else {
+                    return None;
+                }
+            }
+            return Some(move tup as *RValue);
+        } else if init is e_arr: *ArrayLiteralExpr {
+            let arr = ArrayLiteralValue::new(e_arr);
+            for elem in e_arr.elements {
+                let v = self.create_const_expr(elem, ctx);
+                if v is Some(elem) {
+                    arr.elements.push(move elem);
+                } else {
+                    return None;
+                }
+            }
+            return Some(move arr as *RValue);
+        } else if init is e_repeat: *ArrayRepeatLiteralExpr {
+            let elem_opt = self.create_const_expr(e_repeat.element, ctx);
+            if elem_opt is Some(elem) {
+                let len_opt = self.create_const_expr(e_repeat.repeat, ctx);
+                if len_opt is Some(len) {
+                    let arr = RepeatValue::new(e_repeat, move elem, move len);
+                    return Some(move arr as *RValue);
+                }
+            }
+            return None;
+        } else if init is n: *SegmentedNameExpr {
+            let res = self.resolver().resolve_segmented_name(ctx, n.name);
+            if res is Some(r) {
+                if r is SymOrType::Sym(s) {
+                    if s is evsym: *EnumVariantSymbol {
+                        return Some(QualifiedPathValue::create(move init, move evsym as *Symbol) as *RValue);
+                    }
+                }
+            }
+        } else if init is qpe: *QualifiedPathExpr {
+            let res = self.resolver().resolve_qualified_path(ctx, qpe);
+            if res is Some(r) {
+                if r is SymOrType::Sym(s) {
+                    if s is evsym: *EnumVariantSymbol {
+                        let qualified_ty = self.resolver().resolve_type_node(ctx, qpe.ty);
+                        let mut qualified_trait = (type Option<*SType>)::None;
+                        if qpe.trait_ty is Some(trait_ty) {
+                            qualified_trait = self.resolver().resolve_type_node(ctx, trait_ty);
+                        }
+                        return Some(QualifiedPathValue::new(qpe, move qualified_ty, move qualified_trait, move evsym as *Symbol) as *RValue);
+                    }
+                }
+            }
+        }
+        return None;
+    }
+
+}
+
+// 把不带 trait 的排到前面
+pub fn insert_impl(v: &mut Vec<*ImplSymbol>, i: *ImplSymbol) {
+    if i.trait_sty is Some(_) {
+        v.push(move i);
+    } else {
+        v.insert(0, move i);
+    }
+}

@@ -1,0 +1,51 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode, DummySyntaxNode};
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::syntax::token::*;
+use super::*;
+
+impl IndexRValue {
+    fn new(ma: *ExpressionNode, base: *RValue, idx: *RValue) -> *Self {
+        let span = ma.span();
+        return box {
+            .expr = move ma,
+            .parent_node = None,
+            .base = move base,
+            .index = move idx,
+            .sty = SType::sty_invalid(span),
+        }: IndexRValue;
+    }
+}
+
+impl XValue for IndexRValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+        self.base.dump();
+        print("[");
+        self.index.dump();
+        print("]");
+    }
+}
+
+impl RValue for IndexRValue {
+
+}

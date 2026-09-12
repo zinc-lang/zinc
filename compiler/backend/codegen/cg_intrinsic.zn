@@ -1,0 +1,270 @@
+use super::*;
+use super::data_structures::*;
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+impl CodeGenerator {
+
+    fn cg_intrinsic(&mut self, mangle_name: Str, fn_call: *FnCallValue, ctx: *CgContext) -> CgValue {
+
+        if mangle_name.eq(&"::std::intrinsic::size_of/0") {
+            // 一定有一个泛型参数
+            let ty_arg = *fn_call.generic_args.ty_args.index(0).deref();
+            if self.cgtype_of(ty_arg) is Some(cgty) {
+                let size = self.llds.storage_size_of(cgty);
+                return self.llds.get_const_int64(size as UInt64).as_value();
+            } else {
+                let size = self.size_of_stype(ty_arg, ctx);
+                return size;
+            }
+        }
+        if mangle_name.eq(&"::std::intrinsic::type_of/0") {
+            // "::std::meta::type_of/0" 的返回类型不一样, intrinsic 版本只需要返回裸指针即可
+            let ty_arg = *fn_call.generic_args.ty_args.index(0).deref();
+            let typemeta = self.rt_typemeta_of(ty_arg, ctx);
+            return typemeta;
+        }
+        if mangle_name.eq(&"::std::intrinsic::type_of_any/1") {
+            let arg = *fn_call.desugared_args.index(0).deref();
+            let cg_arg = self.cg_xvalue(arg, ctx);
+            let typemeta = self.access_fatptr_field(cg_arg, 1);
+            return typemeta;
+        }
+        if mangle_name.eq(&"::std::intrinsic::write_bytes/3") {
+            let arg0 = *fn_call.desugared_args.index(0).deref();
+            let mut cg_arg0 = self.cg_xvalue(arg0, ctx);
+            cg_arg0 = self.adjust_to_direct(arg0.get_stype(), cg_arg0);
+            let arg1 = *fn_call.desugared_args.index(1).deref();
+            let mut cg_arg1 = self.cg_xvalue(arg1, ctx);
+            cg_arg1 = self.adjust_to_direct(arg1.get_stype(), cg_arg1);
+            let arg2 = *fn_call.desugared_args.index(2).deref();
+            let mut cg_arg2 = self.cg_xvalue(arg2, ctx);
+            cg_arg2 = self.adjust_to_direct(arg2.get_stype(), cg_arg2);
+            self.llds.create_memset(cg_arg0, cg_arg1, cg_arg2);
+
+            let empty_struct = self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>);
+            return empty_struct.as_value();
+        }
+        if mangle_name.eq(&"::std::intrinsic::zeroed/0") {
+            let ty_arg = *fn_call.generic_args.ty_args.index(0).deref();
+            if self.cgtype_of(ty_arg) is Some(cgty) {
+                return self.llds.create_alloca_sized(cgty);
+            } else {
+                let size = self.size_of_stype(ty_arg, ctx);
+                return self.llds.create_alloca_unsized(size);
+            }
+        }
+        if mangle_name.eq(&"::std::intrinsic::destruct_in_place/1") {
+            let arg0 = *fn_call.desugared_args.index(0).deref();
+            if arg0 is local: *LocalVar && local.sym_var.drop_flag is Some(_) {
+                self.do_drop_with_flag(local, ctx);
+            } else {
+                let mut cgval = self.cg_xvalue(arg0, ctx);
+                cgval = self.adjust_to_direct(arg0.get_stype(), cgval);
+                // arg0 的类型必定是 raw pointer
+                let arg0_sty = arg0.get_stype().args.ty_arg(0);
+
+                if arg0_sty.type_symbol is type *ArcPointerSymbol {
+                    let mut obj_ptr = cgval;
+                    if arg0_sty.is_fat_pointer() {
+                        obj_ptr = self.access_fatptr_field(cgval, 0);
+                    }
+                    let mut obj_typemeta = cgval;
+                    if arg0_sty.is_fat_pointer() {
+                        obj_typemeta = self.access_fatptr_field(cgval, 1);
+                    } else {
+                        let pointee_sty = arg0_sty.args.ty_arg(0);
+                        obj_typemeta = self.rt_typemeta_of(move pointee_sty, ctx);
+                    }
+                    if is_send_type(arg0_sty) {
+                        let dtorfn = self.llds.get_ext_fn_in_core("zinc_core_dec_strong_atomic");
+                        self.llds.create_call(dtorfn, &[obj_ptr, obj_typemeta] as Slice<CgValue>);
+                    } else {
+                        let dtorfn = self.llds.get_ext_fn_in_core("zinc_core_dec_strong");
+                        self.llds.create_call(dtorfn, &[obj_ptr, obj_typemeta] as Slice<CgValue>);
+                    }
+                } else if arg0_sty.type_symbol is type *WeakPointerSymbol {
+                    let mut obj_ptr = cgval;
+                    if arg0_sty.is_fat_pointer() {
+                        obj_ptr = self.access_fatptr_field(cgval, 0);
+                    }
+
+                    let mut obj_typemeta = cgval;
+                    if arg0_sty.is_fat_pointer() {
+                        obj_typemeta = self.access_fatptr_field(cgval, 1);
+                    } else {
+                        let pointee_sty = arg0_sty.args.ty_arg(0);
+                        obj_typemeta = self.rt_typemeta_of(move pointee_sty, ctx);
+                    }
+
+                    if is_send_type(arg0_sty) {
+                        let dtorfn = self.llds.get_ext_fn_in_core("zinc_core_dec_weak_atomic");
+                        self.llds.create_call(dtorfn, &[obj_ptr, obj_typemeta] as Slice<CgValue>);
+                    } else {
+                        let dtorfn = self.llds.get_ext_fn_in_core("zinc_core_dec_weak");
+                        self.llds.create_call(dtorfn, &[obj_ptr, obj_typemeta] as Slice<CgValue>);
+                    }
+                } else if arg0_sty.type_symbol is tp: *TypeParamSymbol {
+                    let ty_meta = self.rt_typemeta_of(arg0_sty, ctx);
+                    let dtor_fn = self.access_typemeta_dtorfn(ty_meta);
+
+                    let dtorfn_ty = self.llds.type_function_dtorfn();
+                    self.llds.create_call(
+                        dtorfn_ty, dtor_fn, &[cgval, ty_meta] as Slice<CgValue>
+                    );
+                } else {
+                    let ty_meta = self.rt_typemeta_of(arg0_sty, ctx);
+                    let dtorfn = self.cg_typemeta_dtorfn(arg0_sty.type_symbol);
+                    let di_loc = self.debug_loc(ctx.ll_func, arg0.expr_node().span().start);
+                    self.llds.set_di_loc(di_loc);
+                    self.llds.create_call(dtorfn, &[cgval, ty_meta] as Slice<CgValue>);
+                    self.llds.reset_di_loc();
+                }
+            }
+
+            let empty_struct = self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>);
+            return empty_struct.as_value();
+        }
+        if mangle_name.eq(&"::std::intrinsic::forget/1") {
+            let empty_struct = self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>);
+            return empty_struct.as_value();
+        }
+
+        // 下面是位运算相关函数
+        if mangle_name.eq(&"::std::intrinsic::reverse_bits/1") {
+            let arg0 = *fn_call.desugared_args.index(0).deref();
+            let mut cg_arg0 = self.cg_xvalue(arg0, ctx);
+            cg_arg0 = self.adjust_to_direct(arg0.get_stype(), cg_arg0);
+
+            return self.llds.create_bit_reverse(cg_arg0);
+        }
+        if mangle_name.eq(&"::std::intrinsic::rotate_left/2") {
+            let arg0 = *fn_call.desugared_args.index(0).deref();
+            let mut lhs = self.cg_xvalue(arg0, ctx);
+            lhs = self.adjust_to_direct(arg0.get_stype(), lhs);
+
+            let arg1 = *fn_call.desugared_args.index(1).deref();
+            let mut rhs = self.cg_xvalue(arg1, ctx);
+            rhs = self.adjust_to_direct(arg1.get_stype(), rhs);
+
+            let lhs_sty = arg0.get_stype();
+            if lhs_sty.type_symbol is int_sym: *IntegerSymbol {
+                let lhs_ty = self.cgtype_of(lhs_sty).get_or_panic();
+                if int_sym.is_signed() {
+                    rhs = self.llds.create_sext_or_trunc(rhs, lhs_ty);
+                } else {
+                    rhs = self.llds.create_zext_or_trunc(rhs, lhs_ty);
+                }
+            }
+
+            return self.llds.create_bit_rotate_left(lhs, rhs);
+        }
+        if mangle_name.eq(&"::std::intrinsic::rotate_right/2") {
+            let arg0 = *fn_call.desugared_args.index(0).deref();
+            let mut lhs = self.cg_xvalue(arg0, ctx);
+            lhs = self.adjust_to_direct(arg0.get_stype(), lhs);
+
+            let arg1 = *fn_call.desugared_args.index(1).deref();
+            let mut rhs = self.cg_xvalue(arg1, ctx);
+            rhs = self.adjust_to_direct(arg1.get_stype(), rhs);
+
+            let lhs_sty = arg0.get_stype();
+            if lhs_sty.type_symbol is int_sym: *IntegerSymbol {
+                let lhs_ty = self.cgtype_of(lhs_sty).get_or_panic();
+                if int_sym.is_signed() {
+                    rhs = self.llds.create_sext_or_trunc(rhs, lhs_ty);
+                } else {
+                    rhs = self.llds.create_zext_or_trunc(rhs, lhs_ty);
+                }
+            }
+
+            return self.llds.create_bit_rotate_right(lhs, rhs);
+        }
+        if mangle_name.eq(&"::std::intrinsic::bit_and/2") {
+            let arg0 = *fn_call.desugared_args.index(0).deref();
+            let mut lhs = self.cg_xvalue(arg0, ctx);
+            lhs = self.adjust_to_direct(arg0.get_stype(), lhs);
+
+            let arg1 = *fn_call.desugared_args.index(1).deref();
+            let mut rhs = self.cg_xvalue(arg1, ctx);
+            rhs = self.adjust_to_direct(arg1.get_stype(), rhs);
+
+            return self.llds.create_bit_and(lhs, rhs);
+        }
+        if mangle_name.eq(&"::std::intrinsic::bit_or/2") {
+            let arg0 = *fn_call.desugared_args.index(0).deref();
+            let mut lhs = self.cg_xvalue(arg0, ctx);
+            lhs = self.adjust_to_direct(arg0.get_stype(), lhs);
+
+            let arg1 = *fn_call.desugared_args.index(1).deref();
+            let mut rhs = self.cg_xvalue(arg1, ctx);
+            rhs = self.adjust_to_direct(arg1.get_stype(), rhs);
+
+            return self.llds.create_bit_or(lhs, rhs);
+        }
+        if mangle_name.eq(&"::std::intrinsic::bit_xor/2") {
+            let arg0 = *fn_call.desugared_args.index(0).deref();
+            let mut lhs = self.cg_xvalue(arg0, ctx);
+            lhs = self.adjust_to_direct(arg0.get_stype(), lhs);
+
+            let arg1 = *fn_call.desugared_args.index(1).deref();
+            let mut rhs = self.cg_xvalue(arg1, ctx);
+            rhs = self.adjust_to_direct(arg1.get_stype(), rhs);
+
+            return self.llds.create_bit_xor(lhs, rhs);
+        }
+        if mangle_name.eq(&"::std::intrinsic::bit_not/1") {
+            let arg0 = *fn_call.desugared_args.index(0).deref();
+            let mut cgarg = self.cg_xvalue(arg0, ctx);
+            cgarg = self.adjust_to_direct(arg0.get_stype(), cgarg);
+
+            return self.llds.create_bit_not(cgarg);
+        }
+        if mangle_name.eq(&"::std::intrinsic::bit_shl/2") {
+            let arg0 = *fn_call.desugared_args.index(0).deref();
+            let arg0_sty = arg0.get_stype();
+            if arg0_sty.type_symbol is int_sym: *IntegerSymbol {
+                let mut lhs = self.cg_xvalue(arg0, ctx);
+                lhs = self.adjust_to_direct(arg0_sty, lhs);
+
+                let arg1 = *fn_call.desugared_args.index(1).deref();
+                let mut rhs = self.cg_xvalue(arg1, ctx);
+                rhs = self.adjust_to_direct(arg1.get_stype(), rhs);
+
+                let lhs_ty = self.cgtype_of(arg0_sty).get_or_panic();
+                if int_sym.is_signed() {
+                    rhs = self.llds.create_sext_or_trunc(rhs, lhs_ty);
+                } else {
+                    rhs = self.llds.create_zext_or_trunc(rhs, lhs_ty);
+                }
+
+                return self.llds.create_bit_shl(lhs, rhs);
+            } else {
+                panic;
+            }
+        }
+        if mangle_name.eq(&"::std::intrinsic::bit_shr/2") {
+            let arg0 = *fn_call.desugared_args.index(0).deref();
+            let arg0_sty = arg0.get_stype();
+            if arg0_sty.type_symbol is int_sym: *IntegerSymbol {
+                let mut lhs = self.cg_xvalue(arg0, ctx);
+                lhs = self.adjust_to_direct(arg0_sty, lhs);
+
+                let arg1 = *fn_call.desugared_args.index(1).deref();
+                let mut rhs = self.cg_xvalue(arg1, ctx);
+                rhs = self.adjust_to_direct(arg1.get_stype(), rhs);
+
+                let lhs_ty = self.cgtype_of(arg0_sty).get_or_panic();
+                if int_sym.is_signed() {
+                    rhs = self.llds.create_sext_or_trunc(rhs, lhs_ty);
+                    return self.llds.create_bit_ashr(lhs, rhs);
+                } else {
+                    rhs = self.llds.create_zext_or_trunc(rhs, lhs_ty);
+                    return self.llds.create_bit_lshr(lhs, rhs);
+                }
+            } else {
+                panic;
+            }
+        }
+        panic "BUG: unsupported intrinsic function";
+    }
+}

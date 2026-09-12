@@ -1,0 +1,122 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::source_code::*;
+
+impl UnionSymbol {
+
+    pub fn new(node: *UnionDecl) -> *Self {
+        return box {
+            .union_node = move node,
+            .parent_sym = None,
+            .fields = (type Vec<*VarSymbol>)::new(),
+            .symbol_table = SymbolTable::new(),
+            .all_impls = (type Vec<*ImplSymbol>)::new(),
+            .cache = None,
+        }: UnionSymbol;
+    }
+
+    pub fn find_field(&self, name: &String) -> Option<*VarSymbol> {
+        for f in self.fields {
+            if f.short_name().eq(name) {
+                return Some(move f);
+            }
+        }
+        return None;
+    }
+}
+
+impl Symbol for UnionSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        return self.union_node as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return self.union_node.short_name();
+    }
+
+    fn mangle_name(&self) -> String {
+        if self.parent_sym is Some(ps) {
+            let mut res = ps.export_key();
+            res.push_str("::");
+            res.push_str(self.short_name().as_str().deref());
+            return res;
+        } else {
+            return self.short_name();
+        }
+    }
+
+    fn export_key(&self) -> String {
+        return self.mangle_name();
+    }
+
+    fn export_value(&self) -> String {
+        let mut res = String::new();
+        self.union_node.qualifiers().to_string_inplace(&mut res);
+        res.push_str("union ");
+        res.push_str(self.short_name().as_str().deref());
+        // todo : export where clause
+        res.push_str(" {");
+        for f in self.fields {
+            res.push_str("\n");
+            res.push_str(f.export_value().as_str().deref());
+            res.push_str(",");
+        }
+        res.push_str("\n}");
+        return res;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_sym;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_sym = Some(ss);
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return self.union_node.qualifiers().get(QualifierKind::Pub);
+    }
+}
+
+impl ScopeSymbol for UnionSymbol {
+    fn sym_table(&mut self) -> &mut SymbolTable {
+        return &mut self.symbol_table;
+    }
+}
+
+impl TypeSymbol for UnionSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        let mut res = String::new();
+        res.push_str(self.short_name().as_str().deref());
+        res.push_str(args.to_string().as_str().deref());
+        return res;
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return self.all_impls;
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache is Some(t) {
+            return t;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache = Some(sty);
+            return sty;
+        }
+    }
+    fn to_sty(*self) -> *SType {
+        if self.cache is Some(cached) {
+            return cached;
+        } else {
+            let sty = box {
+                .type_symbol = self as *UnionSymbol as *TypeSymbol,
+                .args = GenericArgs::new(),
+            }: SType;
+            self.cache = Some(sty);
+            return sty;
+        }
+    }
+}

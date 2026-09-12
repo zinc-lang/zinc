@@ -1,0 +1,9 @@
+
+// 用 UnSized 而不是 !Send，是因为我不确定类型的大小应该如何分类，以后会不会改变。
+// 采用 Sized/!Sized 语法意味着把类型的大小分成两类。
+// 但是我们是否要分成三类呢, StaticSized / DynSized / UnSized ? 留待讨论。不使用 !Sized 语法更有灵活性。
+pub trait UnSized {}
+
+// Send 和 Sync 肯定不会再变了，Send/!Send 对类型二分就很好。
+pub trait Send {}
+pub trait Sync {}

@@ -1,0 +1,464 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::syntax::ast::stmt::*;
+use ::self::frontend::syntax::ast::visit::*;
+use ::self::frontend::syntax::ast::ty::*;
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::semantic::hir::ir::*;
+
+use ::self::frontend::diagnostic::*;
+use ::self::frontend::source_code::*;
+
+use super::resolver::*;
+
+struct ExprTransformer {
+    current_block: *BlockSentence,
+    func_sym: *FuncSymbol,
+    expr_to_sentence: HashMap<UInt, *Sentence>, // 没什么用，就删了吧
+    resolver: Resolver,
+}
+
+impl ExprTransformer {
+
+    fn get_ctx(&self) -> ResolveContext {
+        let mut scope: Option<*ScopeSymbol> = None;
+        let mut outer: Option<*SType> = None;
+        if self.func_sym.parent_sym is Some(trait_sym: *TraitSymbol) {
+            scope = Some(trait_sym as *ScopeSymbol);
+            outer = Some(trait_sym.self_ty.to_sty());
+        }
+        if self.func_sym.parent_sym is Some(impl_sym: *ImplSymbol) {
+            scope = Some(impl_sym as *ScopeSymbol);
+            outer = Some(impl_sym.self_ty.to_sty());
+        }
+
+        let blk = self.current_block as *ScopeSymbol;
+
+        let ctx = {
+            .entry_scope = blk,
+            .path_scope = blk,
+            .self_sty = move outer,
+        }: ResolveContext;
+        return ctx;
+    }
+
+    fn visit_expr(&mut self, e: *ExpressionNode) -> *RValue {
+        match e {
+            te: *TernaryExpr => return self.visit_ternary_expr(move te);
+            ce: *ContextExpr => return self.visit_context_expr(move ce);
+            ae: *AssignExpr => return self.visit_assign_expr(move ae);
+            be: *BinaryExpr => return self.visit_binary_expr(move be);
+            is_e: *IsExpr => return self.visit_is_expr(move is_e);
+            as_e: *AsExpr => return self.visit_as_expr(move as_e);
+            ue: *UnaryExpr => return self.visit_unary_expr(move ue);
+            qe: *QuestionExpr => return self.visit_question_expr(move qe);
+            idx_e: *IndexExpr => return self.visit_index_expr(move idx_e);
+            pe: *ParenExpr => return self.visit_paren_expr(move pe);
+            ma: *MemberAccessExpr => return self.visit_member_expr(move ma);
+            fc: *FnCallExpr => return self.visit_call_expr(move fc);
+            lam: *LambdaExpr => return self.visit_lambda_expr(move lam);
+            s_init: *StructInitExpr => return self.visit_struct_init_expr(move s_init);
+            tup_lit: *TupleLiteralExpr => return self.visit_tuple_lit_expr(move tup_lit);
+            arr_lit: *ArrayLiteralExpr => return self.visit_array_lit_expr(move arr_lit);
+            arr_repeat: *ArrayRepeatLiteralExpr => return self.visit_array_repeat_expr(move arr_repeat);
+            lit: *LiteralExpr => return self.visit_lit_expr(move lit);
+            ta: *TypeAscriptionExpr => return self.visit_type_asc_expr(move ta);
+            name: *SegmentedNameExpr => return self.visit_seg_name_expr(move name);
+            path: *QualifiedPathExpr => return self.visit_qualified_path_expr(move path);
+
+            invalid: *DummySyntaxNode => return InvalidValue::new(invalid as *ExpressionNode) as *RValue;
+
+            _ => panic "unknown expression in ExprTransformer::visit_expr";
+        }
+    }
+
+    fn visit_ternary_expr(&mut self, e: *TernaryExpr) -> *RValue {
+        let cond = self.visit_expr(e.condition);
+        let then_br = self.visit_expr(e.then_branch);
+        let else_br = self.visit_expr(e.else_branch);
+        return SelectValue::new(move e, move cond, move then_br, move else_br);
+    }
+
+    fn visit_context_expr(&mut self, e: *ContextExpr) -> *RValue {
+        let inner = self.visit_expr(e.expr);
+        if e.kw_context.token_kind is TokenKind::Keyword(KeywordKind::KW_UNSAFE) {
+            return ContextValue::new(move e, move inner);
+        } else if e.kw_context.token_kind is TokenKind::Keyword(KeywordKind::KW_CONST) {
+            return ContextValue::new(move e, move inner);
+        } else {
+            panic "BUG: unknown context in ContextExpr";
+        }
+    }
+
+    fn visit_assign_expr(&mut self, e: *AssignExpr) -> *RValue {
+        let r = self.visit_expr(e.rhs);
+        let l = self.visit_to_lvalue(e.lhs);
+
+        if e.assign_op.token_kind is TokenKind::Punctuation(PunctuationKind::Assign) {
+            let w = WriteValue::new(e as *ExpressionNode, move r, move l);
+            return w;
+        }
+        else if e.assign_op.token_kind is TokenKind::Punctuation(PunctuationKind::AddAssign) {
+            let lhs = self.visit_expr(e.lhs);
+            let b = BinaryExprValue::create(e as *ExpressionNode, move lhs, move r, PunctuationKind::Plus);
+            let w = WriteValue::new(e as *ExpressionNode, b as *RValue, move l);
+            return w;
+        }
+        else if e.assign_op.token_kind is TokenKind::Punctuation(PunctuationKind::SubAssign) {
+            let lhs = self.visit_expr(e.lhs);
+            let b = BinaryExprValue::create(e as *ExpressionNode, move lhs, move r, PunctuationKind::Minus);
+            let w = WriteValue::new(e as *ExpressionNode, b as *RValue, move l);
+            return w;
+        }
+        else if e.assign_op.token_kind is TokenKind::Punctuation(PunctuationKind::MulAssign) {
+            let lhs = self.visit_expr(e.lhs);
+            let b = BinaryExprValue::create(e as *ExpressionNode, move lhs, move r, PunctuationKind::Star);
+            let w = WriteValue::new(e as *ExpressionNode, b as *RValue, move l);
+            return w;
+        }
+        else if e.assign_op.token_kind is TokenKind::Punctuation(PunctuationKind::DivAssign) {
+            let lhs = self.visit_expr(e.lhs);
+            let b = BinaryExprValue::create(e as *ExpressionNode, move lhs, move r, PunctuationKind::Div);
+            let w = WriteValue::new(e as *ExpressionNode, b as *RValue, move l);
+            return w;
+        }
+        else if e.assign_op.token_kind is TokenKind::Punctuation(PunctuationKind::PercentAssign) {
+            let lhs = self.visit_expr(e.lhs);
+            let b = BinaryExprValue::create(e as *ExpressionNode, move lhs, move r, PunctuationKind::Percent);
+            let w = WriteValue::new(e as *ExpressionNode, b as *RValue, move l);
+            return w;
+        }
+        else {
+            panic "BUG: unknown assign operator in AssignExpr";
+        }
+    }
+
+    fn visit_binary_expr(&mut self, e: *BinaryExpr) -> *RValue {
+        let lhs = self.visit_expr(e.lhs);
+        let rhs = self.visit_expr(e.rhs);
+        let b = BinaryExprValue::new(move e, move lhs, move rhs);
+        return b;
+    }
+
+    fn visit_is_expr(&mut self, e: *IsExpr) -> *RValue {
+        let lhs = self.visit_expr(e.lhs);
+        let pat = self.resolver.resolve_pattern(self.get_ctx(), e.rhs);
+
+        let pmv = PatternMatchValue::new(e as *ExpressionNode, move lhs, move pat);
+        for v in pmv.pattern.collect_all_bindings() {
+            let df = VarSymbol::create(v.var_node.span(), SType::sty_bool());
+            v.drop_flag = Some(move df);
+
+            self.current_block.add_local(v);
+        }
+        return pmv;
+    }
+
+    fn visit_as_expr(&mut self, e: *AsExpr) -> *RValue {
+        let lhs = self.visit_expr(e.lhs);
+        let ty = self.resolver.resolve_type_node(self.get_ctx(), e.rhs);
+        if ty is Some(sty) {
+            let c = CastValue::new(move e, move lhs, move sty);
+            return c;
+        } else {
+            DiagnosticEngine::get().emit_invalid_type(e.rhs.span());
+            return InvalidValue::new(e as *ExpressionNode) as *RValue;
+        }
+    }
+
+    fn visit_unary_expr(&mut self, e: *UnaryExpr) -> *RValue {
+        // todo 处理负号。如果 operand 是整数字面量，那么直接拼凑起来成为一个 ConstValue
+        // if e.kind is UnaryExprKind::Neg {
+        //     if e.operand is lit: *LiteralExpr {
+        //         if lit.token.token_kind is TokenKind::Literal(LiteralKind::LIT_INT) {
+        //             panic "TODO: 处理整数负号";
+        //         }
+        //         if lit.token.token_kind is TokenKind::Literal(LiteralKind::LIT_FLOAT) {
+        //             panic "TODO: 处理浮点数负号";
+        //         }
+        //     }
+        // }
+
+        // 处理 deref
+        if e.kind is UnaryExprKind::Deref {
+            let op = self.visit_expr(e.operand);
+            let d = DerefRValue::new(move e, move op);
+            return d;
+        }
+
+        // 处理 addressof
+        if e.kind is UnaryExprKind::Ref || e.kind is UnaryExprKind::RefMut ||
+            e.kind is UnaryExprKind::RefRaw || e.kind is UnaryExprKind::RefRawMut {
+            let op = self.visit_expr(e.operand);
+            let a = AddressofValue::new(move e, move op);
+            return a;
+        }
+
+        let op = self.visit_expr(e.operand);
+        let u = UnaryExprValue::new(move e, move op);
+        return u;
+    }
+
+    fn visit_question_expr(&mut self, e: *QuestionExpr) -> *RValue {
+        panic "unimplemented question mark operator";
+    }
+
+    fn visit_index_expr(&mut self, e: *IndexExpr) -> *RValue {
+        let base = self.visit_expr(e.base);
+        let idx = self.visit_expr(e.index);
+        let idx_rv = IndexRValue::new(e as *ExpressionNode, move base, move idx);
+        return idx_rv;
+    }
+
+    fn visit_paren_expr(&mut self, e: *ParenExpr) -> *RValue {
+        return self.visit_expr(e.expr);
+    }
+
+    fn visit_member_expr(&mut self, e: *MemberAccessExpr) -> *RValue {
+        let base = self.visit_expr(e.base);
+        if e.member.token_kind is TokenKind::Literal(LiteralKind::LIT_INT) {
+            let ta = TupleAccessRValue::new(move e, move base);
+            return ta;
+        }
+        else {
+            let ma = FieldRValue::new(move e, move base);
+            return ma;
+        }
+    }
+
+    fn visit_call_expr(&mut self, e: *FnCallExpr) -> *RValue {
+        let mut generic_args = GenericArgs::new();
+        for arg in e.type_args {
+            if arg is lt: *LifetimeType {
+                let lt_arg = self.resolver.resolve_lifetime(self.get_ctx(), lt.lifetime);
+                if lt_arg is Some(lt_sym) {
+                    let lifetime = Lifetime::new(lt.lifetime, move lt_sym);
+                    generic_args.lt_args.push(move lifetime);
+                } else {
+                    DiagnosticEngine::get().emit_invalid_type(arg.span());
+                    generic_args.lt_args.push(Lifetime::unnamed());
+                }
+            } else {
+                let ty = self.resolver.resolve_type_node(self.get_ctx(), arg);
+                if ty is Some(sty) {
+                    generic_args.ty_args.push(move sty);
+                } else {
+                    DiagnosticEngine::get().emit_invalid_type(arg.span());
+                    generic_args.ty_args.push(SType::sty_invalid(arg.span()));
+                }
+            }
+        }
+
+        let mut fn_args = (type Vec<FnArgValue>)::new();
+        for arg in e.args {
+            let v = self.visit_expr(arg.value);
+            fn_args.push({
+                .named = arg.named,
+                .value = move v,
+            }: FnArgValue);
+        }
+
+        // 判断 callee 是什么, 如果是 field access 那么翻译成 method call, 如果是其他的翻译成 fn call
+        if e.callee is ma: *MemberAccessExpr {
+            let receiver = self.visit_expr(ma.base);
+            let method_call = MethodCallValue::new(ma, ma.member, move receiver);
+            method_call.generic_args = move generic_args;
+            method_call.fn_args = move fn_args;
+            return method_call;
+        } else {
+            let callee = self.visit_expr(e.callee);
+            let fn_call = FnCallValue::new(move e as *ExpressionNode, move callee);
+            fn_call.generic_args = move generic_args;
+            fn_call.fn_args = move fn_args;
+            return fn_call;
+        }
+    }
+
+    fn visit_lambda_expr(&mut self, e: *LambdaExpr) -> *RValue {
+        panic "unimplemented lambda expression";
+    }
+
+    fn visit_struct_init_expr(&mut self, e: *StructInitExpr) -> *RValue {
+        let agg = AggregateValue::new(e);
+        for ref f in e.fields_init {
+            match f {
+                FieldInitializer::Named(_, name, _, e1) => {
+                    let field_name = name.raw_str();
+                    let field_value = self.visit_expr(move e1);
+                    agg.named_init.insert(field_name, move field_value);
+                    agg.field_token.insert(move field_name, name);
+                }
+                FieldInitializer::Default(_, e2) => {
+                    if e2 is Some(de) {
+                        let default_value = self.visit_expr(move de);
+                        agg.default_value = Some(move default_value);
+                    }
+                }
+            }
+        }
+        return agg;
+    }
+
+    fn visit_tuple_lit_expr(&mut self, e: *TupleLiteralExpr) -> *RValue {
+        let tup = TupleValue::new(e);
+        for elem in e.elements {
+            let v = self.visit_expr(elem);
+            tup.elements.push(move v);
+        }
+        return tup;
+    }
+
+    fn visit_array_lit_expr(&mut self, e: *ArrayLiteralExpr) -> *RValue {
+        let arr = ArrayLiteralValue::new(e);
+        for elem in e.elements {
+            let v = self.visit_expr(elem);
+            arr.elements.push(move v);
+        }
+        return arr;
+    }
+
+    fn visit_array_repeat_expr(&mut self, e: *ArrayRepeatLiteralExpr) -> *RValue {
+        let elem = self.visit_expr(e.element);
+        let len = self.visit_expr(e.repeat);
+        let arr = RepeatValue::new(e, move elem, move len);
+        return arr;
+    }
+
+    fn visit_lit_expr(&mut self, e: *LiteralExpr) -> *RValue {
+        if e.token.token_kind is TokenKind::Literal(LiteralKind::LIT_STR_INTERPOLATION) {
+            let c = InterpolationValue::new(e, self.resolver.sty_string());
+            c.name_resolve(self.get_ctx(), &self.resolver);
+            return c;
+        }
+        return LiteralValue::new(move e);
+    }
+
+    fn visit_type_asc_expr(&mut self, e: *TypeAscriptionExpr) -> *RValue {
+        let sty_opt = self.resolver.resolve_type_node(self.get_ctx(), e.ty);
+        if sty_opt is Some(sty) {
+            let inner = self.visit_expr(e.expr);
+            return TypeAscriptionValue::new(move e, move inner, move sty);
+        } else {
+            DiagnosticEngine::get().emit_invalid_type(e.ty.span());
+            return InvalidValue::new(e as *ExpressionNode) as *RValue;
+        }
+    }
+
+    fn visit_seg_name_expr(&mut self, e: *SegmentedNameExpr) -> *RValue {
+        let res = self.resolver.resolve_segmented_name(self.get_ctx(), e.name);
+        return self.resolve_result_as_rvalue(move res, e as *ExpressionNode);
+    }
+
+    fn visit_qualified_path_expr(&mut self, e: *QualifiedPathExpr) -> *RValue {
+        let res = self.resolver.resolve_qualified_path(self.get_ctx(), e);
+        return self.resolve_result_as_rvalue(move res, e as *ExpressionNode);
+    }
+
+    fn visit_to_lvalue(&mut self, e: *ExpressionNode) -> *LValue {
+        if e is name: *SegmentedNameExpr {
+            let res = self.resolver.resolve_segmented_name(self.get_ctx(), name.name);
+            return self.resolve_result_as_lvalue(move res, e);
+        }
+        else if e is path: *QualifiedPathExpr {
+            let res = self.resolver.resolve_qualified_path(self.get_ctx(), path);
+            return self.resolve_result_as_lvalue(move res, e);
+        }
+        else if e is ma: *MemberAccessExpr {
+            let base = self.visit_expr(ma.base);
+            let field = FieldLValue::create(ma.member.span(), ma.member, move base);
+            return field;
+        }
+        else if e is idx: *IndexExpr {
+            let base = self.visit_expr(idx.base);
+            let index = self.visit_expr(idx.index);
+            let idx_lv = IndexLValue::new(move e, move base, move index);
+            return idx_lv;
+        }
+        else if e is unary: *UnaryExpr && unary.kind is UnaryExprKind::Deref {
+            let op = self.visit_expr(unary.operand);
+            let d = DerefLValue::new(move unary, move op);
+            return d;
+        }
+        DiagnosticEngine::get().emit_invalid_lvalue(e.span());
+        return InvalidValue::new(move e) as *LValue;
+    }
+
+    fn resolve_result_as_lvalue(&self, res: Option<SymOrType>, e: *ExpressionNode) -> *LValue {
+        if res is Some(SymOrType::Sym(s)) {
+            if s is vs: *VarSymbol {
+                if vs.is_const() {
+                    DiagnosticEngine::get().emit_immutable_as_lvalue(e.span());
+                }
+                else if vs.is_static() {
+                    return StaticVar::new(move e, move vs);
+                }
+                else{
+                    return LocalVar::new(move e, move vs);
+                }
+            }
+        }
+
+        DiagnosticEngine::get().emit_invalid_lvalue(e.span());
+        return InvalidValue::new(move e) as *LValue;
+    }
+
+    fn resolve_result_as_rvalue(&self, res: Option<SymOrType>, e: *ExpressionNode) -> *RValue {
+        if res is Some(r) {
+            if r is SymOrType::Sym(s) {
+                if s is vs: *VarSymbol {
+                    if vs.is_const() {
+                        if e is qpe: *QualifiedPathExpr {
+                            let qualified_ty = self.resolver.resolve_type_node(self.get_ctx(), qpe.ty);
+                            let mut qualified_trait = (type Option<*SType>)::None;
+                            if qpe.trait_ty is Some(trait_ty) {
+                                qualified_trait = self.resolver.resolve_type_node(self.get_ctx(), trait_ty);
+                            }
+                            return QualifiedPathValue::new(qpe, move qualified_ty, move qualified_trait, move vs as *Symbol);
+                        } else {
+                            return QualifiedPathValue::create(move e as *ExpressionNode, move vs as *Symbol);
+                        }
+                    } else {
+                        // todo 如果找到的是 non-static 成员变量应该报错
+                        return ReadValue::new(move e as *ExpressionNode, move vs);
+                    }
+                }
+                else if s is fsym: *FuncSymbol {
+                    if e is qpe: *QualifiedPathExpr {
+                        let qualified_ty = self.resolver.resolve_type_node(self.get_ctx(), qpe.ty);
+                        
+                        let mut qualified_trait = (type Option<*SType>)::None;
+                        if qpe.trait_ty is Some(trait_ty) {
+                            qualified_trait = self.resolver.resolve_type_node(self.get_ctx(), trait_ty);
+                        }
+                        return QualifiedPathValue::new(qpe, move qualified_ty, move qualified_trait, move fsym as *Symbol);
+                    } else {
+                        let qpv = QualifiedPathValue::create(e as *ExpressionNode, move fsym as *Symbol);
+                        if e is sne: *SegmentedNameExpr && sne.name.starts_with_self_upper() {
+                            qpv.qualified_ty = self.get_ctx().self_sty;
+                        }
+                        return qpv;
+                    }
+                }
+                else if s is evsym: *EnumVariantSymbol {
+                    if e is qpe: *QualifiedPathExpr {
+                        let qualified_ty = self.resolver.resolve_type_node(self.get_ctx(), qpe.ty);
+                        let mut qualified_trait = (type Option<*SType>)::None;
+                        if qpe.trait_ty is Some(trait_ty) {
+                            qualified_trait = self.resolver.resolve_type_node(self.get_ctx(), trait_ty);
+                        }
+                        return QualifiedPathValue::new(qpe, move qualified_ty, move qualified_trait, move evsym as *Symbol);
+                    } else {
+                        return QualifiedPathValue::create(move e as *ExpressionNode, move evsym as *Symbol);
+                    }
+                }
+            }
+        }
+
+        let span = e.span();
+        let path =  SourceManager::get().source_piece_of(span);
+        DiagnosticEngine::get().emit_path_do_not_exist(path.to_string(), span);
+
+        return InvalidValue::new(e as *ExpressionNode) as *RValue;
+    }
+}

@@ -1,0 +1,81 @@
+
+// 引用计数有两个值，分别代表强引用和弱引用。
+// 而我们在 copy on write 优化的时候，需要判断两个引用数值的和是否为 1，
+// 此时为了线程安全，我们必须用一条 atomic 指令把两个引用计数一起读出来，而不能分开两步读。
+// 因此，每个引用计数值只占用指针的一半大小，这样比较方便用一条 atomic 指令读取两个数字。
+
+// TODO 以下这些函数都应该改为基于编译器内置 intrinsic 实现, 而不是用 C FFI。下面只是为了开发速度的临时措施
+extern fn zinc_core_upgrade_atomic(p: *raw ()) -> *raw ();
+extern fn zinc_core_strong_count(p: *raw ()) -> UShort;
+extern fn zinc_core_weak_count(p: *raw ()) -> UShort;
+extern fn zinc_core_both_count(p: *raw ()) -> UInt;
+extern fn zinc_core_is_unique(p: *raw ()) -> Bool;
+
+extern fn zinc_core_inc_strong_atomic(p: *raw ()) -> UShort;
+static UShortMax: UShort = 0xFFFF_FFFF;
+
+// 把弱指针升级为强指针
+// todo 需要支持 T: ?Sized, 指向 trait 的胖指针怎么办?
+pub fn upgrade<T>(p: *weak T) -> Option<*T> {
+    unsafe {
+        let res = zinc_core_upgrade_atomic(p as *raw T as *raw ());
+        if res as UInt == 0 {
+            return None;
+        } else {
+            return Some(res as *raw T as *T);
+        }
+    }
+}
+
+// 获取强引用的值
+// 参数使用借用，是为了避免这个参数本身影响了引用计数的值
+// 不能直接用 &T，是因为借用指针不一定指向对象的头部
+pub fn strong_count<T>(p: &*T) -> UShort {
+    return unsafe(zinc_core_strong_count(*p as *raw T as *raw ()));
+}
+
+pub fn weak_count<T>(p: &*T) -> UShort {
+    return unsafe(zinc_core_weak_count(*p as *raw T as *raw ()));
+}
+
+pub fn is_unique<P>(p: &*P) -> Bool {
+    return unsafe(zinc_core_is_unique(*p as *raw P as *raw ()));
+}
+
+pub struct RefCountSep {
+    pub strong_count: UShort,
+    pub weak_count: UShort,
+}
+
+// 把 union 当 transmute 使用
+pub union RefCountValue {
+    both: UInt,
+    seperate: RefCountSep,
+}
+
+pub fn ref_count_both<T>(p: &*T) -> RefCountSep {
+    let r: UInt = unsafe(zinc_core_both_count(*p as *raw T as *raw ()));
+    let v = { .both = r }: RefCountValue;
+    return unsafe(v.seperate);
+}
+
+// 操作 强引用和弱引用值
+pub unsafe fn inc_strong_ref_non_atomic<T>(p: &*T) -> UShort {
+    let mut rp = *p as *raw T as *raw mut RefCountValue;
+    rp = rp - 1;
+    unsafe {
+        let old = rp.seperate.strong_count;
+        rp.seperate.strong_count += 1;
+        return old;
+    }
+}
+
+pub fn inc_strong_ref_atomic<T>(p: &*T) -> UShort {
+    return unsafe(zinc_core_inc_strong_atomic(*p as *raw T as *raw ()));
+}
+
+pub fn write<T>(dst: *raw mut T, val: T) {
+    unsafe {
+        *dst = move val;
+    }
+}

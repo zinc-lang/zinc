@@ -1,0 +1,44 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use super::*;
+
+impl LiteralValue {
+    fn new(e: *LiteralExpr) -> *Self {
+        let span = e.span();
+        return box {
+            .expr = move e,
+            .parent_node = None,
+            .sty = SType::sty_invalid(span),
+        }: LiteralValue;
+    }
+}
+
+impl XValue for LiteralValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+        
+    }
+}
+
+impl RValue for LiteralValue {
+
+}

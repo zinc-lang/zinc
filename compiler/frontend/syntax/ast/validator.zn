@@ -1,0 +1,920 @@
+use super::decl::*;
+use super::stmt::*;
+use super::expr::*;
+use super::pattern::*;
+use super::ty::*;
+use super::visit::{SyntaxVisitor, VisitResult};
+use super::{SyntaxNode, SyntaxTree, DummySyntaxNode, Qualifier, QualifierKind, QualifierList, StatementNode, DeclNode, PatternNode};
+use super::super::token::*;
+use super::super::super::source_code::*;
+use super::super::super::diagnostic::*;
+use super::{upgrade_syntaxnode, is_inside_unsafe_context};
+
+use std::collections::hashset::HashSet;
+
+pub struct SyntaxValidator {
+    top_mod: *ModDecl,
+    export_found: Option<*ExportDecl>,
+    main_found: Option<*FuncDecl>,
+    all_imports: Vec<*ImportDecl>,
+    dump_ast: String,
+}
+
+impl SyntaxVisitor for SyntaxValidator {
+    fn visit_dummy_node(&mut self, node: *DummySyntaxNode) -> VisitResult {
+        DiagnosticEngine::get().emit_invalid_syntax_node(node.span());
+        return VisitResult::Continue;
+    }
+
+    // decls
+    fn visit_mod(&mut self, node: *ModDecl) -> VisitResult {
+        if node.parent_mod is None {
+            return VisitResult::Continue; // root mod 不需要检查
+        }
+        // 检查 qualifier
+        let expected = [QualifierKind::Pub];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "mod");
+
+        // 检查命名合法性
+        check_valid_ident(node.name.raw_str().as_str().deref(), node.name.span());
+
+        // mod 内部的 item (除了函数之外) 不允许重名
+        let mut item_names = (type HashMap<String, *DeclNode>)::new();
+        for item in node.items {
+            let name = item.short_name();
+            if !name.is_empty() {
+                if item_names.at(&name) is Some(existed) {
+                    if !(existed is type *FuncDecl) || !(item is type *FuncDecl) {
+                        DiagnosticEngine::get().emit_duplicate_name(item.span(), name.to_string());
+                    }
+                } else {
+                    item_names.insert(move name, move item);
+                }
+            }
+        }
+
+        return VisitResult::Continue;
+    }
+    fn visit_export(&mut self, node: *ExportDecl) -> VisitResult {
+        // 检查 qualifier
+        let expected: [QualifierKind; 0] = [];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "export");
+
+        check_valid_ident(node.name.raw_str().as_str().deref(), node.name.span());
+
+        // export 只能写在 top mod 里面
+        if node.parent_node as *raw SyntaxNode as UInt != self.top_mod as *raw ModDecl as UInt {
+            DiagnosticEngine::get().emit_decl_in_top_mod_only(node.span(), "export".to_string());
+        } else {
+            self.top_mod.name = node.name;
+            // export 前面只能有 attribute
+            for item in self.top_mod.items {
+                if item as *raw DeclNode as UInt == node as *raw ExportDecl as UInt {
+                    break;
+                }
+                else { // 如果是 attribute 不需要报错
+                    DiagnosticEngine::get().emit_decl_ahead_of_other_than(item.span(), "export".to_string());
+                }
+            }
+        }
+
+        // export 只能有一个
+        if self.export_found is Some(_) {
+            DiagnosticEngine::get().emit_duplicate_export(node.span(), node.name.raw_str());
+        } else {
+            self.export_found = Some(node);
+        }
+
+        return VisitResult::Continue;
+    }
+    fn visit_import(&mut self, node: *ImportDecl) -> VisitResult {
+        // 检查 qualifier
+        let expected: [QualifierKind; 0] = [];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "import");
+
+        // import 只能写在 top mod 里面
+        if node.parent_node as *raw SyntaxNode as UInt != self.top_mod as *raw ModDecl as UInt {
+            DiagnosticEngine::get().emit_decl_in_top_mod_only(node.span(), "import".to_string());
+        } else {
+            // import 前面只能有 attribute 或者 export
+            for item in self.top_mod.items {
+                if item as *raw DeclNode as UInt == node as *raw ImportDecl as UInt {
+                    break;
+                }
+                else {
+                    if !(item is type *ExportDecl) && !(item is type *ImportDecl) {
+                        DiagnosticEngine::get().emit_decl_ahead_of_other_than(item.span(), "import".to_string());
+                    }
+                }
+            }
+        }
+
+        // std 不能 import 其它组件
+        if self.export_found is Some(e) && e.name.raw_str().as_str().deref().eq(&"std") {
+            DiagnosticEngine::get().emit_import_in_std(node.span());
+        }
+
+        // 不能 import 自己
+        if self.export_found is Some(e) && e.name.raw_str().eq(&node.name.raw_str()) {
+            DiagnosticEngine::get().emit_import_self(node.span());
+        }
+
+        // 不能 import std
+        if node.name.raw_str().as_str().deref().eq(&"std") {
+            DiagnosticEngine::get().emit_import_std(node.span());
+        }
+
+        // 不能重复 import 同一个组件
+        for im in self.all_imports {
+            let name = im.name.raw_str();
+            if name.eq(&node.name.raw_str()) {
+                DiagnosticEngine::get().emit_duplicate_import(node.span(), name);
+            }
+        }
+        self.all_imports.push(node);
+
+        return VisitResult::Continue;
+    }
+    fn visit_use(&mut self, node: *UseDecl) -> VisitResult {
+        // 检查 qualifier
+        let expected: [QualifierKind; 1] = [QualifierKind::Pub];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "use");
+
+        // pub use 暂时还未实现
+        if (node.qualifiers().has(QualifierKind::Pub)) {
+            DiagnosticEngine::get().emit_unimplemented(node.span(), "reexport");
+        }
+
+        // use 只能用在 mod 里面或者 block 里面
+        if !(node.parent_node is type *weak ModDecl) && !(node.parent_node is type *weak BlockStmt) {
+            DiagnosticEngine::get().emit_use_decl_invalid_parent(node.span());
+        }
+
+        // 在 block 里面的 use 语句，只能写在 block 的最前面
+        if node.parent_node is parent: *weak BlockStmt {
+            if std::ptr::upgrade(parent) is Some(block) {
+                for stmt in block.stmts {
+                    if stmt as *raw StatementNode as UInt == node as *raw UseDecl as UInt {
+                        break;
+                    }
+                    else {
+                        if !(stmt is type *UseDecl) {
+                            DiagnosticEngine::get().emit_decl_ahead_of_other_than(stmt.span(), "use".to_string());
+                        }
+                    }
+                }
+            }
+            
+        }
+
+        // 检查 UseDeclBody 的合法性
+        node.desugar();
+
+        return VisitResult::Continue;
+    }
+    fn visit_where(&mut self, node: *WhereCondDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_generic_param(&mut self, node: *GenericTypeParamDecl) -> VisitResult {
+        let static_lifetime = "'static";
+        if node.name.token_kind is TokenKind::Lifetime &&
+            node.name.raw_str().as_str().deref().eq(&static_lifetime) {
+            DiagnosticEngine::get().emit_keyword_as_lifetime(node.name.source_span, move static_lifetime);
+        }
+        return VisitResult::Continue;
+    }
+    fn visit_fn_param(&mut self, node: *FnParamDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_fn(&mut self, node: *FuncDecl) -> VisitResult {
+        if node.name.raw_str().eq(&self.dump_ast) {
+            SyntaxTree::dump(node as *DeclNode, false);
+        }
+
+        // 以下几个函数的 qualifier 只能用在 trait 里面
+        if !(node.parent_node is type *weak TraitDecl) {
+            if node.qualifiers().get(QualifierKind::Virtual) is Some(q) {
+                DiagnosticEngine::get().emit_qualifier_in_trait_only(q.token.span(), "virtual");
+            }
+            if node.qualifiers().get(QualifierKind::Override) is Some(q) {
+                DiagnosticEngine::get().emit_qualifier_in_trait_only(q.token.span(), "override");
+            }
+            if node.qualifiers().get(QualifierKind::Sealed) is Some(q) {
+                DiagnosticEngine::get().emit_qualifier_in_trait_only(q.token.span(), "sealed");
+            }
+        }
+        
+        if node.parent_node is weak_trait_decl: *weak TraitDecl {
+            if std::ptr::upgrade(weak_trait_decl) is Some(trait_decl) {
+                // pub trait 里面的成员方法暂时不支持默认实现 (还需要 importer/exporter 配合)
+                if trait_decl.qualifier_list.has(QualifierKind::Pub) && node.body is Some(_) {
+                    DiagnosticEngine::get().emit_unimplemented(node.name.span(), "default implementation of trait method");
+                }
+            }
+        }
+
+        // impl Trait for Type 里面的函数不许有 pub 修饰符
+        if node.parent_node is i: *weak ImplDecl {
+            if std::ptr::upgrade(i) is Some(im) {
+                if im.trait_ty is Some(_) {
+                    let expected = [QualifierKind::Const, QualifierKind::Unsafe, QualifierKind::Async, QualifierKind::Inline];
+                    accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "fn");
+                } else {
+                    let expected = [QualifierKind::Pub, QualifierKind::Const, QualifierKind::Unsafe, QualifierKind::Async, QualifierKind::Inline];
+                    accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "fn");
+                }
+            }
+        }
+
+        // 检查名字合法性
+        check_valid_ident(node.name.raw_str().as_str().deref(), node.name.span());
+
+        // 检查主函数
+        if node.parent_node is parent: *weak ModDecl {
+            if parent as *raw ModDecl as UInt == self.top_mod as *raw ModDecl as UInt {
+                if node.name.raw_str().as_str().deref().eq(&"main") {
+                    if self.main_found is Some(e) {
+                        DiagnosticEngine::get().emit_duplicate_main_fn(node.name.span());
+                    } else {
+                        self.main_found = Some(node);
+                        self.top_mod.name = {
+                            .source_span = SourceSpan::empty(),
+                            .token_kind = TokenKind::Keyword(KeywordKind::KW_SELF_LOWER),
+                        }: Token;
+                    }
+                }
+            }
+        }
+
+        if node.qualifiers().has(QualifierKind::Extern) {
+            // extern 函数必须是全局函数
+            if !(node.parent_node is type *weak ModDecl) {
+                DiagnosticEngine::get().emit_extern_fn_must_be_global(node.name.span());
+            }
+
+            // extern 函数不能有函数体
+            if node.body is Some(_) {
+                DiagnosticEngine::get().emit_extern_fn_has_body(node.name.span());
+            }
+
+            // extern 函数不能是泛型函数
+            if node.generic_params.len() > 0 {
+                DiagnosticEngine::get().emit_extern_fn_has_generic(node.name.span());
+            }
+        }
+
+        // 泛型参数列表检查
+        check_generic_params(&node.generic_params);
+
+        // 只有几种情况可以没有函数体： extern 声明、trait 声明、从zno文件读取的签名。extern 必须没有函数体. zno 读出来的源代码，不用这个 validator。
+        if node.body.is None {
+            // inline & const 修饰的函数必须有函数体
+            if node.qualifiers().get(QualifierKind::Inline) is Some(q){
+                DiagnosticEngine::get().emit_fn_without_body(q.token.span());
+            }
+            else if node.qualifiers().get(QualifierKind::Const) is Some(q) {
+                DiagnosticEngine::get().emit_fn_without_body(q.token.span());
+            }
+            else {
+                let mut valid = false;
+                if node.qualifiers().has(QualifierKind::Extern) {
+                    valid = true;
+                }
+                if node.parent_node is type *weak TraitDecl {
+                    valid = true;
+                }
+                if node.parent_node is type *weak ImplDecl {
+                    valid = true;
+                }
+                if !valid {
+                    DiagnosticEngine::get().emit_fn_without_body(node.name.span());
+                }
+            }
+        }
+
+        // 函数参数个数限制
+        let ParamCountLimit: UInt = 255;
+        if node.params.len() > ParamCountLimit {
+            let last = *node.params.index(node.params.len() - 1).deref();
+            DiagnosticEngine::get().emit_param_count_exceed_limit(last.span());
+        }
+
+        let is_inside_trait = node.parent_node is type *weak TraitDecl;
+
+        // 检查参数名唯一性
+        let mut param_names = (type HashSet<String>)::new();
+        let mut idx: UInt = 0;
+        for param in node.params {
+            let mut name = param.name();
+            if !name.is_empty() {
+                if param_names.contains(&name) {
+                    DiagnosticEngine::get().emit_duplicate_name(param.span(), name);
+                } else {
+                    param_names.insert(name);
+                }
+            }
+
+            match param.decl_kind {
+                FnParamDeclKind::Receiver(_) => {
+                    if idx != 0 {
+                        DiagnosticEngine::get().emit_receiver_param_not_first(param.span());
+                    }
+                }
+                FnParamDeclKind::Named(name1, _, _) => {
+                    if name1.raw_str().as_str().deref().eq(&"self") && idx != 0 {
+                        DiagnosticEngine::get().emit_receiver_param_not_first(name1.span());
+                    }
+                    if is_inside_trait {
+                        DiagnosticEngine::get().emit_unimplemented(name1.span(), "named parameter in trait method");
+                    }
+                }
+                FnParamDeclKind::Normal(name2, _, _) => {
+                    if name2.raw_str().as_str().deref().eq(&"self") && idx != 0 {
+                        DiagnosticEngine::get().emit_receiver_param_not_first(name2.span());
+                    }
+                }
+                FnParamDeclKind::Ellipsis(_) =>  {
+                    if idx != (node.params.len() - 1) {
+                        DiagnosticEngine::get().emit_ellipsis_param_position(param.span());
+                    }
+                    if !node.qualifiers().has(QualifierKind::Extern) {
+                        DiagnosticEngine::get().emit_only_extern_can_have_ellipsis_param(param.span());
+                    }
+                }
+            }
+            idx += 1;
+        }
+
+        return VisitResult::Continue;
+    }
+    fn visit_impl(&mut self, node: *ImplDecl) -> VisitResult {
+        // 检查 qualifier
+        let expected: [QualifierKind; 1] = [QualifierKind::Unsafe];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "impl");
+        
+        check_generic_params(&node.generic_params);
+
+        return VisitResult::Continue;
+    }
+    fn visit_reuse(&mut self, node: *ReuseDecl) -> VisitResult {
+        let expected: [QualifierKind; 0] = [];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "reuse");
+
+        DiagnosticEngine::get().emit_unimplemented(node.span(), "reuse decl");
+
+        return VisitResult::Continue;
+    }
+    fn visit_struct(&mut self, node: *StructDecl) -> VisitResult {
+        let expected: [QualifierKind; 1] = [QualifierKind::Pub];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "struct");
+
+        check_valid_ident(node.name.raw_str().as_str().deref(), node.name.span());
+
+        check_generic_params(&node.generic_params);
+
+        // 检查成员变量合法性
+        let mut field_names = (type HashSet<String>)::new();
+        for field in node.fields {
+            let name = field.name.raw_str();
+            check_valid_ident(name.as_str().deref(), field.name.span());
+
+            if !name.is_empty() {
+                if field_names.contains(&name) {
+                    DiagnosticEngine::get().emit_duplicate_name(field.span(), name);
+                } else {
+                    field_names.insert(name);
+                }
+            }
+
+            let expected: [QualifierKind; 1] = [QualifierKind::Pub];
+            accept_qualifiers(&expected as Slice<QualifierKind>, &field.qualifiers(), "struct field");
+        }
+        return VisitResult::Continue;
+    }
+    fn visit_enum(&mut self, node: *EnumDecl) -> VisitResult {
+        let expected: [QualifierKind; 1] = [QualifierKind::Pub];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "enum");
+
+        check_valid_ident(node.name.raw_str().as_str().deref(), node.name.span());
+        for variant in node.variants {
+            let name = variant.name.raw_str();
+            check_valid_ident(name.as_str().deref(), variant.name.span());
+        }
+
+        check_generic_params(&node.generic_params);
+
+        if node.variants.len() == 0 {
+            DiagnosticEngine::get().emit_unimplemented(node.name.span(), "bottom type");
+        }
+
+        if node.repr_int is Some(repr) {
+            DiagnosticEngine::get().emit_unimplemented(repr.span(), "enum repr type");
+        }
+
+        return VisitResult::Continue;
+    }
+    fn visit_enum_variant(&mut self, node: *EnumVariantDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_union(&mut self, node: *UnionDecl) -> VisitResult {
+        let expected: [QualifierKind; 1] = [QualifierKind::Pub];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "union");
+
+        check_valid_ident(node.name.raw_str().as_str().deref(), node.name.span());
+
+        for field in node.fields {
+            let name = field.name.raw_str();
+            check_valid_ident(name.as_str().deref(), field.name.span());
+            let expected: [QualifierKind; 0] = [];
+            accept_qualifiers(&expected as Slice<QualifierKind>, &field.qualifiers(), "union field");
+        }
+
+        return VisitResult::Continue;
+    }
+    fn visit_trait(&mut self, node: *TraitDecl) -> VisitResult {
+        let expected: [QualifierKind; 2] = [QualifierKind::Pub, QualifierKind::Sealed];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "trait");
+        check_valid_ident(node.name.raw_str().as_str().deref(), node.name.span());
+        check_generic_params(&node.generic_params);
+
+        if !node.generic_params.is_empty() {
+            // 带泛型的 trait 在后续做语义检查的时候，需要额外用 TypeMapping 做类型替换，这块检查目前漏了
+            DiagnosticEngine::get().emit_unimplemented(node.name.source_span, "trait declaration with generics");
+        }
+
+        return VisitResult::Continue;
+    }
+    fn visit_typealias(&mut self, node: *TypeAliasDecl) -> VisitResult {
+        let expected = [QualifierKind::Pub, QualifierKind::Extern];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "typealias");
+        
+        // 如果是 extern type 不能有 target, 不能有泛型参数列表
+        if node.qualifiers().has(QualifierKind::Extern) {
+            if node.target_ty is Some(_) {
+                DiagnosticEngine::get().emit_extern_type_has_target(node.name.span());
+            }
+            if node.generic_params.len() > 0 {
+                DiagnosticEngine::get().emit_extern_type_has_generic(node.name.span());
+            }
+        }
+
+        check_generic_params(&node.generic_params);
+
+        check_valid_ident(node.name.raw_str().as_str().deref(), node.name.span());
+
+        return VisitResult::Continue;
+    }
+    fn visit_associated_type(&mut self, node: *AssociatedTypeDecl) -> VisitResult {
+        let expected : [QualifierKind; 0] = [];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "associated type");
+
+        check_generic_params(&node.generic_params);
+
+        check_valid_ident(node.name.raw_str().as_str().deref(), node.name.span());
+
+        return VisitResult::Continue;
+    }
+    fn visit_extern_block(&mut self, node: *ExternBlockDecl) -> VisitResult {
+
+        let expected = [QualifierKind::Extern];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "extern block");
+
+        return VisitResult::Continue;
+    }
+    fn visit_var_decl(&mut self, node: *VarDecl) -> VisitResult {
+        let expected = [QualifierKind::Pub, QualifierKind::Unsafe];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifiers(), "variable");
+
+        check_valid_ident(node.name.raw_str().as_str().deref(), node.name.span());
+
+        if !node.kw_static.is_invalid() || !node.kw_const.is_invalid() {
+            if node.ty is None {
+                DiagnosticEngine::get().emit_global_must_specify_type(node.name.span());
+            }
+
+            if !node.kw_mut.is_invalid() && !node.qualifier_list.has(QualifierKind::Unsafe) {
+                DiagnosticEngine::get().emit_static_mut_must_be_unsafe(node.name.span());
+            }
+        }
+
+        return VisitResult::Continue;
+    }
+
+    // statements
+    fn visit_empty_stmt(&mut self, node: *EmptyStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_let_stmt(&mut self, node: *LetStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_expr_stmt(&mut self, node: *ExprStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_block(&mut self, node: *BlockStmt) -> VisitResult {
+        for d in node.decls {
+            if d is type *ModDecl {
+                DiagnosticEngine::get().emit_invalid_inner_decl(d.span(), "mod");
+            }
+            else if d is type *ImportDecl {
+                DiagnosticEngine::get().emit_invalid_inner_decl(d.span(), "import");
+            }
+            else if d is type *ExportDecl {
+                DiagnosticEngine::get().emit_invalid_inner_decl(d.span(), "export");
+            }
+            // 以下几个暂时不允许 后续可以放开。
+            // 比如把 static/const/typealias/extern fn 这些写到函数里面还是很常见的
+            // 类型定义和 impl 写到函数里面有点不好读，但允许也没什么问题。
+            else {
+                DiagnosticEngine::get().emit_unimplemented(d.span(), "inner items inside block");
+            }
+        }
+        return VisitResult::Continue;
+    }
+    fn visit_if_stmt(&mut self, node: *IfStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_while_stmt(&mut self, node: *WhileStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_for_stmt(&mut self, node: *ForStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_do_while_stmt(&mut self, node: *DoWhileStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_match_stmt(&mut self, node: *MatchStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_match_arm(&mut self, node: *MatchArm) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_break_stmt(&mut self, node: *BreakStmt) -> VisitResult {
+        if find_outer_loop(node as *StatementNode) is None {
+            DiagnosticEngine::get().emit_jump_not_in_loop(node.span(), "break");
+        }
+        return VisitResult::Continue;
+    }
+    fn visit_continue_stmt(&mut self, node: *ContinueStmt) -> VisitResult {
+        if find_outer_loop(node as *StatementNode) is None {
+            DiagnosticEngine::get().emit_jump_not_in_loop(node.span(), "continue");
+        }
+        return VisitResult::Continue;
+    }
+    fn visit_return_stmt(&mut self, node: *ReturnStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_panic_stmt(&mut self, node: *PanicStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_goto_stmt(&mut self, node: *GotoStmt) -> VisitResult {
+        // 预留功能，暂时未实现
+        DiagnosticEngine::get().emit_unimplemented(node.span(), "goto statement");
+        return VisitResult::Continue;
+    }
+    fn visit_label_stmt(&mut self, node: *LabelStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+
+    // expressions
+    fn visit_ternary_expr(&mut self, node: *TernaryExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_context_expr(&mut self, node: *ContextExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_assign_expr(&mut self, node: *AssignExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_binary_expr(&mut self, node: *BinaryExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_unary_expr(&mut self, node: *UnaryExpr) -> VisitResult {
+        if node.op1.token_kind is TokenKind::Keyword(KeywordKind::KW_AWAIT) {
+            DiagnosticEngine::get().emit_unimplemented(node.op1.span(), "await operator");
+        }
+        if node.op1.token_kind is TokenKind::Keyword(KeywordKind::KW_YIELD) {
+            DiagnosticEngine::get().emit_unimplemented(node.op1.span(), "yield operator");
+        }
+        return VisitResult::Continue;
+    }
+    fn visit_is_expr(&mut self, node: *IsExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_as_expr(&mut self, node: *AsExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_question_expr(&mut self, node: *QuestionExpr) -> VisitResult {
+        // 这个表达式只能用在函数内部，对函数的返回类型有要求，暂时还未实现
+        DiagnosticEngine::get().emit_unimplemented(node.question.span(), "question operator");
+        return VisitResult::Continue;
+    }
+    fn visit_index_expr(&mut self, node: *IndexExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_call_expr(&mut self, node: *FnCallExpr) -> VisitResult {
+        // 命名参数必须在非命名参数后面
+        let mut seen_named = false;
+        for arg in node.args {
+            if arg.is_named() {
+                seen_named = true;
+            } else {
+                if seen_named {
+                    DiagnosticEngine::get().emit_named_args_position(arg.span());
+                }
+            }
+        }
+        return VisitResult::Continue;
+    }
+    fn visit_paren_expr(&mut self, node: *ParenExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_member_expr(&mut self, node: *MemberAccessExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_struct_init_expr(&mut self, node: *StructInitExpr) -> VisitResult {
+        // field 不能重复
+        let mut field_names = (type HashSet<String>)::new();
+
+        let mut idx: UInt = 0;
+        let field_count = node.fields_init.len();
+        for field_init in node.fields_init {
+            match field_init {
+                FieldInitializer::Named(_, name, _, _) => {
+                    let field_name = name.raw_str();
+                    check_valid_ident(field_name.as_str().deref(), name.span());
+
+                    if !field_name.is_empty() {
+                        if field_names.contains(&field_name) {
+                            DiagnosticEngine::get().emit_duplicate_name(name.span(), field_name);
+                        } else {
+                            field_names.insert(field_name);
+                        }
+                    }
+                }
+                FieldInitializer::Default(ellipsis, _) => {
+                    if idx != (field_count - 1) {
+                        DiagnosticEngine::get().emit_default_init_position(ellipsis.span());
+                    }
+                }
+            }
+        }
+        return VisitResult::Continue;
+    }
+    fn visit_tuple_expr(&mut self, node: *TupleLiteralExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_array_expr(&mut self, node: *ArrayLiteralExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_array_repeat_expr(&mut self, node: *ArrayRepeatLiteralExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_literal_expr(&mut self, node: *LiteralExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_type_ascription_expr(&mut self, node: *TypeAscriptionExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_name_expr(&mut self, node: *SegmentedNameExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_path_expr(&mut self, node: *QualifiedPathExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_lambda_expr(&mut self, node: *LambdaExpr) -> VisitResult {
+        DiagnosticEngine::get().emit_unimplemented(node.span(), "lambda expression");
+        return VisitResult::Continue;
+    }
+
+    // patterns
+    fn visit_wildcard_pattern(&mut self, node: *WildcardPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_rest_pattern(&mut self, node: *RestPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_literal_pattern(&mut self, node: *LiteralPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_ident_pattern(&mut self, node: *IdentPatternNode) -> VisitResult {
+        if node.ty is Some(_) && node.name.names.len() > 1 {
+            DiagnosticEngine::get().emit_name_not_ident_pattern(node.name.span());
+        }
+        return VisitResult::Continue;
+    }
+    fn visit_type_name_pattern(&mut self, node: *TypeNamePatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_tuple_pattern(&mut self, node: *TuplePatternNode) -> VisitResult {
+        let mut idx: UInt = 0;
+        for elem in node.elements {
+            if elem is type *RestPatternNode {
+                if idx != (node.elements.len() - 1) {
+                    DiagnosticEngine::get().emit_rest_pattern_position(elem.span());
+                }
+            }
+            idx += 1;
+        }
+        return VisitResult::Continue;
+    }
+    fn visit_struct_pattern(&mut self, node: *StructPatternNode) -> VisitResult {
+        let mut field_names = (type HashSet<String>)::new();
+        for field in node.fields {
+            let name = field.name.raw_str();
+            check_valid_ident(name.as_str().deref(), field.name.span());
+
+            if !name.is_empty() {
+                if field_names.contains(&name) {
+                    DiagnosticEngine::get().emit_duplicate_name(field.span(), name);
+                } else {
+                    field_names.insert(name);
+                }
+            }
+        }
+        return VisitResult::Continue;
+    }
+    fn visit_field_pattern(&mut self, node: *FieldPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_enum_variant_pattern(&mut self, node: *EnumVariantPatternNode) -> VisitResult {
+        // 与 tuple pattern 类似，只能一个 rest pattern，并且只能放在最后
+        let mut idx: UInt = 0;
+        for elem in node.elements {
+            if elem is type *RestPatternNode {
+                if idx != (node.elements.len() - 1) {
+                    DiagnosticEngine::get().emit_rest_pattern_position(elem.span());
+                }
+            }
+            idx += 1;
+        }
+        return VisitResult::Continue;
+    }
+    fn visit_ref_pattern(&mut self, node: *RefPatternNode) -> VisitResult {
+        // ref pattern 的 inner pattern 只能是 IdentPatternNode
+        if !(node.pattern is type *IdentPatternNode) {
+            DiagnosticEngine::get().emit_pattern_must_be_ident(node.pattern.span());
+        }
+
+        // 不允许针对 enum 的 payload 取地址 (ref/ref mut 模式), 因为 payload 的内存结构很容易被破坏
+        // todo: 当前的规则还可以继续放宽一点
+        // 1. 如果 payload 是 Arc 指针, ref 模式是指向的是另外的对象, 那就跟 enum 没什么关系, 可以直接允许
+        // 2. 如果是针对值类型的 enum 做模式匹配, 那么可以用 ref pattern 对 payload 取地址。
+        //    但需要对这种情况做局部的类似 borrow checker 的检查, 保证在这个指针存活的范围内被指向的对象没有被重新赋值即可
+        // 3. 如果是针对指向 enum 的指针做 variant pattern 模式匹配, 那么还是不能用 ref pattern 对 payload 取地址
+        //    因为在这个指针存活范围内, 可能通过别的函数修改了指向的 enum 导致 payload 的内存结构都变了, 无法通过编译检查解决
+        if inside_enum_variant_pattern(node) && !is_inside_unsafe_context(node as *SyntaxNode) {
+            DiagnosticEngine::get().emit_ref_pattern_disallowed(node.kw_ref.source_span);
+        }
+
+        return VisitResult::Continue;
+    }
+    fn visit_deref_pattern(&mut self, node: *DerefPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_weak_pattern(&mut self, node: *WeakPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_mut_pattern(&mut self, node: *MutPatternNode) -> VisitResult {
+        let inner = node.pattern;
+        if !(inner is type *IdentPatternNode) &&
+            !(inner is type *RefPatternNode) &&
+            !(inner is type *DerefPatternNode) &&
+            !(inner is type *WeakPatternNode) &&
+            !(inner is type *WildcardPatternNode) {
+
+            DiagnosticEngine::get().emit_pattern_must_be_ident(inner.span());
+        }
+        return VisitResult::Continue;
+    }
+
+    // types
+    fn visit_named_type(&mut self, node: *NamedType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_arc_type(&mut self, node: *ArcType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_weak_type(&mut self, node: *WeakType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_borrow_type(&mut self, node: *BorrowType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_raw_ptr_type(&mut self, node: *RawPointerType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_tuple_type(&mut self, node: *TupleType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_array_type(&mut self, node: *ArrayType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_fn_type(&mut self, node: *FnType) -> VisitResult {
+        DiagnosticEngine::get().emit_unimplemented(node.span(), "function type");
+        return VisitResult::Continue;
+    }
+    fn visit_lifetime_type(&mut self, node: *LifetimeType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    fn visit_existential_type(&mut self, node: *ExistentialType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+}
+
+fn accept_qualifiers(expected: Slice<QualifierKind>, actual: &QualifierList, name: Str) {
+    for q in actual.qualifiers {
+        let k: QualifierKind = q.kind();
+        if !expected.contains(&k) {
+            DiagnosticEngine::get().emit_unexpected_qualifier(q.token.span(), name.to_string(), q.token.raw_str());
+        }
+    }
+}
+
+fn check_valid_ident(name: Str, span: SourceSpan) {
+    if name.is_empty() {
+        DiagnosticEngine::get().emit_invalid_ident_name(span, "<empty>".to_string());
+    } 
+    if name.eq(&"_") {
+        DiagnosticEngine::get().emit_invalid_ident_name(span, "<underscore>".to_string());
+    }
+    if name.eq(&"'_") {
+        DiagnosticEngine::get().emit_invalid_ident_name(span, "<underscore>".to_string());
+    }
+}
+
+fn check_generic_params(params: &Vec<*GenericTypeParamDecl>) {
+    let ParamCountLimit: UInt = 255;
+    if params.len() > ParamCountLimit {
+        let last = *params.index(params.len() - 1).deref();
+        DiagnosticEngine::get().emit_param_count_exceed_limit(last.span());
+    }
+
+    // 确保生命周期参数在类型参数之前
+    let mut met_type = false;
+    for param in params {
+        if param.name.token_kind is TokenKind::Lifetime {
+            if met_type {
+                DiagnosticEngine::get().emit_lifetime_must_before_type_arg(param.span());
+            }
+        } else {
+            met_type = true;
+        }
+    }
+
+    // 检查命名合法性，不能是 空 或者 'static 或者 下划线
+    for param in params {
+        let name = param.name.raw_str();
+        let name_str = name.as_str().deref();
+        if name_str.eq(&"static") || name_str.is_empty() || name_str.eq(&"_") {
+            DiagnosticEngine::get().emit_generic_param_invalid_name(param.name.span());
+        }
+    }
+}
+
+// todo 修 bug
+fn find_outer_loop(stmt: *StatementNode) -> Option<*weak SyntaxNode> {
+    let s: *SyntaxNode = stmt as *SyntaxNode;
+    let mut current: Option<*weak SyntaxNode> = s.parent();
+    while current is Some(parent) {
+        if parent is type *weak WhileStmt ||
+            parent is type *weak ForStmt ||
+            parent is type *weak DoWhileStmt {
+            return Some(parent);
+        }
+        if parent is type *weak DeclNode {
+            break; // 遇到外层声明就停止，说明没有找到
+        }
+        if parent is type *weak LambdaExpr {
+            break; // 遇到 lambda 就停止，说明没有找到
+        }
+
+        let upgrade_result = upgrade_syntaxnode(parent);
+        if upgrade_result is Some(p) {
+            current = p.parent();
+        } else {
+            break;
+        }
+    }
+    return None;
+}
+
+fn inside_enum_variant_pattern(pat: *RefPatternNode) -> Bool {
+    let s: *SyntaxNode = pat as *SyntaxNode;
+    let mut current: Option<*weak SyntaxNode> = s.parent();
+    while current is Some(parent) {
+        if parent is evp: *weak EnumVariantPatternNode {
+            return true;
+        }
+        if !(parent is type *weak PatternNode) {
+            break;
+        }
+
+        let upgrade_result = upgrade_syntaxnode(parent);
+        if upgrade_result is Some(p) {
+            current = p.parent();
+        } else {
+            break;
+        }
+    }
+    return false;
+}

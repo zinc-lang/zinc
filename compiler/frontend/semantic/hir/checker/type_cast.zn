@@ -1,0 +1,456 @@
+
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::*;
+
+use super::type_mapping::*;
+use super::type_utils::*;
+
+use std::primitives::string::ToString;
+
+enum ResolvedCastKind {
+    Err,
+    SameType,
+    BoolToInt,
+    IntToInt,
+    IntToFloat,
+    EnumToInt,
+    FloatExt,
+    FloatTrunc,
+    FloatToInt,
+    CharToUInt32,
+    UInt32ToChar,
+    ArrayRefToSlice,
+    FunctionToFnLower,
+    FunctionToFnUpperBorrow,
+    FnLowerToFnUpperBorrow,
+    LambdaToFnLower,
+    LambdaToFnUpperPtr,
+    ArcToWeak, // 指针转换注意分 Fat/Thin 两种不同情况做代码生成
+    MutBorrowToImmut,
+    PointerSafeToUnsafe,
+    TypedPtrToUnitPtr,
+    // 在 unsafe 上下文中允许 raw 转换回 Arc/Borrow
+    PointerUnsafeToSafe,
+    UnsafePointerToUnsafePointer, // 被指向类型可以不同
+    UnsafePointerToUInt,
+    UIntToUnsafePointer,
+    // 这两种情况都是 Ptr<Sub> 到 Ptr<Base> 的转换
+    ThinPtrUpToFatPtr,
+    FatPtrDownToThinPtr,
+    FatPtrToFatPtr,
+    // 如果 U: Deref<V> 则 U 可以转换为 V
+    DerefCast(DerefMethodInfo),
+    DerefMutCast(DerefMethodInfo),
+    // 在 unsafe 上下文中允许 lifetime cast
+    LifetimeCast
+}
+
+// 判断能否从 from 类型转换为 to
+fn resolve_type_cast_kind(from: *SType, to: *SType) -> ResolvedCastKind {
+
+    if from.is_invalid() {
+        return ResolvedCastKind::Err;
+    }
+    if to.is_invalid() {
+        return ResolvedCastKind::Err;
+    }
+
+    let src = from.canonical();
+    let dst = to.canonical();
+
+    if src as *raw SType as UInt == dst as *raw SType as UInt {
+        return ResolvedCastKind::SameType;
+    }
+
+    if stype_eq_regardless_lifetime(src, dst) {
+        return ResolvedCastKind::LifetimeCast;
+    }
+
+    // Bool 转换为整数
+    if src.type_symbol is type *BoolSymbol && dst.type_symbol is type *IntegerSymbol {
+        return ResolvedCastKind::BoolToInt;
+    }
+
+    // 整数、浮点数之间的转换
+    if src.type_symbol is type *IntegerSymbol && dst.type_symbol is type *IntegerSymbol {
+        return ResolvedCastKind::IntToInt;
+    }
+
+    if src.type_symbol is type *IntegerSymbol && dst.type_symbol is type *FloatSymbol {
+        return ResolvedCastKind::IntToFloat;
+    }
+
+    if src.type_symbol is type *FloatSymbol && dst.type_symbol is type *IntegerSymbol {
+        return ResolvedCastKind::FloatToInt;
+    }
+
+    if src.type_symbol is src_sym: *FloatSymbol && dst.type_symbol is dst_sym: *FloatSymbol {
+        if src_sym.kind.eq(&dst_sym.kind) {
+            return ResolvedCastKind::SameType;
+        }
+        else if src_sym.kind.lt(&dst_sym.kind) {
+            return ResolvedCastKind::FloatExt;
+        }
+        else {
+            return ResolvedCastKind::FloatTrunc;
+        }
+    }
+
+    // 整数、Char 之间的转换
+    if src.type_symbol is src_sym: *IntegerSymbol && dst.type_symbol is type *CharSymbol
+        && src_sym.kind is IntegerKind::U32 {
+        return ResolvedCastKind::UInt32ToChar;
+    }
+
+    if src.type_symbol is type *CharSymbol && dst.type_symbol is dst_sym: *IntegerSymbol
+        && dst_sym.kind is IntegerKind::U32 {
+        return ResolvedCastKind::CharToUInt32;
+    }
+
+    // enum 到整数的转换
+    if src.type_symbol is src_sym: *EnumSymbol && dst.type_symbol is dst_sym: *IntegerSymbol {
+        if src_sym.variants.len() as UInt64 > dst_sym.kind.max_num() {
+            return ResolvedCastKind::Err;
+        } else {
+            return ResolvedCastKind::EnumToInt;
+        }
+    }
+
+    // 定长数组的借用, 转换为 Slice
+    if (is_borrow_to_array(src) && is_slice(dst)) ||
+        (is_borrow_to_array(src) && is_slicemut(dst)) ||
+        (is_mutborrow_to_array(src) && is_slicemut(dst)) {
+        return ResolvedCastKind::ArrayRefToSlice;
+    }
+
+    // 函数类型相关的转换
+    // todo 需要补充 函数/enum variant/lambda 到 Fn / FnMut 等类型的转换
+    if src.type_symbol is type *FuncSymbol && dst.type_symbol is type *FnLowerTypeSymbol {
+        return ResolvedCastKind::FunctionToFnLower;
+    }
+
+    if src.type_symbol is type *EnumVariantSymbol && dst.type_symbol is type *FnLowerTypeSymbol {
+        return ResolvedCastKind::FunctionToFnLower;
+    }
+
+    // 指针之间的转换
+    // 1. Arc 到 weak
+    if src.type_symbol is type *ArcPointerSymbol &&
+        dst.type_symbol is type *WeakPointerSymbol &&
+        stype_eq_regardless_lifetime(src.args.ty_arg(0), dst.args.ty_arg(0)) {
+        return ResolvedCastKind::ArcToWeak;
+    }
+    // 2. Raw 到 UInt
+    if (src.type_symbol is type *RawPointerImmutSymbol || src.type_symbol is type *RawPointerMutSymbol) {
+        if dst.type_symbol is dst_sym: *IntegerSymbol && dst_sym.kind is IntegerKind::Usize {
+            return ResolvedCastKind::UnsafePointerToUInt;
+        }
+    }
+    // 3. UInt 到 Raw
+    if (dst.type_symbol is type *RawPointerImmutSymbol || dst.type_symbol is type *RawPointerMutSymbol) {
+        if src.type_symbol is src_sym: *IntegerSymbol && src_sym.kind is IntegerKind::Usize &&
+            !dst.is_fat_pointer() {
+            return ResolvedCastKind::UIntToUnsafePointer;
+        }
+    }
+    // 4. MutBorrow 到 ImmutBorrow
+    if src.type_symbol is type *BorrowMutSymbol &&
+        dst.type_symbol is type *BorrowImmutSymbol &&
+        stype_eq_regardless_lifetime(src.args.ty_arg(0), dst.args.ty_arg(0)) {
+        return ResolvedCastKind::MutBorrowToImmut;
+    }
+    // 5. safe pointer 到 unsafe pointer
+    if is_safe_pointer(src) && is_unsafe_pointer(dst) &&
+        stype_eq_regardless_lifetime(src.args.ty_arg(0), dst.args.ty_arg(0)) {
+        return ResolvedCastKind::PointerSafeToUnsafe;
+    }
+    // 6. unsafe pointer 到 safe pointer
+    if is_unsafe_pointer(src) && is_safe_pointer(dst) &&
+        stype_eq_regardless_lifetime(src.args.ty_arg(0), dst.args.ty_arg(0)) {
+        return ResolvedCastKind::PointerUnsafeToSafe;
+    }
+    // 7. pointer 到 unit pointer
+    if src.type_symbol is type *PointerLikeSymbol &&
+        src.type_symbol as *raw TypeSymbol as UInt == dst.type_symbol as *raw TypeSymbol as UInt &&
+        dst.args.ty_arg(0).is_unit() {
+        return ResolvedCastKind::TypedPtrToUnitPtr;
+    }
+    // 8. 瘦指针转胖指针
+    if src.is_thin_pointer() && dst.is_fat_pointer() &&
+        src.type_symbol as *raw TypeSymbol as UInt == dst.type_symbol as *raw TypeSymbol as UInt {
+        return ResolvedCastKind::ThinPtrUpToFatPtr;
+    }
+    // 9. 胖指针转瘦指针
+    if src.is_fat_pointer() && dst.is_thin_pointer() &&
+        src.type_symbol as *raw TypeSymbol as UInt == dst.type_symbol as *raw TypeSymbol as UInt {
+        return ResolvedCastKind::FatPtrDownToThinPtr;
+    }
+    // 10. 胖指针转胖指针
+    if src.is_fat_pointer() && dst.is_fat_pointer() &&
+        src.type_symbol as *raw TypeSymbol as UInt == dst.type_symbol as *raw TypeSymbol as UInt {
+        return ResolvedCastKind::FatPtrToFatPtr;
+    }
+    // 11. unsafe pointer 到 unsafe pointer
+    if is_unsafe_pointer(src) && is_unsafe_pointer(dst) {
+        return ResolvedCastKind::UnsafePointerToUnsafePointer;
+    }
+
+    // 处理 Self type
+    if src.type_symbol is assoc_ty: *AssociatedTypeSymbol {
+        let mut subst = TypeMapping::new();
+        subst.unify(assoc_ty.to_sty(), src);
+        let target = subst.subst(assoc_ty.target_sty);
+
+        return resolve_type_cast_kind(target, dst);
+    }
+    if dst.type_symbol is assoc_ty: *AssociatedTypeSymbol {
+        let mut subst = TypeMapping::new();
+        subst.unify(assoc_ty.to_sty(), dst);
+        let target = subst.subst(assoc_ty.target_sty);
+
+        return resolve_type_cast_kind(src, target);
+    }
+    if src.type_symbol is type *PointerLikeSymbol && dst.type_symbol is type *PointerLikeSymbol &&
+        src.type_symbol as *raw TypeSymbol as UInt == dst.type_symbol as *raw TypeSymbol as UInt {
+
+        let src_arg0: *SType = src.args.ty_arg(0);
+        let mut src_arg0_is_self = false;
+        if src_arg0.type_symbol is assoc_ty1: *AssociatedTypeSymbol && assoc_ty1.is_self_ty() { src_arg0_is_self = true; }
+        let dst_arg0: *SType = dst.args.ty_arg(0);
+        let mut dst_arg0_is_self = false;
+        if dst_arg0.type_symbol is assoc_ty2: *AssociatedTypeSymbol && assoc_ty2.is_self_ty() { dst_arg0_is_self = true; }
+
+        if src_arg0_is_self {
+            if dst.is_fat_pointer() {
+                return ResolvedCastKind::ThinPtrUpToFatPtr;
+            } else {
+                return ResolvedCastKind::SameType;
+            }
+        }
+        if dst_arg0_is_self {
+            if src.is_fat_pointer() {
+                return ResolvedCastKind::FatPtrDownToThinPtr;
+            } else {
+                return ResolvedCastKind::SameType;
+            }
+        }
+    }
+
+    // 处理自动 Deref
+    // [todo] 还需要考虑 src 是 TypeParamSymbol 带有 Deref 约束的场景
+    // [todo] 还需要考虑多层 auto deref 的场景
+    if detect_deref_trait_cast(src, dst) is Some(info) {
+        return ResolvedCastKind::DerefCast(move info);
+    }
+    if detect_derefmut_trait_cast(src, dst) is Some(info) {
+        return ResolvedCastKind::DerefMutCast(move info);
+    }
+
+    return ResolvedCastKind::Err;
+}
+
+fn detect_deref_trait_cast(src: *SType, dst: *SType) -> Option<DerefMethodInfo> {
+    if src.type_symbol is type *ArcPointerSymbol {
+        let src_arg = src.args.ty_arg(0);
+        return detect_deref_trait_cast(src_arg, dst);
+    }
+    if src.type_symbol is type *BorrowImmutSymbol {
+        let src_arg = src.args.ty_arg(0);
+        return detect_deref_trait_cast(src_arg, dst);
+    }
+    if src.type_symbol is type *BorrowMutSymbol {
+        let src_arg = src.args.ty_arg(0);
+        return detect_deref_trait_cast(src_arg, dst);
+    }
+    if !(src.type_symbol is type *PointerLikeSymbol) && implemented_deref_trait(src) is Some(info) {
+        if stype_eq_regardless_lifetime(info.target_sty, dst) {
+            return Some(move info);
+        }
+    }
+    return None;
+}
+
+fn detect_derefmut_trait_cast(src: *SType, dst: *SType) -> Option<DerefMethodInfo> {
+    if src.type_symbol is type *ArcPointerSymbol {
+        let src_arg = src.args.ty_arg(0);
+        return detect_derefmut_trait_cast(src_arg, dst);
+    }
+    if src.type_symbol is type *BorrowMutSymbol {
+        let src_arg = src.args.ty_arg(0);
+        return detect_derefmut_trait_cast(src_arg, dst);
+    }
+    if !(src.type_symbol is type *PointerLikeSymbol) &&
+        implemented_derefmut_trait(src) is Some(info) && 
+        stype_eq_regardless_lifetime(info.target_sty, dst) {
+        return Some(move info);
+    }
+    return None;
+}
+
+fn add_implicit_cast(v: *RValue, kind: ResolvedCastKind, dst_ty: *SType) -> *RValue {
+
+    if kind is ResolvedCastKind::Err {
+        DiagnosticEngine::get().emit_cast_error(v.get_stype().to_string(), dst_ty.to_string(), v.expr_node().span());
+        return v;
+    }
+    if kind is ResolvedCastKind::SameType {
+        return v;
+    }
+    if kind is ResolvedCastKind::DerefCast(info) {
+        let desugared_receiver = auto_ref_and_deref(info.receiver_sty, v.get_stype(), v);
+        let method_call = MethodCallValue::create(
+            move desugared_receiver, info.method_sym, GenericArgs::new(), (type Vec<*RValue>)::new(), info.target_sty);
+        return method_call as *RValue;
+    }
+    if kind is ResolvedCastKind::DerefMutCast(info) {
+        let desugared_receiver = auto_ref_and_deref(info.receiver_sty, v.get_stype(), v);
+        let method_call = MethodCallValue::create(
+            move desugared_receiver, info.method_sym, GenericArgs::new(), (type Vec<*RValue>)::new(), info.target_sty);
+        return method_call as *RValue;
+    }
+    if kind is ResolvedCastKind::BoolToInt ||
+        kind is ResolvedCastKind::IntToInt ||
+        kind is ResolvedCastKind::IntToFloat ||
+        kind is ResolvedCastKind::FloatExt ||
+        kind is ResolvedCastKind::FloatTrunc ||
+        kind is ResolvedCastKind::FloatToInt ||
+        kind is ResolvedCastKind::CharToUInt32 ||
+        kind is ResolvedCastKind::UInt32ToChar ||
+        kind is ResolvedCastKind::EnumToInt ||
+        kind is ResolvedCastKind::PointerSafeToUnsafe ||
+        kind is ResolvedCastKind::PointerUnsafeToSafe ||
+        kind is ResolvedCastKind::UnsafePointerToUnsafePointer ||
+        kind is ResolvedCastKind::UnsafePointerToUInt ||
+        kind is ResolvedCastKind::UIntToUnsafePointer ||
+        kind is ResolvedCastKind::FatPtrDownToThinPtr {
+
+        DiagnosticEngine::get().emit_illegal_implicit_cast(v.get_stype().to_string(), dst_ty.to_string(), v.expr_node().span());
+    }
+
+    if kind is ResolvedCastKind::FatPtrToFatPtr {
+        // 确保 v 的类型是 dst_ty 的子类型
+        if !is_subtype(v.get_stype(), dst_ty) {
+            DiagnosticEngine::get().emit_not_subtype(v.get_stype().to_string(), dst_ty.to_string(), v.expr_node().span());
+        }
+    }
+
+    if kind is ResolvedCastKind::ThinPtrUpToFatPtr {
+        // 确保 v 的类型是 dst_ty 的子类型
+
+        // FIXME: 泛型参数场景要根据当前上下文的 constraints 判断
+        let sub = v.get_stype();
+        if !contains_type_param(sub) && !contains_associated_type(sub) {
+            if !is_subtype(sub, dst_ty) {
+                DiagnosticEngine::get().emit_not_subtype(v.get_stype().to_string(), dst_ty.to_string(), v.expr_node().span());
+            }
+        }
+    }
+
+    let mut cast = CastValue::create(move v, move dst_ty);
+    cast.resolved_kind = kind;
+    cast.is_refutable = true;
+    return cast as *RValue;
+}
+
+impl ToString for ResolvedCastKind {
+    fn to_string_inplace(&self, buf: &mut String) {
+        match self {
+            ResolvedCastKind::Err => buf.push_str("Err");
+            ResolvedCastKind::SameType => buf.push_str("SameType");
+            ResolvedCastKind::BoolToInt => buf.push_str("BoolToInt");
+            ResolvedCastKind::IntToInt => buf.push_str("IntToInt");
+            ResolvedCastKind::IntToFloat => buf.push_str("IntToFloat");
+            ResolvedCastKind::EnumToInt => buf.push_str("EnumToInt");
+            ResolvedCastKind::FloatExt => buf.push_str("FloatExt");
+            ResolvedCastKind::FloatTrunc => buf.push_str("FloatTrunc");
+            ResolvedCastKind::FloatToInt => buf.push_str("FloatToInt");
+            ResolvedCastKind::CharToUInt32 => buf.push_str("CharToUInt32");
+            ResolvedCastKind::UInt32ToChar => buf.push_str("UInt32ToChar");
+            ResolvedCastKind::ArrayRefToSlice => buf.push_str("ArrayRefToSlice");
+            ResolvedCastKind::FunctionToFnLower => buf.push_str("FunctionToFnLower");
+            ResolvedCastKind::FunctionToFnUpperBorrow => buf.push_str("FunctionToFnUpperBorrow");
+            ResolvedCastKind::FnLowerToFnUpperBorrow => buf.push_str("FnLowerToFnUpperBorrow");
+            ResolvedCastKind::LambdaToFnLower => buf.push_str("LambdaToFnLower");
+            ResolvedCastKind::LambdaToFnUpperPtr => buf.push_str("LambdaToFnUpperPtr");
+            ResolvedCastKind::ArcToWeak => buf.push_str("ArcToWeak");
+            ResolvedCastKind::MutBorrowToImmut => buf.push_str("MutBorrowToImmut");
+            ResolvedCastKind::PointerSafeToUnsafe => buf.push_str("PointerSafeToUnsafe");
+            ResolvedCastKind::TypedPtrToUnitPtr => buf.push_str("TypedPtrToUnitPtr");
+            ResolvedCastKind::PointerUnsafeToSafe => buf.push_str("PointerUnsafeToSafe");
+            ResolvedCastKind::UnsafePointerToUnsafePointer => buf.push_str("UnsafePointerToUnsafePointer");
+            ResolvedCastKind::UnsafePointerToUInt => buf.push_str("UnsafePointerToUInt");
+            ResolvedCastKind::UIntToUnsafePointer => buf.push_str("UIntToUnsafePointer");
+            ResolvedCastKind::ThinPtrUpToFatPtr => buf.push_str("ThinPtrUpToFatPtr");
+            ResolvedCastKind::FatPtrDownToThinPtr => buf.push_str("FatPtrDownToThinPtr");
+            ResolvedCastKind::FatPtrToFatPtr => buf.push_str("FatPtrToFatPtr");
+            ResolvedCastKind::DerefCast(_) => buf.push_str("DerefCast");
+            ResolvedCastKind::DerefMutCast(_) => buf.push_str("DerefMutCast");
+            ResolvedCastKind::LifetimeCast => buf.push_str("LifetimeCast");
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+// 检查 expr is pat 的结果是 AlwaysTrue, AlwaysFalse, Maybe
+enum TypeTestKind {
+    AlwaysTrue,
+    AlwaysFalse,
+    Maybe(*SType, *SType),
+}
+
+fn resolve_type_test_kind(expr_ty: *SType, pat_ty: *SType) -> TypeTestKind {
+    match expr_ty.type_symbol {
+        trait_sym: *TraitSymbol => {
+            if pat_ty.type_symbol is type *TraitSymbol {
+                if trait_sym as *raw TraitSymbol as UInt == pat_ty.type_symbol as *raw TypeSymbol as UInt {
+                    return TypeTestKind::AlwaysTrue;
+                }
+            }
+            return TypeTestKind::Maybe(expr_ty, pat_ty);
+        }
+        type_param_sym: *TypeParamSymbol => {
+            if type_param_sym as *raw TypeParamSymbol as UInt == pat_ty.type_symbol as *raw TypeSymbol as UInt {
+                return TypeTestKind::AlwaysTrue;
+            }
+            return TypeTestKind::Maybe(expr_ty, pat_ty);
+        }
+        _ => {
+            if expr_ty.type_symbol as *raw TypeSymbol as UInt != pat_ty.type_symbol as *raw TypeSymbol as UInt {
+                return TypeTestKind::AlwaysFalse;
+            }
+            if expr_ty.args.ty_args.len() != pat_ty.args.ty_args.len() {
+                return TypeTestKind::AlwaysFalse;
+            }
+            let mut results = (type Vec<TypeTestKind>)::new();
+            let mut i: UInt = 0;
+            while i < expr_ty.args.ty_args.len() {
+                let expr_arg = expr_ty.args.ty_arg(i);
+                let pat_arg = pat_ty.args.ty_arg(i);
+                let k = resolve_type_test_kind(expr_arg, pat_arg);
+                if k is TypeTestKind::AlwaysFalse {
+                    return TypeTestKind::AlwaysFalse;
+                }
+                if !(k is TypeTestKind::AlwaysTrue) {
+                    results.push(move k);
+                }
+                i += 1;
+            }
+
+            if results.len() == 0 {
+                return TypeTestKind::AlwaysTrue;
+            } 
+            else if results.len() == 1 {
+                return results.at(0).get_or_panic();
+            }
+            else {
+                return TypeTestKind::Maybe(expr_ty, pat_ty);
+            }
+        }
+    }
+}

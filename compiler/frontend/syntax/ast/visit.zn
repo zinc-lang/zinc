@@ -1,0 +1,288 @@
+use super::{SyntaxNode, Qualifier, QualifierKind, SyntaxTree, StatementNode, ExpressionNode, PatternNode, TypeNode, DeclNode, DummySyntaxNode};
+use super::decl::*;
+use super::expr::*;
+use super::pattern::*;
+use super::stmt::*;
+use super::ty::*;
+use std::meta::Type;
+use std::thread::sleep_ms;
+
+pub enum VisitResult {
+    Continue,
+    Stop,
+    SkipChildren,
+}
+
+pub fn traverse_ast(node: *SyntaxNode, visitor: &mut SyntaxVisitor) -> VisitResult {
+    let visit_result = node.visit(visitor);
+
+    match visit_result {
+        VisitResult::Stop => return VisitResult::Stop;
+        VisitResult::SkipChildren => return VisitResult::Continue;
+        VisitResult::Continue => {
+            let children : Vec<*SyntaxNode> = node.children();
+            for child in children {
+                let child_visit_result = traverse_ast(child, visitor);
+                match child_visit_result {
+                    VisitResult::Continue => continue;
+                    VisitResult::Stop => return VisitResult::Stop;
+                    VisitResult::SkipChildren => return VisitResult::Continue;
+                }
+            }
+            return VisitResult::Continue;
+        }
+    }
+}
+
+trait SyntaxVisitor {
+    virtual fn visit_dummy_node(&mut self, node: *DummySyntaxNode)  -> VisitResult {
+        return VisitResult::Continue;
+    }
+
+    // decls
+    virtual fn visit_mod(&mut self, node: *ModDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_export(&mut self, node: *ExportDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_import(&mut self, node: *ImportDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_use(&mut self, node: *UseDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_where(&mut self, node: *WhereCondDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_generic_param(&mut self, node: *GenericTypeParamDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_fn_param(&mut self, node: *FnParamDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_fn(&mut self, node: *FuncDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_impl(&mut self, node: *ImplDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_reuse(&mut self, node: *ReuseDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_struct(&mut self, node: *StructDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_enum(&mut self, node: *EnumDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_enum_variant(&mut self, node: *EnumVariantDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_union(&mut self, node: *UnionDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_trait(&mut self, node: *TraitDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_typealias(&mut self, node: *TypeAliasDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_associated_type(&mut self, node: *AssociatedTypeDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_extern_block(&mut self, node: *ExternBlockDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_var_decl(&mut self, node: *VarDecl) -> VisitResult {
+        return VisitResult::Continue;
+    }
+
+    // statements
+    virtual fn visit_empty_stmt(&mut self, node: *EmptyStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_let_stmt(&mut self, node: *LetStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_expr_stmt(&mut self, node: *ExprStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_block(&mut self, node: *BlockStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_if_stmt(&mut self, node: *IfStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_while_stmt(&mut self, node: *WhileStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_for_stmt(&mut self, node: *ForStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_do_while_stmt(&mut self, node: *DoWhileStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_match_stmt(&mut self, node: *MatchStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_match_arm(&mut self, node: *MatchArm) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_break_stmt(&mut self, node: *BreakStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_continue_stmt(&mut self, node: *ContinueStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_return_stmt(&mut self, node: *ReturnStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_panic_stmt(&mut self, node: *PanicStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_goto_stmt(&mut self, node: *GotoStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_label_stmt(&mut self, node: *LabelStmt) -> VisitResult {
+        return VisitResult::Continue;
+    }
+
+    // expressions
+    virtual fn visit_ternary_expr(&mut self, node: *TernaryExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_context_expr(&mut self, node: *ContextExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_assign_expr(&mut self, node: *AssignExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_binary_expr(&mut self, node: *BinaryExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_unary_expr(&mut self, node: *UnaryExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_is_expr(&mut self, node: *IsExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_as_expr(&mut self, node: *AsExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_question_expr(&mut self, node: *QuestionExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_index_expr(&mut self, node: *IndexExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_call_expr(&mut self, node: *FnCallExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_paren_expr(&mut self, node: *ParenExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_member_expr(&mut self, node: *MemberAccessExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_struct_init_expr(&mut self, node: *StructInitExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_tuple_expr(&mut self, node: *TupleLiteralExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_array_expr(&mut self, node: *ArrayLiteralExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_array_repeat_expr(&mut self, node: *ArrayRepeatLiteralExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_literal_expr(&mut self, node: *LiteralExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_type_ascription_expr(&mut self, node: *TypeAscriptionExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_name_expr(&mut self, node: *SegmentedNameExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_path_expr(&mut self, node: *QualifiedPathExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_lambda_expr(&mut self, node: *LambdaExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+
+    // patterns
+    virtual fn visit_wildcard_pattern(&mut self, node: *WildcardPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_rest_pattern(&mut self, node: *RestPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_literal_pattern(&mut self, node: *LiteralPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_ident_pattern(&mut self, node: *IdentPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_type_name_pattern(&mut self, node: *TypeNamePatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_tuple_pattern(&mut self, node: *TuplePatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_struct_pattern(&mut self, node: *StructPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_field_pattern(&mut self, node: *FieldPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_enum_variant_pattern(&mut self, node: *EnumVariantPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_ref_pattern(&mut self, node: *RefPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_deref_pattern(&mut self, node: *DerefPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_weak_pattern(&mut self, node: *WeakPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_mut_pattern(&mut self, node: *MutPatternNode) -> VisitResult {
+        return VisitResult::Continue;
+    }
+
+    // types
+    virtual fn visit_named_type(&mut self, node: *NamedType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_arc_type(&mut self, node: *ArcType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_weak_type(&mut self, node: *WeakType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_borrow_type(&mut self, node: *BorrowType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_raw_ptr_type(&mut self, node: *RawPointerType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_tuple_type(&mut self, node: *TupleType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_array_type(&mut self, node: *ArrayType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_fn_type(&mut self, node: *FnType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_lifetime_type(&mut self, node: *LifetimeType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+    virtual fn visit_existential_type(&mut self, node: *ExistentialType) -> VisitResult {
+        return VisitResult::Continue;
+    }
+}

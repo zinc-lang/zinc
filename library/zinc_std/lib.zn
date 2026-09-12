@@ -1,0 +1,62 @@
+
+export std; // 通过这个判断这个库是不是标准库
+
+pub mod alloc;
+pub mod cmp;
+pub mod collections;
+pub mod env;
+pub mod fs;
+pub mod ops;
+pub mod marker;
+pub mod mem;
+pub mod meta;
+pub mod num;
+pub mod io;
+pub mod primitives;
+pub mod process;
+pub mod hash;
+pub mod iter;
+pub mod ptr;
+pub mod thread;
+pub mod time;
+
+mod ffi;
+mod intrinsic;
+
+use self::cmp::{PartialEq, PartialOrd, Eq, Ord};
+
+pub fn assert(condition: Bool) {
+    if !condition {
+        panic("assertion failed");
+    }
+}
+
+pub fn assert(condition: Bool, message: Str) {
+    if !condition {
+        panic(message);
+    }
+}
+
+pub fn assert_eq<T>(left: T, right: T) where T: PartialEq {
+    if left.ne(&right) {
+        panic("assertion failed: left != right");
+    }
+}
+
+pub fn assert_eq<T>(left: T, right: T, message: Str) where T: PartialEq {
+    if left.ne(&right) {
+        panic(message);
+    }
+}
+
+pub fn assert_ne<T>(left: T, right: T) where T: PartialEq {
+    if left.eq(&right) {
+        panic("assertion failed: left == right");
+    }
+}
+
+pub fn assert_ne<T>(left: T, right: T, message: Str) where T: PartialEq {
+    if left.eq(&right) {
+        panic(message);
+    }
+}

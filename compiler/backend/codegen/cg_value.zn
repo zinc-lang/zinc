@@ -1,0 +1,2437 @@
+use super::*;
+use super::data_structures::*;
+use super::cg_cfg::*;
+
+use ::self::frontend::source_code::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::mir::ir::*;
+use ::self::frontend::semantic::hir::constant::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+
+use std::meta::Type;
+
+impl CodeGenerator {
+
+    fn cg_xvalue(&mut self, xvalue: *XValue, ctx: *CgContext) -> CgValue {
+        let xvalue_int = xvalue as *raw XValue as UInt;
+        if ctx.value_map.at(&xvalue_int) is Some(v) {
+            return v;
+        }
+
+        if xvalue is lvalue: *LValue {
+            let v = self.cg_lvalue(lvalue, ctx);
+            ctx.value_map.insert(xvalue_int, v);
+            return v;
+        }
+        if xvalue is rvalue: *RValue {
+            let v = self.cg_rvalue(rvalue, ctx);
+            ctx.value_map.insert(xvalue_int, v);
+            return v;
+        }
+        panic;
+    }
+
+    fn cg_lvalue(&mut self, lvalue: *LValue, ctx: *CgContext) -> CgValue {
+        match lvalue {
+            deref_lv: *DerefLValue => {
+                let mut v = self.cg_xvalue(deref_lv.operand, ctx);
+                if v.indirect {
+                    let mut r = self.llds.create_load(self.llds.type_thin_ptr(), v);
+                    r.indirect = true;
+                    return r;
+                } else {
+                    v.indirect = true;
+                    return v;
+                }
+            }
+            field_lv: *FieldLValue => {
+                let mut base = self.cg_xvalue(field_lv.base, ctx);
+                let base_sty = field_lv.base.get_stype().canonical();
+                let stripped_base_sty = base_sty.strip_pointer();
+                base = self.load_to_single_ptr_level(base_sty, base);
+
+                // 现在 base 一定是指向某struct或者union的指针
+                if stripped_base_sty.type_symbol is type *UnionSymbol {
+                    return base;
+                } else if stripped_base_sty.type_symbol is struct_sym: *StructSymbol {
+                    if self.cgtype_of(stripped_base_sty) is Some(ty) {
+                        return self.llds.create_struct_gep(ty, base, field_lv.index_of_field());
+                    } else {
+                        let mut mappings = TypeMapping::new();
+                        mappings.unify(struct_sym.to_sty(), stripped_base_sty);
+
+                        // 运行时查找成员的偏移
+                        let r = field_lv.field_resolved.get_or_panic();
+                        let ri = r as *raw VarSymbol as UInt;
+                        let mut field_head = base;
+                        for f in struct_sym.fields {
+                            let actual_field_sty = mappings.subst(f.stype);
+                            let field_tm = self.rt_typemeta_of(actual_field_sty, ctx);
+                            field_head = self.llds.align_pointer_to_typemeta(field_head, field_tm);
+
+                            if f as *raw VarSymbol as UInt == ri {
+                                field_head.indirect = true;
+                                return field_head;
+                            }
+                            
+                            let s = self.size_of_stype(actual_field_sty, ctx);
+                            field_head = self.llds.create_gep(self.llds.type_int8(), field_head, s);
+                        }
+                        panic;
+                    }
+                } else {
+                    panic;
+                }
+            }
+            idx_lv: *IndexLValue => {
+                let mut base = self.cg_xvalue(idx_lv.base, ctx);
+                let base_sty = idx_lv.base.get_stype().canonical();
+                base = self.load_to_single_ptr_level(base_sty, base);
+
+                let mut idx = self.cg_xvalue(idx_lv.index, ctx);
+                idx = self.adjust_to_direct(idx_lv.index.get_stype(), idx);
+
+                // 目前只支持数组
+                if self.cgtype_of(idx_lv.sty) is Some(ty) {
+                    return self.llds.create_gep(ty, base, idx);
+                } else {
+                    panic;
+                }
+            }
+            local_var: *LocalVar => {
+                let var_int = local_var.sym_var as *raw VarSymbol as UInt;
+                if ctx.local_map.at(&var_int) is Some(v) {
+                    return v;
+                }
+                if ctx.arg_map.at(&var_int) is Some(v) {
+                    return v;
+                }
+
+                let mut var_name = local_var.sym_var.short_name().as_str().deref();
+                if var_name.is_empty() {
+                    var_name = "<empty>";
+                }
+                let ctx_name = ctx.sym.mangle_name();
+                let msg = f"LocalVar not found $(var_name) in $(ctx_name)";
+                panic msg.as_str().deref();
+            }
+            static_var: *StaticVar => {
+                let name = static_var.sym_var.mangle_name().as_str().deref();
+                let ty = self.cgtype_of(static_var.sym_var.stype).get_or_panic();
+                return self.llds.get_or_insert_global(name, ty).as_value();
+            }
+            tup_lv: *TupleAccessLValue => {
+                let mut base = self.cg_xvalue(tup_lv.base, ctx);
+                let base_sty = tup_lv.base.get_stype().canonical();
+                let stripped_base_sty = base_sty.strip_pointer();
+                base = self.load_to_single_ptr_level(base_sty, base);
+
+                if self.cgtype_of(stripped_base_sty) is Some(ty) {
+                    return self.llds.create_struct_gep(ty, base, tup_lv.index);
+                } else {
+                    // 运行时查找成员的偏移
+                    let mut idx: UInt = 0;
+                    let mut field_head = base;
+                    for f in stripped_base_sty.args.ty_args {
+                        let field_tm = self.rt_typemeta_of(f, ctx);
+                        field_head = self.llds.align_pointer_to_typemeta(field_head, field_tm);
+
+                        if idx == tup_lv.index {
+                            field_head.indirect = true;
+                            return field_head;
+                        }
+                        
+                        let s = self.size_of_stype(f, ctx);
+                        field_head = self.llds.create_gep(self.llds.type_int8(), field_head, s);
+                        idx += 1;
+                    }
+                    panic;
+                }
+            }
+            _ => { panic; }
+        }
+        let ty = Type::of(&*lvalue as &Any);
+        let ty_name = ty.name();
+        let msg = f"BUG: unhandled RValue type: $(ty_name) in cg_lvalue";
+        panic msg.as_str().deref();
+    }
+
+    fn cg_rvalue(&mut self, rvalue: *RValue, ctx: *CgContext) -> CgValue {
+        match rvalue {
+            cast_rv: *CastValue => {
+                return self.cg_cast_value(move cast_rv, move ctx);
+            }
+            deref_rv: *DerefRValue => {
+                let mut v = self.cg_xvalue(deref_rv.operand, ctx);
+                if v.indirect {
+                    let mut r = self.llds.create_load(self.llds.type_thin_ptr(), v);
+                    r.indirect = true;
+                    return r;
+                } else {
+                    v.indirect = true;
+                    return v;
+                }
+            }
+            field_rv: *FieldRValue => { // 跟 FieldLValue 一致
+                let mut base = self.cg_xvalue(field_rv.base, ctx);
+                let base_sty = field_rv.base.get_stype().canonical();
+                let stripped_base_sty = base_sty.strip_pointer();
+                base = self.load_to_single_ptr_level(base_sty, base);
+
+                // 现在 base 一定是指向某struct或者union的指针
+                if stripped_base_sty.type_symbol is type *UnionSymbol {
+                    return base;
+                } else if stripped_base_sty.type_symbol is struct_sym: *StructSymbol {
+                    if self.cgtype_of(stripped_base_sty) is Some(ty) {
+                        return self.llds.create_struct_gep(ty, base, field_rv.index_of_field());
+                    } else {
+                        // 运行时查找成员的偏移
+                        let mut mappings = TypeMapping::new();
+                        mappings.unify(struct_sym.to_sty(), stripped_base_sty);
+
+                        let r = field_rv.field_resolved.get_or_panic();
+                        let ri = r as *raw VarSymbol as UInt;
+                        let mut field_head = base;
+
+                        for f in struct_sym.fields {
+                            let actual_field_sty = mappings.subst(f.stype);
+                            let field_tm = self.rt_typemeta_of(actual_field_sty, ctx);
+                            field_head = self.llds.align_pointer_to_typemeta(field_head, field_tm);
+
+                            if f as *raw VarSymbol as UInt == ri {
+                                field_head.indirect = true;
+                                return field_head;
+                            }
+                            
+                            let s = self.size_of_stype(actual_field_sty, ctx);
+                            field_head = self.llds.create_gep(self.llds.type_int8(), field_head, s);
+                        }
+                        panic;
+                    }
+                } else {
+                    let sty_str = stripped_base_sty.to_string();
+                    let field_str = field_rv.field.raw_str();
+                    let fn_str = ctx.sym.mangle_name();
+                    let tymeta = Type::of(&*field_rv.base as &Any);
+                    let ty_str = tymeta.name();
+                    let msg = f"value $(ty_str)'s type $(sty_str) does not support field: $(field_str), in fn $(fn_str)";
+                    panic msg.as_str().deref();
+                }
+            }
+            idx_rv: *IndexRValue => {
+                let mut base = self.cg_xvalue(idx_rv.base, ctx);
+                let base_sty = idx_rv.base.get_stype().canonical();
+                base = self.load_to_single_ptr_level(base_sty, base);
+
+                let mut idx = self.cg_xvalue(idx_rv.index, ctx);
+                idx = self.adjust_to_direct(idx_rv.index.get_stype(), idx);
+
+                // 目前只支持数组
+                if self.cgtype_of(idx_rv.sty) is Some(ty) {
+                    return self.llds.create_gep(ty, base, idx);
+                } else {
+                    panic;
+                }
+            }
+            interp_rv: *InterpolationValue => {
+                panic; // 在 mir 阶段已经解糖了, 此处执行不到
+            }
+            lit_rv: *LiteralValue => {
+                if const_value_from_lit_token(lit_rv.expr.token) is Some(cv) {
+                    return self.cg_const_value(move cv, lit_rv.sty).as_value();
+                } else {
+                    panic;
+                }
+            }
+            tup_lit_rv: *TupleValue => {
+                let tup_sty = tup_lit_rv.sty.strip_pointer();
+                if self.cgtype_of(tup_sty) is Some(cgty) {
+                    let size = self.llds.storage_size_of(cgty);
+                    if size == 0 {
+                        let empty_struct = self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>);
+                        return empty_struct.as_value();
+                    }
+
+                    let addr = self.llds.create_alloca_sized(cgty);
+                    self.fill_in_tuple_value(addr, tup_lit_rv, ctx);
+                    return addr;
+                } else {
+                    let size = self.size_of_stype(tup_sty, ctx);
+                    let addr = self.llds.create_alloca_unsized(size);
+                    self.fill_in_tuple_value(addr, tup_lit_rv, ctx);
+                    return addr;
+                }
+            }
+            array_rv: *ArrayLiteralValue => {
+                let arr_sty = array_rv.sty.strip_pointer();
+                if self.cgtype_of(arr_sty) is Some(cgty) {
+                    let size = self.llds.storage_size_of(cgty);
+                    if size == 0 {
+                        let empty_struct = self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>);
+                        return empty_struct.as_value();
+                    }
+
+                    let addr = self.llds.create_alloca_sized(cgty);
+                    self.fill_in_arr_value(addr, array_rv, ctx);
+                    return addr;
+                } else {
+                    let size = self.size_of_stype(arr_sty, ctx);
+                    let addr = self.llds.create_alloca_unsized(size);
+                    self.fill_in_arr_value(addr, array_rv, ctx);
+                    return addr;
+                }
+            }
+            agg_rv: *AggregateValue => {
+                if self.cgtype_of(agg_rv.sty) is Some(cgty) {
+                    let addr = self.llds.create_alloca_sized(cgty);
+                    self.fill_in_agg_value(addr, move agg_rv, move ctx);
+                    return addr;
+                } else {
+                    let size = self.size_of_stype(agg_rv.sty, ctx);
+                    let addr = self.llds.create_alloca_unsized(size);
+                    self.fill_in_agg_value(addr, move agg_rv, move ctx);
+                    return addr;
+                }
+            }
+            repeat_rv: *RepeatValue => {
+                let arr_sty = repeat_rv.sty.strip_pointer();
+                if self.cgtype_of(arr_sty) is Some(cgty) {
+                    let size = self.llds.storage_size_of(cgty);
+                    if size == 0 {
+                        let empty_struct = self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>);
+                        return empty_struct.as_value();
+                    }
+
+                    let addr = self.llds.create_alloca_sized(cgty);
+                    self.fill_in_repeat_value(addr, repeat_rv, ctx);
+                    return addr;
+                } else {
+                    let size = self.size_of_stype(arr_sty, ctx);
+                    let addr = self.llds.create_alloca_unsized(size);
+                    self.fill_in_repeat_value(addr, repeat_rv, ctx);
+                    return addr;
+                }
+            }
+            call_rv: *FnCallValue => { return self.cg_func_call(call_rv, ctx); }
+            mcall_rv: *MethodCallValue => { return self.cg_method_call(mcall_rv, ctx); }
+            pmv_rv: *PatternMatchValue => {
+                let op = self.cg_xvalue(pmv_rv.operand, ctx);
+                return self.cg_pattern_match(op, pmv_rv.operand.get_stype(), pmv_rv.pattern, ctx);
+            }
+            qp_rv: *QualifiedPathValue => {
+                if qp_rv.symbol is fsym: *FuncSymbol {
+                    return self.cg_func_decl(fsym).as_const().as_value();
+                }
+                else if qp_rv.symbol is evsym: *EnumVariantSymbol {
+                    // 这种场景下的 Enum Variant 都是不带参数的, 带参数的走 FnCallValue 去了
+                    let tag = self.llds.get_const_int64(evsym.tag_num() as UInt64).as_value();
+                    if self.cgtype_of(qp_rv.sty) is Some(cgty) {
+                        let agg = self.llds.get_null_value_of(cgty).as_value();
+                        if evsym.mangle_name().as_str().deref().eq(&"::std::primitives::option::Option::None/0") {
+                            return agg;
+                        } else {
+                            // 保存 tag
+                            return self.llds.create_insert_value(agg, tag, 0);
+                        }
+                    } else {
+                        let typemeta = self.rt_typemeta_of(qp_rv.sty, ctx);
+                        let size_value = self.access_typemeta_size(typemeta);
+                        let alloca = self.llds.create_alloca_unsized(size_value); // 默认初始化为0
+                        // 保存 tag
+                        self.llds.create_store(tag, alloca);
+                        return alloca;
+                    }
+                }
+                else if qp_rv.symbol is vsym: *VarSymbol {
+                    if vsym.is_static() || vsym.is_const() {
+                        let name = vsym.mangle_name().as_str().deref();
+                        let cgty = self.cgtype_of(vsym.stype).get_or_panic();
+                        return self.llds.get_or_insert_global(name, cgty).as_value();
+                    }
+                    let var_int = vsym as *raw VarSymbol as UInt;
+                    if ctx.local_map.at(&var_int) is Some(v) {
+                        return v;
+                    }
+                    if ctx.arg_map.at(&var_int) is Some(v) {
+                        return v;
+                    }
+                    panic;
+                }
+                panic;
+            }
+            select_rv: *SelectValue => {
+                let mut cond = self.cg_xvalue(select_rv.cond, ctx);
+                cond = self.adjust_to_direct(SType::sty_bool(), cond);
+
+                let mut br_true = self.cg_xvalue(select_rv.br_true, ctx);
+                br_true = self.adjust_to_direct(select_rv.br_true.get_stype(), br_true);
+
+                let mut br_false = self.cg_xvalue(select_rv.br_false, ctx);
+                br_false = self.adjust_to_direct(select_rv.br_false.get_stype(), br_false);
+
+                return self.llds.create_select(cond, br_true, br_false);
+            }
+            tup_acc_rv: *TupleAccessRValue => {
+                let mut base = self.cg_xvalue(tup_acc_rv.base, ctx);
+                let base_sty = tup_acc_rv.base.get_stype().canonical();
+                let stripped_base_sty = base_sty.strip_pointer();
+                base = self.load_to_single_ptr_level(base_sty, base);
+
+                if self.cgtype_of(stripped_base_sty) is Some(ty) {
+                    return self.llds.create_struct_gep(ty, base, tup_acc_rv.index);
+                } else {
+                    // 运行时查找成员的偏移
+                    let mut idx: UInt = 0;
+                    let mut field_head = base;
+                    for f in stripped_base_sty.args.ty_args {
+                        let field_tm = self.rt_typemeta_of(f, ctx);
+                        field_head = self.llds.align_pointer_to_typemeta(field_head, field_tm);
+
+                        if idx == tup_acc_rv.index {
+                            field_head.indirect = true;
+                            return field_head;
+                        }
+                        
+                        let s = self.size_of_stype(f, ctx);
+                        field_head = self.llds.create_gep(self.llds.type_int8(), field_head, s);
+                        idx += 1;
+                    }
+                    panic;
+                }
+            }
+            ue_rv: *UnaryExprValue => return self.cg_unary_xvalue(move ue_rv, ctx);
+            be_rv: *BinaryExprValue => return self.cg_binary_xvalue(move be_rv, ctx);
+            vpv_rv: *VariantPayloadValue => {
+                let op_sty = vpv_rv.enum_value.get_stype();
+                let enum_sty = op_sty.strip_pointer();
+                let arg_sty = enum_sty.args.ty_arg(0);
+
+                let mut enum_value = self.cg_xvalue(vpv_rv.enum_value, ctx);
+                if op_sty.is_thin_pointer() {
+                    if enum_value.indirect {
+                        enum_value = self.llds.create_load(self.llds.type_thin_ptr(), enum_value);
+                        enum_value.indirect = true;
+                    } else {
+                        enum_value.indirect = true;
+                    }
+                }
+
+                // Option 类型特殊处理
+                if enum_sty.type_symbol.export_key().as_str().deref().eq(&"::std::primitives::option::Option") {
+                    let mut payload = self.extract_option_payload(enum_value, enum_sty, ctx);
+                    return payload;
+                }
+
+                if self.cgtype_of(enum_sty) is Some(cgty) {
+                    if enum_value.indirect {
+                        return self.llds.create_struct_gep(cgty, enum_value, 1_u);
+                    } else {
+                        let mut r = self.llds.extract_value(enum_value, 1);
+                        let alloca = self.llds.create_alloca_sized(r.get_type());
+                        self.llds.create_store(r, alloca);
+                        return alloca;
+                    }
+                } else {
+                    if enum_value.indirect {
+                        let mut payload_value = self.llds.create_gep(self.llds.type_int64(), enum_value, self.llds.get_const_int64(1).as_value());
+                        return payload_value;
+                    } else {
+                        panic;
+                    }
+                }
+            }
+            addr_rv: *AddressofValue => {
+                let mut op = self.cg_xvalue(addr_rv.operand, ctx);
+                if op.indirect {
+                    op.indirect = false;
+                    return op;
+                } else {
+                    if self.cgtype_of(addr_rv.operand.get_stype()) is Some(cgty) {
+                        let alloca = self.llds.create_alloca_sized(cgty);
+                        self.llds.create_store(op, alloca);
+                        return alloca;
+                    } else {
+                        panic;
+                    }
+                }
+            }
+            read_rv: *ReadValue => {
+                if read_rv.sym_var.is_static() || read_rv.sym_var.is_const() {
+                    let name = read_rv.sym_var.mangle_name().as_str().deref();
+                    let cgty = self.cgtype_of(read_rv.sym_var.stype).get_or_panic();
+                    return self.llds.get_or_insert_global(name, cgty).as_value();
+                }
+                let var_int = read_rv.sym_var as *raw VarSymbol as UInt;
+                if ctx.local_map.at(&var_int) is Some(v) {
+                    return v;
+                }
+                if ctx.arg_map.at(&var_int) is Some(v) {
+                    return v;
+                }
+                panic;
+            }
+            write_rv: *WriteValue => {
+                let src_sty = write_rv.src.get_stype().canonical();
+                let empty_struct = self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>).as_value();
+                        
+                // 做一个小优化: AggregateValue / ArrayLiteralValue / RepeatValue 赋值的时候
+                // 可以避免 alloca 局部变量再复制, 而是直接往已经分配好的内存中写入
+                let dst = self.cg_xvalue(write_rv.dst, ctx);
+                // 处理 drop_flag
+                if write_rv.dst is local: *LocalVar {
+                    if local.sym_var.drop_flag is Some(drop_flag) {
+                        let df_int = drop_flag as *raw VarSymbol as UInt;
+                        let df = ctx.local_map.at(&df_int).get_or_panic();
+                        let const_true = self.llds.get_const_int1(true).as_value();
+                        self.llds.create_store(const_true, df);
+                    }
+                }
+                // if write_rv.src is agg: *AggregateValue {
+                //     self.fill_in_agg_value(dst, agg, ctx);
+                //     return empty_struct;
+                // }
+                // if write_rv.src is arr: *ArrayLiteralValue {
+                //     self.fill_in_arr_value(dst, arr, ctx);
+                //     return empty_struct;
+                // }
+                // if write_rv.src is repeat: *RepeatValue {
+                //     self.fill_in_repeat_value(dst, repeat, ctx);
+                //     return empty_struct;
+                // }
+                // if write_rv.src is tup: *TupleValue {
+                //     self.fill_in_tuple_value(dst, tup, ctx);
+                //     return empty_struct;
+                // }
+
+                if self.cgtype_of(src_sty) is Some(src_cgty) {
+                    let size = self.llds.storage_size_of(src_cgty);
+                    if size == 0 {
+                        return empty_struct;
+                    }
+                    let src = self.cg_xvalue(write_rv.src, ctx);
+                    let size_val = self.llds.get_const_int64(size as UInt64).as_value();
+
+                    if src.indirect {
+                        self.llds.create_memcpy(dst, src, size_val);
+                    } else {
+                        self.llds.create_store(src, dst);
+                    }
+                } else {
+                    let src = self.cg_xvalue(write_rv.src, ctx);
+                    let size_val = self.size_of_stype(src_sty, ctx);
+                    self.llds.create_memcpy(dst, src, size_val);
+                }
+                return empty_struct;
+            }
+            alloca_rv: *AllocaValue => {
+                let cgv = self.cg_xvalue(alloca_rv.src, ctx);
+                if cgv.indirect {
+                    return cgv;
+                } else {
+                    if self.cgtype_of(alloca_rv.get_stype()) is Some(cgty) {
+                        let alloca = self.llds.create_alloca_sized(cgty);
+                        self.llds.create_store(cgv, alloca);
+                        return alloca;
+                    }
+                    panic;
+                }
+            }
+            load_rv: *LoadValue => {
+                let cgv = self.cg_xvalue(load_rv.src, ctx);
+                return self.adjust_to_direct(load_rv.get_stype(), cgv);
+            }
+            phi_rv: *PhiValue => {
+                let mut cgty = self.llds.type_thin_ptr();
+                if !phi_rv.for_alloca {
+                    cgty = self.cgtype_of(phi_rv.get_stype()).get_or_panic();
+                }
+                let mut phi = self.llds.create_phi(cgty, phi_rv.incoming.len());
+                phi.indirect = phi_rv.for_alloca;
+                for item in phi_rv.incoming {
+                    let mut cgv = self.cg_xvalue(item.0, ctx);
+                    let bb_int = item.1 as *raw BasicBlock as UInt;
+                    if ctx.bb_map.at(&bb_int) is Some(cgbb) {
+                        self.llds.phi_add_incoming(phi, cgv, cgbb);
+                    } else {
+                        panic;
+                    }
+                }
+                return phi;
+            }
+            ct_rv: *CompileTimeValue => {
+                return self.cg_const_value(ct_rv.value, ct_rv.stype).as_value();
+            }
+            dtor_rv: *DtorValue => {
+                if dtor_rv.no_need {
+                    let empty_struct = self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>);
+                    return empty_struct.as_value();
+                }
+                self.do_drop_xvalue(dtor_rv.src as *XValue, ctx);
+                let empty_struct = self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>);
+                return empty_struct.as_value();
+            }
+            copy_rv: *CopyValue => {
+                let src = self.cg_xvalue(copy_rv.src, ctx);
+                self.do_copy_xvalue(src, copy_rv.src as *XValue, ctx);
+                return src;
+            }
+
+            type *IteratorValue => { panic; }
+            type *IteratorNextValue => { panic; }
+            type *IteratorItemValue => { panic; }
+            asc_rv: *TypeAscriptionValue => { return self.cg_xvalue(asc_rv.inner, ctx); }
+            reb_rv: *ReBorrowValue => { return self.cg_xvalue(reb_rv.src, ctx); }
+            ctx_rv: *ContextValue => { return self.cg_xvalue(ctx_rv.inner, ctx); }
+            moved_rv: *MovedValue => {
+                if moved_rv.src is read_val: *ReadValue {
+                    if read_val.sym_var.drop_flag is Some(drop_flag) {
+                        let drop_flag_int = drop_flag as *raw VarSymbol as UInt;
+                        let drop_flag_var = ctx.local_map.at(&drop_flag_int).get_or_panic();
+                        self.llds.create_store(self.llds.get_const_int1(false).as_value(), drop_flag_var);
+                    }
+                }
+                return self.cg_xvalue(moved_rv.src, ctx);
+            }
+        }
+
+        let ty = Type::of(&*rvalue as &Any);
+        let ty_name = ty.name();
+        let msg = f"BUG: unhandled RValue type: $(ty_name) in cg_rvalue";
+        panic msg.as_str().deref();
+    }
+
+    fn cg_const_value(&mut self, cv: *ConstValue, sty: *SType) -> CgConst {
+        match cv {
+            bool: *BoolCValue => {
+                return self.llds.get_const_int1(bool.value);
+            }
+            char: *CharCValue => {
+                return self.llds.get_const_int32(char.codepoint);
+            }
+            str: *StringCValue => {
+                let ptr = self.llds.get_const_string(str.value.as_str().deref());
+                let len = self.llds.get_const_int64(str.value.len() as UInt64);
+                let ty = self.cgtype_of(sty).get_or_panic();
+                let str = self.llds.get_const_struct(ty, &[ptr, len] as Slice<CgConst>);
+                return str;
+            }
+            byte: *ByteCValue => {
+                return self.llds.get_const_int8(byte.value);
+            }
+            int: *IntegerCValue => {
+                if sty.type_symbol is int_sym: *IntegerSymbol {
+                    match int_sym.kind {
+                        IntegerKind::I8 => {
+                            let mut v = int.value as Int8;
+                            if !int.sign { v = -v; }
+                            return self.llds.get_const_int8(v as UInt8);
+                        }
+                        IntegerKind::I16 => {
+                            let mut v = int.value as Int16;
+                            if !int.sign { v = -v; }
+                            return self.llds.get_const_int16(v as UInt16);
+                        }
+                        IntegerKind::I32 => {
+                            let mut v = int.value as Int32;
+                            if !int.sign { v = -v; }
+                            return self.llds.get_const_int32(v as UInt32);
+                        }
+                        IntegerKind::I64 => {
+                            let mut v = int.value as Int64;
+                            if !int.sign { v = -v; }
+                            return self.llds.get_const_int64(v as UInt64);
+                        }
+                        IntegerKind::Isize => {
+                            let mut v = int.value as Int;
+                            if !int.sign { v = -v; }
+                            return self.llds.get_const_int64(v as UInt64);
+                        }
+                        IntegerKind::Ishort => {
+                            let mut v = int.value as Short;
+                            if !int.sign { v = -v; }
+                            return self.llds.get_const_int32(v as UInt32);
+                        }
+                        IntegerKind::U8 => {
+                            let mut v = int.value as UInt8;
+                            return self.llds.get_const_int8(v as UInt8);
+                        }
+                        IntegerKind::U16 => {
+                            let mut v = int.value as UInt16;
+                            return self.llds.get_const_int16(v as UInt16);
+                        }
+                        IntegerKind::U32 => {
+                            let mut v = int.value as UInt32;
+                            return self.llds.get_const_int32(v as UInt32);
+                        }
+                        IntegerKind::U64 => {
+                            let mut v = int.value as UInt64;
+                            return self.llds.get_const_int64(v as UInt64);
+                        }
+                        IntegerKind::Usize => {
+                            let mut v = int.value as UInt;
+                            return self.llds.get_const_int64(v as UInt64);
+                        }
+                        IntegerKind::Ushort => {
+                            let mut v = int.value as UShort;
+                            return self.llds.get_const_int32(v as UInt32);
+                        }
+                    }
+                } else {
+                    panic;
+                }
+            }
+            float: *FloatCValue => {
+                if sty.type_symbol is float_sym: *FloatSymbol {
+                    match float_sym.kind {
+                        FloatKind::F32 => {
+                            return self.llds.get_const_f32(float.value as F32);
+                        }
+                        FloatKind::F64 => {
+                            return self.llds.get_const_f64(float.value);
+                        }
+                    }
+                } else {
+                    panic;
+                }
+            }
+            arr_cv: *ArrayCValue => {
+                if sty.args.ty_args.is_empty() {
+                    return self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>);
+                }
+                let elem_sty = sty.args.ty_arg(0);
+                let mut elems = (type Vec<CgConst>)::with_capacity(arr_cv.elements.len());
+                for e in arr_cv.elements {
+                    elems.push(self.cg_const_value(move e, elem_sty));
+                }
+                let cgtype = self.cgtype_of(elem_sty).get_or_panic();
+                return self.llds.get_const_array(cgtype, elems.as_slice().deref());
+            }
+            tup_cv: *TupleCValue => {
+                if sty.args.ty_args.is_empty() {
+                    return self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>);
+                }
+                let mut elems = (type Vec<CgConst>)::with_capacity(tup_cv.elements.len());
+                let mut idx: UInt = 0;
+                for e in tup_cv.elements {
+                    let elem_sty = sty.args.ty_arg(idx);
+                    elems.push(self.cg_const_value(move e, elem_sty));
+                    idx += 1;
+                }
+                let cgtype = self.cgtype_of(sty).get_or_panic();
+                return self.llds.get_const_struct(cgtype, elems.as_slice().deref());
+            }
+            struct_cv: *StructCValue => {
+                if sty.type_symbol is struct_sym: *StructSymbol {
+                    let mut mappings = TypeMapping::new();
+                    mappings.unify(struct_sym.to_sty(), sty);
+
+                    let mut elems = (type Vec<CgConst>)::with_capacity(struct_cv.fields.len());
+                    let mut idx: UInt = 0;
+                    for field in struct_sym.fields {
+                        let actual_field_sty = mappings.subst(field.stype);
+                        let e = *struct_cv.fields.index(idx).deref();
+                        elems.push(self.cg_const_value(move e, actual_field_sty));
+                        idx += 1;
+                    }
+
+                    let cgtype = self.cgtype_of(sty).get_or_panic();
+                    return self.llds.get_const_struct(cgtype, elems.as_slice().deref());
+                } else {
+                    panic;
+                }
+            }
+            enum_cv: *EnumCValue => {
+                let cgtype = self.cgtype_of(sty).get_or_panic();
+                if enum_cv.enum_variant.mangle_name().as_str().deref().eq(&"::std::primitives::option::Option::None/0") {
+                    return self.llds.get_null_value_of(cgtype);
+                }
+                return self.llds.get_const_int64(enum_cv.enum_variant.tag_num() as UInt64);
+            }
+            _ => { panic "unimplemented"; }
+        }
+        panic;
+    }
+
+    fn cg_cast_value(&mut self, cast_rv: *CastValue, ctx: *CgContext) -> CgValue {
+        let op = self.cg_xvalue(cast_rv.operand, ctx);
+        let src_sty = cast_rv.operand.get_stype().canonical();
+        let dst_sty = cast_rv.target_sty.canonical();
+
+        match cast_rv.resolved_kind {
+            ResolvedCastKind::SameType => return op;
+            ResolvedCastKind::MutBorrowToImmut => return op;
+            ResolvedCastKind::LifetimeCast => return op;
+            ResolvedCastKind::CharToUInt32 => return op;
+            ResolvedCastKind::UInt32ToChar => return op;
+
+            ResolvedCastKind::BoolToInt => {
+                let bool = self.adjust_to_direct(SType::sty_bool(), op);
+                return self.llds.create_zext(bool, self.cgtype_of(dst_sty).get_or_panic());
+            }
+            ResolvedCastKind::IntToInt => {
+                if dst_sty.type_symbol is int_sym: *IntegerSymbol {
+                    let int = self.adjust_to_direct(src_sty, op);
+                    if int_sym.is_signed() {
+                        return self.llds.create_sext_or_trunc(int, self.cgtype_of(dst_sty).get_or_panic());
+                    } else {
+                        return self.llds.create_zext_or_trunc(int, self.cgtype_of(dst_sty).get_or_panic());
+                    }
+                } else {
+                    panic;
+                }
+            }
+            ResolvedCastKind::IntToFloat => {
+                if src_sty.type_symbol is int_sym: *IntegerSymbol {
+                    let int = self.adjust_to_direct(src_sty, op);
+                    if int_sym.is_signed() {
+                        return self.llds.create_si_to_fp(int, self.cgtype_of(dst_sty).get_or_panic());
+                    } else {
+                        return self.llds.create_ui_to_fp(int, self.cgtype_of(dst_sty).get_or_panic());
+                    }
+                } else {
+                    panic;
+                }
+            }
+            ResolvedCastKind::FloatExt => {
+                let float = self.adjust_to_direct(src_sty, op);
+                return self.llds.create_fp_ext(float, self.cgtype_of(dst_sty).get_or_panic());
+            }
+            ResolvedCastKind::FloatTrunc => {
+                let float = self.adjust_to_direct(src_sty, op);
+                return self.llds.create_fp_trunc(float, self.cgtype_of(dst_sty).get_or_panic());
+            }
+            ResolvedCastKind::FloatToInt => {
+                if dst_sty.type_symbol is int_sym: *IntegerSymbol {
+                    let float = self.adjust_to_direct(src_sty, op);
+                    if int_sym.is_signed() {
+                        return self.llds.create_fp_to_si(float, self.cgtype_of(dst_sty).get_or_panic());
+                    } else {
+                        return self.llds.create_fp_to_ui(float, self.cgtype_of(dst_sty).get_or_panic());
+                    }
+                } else {
+                    panic;
+                }
+            }
+            ResolvedCastKind::EnumToInt => {
+                let mut tag: CgValue = CgValue::null();
+                if op.indirect {
+                    tag = self.llds.create_load(self.llds.type_int64(), op);
+                } else {
+                    tag = self.llds.extract_value(op, 0);
+                }
+
+                // Option 类型要特殊处理
+                let key = src_sty.strip_pointer().type_symbol.export_key();
+                if key.as_str().deref().eq(&"::std::primitives::option::Option") {
+                    let r = self.llds.create_icmp_ne(tag, self.llds.get_const_int64(0).as_value());
+                    return self.llds.create_zext(r, self.cgtype_of(dst_sty).get_or_panic());
+                }
+
+                if dst_sty.type_symbol is int_sym: *IntegerSymbol {
+                    if int_sym.is_signed() {
+                        return self.llds.create_sext_or_trunc(tag, self.cgtype_of(dst_sty).get_or_panic());
+                    } else {
+                        return self.llds.create_zext_or_trunc(tag, self.cgtype_of(dst_sty).get_or_panic());
+                    }
+                } else {
+                    panic;
+                }
+            }
+            ResolvedCastKind::ArrayRefToSlice => {
+                if src_sty.type_symbol is type *PointerLikeSymbol {
+                    let pointee = src_sty.args.ty_arg(0);
+                    if pointee.type_symbol is type *ArraySymbol {
+                        let ptr = self.adjust_to_direct(src_sty, op);
+                        let size = self.llds.get_const_int64(pointee.args.ty_args.len() as UInt64).as_value();
+                        let slice_ty = self.cgtype_of(dst_sty).get_or_panic();
+
+                        let res = self.llds.create_alloca_sized(slice_ty);
+                        self.llds.create_store(ptr, res);
+                        let second = self.llds.create_gep(self.llds.type_thin_ptr(), res, self.llds.get_const_int64(1).as_value());
+                        self.llds.create_store(size, second);
+                        return res;
+                    }
+                }
+                panic;
+            }
+            
+            ResolvedCastKind::ArcToWeak => {
+                self.do_copy_xvalue(op, cast_rv as *XValue, ctx);
+                return op;
+            }
+
+            ResolvedCastKind::PointerSafeToUnsafe => {
+                let ptr = self.adjust_to_direct(src_sty, op);
+                return ptr;
+            }
+            
+            ResolvedCastKind::PointerUnsafeToSafe => {
+                let ptr = self.adjust_to_direct(src_sty, op);
+                return ptr;
+            }
+            ResolvedCastKind::UnsafePointerToUnsafePointer => {
+                let ptr = self.adjust_to_direct(src_sty, op);
+                return ptr;
+            }
+            ResolvedCastKind::UnsafePointerToUInt => {
+                if src_sty.is_thin_pointer() {
+                    if op.indirect {
+                        let ptr = self.llds.create_load(self.llds.type_thin_ptr(), op);
+                        return self.llds.create_ptr_to_int(ptr);
+                    } else {
+                        return self.llds.create_ptr_to_int(op);
+                    }
+                } 
+                else if src_sty.is_fat_pointer() {
+                    if op.indirect {
+                        let ptr = self.llds.create_load(self.llds.type_thin_ptr(), op);
+                        return self.llds.create_ptr_to_int(ptr);
+                    } else {
+                        let ptr = self.llds.extract_value(op, 0);
+                        return self.llds.create_ptr_to_int(ptr);
+                    }
+                }
+                else {
+                    panic;
+                }
+            }
+            ResolvedCastKind::UIntToUnsafePointer => {
+                if op.indirect {
+                    let int = self.llds.create_load(self.llds.type_int64(), op);
+                    return self.llds.create_int_to_ptr(int);
+                } else {
+                    return self.llds.create_int_to_ptr(op);
+                }
+            }
+            ResolvedCastKind::TypedPtrToUnitPtr => {
+                if src_sty.is_thin_pointer() {
+                    if op.indirect {
+                        return self.llds.create_load(self.llds.type_thin_ptr(), op);
+                    } else {
+                        return op;
+                    }
+                } 
+                else if src_sty.is_fat_pointer() {
+                    if op.indirect {
+                        return self.llds.create_load(self.llds.type_thin_ptr(), op);
+                    } else {
+                        return self.llds.extract_value(op, 0);
+                    }
+                }
+                else {
+                    panic;
+                }
+            }
+            ResolvedCastKind::ThinPtrUpToFatPtr => {
+                let ptr = self.adjust_to_direct(src_sty, op);
+                let src_meta = self.rt_typemeta_of(src_sty.strip_pointer(), ctx);
+                let dst_meta = self.rt_typemeta_of(dst_sty.strip_pointer(), ctx);
+
+                let find_impl_fn = self.llds.get_ext_fn_in_core("zinc_core_find_impl");
+                let impl_meta = self.llds.create_call(find_impl_fn, &[src_meta, dst_meta] as Slice<CgValue>);
+                
+                let impl_ty = self.llds.type_ZnTraitImpl();
+                let vtable_addr = self.llds.create_struct_gep(impl_ty, impl_meta, 6_u);
+                let vtable = self.llds.create_load(self.llds.type_thin_ptr(), vtable_addr);
+
+                return self.llds.create_fat_ptr(ptr, src_meta, vtable);
+            }
+            ResolvedCastKind::FatPtrDownToThinPtr => {
+                if op.indirect {
+                    return self.llds.create_load(self.llds.type_thin_ptr(), op);
+                } else {
+                    return self.llds.extract_value(op, 0);
+                }
+            }
+            ResolvedCastKind::FatPtrToFatPtr => {
+                let mut ptr = op;
+                if op.indirect {
+                    ptr = self.llds.create_load(self.llds.type_thin_ptr(), op);
+                } else {
+                    ptr = self.llds.extract_value(op, 0);
+                }
+                let mut src_meta = op; // 随便初始化一下。 这里改为 if-then-else 表达式更好
+                if op.indirect {
+                    let second = self.llds.create_struct_gep(self.llds.type_fat_ptr(), op, 1_u);
+                    src_meta = self.llds.create_load(self.llds.type_thin_ptr(), second);
+                } else {
+                    src_meta = self.llds.extract_value(op, 1);
+                }
+
+                let dst_meta = self.rt_typemeta_of(dst_sty.strip_pointer(), ctx);
+
+                let find_impl_fn = self.llds.get_ext_fn_in_core("zinc_core_find_impl");
+                let impl_meta = self.llds.create_call(find_impl_fn, &[src_meta, dst_meta] as Slice<CgValue>);
+                
+                let impl_ty = self.llds.type_ZnTraitImpl();
+                let vtable_addr = self.llds.create_struct_gep(impl_ty, impl_meta, 6_u);
+                let vtable = self.llds.create_load(self.llds.type_thin_ptr(), vtable_addr);
+
+                return self.llds.create_fat_ptr(ptr, src_meta, vtable);
+            }
+            ResolvedCastKind::DerefCast(deref) => {
+                panic;
+            }
+            ResolvedCastKind::DerefMutCast(deref_mut) => {
+                panic;
+            }
+            ResolvedCastKind::FunctionToFnLower => panic;
+            ResolvedCastKind::FunctionToFnUpperBorrow => panic;
+            ResolvedCastKind::FnLowerToFnUpperBorrow => panic;
+            ResolvedCastKind::LambdaToFnLower => panic;
+            ResolvedCastKind::LambdaToFnUpperPtr => panic;
+            _ => {
+                let kind_int = cast_rv.resolved_kind as UInt;
+                let msg = f"unhandled ResolvedCastKind $(kind_int) in cg_cast_value";
+                panic msg.as_str().deref();
+            }
+        }
+        panic;
+    }
+
+    fn cg_unary_xvalue(&mut self, unary_rv: *UnaryExprValue, ctx: *CgContext) -> CgValue {
+        let op_sty = unary_rv.operand.get_stype().canonical();
+
+        match unary_rv.kind {
+            UnaryValueKind::Neg => {
+                let mut op = self.cg_xvalue(unary_rv.operand, ctx);
+                op = self.adjust_to_direct(op_sty, op);
+
+                if op_sty.type_symbol is type *FloatSymbol {
+                    return self.llds.create_fneg(op);
+                } else {
+                    return self.llds.create_neg(op);
+                }
+            }
+            UnaryValueKind::Not => {
+                let mut op = self.cg_xvalue(unary_rv.operand, ctx);
+                op = self.adjust_to_direct(op_sty, op);
+                return self.llds.create_bit_not(op);
+            }
+            UnaryValueKind::ToWeak => { // 跟 ResolvedCastKind::ArcToWeak 一样的, 可以重构一下消除重复
+                let mut op = self.cg_xvalue(unary_rv.operand, ctx);
+                op = self.adjust_to_direct(op_sty, op);
+                self.do_copy_xvalue(op, unary_rv as *XValue, ctx);
+                return op;
+            }
+            UnaryValueKind::Box => {
+                // 先分配内存, 再往里面写入
+                let callee = self.llds.get_ext_fn_in_core("zinc_core_alloc_boxed");
+                let mut size_val = CgValue::null();
+                if self.cgtype_of(op_sty) is Some(cgty) {
+                    let size = self.llds.storage_size_of(cgty);
+                    size_val = self.llds.get_const_int64(size as UInt64).as_value();
+                } else {
+                    size_val = self.size_of_stype(op_sty, ctx);
+                }
+                size_val = self.adjust_to_direct(SType::sty_uint(), size_val);
+                let box_ptr = self.llds.create_call(callee, &[size_val] as Slice<CgValue>);
+
+                // 做一个小优化: box AggregateValue / box ArrayLiteralValue / box RepeatValue 
+                // 可以避免 alloca 局部变量再复制, 而是直接往已经分配好的内存中写入
+                // if unary_rv.operand is agg: *AggregateValue {
+                //     self.fill_in_agg_value(box_ptr, agg, ctx);
+                //     return box_ptr;
+                // }
+                // if unary_rv.operand is arr: *ArrayLiteralValue {
+                //     self.fill_in_arr_value(box_ptr, arr, ctx);
+                //     return box_ptr;
+                // }
+                // if unary_rv.operand is repeat: *RepeatValue {
+                //     self.fill_in_repeat_value(box_ptr, repeat, ctx);
+                //     return box_ptr;
+                // }
+                // if unary_rv.operand is tup: *TupleValue {
+                //     self.fill_in_tuple_value(box_ptr, tup, ctx);
+                //     return box_ptr;
+                // }
+                let mut op = self.cg_xvalue(unary_rv.operand, ctx);
+                if op.indirect {
+                    self.llds.create_memcpy(box_ptr, op, size_val);
+                } else {
+                    self.llds.create_store(op, box_ptr);
+                }
+                return box_ptr;
+            }
+            UnaryValueKind::Move => {
+                let mut op = self.cg_xvalue(unary_rv.operand, ctx);
+                // 处理 drop_flag
+                if unary_rv.operand is rd: *ReadValue {
+                    if rd.sym_var.drop_flag is Some(drop_flag) {
+                        let drop_flag_int = drop_flag as *raw VarSymbol as UInt;
+                        let drop_flag_var = ctx.local_map.at(&drop_flag_int).get_or_panic();
+                        self.llds.create_store(self.llds.get_const_int1(false).as_value(), drop_flag_var);
+                    }
+                }
+                return op;
+            }
+        }
+        panic;
+    }
+
+    fn cg_binary_xvalue(&mut self, binary_rv: *BinaryExprValue, ctx: *CgContext) -> CgValue {
+        let lhs_sty = binary_rv.lhs.get_stype().canonical();
+        let rhs_sty = binary_rv.rhs.get_stype().canonical();
+
+        let mut lhs = self.cg_xvalue(binary_rv.lhs, ctx);
+        lhs = self.adjust_to_direct(lhs_sty, lhs);
+        let mut rhs = self.cg_xvalue(binary_rv.rhs, ctx);
+        rhs = self.adjust_to_direct(rhs_sty, rhs);
+        
+        if binary_rv.op.token_kind is TokenKind::Punctuation(k) {
+            match k {
+                PunctuationKind::Plus => {
+                    // 裸指针加法运算要考虑指向的类型的 size
+                    if is_unsafe_pointer(lhs_sty) {
+                        let pointee_sty = lhs_sty.args.ty_arg(0);
+                        if self.cgtype_of(pointee_sty) is Some(cgty) {
+                            let mut r = self.llds.create_gep(cgty, lhs, rhs);
+                            r.indirect = false;
+                            return r;
+                        } else {
+                            let size = self.size_of_stype(pointee_sty, ctx);
+                            let total = self.llds.create_mul(size, rhs);
+                            let mut r = self.llds.create_gep(self.llds.type_int8(), lhs, total);
+                            r.indirect = false;
+                            return r;
+                        }
+                    }
+                    else if is_unsafe_pointer(rhs_sty) {
+                        let pointee_sty = rhs_sty.args.ty_arg(0);
+                        if self.cgtype_of(pointee_sty) is Some(cgty) {
+                            let mut r = self.llds.create_gep(cgty, rhs, lhs);
+                            r.indirect = false;
+                            return r;
+                        } else {
+                            let size = self.size_of_stype(pointee_sty, ctx);
+                            let total = self.llds.create_mul(size, lhs);
+                            let mut r = self.llds.create_gep(self.llds.type_int8(), rhs, total);
+                            r.indirect = false;
+                            return r;
+                        }
+                    }
+                    else {
+                        if lhs_sty.type_symbol is type *FloatSymbol ||
+                            rhs_sty.type_symbol is type *FloatSymbol {
+                            return self.llds.create_fadd(lhs, rhs);
+                        } else {
+                            return self.llds.create_add(lhs, rhs);
+                        }
+                    }
+                }
+                PunctuationKind::Minus => {
+                    // 裸指针减法运算要考虑指向的类型的 size
+                    if is_unsafe_pointer(lhs_sty) {
+                        let pointee_sty = lhs_sty.args.ty_arg(0);
+                        let neg_rhs = self.llds.create_neg(rhs);
+                        if self.cgtype_of(pointee_sty) is Some(cgty) {
+                            let mut r = self.llds.create_gep(cgty, lhs, neg_rhs);
+                            r.indirect = false;
+                            return r;
+                        } else {
+                            let size = self.size_of_stype(pointee_sty, ctx);
+                            let total = self.llds.create_mul(size, neg_rhs);
+                            let mut r = self.llds.create_gep(self.llds.type_int8(), lhs, total);
+                            r.indirect = false;
+                            return r;
+                        }
+                    }
+                    else {
+                        if lhs_sty.type_symbol is type *FloatSymbol ||
+                            rhs_sty.type_symbol is type *FloatSymbol {
+                            let neg_rhs = self.llds.create_fneg(rhs);
+                            return self.llds.create_fadd(lhs, neg_rhs);
+                        } else {
+                            let neg_rhs = self.llds.create_neg(rhs);
+                            return self.llds.create_add(lhs, neg_rhs);
+                        }
+                    }
+                }
+                PunctuationKind::Star => {
+                    if lhs_sty.type_symbol is type *FloatSymbol ||
+                            rhs_sty.type_symbol is type *FloatSymbol {
+                        return self.llds.create_fmul(lhs, rhs);
+                    } else {
+                        return self.llds.create_mul(lhs, rhs);
+                    }
+                }
+                PunctuationKind::Div => {
+                    if lhs_sty.type_symbol is type *FloatSymbol ||
+                            rhs_sty.type_symbol is type *FloatSymbol {
+                        return self.llds.create_fdiv(lhs, rhs);
+                    } else if lhs_sty.type_symbol is int_sym: *IntegerSymbol {
+                        if int_sym.is_signed() {
+                            return self.llds.create_sdiv(lhs, rhs);
+                        } else {
+                            return self.llds.create_udiv(lhs, rhs);
+                        }
+                    } else {
+                        panic;
+                    }
+                }
+                PunctuationKind::Percent => {
+                    if lhs_sty.type_symbol is type *FloatSymbol ||
+                            rhs_sty.type_symbol is type *FloatSymbol {
+                        return self.llds.create_frem(lhs, rhs);
+                    } else if lhs_sty.type_symbol is int_sym: *IntegerSymbol {
+                        if int_sym.is_signed() {
+                            return self.llds.create_srem(lhs, rhs);
+                        } else {
+                            return self.llds.create_urem(lhs, rhs);
+                        }
+                    } else {
+                        panic;
+                    }
+                }
+                PunctuationKind::AndAnd => {
+                    return self.llds.create_logic_and(lhs, rhs);
+                }
+                PunctuationKind::OrOr => {
+                    return self.llds.create_logic_or(lhs, rhs);
+                }
+                PunctuationKind::Lt => {
+                    if lhs_sty.type_symbol is type *FloatSymbol ||
+                            rhs_sty.type_symbol is type *FloatSymbol {
+                        return self.llds.create_fcmp_olt(lhs, rhs);
+                    } else if lhs_sty.type_symbol is int_sym: *IntegerSymbol {
+                        if int_sym.is_signed() {
+                            return self.llds.create_icmp_slt(lhs, rhs);
+                        } else {
+                            return self.llds.create_icmp_ult(lhs, rhs);
+                        }
+                    } else if lhs_sty.type_symbol is type *CharSymbol || lhs_sty.type_symbol is type *BoolSymbol {
+                        return self.llds.create_icmp_ult(lhs, rhs);
+                    } else {
+                        panic;
+                    }
+                }
+                PunctuationKind::LtEq => {
+                    if lhs_sty.type_symbol is type *FloatSymbol ||
+                            rhs_sty.type_symbol is type *FloatSymbol {
+                        return self.llds.create_fcmp_ole(lhs, rhs);
+                    } else if lhs_sty.type_symbol is int_sym: *IntegerSymbol {
+                        if int_sym.is_signed() {
+                            return self.llds.create_icmp_sle(lhs, rhs);
+                        } else {
+                            return self.llds.create_icmp_ule(lhs, rhs);
+                        }
+                    } else if lhs_sty.type_symbol is type *CharSymbol || lhs_sty.type_symbol is type *BoolSymbol {
+                        return self.llds.create_icmp_ule(lhs, rhs);
+                    } else {
+                        panic;
+                    }
+                }
+                PunctuationKind::Gt => {
+                    if lhs_sty.type_symbol is type *FloatSymbol ||
+                            rhs_sty.type_symbol is type *FloatSymbol {
+                        return self.llds.create_fcmp_ogt(lhs, rhs);
+                    } else if lhs_sty.type_symbol is int_sym: *IntegerSymbol {
+                        if int_sym.is_signed() {
+                            return self.llds.create_icmp_sgt(lhs, rhs);
+                        } else {
+                            return self.llds.create_icmp_ugt(lhs, rhs);
+                        }
+                    } else if lhs_sty.type_symbol is type *CharSymbol || lhs_sty.type_symbol is type *BoolSymbol {
+                        return self.llds.create_icmp_ugt(lhs, rhs);
+                    } else {
+                        panic;
+                    }
+                }
+                PunctuationKind::GtEq => {
+                    if lhs_sty.type_symbol is type *FloatSymbol ||
+                            rhs_sty.type_symbol is type *FloatSymbol {
+                        return self.llds.create_fcmp_oge(lhs, rhs);
+                    } else if lhs_sty.type_symbol is int_sym: *IntegerSymbol {
+                        if int_sym.is_signed() {
+                            return self.llds.create_icmp_sge(lhs, rhs);
+                        } else {
+                            return self.llds.create_icmp_uge(lhs, rhs);
+                        }
+                    } else if lhs_sty.type_symbol is type *CharSymbol || lhs_sty.type_symbol is type *BoolSymbol {
+                        return self.llds.create_icmp_uge(lhs, rhs);
+                    } else {
+                        panic;
+                    }
+                }
+                PunctuationKind::EqEq => {
+                    if lhs_sty.type_symbol is type *FloatSymbol ||
+                            rhs_sty.type_symbol is type *FloatSymbol {
+                        return self.llds.create_fcmp_eq(lhs, rhs);
+                    } else if lhs_sty.type_symbol is type *EnumSymbol {
+                        let lhs_tag = self.llds.extract_value(lhs, 0);
+                        let rhs_tag = self.llds.extract_value(rhs, 0);
+                        return self.llds.create_icmp_eq(lhs_tag, rhs_tag);
+                    } else {
+                        return self.llds.create_icmp_eq(lhs, rhs);
+                    }
+                }
+                PunctuationKind::NotEq => {
+                    if lhs_sty.type_symbol is type *FloatSymbol ||
+                            rhs_sty.type_symbol is type *FloatSymbol {
+                        return self.llds.create_fcmp_ne(lhs, rhs);
+                    } else if lhs_sty.type_symbol is type *EnumSymbol {
+                        let lhs_tag = self.llds.extract_value(lhs, 0);
+                        let rhs_tag = self.llds.extract_value(rhs, 0);
+                        return self.llds.create_icmp_ne(lhs_tag, rhs_tag);
+                    } else {
+                        return self.llds.create_icmp_ne(lhs, rhs);
+                    }
+                }
+                _ => panic;
+            }
+        }
+        panic;
+    }
+
+    fn cg_pattern_match(&mut self, op: CgValue, op_sty: *SType, pat: *Pattern, ctx: *CgContext) -> CgValue {
+        match pat {
+            ref_pat: *RefPattern => {
+                if op.indirect {
+                    let mut addr = op;
+                    addr.indirect = false;
+                    return self.cg_pattern_match(addr, op_sty, ref_pat.inner, ctx);
+                } else {
+                    let mut alloca = self.llds.create_alloca_sized(op.get_type());
+                    self.llds.create_store(op, alloca);
+                    alloca.indirect = false;
+                    return self.cg_pattern_match(alloca, op_sty, ref_pat.inner, ctx);
+                }
+            }
+            deref_pat: *DerefPattern => {
+                let mut direct_op = self.adjust_to_direct(op_sty, op);
+                return self.cg_pattern_match(op, op_sty, deref_pat.inner, ctx);
+            }
+            weak_pat: *WeakPattern => {
+                return self.cg_pattern_match(op, op_sty, weak_pat.inner, ctx);
+            }
+            mut_pat: *MutPattern => {
+                return self.cg_pattern_match(op, op_sty, mut_pat.inner, ctx);
+            }
+            var_pat: *VarBindingPattern => {
+                if var_pat.pat_sty is Some(pat_sty) {
+                    if var_pat.var_sym.init is Some(init) {
+                        if init is cast: *CastValue {
+                            if cast.resolved_kind is ResolvedCastKind::FatPtrToFatPtr {
+                                let src_typemeta = self.access_fatptr_field(op, 1);
+                                let dst_typemeta = self.rt_typemeta_of(pat_sty.strip_pointer(), ctx);
+                                let find_impl = self.llds.get_ext_fn_in_core("zinc_core_find_impl");
+                                let found_impl = self.llds.create_call(find_impl, &[src_typemeta, dst_typemeta] as Slice<CgValue>);
+                                let is_not_null = self.llds.create_icmp_ne(found_impl, self.llds.get_null_value_of(self.llds.type_thin_ptr()).as_value());
+                                return is_not_null;
+                            }
+                            else if cast.resolved_kind is ResolvedCastKind::FatPtrDownToThinPtr {
+                                let src_typemeta = self.access_fatptr_field(op, 1);
+                                let dst_typemeta = self.rt_typemeta_of(pat_sty.strip_pointer(), ctx);
+                                let is_eq = self.llds.create_icmp_eq(src_typemeta, dst_typemeta);
+                                return is_eq;
+                            }
+                            else if cast.resolved_kind is ResolvedCastKind::SameType {
+                                return self.llds.get_const_int1(true).as_value();
+                            }
+                            else {
+                                let k = cast.resolved_kind.to_string();
+                                let msg = f"BUG: unhandled cast $(k)";
+                                panic msg.as_str().deref();
+                            }
+                        }
+                    }
+                }
+                return self.llds.get_const_int1(true).as_value();// 这种情况是肯定可以匹配的，因为没有类型约束了
+            }
+            lit_pat: *LiteralPattern => {
+                if const_value_from_lit_token(lit_pat.node.literal) is Some(cv) {
+                    let mut c_op = op;
+                    if op_sty.is_thin_pointer() {
+                        if op.indirect {
+                            c_op = self.llds.create_load(self.llds.type_thin_ptr(), op);
+                            c_op.indirect = true;
+                        } else {
+                            c_op.indirect = true;
+                        }
+                    }
+                    let lit_sty = op_sty.strip_pointer().canonical();
+                    let src = self.load_to_single_ptr_level(lit_sty, c_op);
+                    let const_val = self.cg_const_value(move cv, lit_pat.stype).as_value();
+                    let cgty = self.cgtype_of(lit_pat.stype).get_or_panic();
+                    let const_val_ptr = self.llds.create_alloca_sized(cgty);
+                    self.llds.create_store(const_val, const_val_ptr);
+                    let size = self.size_of_stype(lit_pat.stype, ctx);
+                    // todo 字符串模式匹配不能这么简单粗暴
+                    let cmp_fn = self.llds.get_ext_fn_in_core("zinc_core_mem_compare");
+                    let cmp_res = self.llds.create_call(cmp_fn, &[src, const_val_ptr, size] as Slice<CgValue>);
+                    return self.llds.create_icmp_eq(cmp_res, self.llds.get_const_int32(0_u32).as_value());
+                } else {
+                    panic;
+                }
+            }
+            const_pat: *ConstPattern => {
+                if const_pat.constant is ev: *EnumVariantSymbol {
+                    let mut enum_op = op;
+                    if op_sty.is_thin_pointer() {
+                        if op.indirect {
+                            enum_op = self.llds.create_load(self.llds.type_thin_ptr(), op);
+                            enum_op.indirect = true;
+                        } else {
+                            enum_op.indirect = true;
+                        }
+                    }
+                    let enum_sty = op_sty.strip_pointer().canonical();
+                    if enum_sty.type_symbol.export_key().as_str().deref().eq(&"::std::primitives::option::Option") {
+                        let option_arg = enum_sty.args.ty_arg(0);
+                        if self.can_option_niche_opt(option_arg) {
+                            if option_arg.is_fat_pointer() {
+                                let obj = self.access_fatptr_field(enum_op, 0);
+                                return self.llds.create_icmp_eq(obj, self.llds.get_null_value_of(self.llds.type_thin_ptr()).as_value());
+                            } else {
+                                let obj = self.adjust_to_direct(op_sty, enum_op);
+                                return self.llds.create_icmp_eq(obj, self.llds.get_null_value_of(self.llds.type_thin_ptr()).as_value());
+                            }
+                        }
+                    }
+
+                    let tag = self.llds.get_const_int64(ev.tag_num()).as_value();
+                    if enum_op.indirect {
+                        let obj = self.llds.create_load(self.llds.type_int64(), enum_op);
+                        return self.llds.create_icmp_eq(obj, tag);
+                    } else {
+                        let obj = self.llds.extract_value(enum_op, 0);
+                        return self.llds.create_icmp_eq(obj, tag);
+                    }
+                }
+                if const_pat.constant is var: *VarSymbol {
+                    if !var.is_const() { panic; }
+
+                    let mut op_ptr = op;
+                    if op_sty.is_thin_pointer() {
+                        if op.indirect {
+                            op_ptr = self.llds.create_load(self.llds.type_thin_ptr(), op);
+                            op_ptr.indirect = true;
+                        } else {
+                            op_ptr.indirect = true;
+                        }
+                    }
+                    let val = self.cg_xvalue(var.init.get_or_panic(), ctx);
+                    let val_ptr = self.load_to_single_ptr_level(var.stype, val);
+
+                    let size = self.size_of_stype(var.stype, ctx);
+                    let cmp_fn = self.llds.get_ext_fn_in_core("zinc_core_mem_compare");
+                    let cmp_res = self.llds.create_call(cmp_fn, &[op_ptr, val_ptr, size] as Slice<CgValue>);
+                    return self.llds.create_icmp_eq(cmp_res, self.llds.get_const_int32(0_u32).as_value());
+                }
+                panic "other cases are unimplemented";
+            }
+            type_pat: *TypeNamePattern => {
+                let mut op_typemeta = op;
+                if op_sty.is_fat_pointer() {
+                    op_typemeta = self.access_fatptr_field(op, 1);
+                } else {
+                    op_typemeta = self.rt_typemeta_of(op_sty.strip_pointer(), ctx);
+                }
+                // todo 这里有 bug。假设了代码一定是指针类型或者 fat pointer 类型。应该考虑更一般的场景。
+                let mut target_typemeta = self.rt_typemeta_of(type_pat.pat_sty.strip_pointer(), ctx);
+                if type_pat.pat_sty.is_fat_pointer() {
+                    let find_impl = self.llds.get_ext_fn_in_core("zinc_core_find_impl");
+                    let found_impl = self.llds.create_call(find_impl, &[op_typemeta, target_typemeta] as Slice<CgValue>);
+                    let is_not_null = self.llds.create_icmp_ne(found_impl, self.llds.get_null_value_of(self.llds.type_thin_ptr()).as_value());
+                    return is_not_null;
+                } else {
+                    let is_eq = self.llds.create_icmp_eq(op_typemeta, target_typemeta);
+                    return is_eq;
+                }
+            }
+            ignore_pat: *WildcardPattern => {
+                return self.llds.get_const_int1(true).as_value();
+            }
+            rest_pat: *RestPattern => {
+                return self.llds.get_const_int1(true).as_value();
+            }
+            field_pat: *FieldPattern => {
+                // 实现在 StructPattern 分支中
+                panic;
+            }
+            struct_pat: *StructPattern => {
+                let mut struct_op = op;
+                if op_sty.is_thin_pointer() {
+                    if op.indirect {
+                        struct_op = self.llds.create_load(self.llds.type_thin_ptr(), op);
+                        struct_op.indirect = true;
+                    } else {
+                        struct_op.indirect = true;
+                    }
+                }
+                let struct_sty = op_sty.strip_pointer().canonical();
+
+                if self.cgtype_of(struct_sty) is Some(cgty) {
+                    let mut matched = self.llds.get_const_int1(true).as_value();
+                    for field_pat in struct_pat.fields {
+                        let field_idx = field_pat.index_of_field().get_or_panic();
+                        let field_sty = field_pat.matches_with.get_or_panic().get_stype();
+                        let mut field_op = struct_op;
+                        if struct_op.indirect {
+                            let addr = self.llds.create_struct_gep(cgty, struct_op, field_idx);
+                            field_op = self.llds.create_load(self.cgtype_of(field_sty).get_or_panic(), addr);
+                        } else {
+                            field_op = self.llds.extract_value(struct_op, field_idx);
+                        };
+                        let inner_matched = self.cg_pattern_match(field_op, field_sty, field_pat.inner, ctx);
+                        matched = self.llds.create_logic_and(matched, inner_matched);
+                    }
+                    return matched;
+                } else {
+                    panic; // todo 暂未实现, 应该仿照 FieldRValue 做运行时的 field offset 计算, 然后再去访问 field
+                }
+            }
+            tup_pat: *TuplePattern => {
+                let mut tup_op = op;
+                if op_sty.is_thin_pointer() {
+                    if op.indirect {
+                        tup_op = self.llds.create_load(self.llds.type_thin_ptr(), op);
+                        tup_op.indirect = true;
+                    } else {
+                        tup_op.indirect = true;
+                    }
+                }
+                let tup_sty = tup_pat.tuple_sty.get_or_panic();
+
+                if self.cgtype_of(tup_sty) is Some(cgty) {
+                    let mut matched = self.llds.get_const_int1(true).as_value();
+                    let mut field_idx: UInt = 0;
+                    for field_pat in tup_pat.elements {
+                        let field_sty = tup_sty.args.ty_arg(field_idx);
+                        let mut field_op = tup_op;
+                        if tup_op.indirect {
+                            let addr = self.llds.create_struct_gep(cgty, tup_op, field_idx);
+                            field_op = self.llds.create_load(self.cgtype_of(field_sty).get_or_panic(), addr);
+                        } else {
+                            field_op = self.llds.extract_value(tup_op, field_idx);
+                        };
+                        let inner_matched = self.cg_pattern_match(field_op, field_sty, field_pat, ctx);
+                        matched = self.llds.create_logic_and(matched, inner_matched);
+                        field_idx += 1;
+                    }
+                    return matched;
+                } else {
+                    panic; // todo 暂未实现, 应该仿照 TupleAccessRValue 做运行时的 field offset 计算, 然后再去访问 field
+                }
+            }
+            ev_pat: *EnumVariantPattern => {
+                let mut enum_op = op;
+                // todo 万一 op_sty 是多层指针, 就需要做多次 load。目前只做了一次
+                if op_sty.is_thin_pointer() {
+                    if op.indirect {
+                        enum_op = self.llds.create_load(self.llds.type_thin_ptr(), op);
+                        enum_op.indirect = true;
+                    } else {
+                        enum_op.indirect = true;
+                    }
+                }
+
+                let enum_sty = op_sty.strip_pointer().canonical();
+                if ev_pat.enum_ctor_sym.export_key().as_str().deref().eq(&"::std::primitives::option::Option::None/0") {
+                    let option_arg = enum_sty.args.ty_arg(0);
+                    if self.can_option_niche_opt(option_arg) {
+                        if option_arg.is_fat_pointer() {
+                            let obj = self.access_fatptr_field(enum_op, 0);
+                            return self.llds.create_icmp_eq(obj, self.llds.get_null_value_of(self.llds.type_thin_ptr()).as_value());
+                        } else {
+                            let obj = self.adjust_to_direct(op_sty, enum_op);
+                            return self.llds.create_icmp_eq(obj, self.llds.get_null_value_of(self.llds.type_thin_ptr()).as_value());
+                        }
+                    }
+                }
+                else if ev_pat.enum_ctor_sym.export_key().as_str().deref().eq(&"::std::primitives::option::Option::Some/1") {
+                    let option_arg = enum_sty.args.ty_arg(0);
+                    if self.can_option_niche_opt(option_arg) {
+                        if option_arg.is_fat_pointer() {
+                            let obj = self.access_fatptr_field(enum_op, 0);
+                            let matched_some = self.llds.create_icmp_ne(obj, self.llds.get_null_value_of(self.llds.type_thin_ptr()).as_value());
+
+                            let payload = self.extract_option_payload(enum_op, enum_sty, ctx);
+                            let inner_matched = self.cg_pattern_match(payload, option_arg, *ev_pat.elements.index(0).deref(), ctx);
+                        
+                            return self.llds.create_logic_and(matched_some, inner_matched);
+                        } else {
+                            let obj = self.adjust_to_direct(op_sty, enum_op);
+                            let matched_some = self.llds.create_icmp_ne(obj, self.llds.get_null_value_of(self.llds.type_thin_ptr()).as_value());
+                        
+                            let payload = self.extract_option_payload(enum_op, enum_sty, ctx);
+                            let mut inner_matched = self.llds.get_const_int1(true).as_value();
+                            if ev_pat.elements.len() > 0 {
+                                inner_matched = self.cg_pattern_match(payload, option_arg, *ev_pat.elements.index(0).deref(), ctx);
+                            }
+
+                            return self.llds.create_logic_and(matched_some, inner_matched);
+                        }
+                    } else {
+                        let mut tag = enum_op;
+                        if enum_op.indirect {
+                            tag = self.llds.create_load(self.llds.type_int64(), enum_op);
+                        } else {
+                            tag = self.llds.extract_value(enum_op, 0);
+                        }
+
+                        let matched_some = self.llds.create_icmp_ne(tag, self.llds.get_null_value_of(self.llds.type_int64()).as_value());
+                        let payload = self.extract_option_payload(enum_op, enum_sty, ctx);
+                        let inner_matched = self.cg_pattern_match(payload, option_arg, *ev_pat.elements.index(0).deref(), ctx);
+                        return self.llds.create_logic_and(matched_some, inner_matched);
+                    }
+                }
+
+                if !enum_op.indirect {
+                    if self.cgtype_of(enum_sty) is Some(cgty) {
+                        let alloca = self.llds.create_alloca_sized(cgty);
+                        self.llds.create_store(enum_op, alloca);
+                        enum_op = alloca;
+                    } else {
+                        panic;
+                    }
+                }
+                
+                let tag_expected = self.llds.get_const_int64(ev_pat.enum_ctor_sym.tag_num() as UInt64).as_value();
+                let tag_actual = self.llds.create_load(self.llds.type_int64(), enum_op);
+                let tag_check = self.llds.create_icmp_eq(tag_expected, tag_actual);
+                if ev_pat.elements.is_empty() {
+                    return tag_check;
+                }
+                // 如果有字段，继续匹配字段
+                // todo: 如果 tag_check 失败，应该跳过字段匹配，避免读取到未定义数据
+                let mut base = self.llds.create_gep(self.llds.type_int64(), enum_op, self.llds.get_const_int32(1_u32).as_value());
+                let mut mappings = TypeMapping::new();
+                mappings.unify(enum_sty.type_symbol.to_sty(), enum_sty);
+
+                let mut args = GenericArgs::new();
+                let mut idx: UInt = 0;
+                for elem_pat in ev_pat.elements {
+                    let field_sty = mappings.subst(*ev_pat.enum_ctor_sym.fields.index(idx).deref());
+                    args.ty_args.push(move field_sty);
+                    idx += 1;
+                }
+                let payload_tup_sty = TupleSymbol::new().to_sty(move args);
+
+                let mut field_checks = self.llds.get_const_int1(true).as_value();
+
+                if self.cgtype_of(payload_tup_sty) is Some(tup_cgty) {
+                    let mut idx: UInt = 0;
+                    for elem_pat in ev_pat.elements {
+                        let field_sty = payload_tup_sty.args.ty_arg(idx);
+                        let field_addr = self.llds.create_struct_gep(tup_cgty, base, idx);
+                        let field_match = self.cg_pattern_match(field_addr, field_sty, elem_pat, ctx);
+                        field_checks = self.llds.create_logic_and(field_checks, field_match);
+                        idx += 1;
+                    }
+                    return self.llds.create_logic_and(tag_check, field_checks);
+                } else {
+                    // todo 这部分代码有 bug
+                    let mut idx: UInt = 0;
+                    for elem_pat in ev_pat.elements {
+                        let field_sty = payload_tup_sty.args.ty_arg(idx);
+                        let field_tm = self.rt_typemeta_of(field_sty, ctx);
+                        if idx > 0 {
+                            base = self.llds.align_pointer_to_typemeta(base, field_tm);
+                        }
+                        let field_match = self.cg_pattern_match(base, field_sty, elem_pat, ctx);
+                        field_checks = self.llds.create_logic_and(field_checks, field_match);
+
+                        let size = self.access_typemeta_size(field_tm);
+                        base = self.llds.create_gep(self.llds.type_int8(), base, size);
+                        idx += 1;
+                    }
+                    return self.llds.create_logic_and(tag_check, field_checks);
+                }
+            }
+            _ => panic;
+        }
+        panic;
+    }
+
+    fn access_fatptr_field(&mut self, fatptr: CgValue, idx: UInt) -> CgValue {
+        if !fatptr.indirect && fatptr.get_type().is_struct_ty() {
+            return self.llds.extract_value(fatptr, idx);
+        } else {
+            let addr = self.llds.create_gep(self.llds.type_thin_ptr(), fatptr, self.llds.get_const_int64(idx as UInt64).as_value());
+            return self.llds.create_load(self.llds.type_thin_ptr(), addr);
+        }
+    }
+
+    fn access_impl_vtable(&mut self, impl_meta: CgValue, idx: UInt) -> CgValue {
+        let impl_ty = self.llds.type_ZnTraitImpl();
+        let vtable_addr = self.llds.create_struct_gep(impl_ty, impl_meta, 6_u);
+        let vtable = self.llds.create_load(self.llds.type_thin_ptr(), vtable_addr);
+        let method_addr = self.llds.create_gep(self.llds.type_thin_ptr(), vtable, self.llds.get_const_int64(idx as UInt64).as_value());
+        return self.llds.create_load(self.llds.type_thin_ptr(), method_addr);
+    }
+
+    fn do_drop_xvalue(&mut self, value: *XValue, ctx: *CgContext) {
+
+        if value is local: *LocalVar && local.sym_var.drop_flag is Some(_) { // 只有 local var 才有 drop flag 这种情况
+            self.do_drop_with_flag(move local, move ctx);
+        } else {
+            let di_loc = self.debug_loc(ctx.ll_func, value.expr_node().span().start);
+
+            let sty = value.get_stype().canonical();
+            let cgval = self.cg_xvalue(value as *XValue, ctx);
+            if sty.type_symbol is type *ArcPointerSymbol {
+                let mut ptr = cgval;
+                if sty.is_fat_pointer() {
+                    ptr = self.access_fatptr_field(cgval, 0);
+                } else {
+                    ptr = self.adjust_to_direct(sty, cgval);
+                }
+                
+                let mut obj_typemeta = cgval;
+                if sty.is_fat_pointer() {
+                    obj_typemeta = self.access_fatptr_field(cgval, 1);
+                } else {
+                    let pointee_sty = sty.args.ty_arg(0);
+                    obj_typemeta = self.rt_typemeta_of(move pointee_sty, ctx);
+                }
+
+                if is_send_type(sty) {
+                    let dtorfn = self.llds.get_ext_fn_in_core("zinc_core_dec_strong_atomic");
+                    self.llds.create_call(dtorfn, &[ptr, obj_typemeta] as Slice<CgValue>);
+                } else {
+                    let dtorfn = self.llds.get_ext_fn_in_core("zinc_core_dec_strong");
+                    self.llds.create_call(dtorfn, &[ptr, obj_typemeta] as Slice<CgValue>);
+                }
+            }
+            else if sty.type_symbol is type *WeakPointerSymbol {
+                let mut ptr = cgval;
+                if sty.is_fat_pointer() {
+                    ptr = self.access_fatptr_field(cgval, 0);
+                } else {
+                    ptr = self.adjust_to_direct(sty, cgval);
+                }
+                
+                let mut obj_typemeta = cgval;
+                if sty.is_fat_pointer() {
+                    obj_typemeta = self.access_fatptr_field(cgval, 1);
+                } else {
+                    let pointee_sty = sty.args.ty_arg(0);
+                    obj_typemeta = self.rt_typemeta_of(move pointee_sty, ctx);
+                }
+
+                if is_send_type(sty) {
+                    let dtorfn = self.llds.get_ext_fn_in_core("zinc_core_dec_weak_atomic");
+                    self.llds.create_call(dtorfn, &[ptr, obj_typemeta] as Slice<CgValue>);
+                } else {
+                    let dtorfn = self.llds.get_ext_fn_in_core("zinc_core_dec_weak");
+                    self.llds.create_call(dtorfn, &[ptr, obj_typemeta] as Slice<CgValue>);
+                }
+            }
+            else if sty.type_symbol is tp: *TypeParamSymbol {
+                let ty_meta = self.rt_typemeta_of(sty, ctx);
+                let dtor_fn = self.access_typemeta_dtorfn(ty_meta);
+
+                let obj = self.load_to_single_ptr_level(sty, cgval);
+                let dtorfn_ty = self.llds.type_function_dtorfn();
+                self.llds.create_call(
+                    dtorfn_ty, dtor_fn, &[obj, ty_meta] as Slice<CgValue>
+                );
+            }
+            else {
+                let obj = self.load_to_single_ptr_level(sty, cgval);
+                let ty_meta = self.rt_typemeta_of(sty, ctx);
+                let dtorfn = self.cg_typemeta_dtorfn(sty.type_symbol);
+                self.llds.set_di_loc(di_loc);
+                self.llds.create_call(dtorfn, &[obj, ty_meta] as Slice<CgValue>);
+                self.llds.reset_di_loc();
+            }
+        }
+    }
+
+    fn do_drop_with_flag(&mut self, local: *LocalVar, ctx: *CgContext) {
+        if local.sym_var.drop_flag is Some(drop_flag) {
+            let local_int = local.sym_var as *raw VarSymbol as UInt;
+            let drop_flag_int = drop_flag as *raw VarSymbol as UInt;
+
+            let flag = ctx.local_map.at(&drop_flag_int).get_or_panic();
+            let typemeta = self.rt_typemeta_of(local.sym_var.stype, ctx);
+            let cond_dtor = self.llds.get_ext_fn_in_core("zinc_core_conditional_destruct");
+            let dtorfn = self.access_typemeta_dtorfn(typemeta);
+
+            if ctx.local_map.at(&local_int) is Some(obj) {
+                self.llds.create_call(cond_dtor, &[flag, dtorfn, obj, typemeta] as Slice<CgValue>);
+                return;
+            }
+            if ctx.arg_map.at(&local_int) is Some(obj) {
+                self.llds.create_call(cond_dtor, &[flag, dtorfn, obj, typemeta] as Slice<CgValue>);
+                return;
+            }
+
+            let var_name = local.sym_var.short_name();
+            let f_name = ctx.sym.mangle_name();
+            let msg = f"BUG: $(var_name) in $(f_name) is not found in codegen maps";
+            panic msg.as_str().deref();
+        }
+    }
+
+    fn do_copy_xvalue(&mut self, value: CgValue, xvalue: *XValue, ctx: *CgContext) {
+        let sty = xvalue.get_stype();
+        if sty.type_symbol is type *ArcPointerSymbol {
+            let mut ptr = value;
+            if value.indirect {
+                ptr = self.llds.create_load(self.llds.type_thin_ptr(), value);
+            } else {
+                if sty.is_fat_pointer() {
+                    ptr = self.llds.extract_value(value, 0);
+                }
+            }
+
+            if is_send_type(sty) {
+                let inc_fn = self.llds.get_ext_fn_in_core("zinc_core_inc_strong_atomic");
+                self.llds.create_call(inc_fn, &[ptr] as Slice<CgValue>);
+            } else {
+                let inc_fn = self.llds.get_ext_fn_in_core("zinc_core_inc_strong");
+                self.llds.create_call(inc_fn, &[ptr] as Slice<CgValue>);
+            }
+        }
+        else if sty.type_symbol is type *WeakPointerSymbol {
+            let mut ptr = value;
+            if value.indirect {
+                ptr = self.llds.create_load(self.llds.type_thin_ptr(), value);
+            } else {
+                if sty.is_fat_pointer() {
+                    ptr = self.llds.extract_value(value, 0);
+                }
+            }
+            if is_send_type(sty) {
+                let inc_fn = self.llds.get_ext_fn_in_core("zinc_core_inc_weak_atomic");
+                self.llds.create_call(inc_fn, &[ptr] as Slice<CgValue>);
+            } else {
+                let inc_fn = self.llds.get_ext_fn_in_core("zinc_core_inc_weak");
+                self.llds.create_call(inc_fn, &[ptr] as Slice<CgValue>);
+            }
+        }
+        else if sty.type_symbol is tp: *TypeParamSymbol {
+            let ty_meta = self.rt_typemeta_of(sty, ctx);
+            let copy_fn = self.access_typemeta_copyfn(ty_meta);
+
+            let copyfn_ty = self.llds.type_function_copyfn();
+            let obj = self.load_to_single_ptr_level(sty, value);
+            self.llds.create_call(
+                copyfn_ty, copy_fn, &[obj, ty_meta] as Slice<CgValue>
+            );
+        }
+        else {
+            let di_loc = self.debug_loc(ctx.ll_func, xvalue.expr_node().span().start);
+
+            let ty_meta = self.rt_typemeta_of(sty, ctx);
+            let obj = self.load_to_single_ptr_level(sty, value);
+            let copyfn = self.cg_typemeta_copyfn(sty.type_symbol);
+
+            self.llds.set_di_loc(di_loc);
+            self.llds.create_call(copyfn, &[obj, ty_meta] as Slice<CgValue>);
+            self.llds.reset_di_loc();
+        }
+    }
+
+    fn cg_func_call(&mut self, fn_call: *FnCallValue, ctx: *CgContext) -> CgValue {
+        if fn_call.callee is qp_rv: *QualifiedPathValue {
+            if qp_rv.symbol is fsym: *FuncSymbol {
+                let mangle_name = fsym.mangle_name().as_str().deref();
+                if mangle_name.starts_with("::std::intrinsic::") {
+                    return self.cg_intrinsic(mangle_name, fn_call, ctx);
+                }
+
+                let callee = self.cg_func_decl(fsym);
+                let mut args: Vec<CgValue> = Vec::new();
+                let signature = self.signature_of_fsym(fsym);
+                let mut sret_ptr: Option<CgValue> = None;
+                for ref param in signature.params {
+                    match param {
+                        CgParam::Receiver(var) => {
+                            panic; // 只有 MethodCall 才会有 Receiver
+                        }
+                        CgParam::SRet => {
+                            if self.cgtype_of(fn_call.sty) is Some(ret_ty) {
+                                let ret_ptr = self.llds.create_alloca_sized(ret_ty);
+                                args.push(ret_ptr);
+                                sret_ptr = Some(ret_ptr);
+                            } else {
+                                let size_val = self.size_of_stype(fn_call.sty, ctx);
+                                let ret_ptr = self.llds.create_alloca_unsized(size_val);
+                                args.push(ret_ptr);
+                                sret_ptr = Some(ret_ptr);
+                            }
+                        }
+                        CgParam::TypeMeta => {
+                            let ctx_func = ctx.sym.mangle_name();
+                            let msg = f"member_of is None for calling $(mangle_name) inside $(ctx_func)";
+                            let self_sty = fn_call.member_of.get_or_panic(msg.as_str().deref());
+                            let tm = self.rt_typemeta_of(move self_sty, ctx);
+                            args.push(tm);
+                        }
+                        CgParam::GenericArg(tp, _) => {
+                            let idx = fsym.generics.index_of_typaram(move tp).get_or_panic();
+                            let ga_sty = *fn_call.generic_args.ty_args.index(idx).deref();
+                            let tm = self.rt_typemeta_of(move ga_sty, ctx);
+                            args.push(tm);
+                        }
+                        CgParam::FnArgVal(arg_idx1, _, _) => {
+                            let arg = *fn_call.desugared_args.index(arg_idx1).deref();
+                            let mut cg_val = self.cg_xvalue(arg, ctx);
+                            cg_val = self.adjust_to_direct(arg.get_stype(), cg_val);
+                            args.push(cg_val);
+                        }
+                        CgParam::FnArgRef(arg_idx2, _, _) => {
+                            let arg = *fn_call.desugared_args.index(arg_idx2).deref();
+                            let mut cg_val = self.cg_xvalue(arg, ctx);
+                            if !cg_val.indirect {
+                                if self.cgtype_of(arg.get_stype()) is Some(cgty) {
+                                    let alloca = self.llds.create_alloca_sized(cgty);
+                                    self.llds.create_store(cg_val, alloca);
+                                    cg_val = alloca;
+                                } else {
+                                    panic;
+                                }
+                            }
+                            args.push(cg_val);
+                        }
+                    }
+                }
+
+                let di_loc = self.debug_loc(ctx.ll_func, fn_call.expr.span().start);
+
+                self.llds.set_di_loc(di_loc);
+                let call = self.llds.create_call(callee, args.as_slice().deref());
+                self.llds.reset_di_loc();
+
+                if sret_ptr is Some(r) {
+                    return r;
+                } else {
+                    return call;
+                }
+            }
+            if qp_rv.symbol is evsym: *EnumVariantSymbol {
+                let mangle_name = evsym.mangle_name().as_str().deref();
+                if mangle_name.starts_with("::std::primitives::option::Option::Some/1") {
+                    let enum_sty = fn_call.sty;
+                    let option_arg = enum_sty.args.ty_arg(0);
+                    if self.can_option_niche_opt(option_arg) {
+                        let payload = *fn_call.desugared_args.index(0).deref();
+                        let mut payload_val = self.cg_xvalue(payload, ctx);
+                        payload_val = self.adjust_to_direct(payload.get_stype(), payload_val);
+                        return payload_val;
+                    } else {
+                        // 调用 Option::Some 函数, 需要根据泛型参数判断内存布局, 所以把实现写到 zinc_core 里面
+                        let callee = self.llds.get_ext_fn_in_core("zinc_core_option_some_fn");
+                        let option_typemeta = self.rt_typemeta_of(enum_sty, ctx);
+                        let size_val = self.access_typemeta_size(option_typemeta);
+                        let ret_val = self.llds.create_alloca_unsized(size_val);
+                        let payload = *fn_call.desugared_args.index(0).deref();
+                        let mut payload_val = self.cg_xvalue(payload, ctx);
+                        payload_val = self.load_to_single_ptr_level(payload.get_stype(), payload_val);
+
+                        self.llds.create_call(callee, &[ret_val, size_val, payload_val, option_typemeta] as Slice<CgValue>);
+                        return ret_val;
+                    }
+                }
+                if mangle_name.starts_with("::std::primitives::option::Option::None/0") {
+                    panic; // 在 QualifiedPathValue 中已经处理了 Option::None 的情况, 这里不应该再出现
+                }
+
+                let callee = self.cg_ev_decl(evsym);
+                let mut args: Vec<CgValue> = Vec::new();
+                let signature = self.signature_of_evsym(evsym);
+                let mut sret_ptr: Option<CgValue> = None;
+                for ref param in signature.params {
+                    match param {
+                        CgParam::Receiver(var) => {
+                            panic; // 只有 MethodCall 才会有 Receiver
+                        }
+                        CgParam::SRet => {
+                            if self.cgtype_of(fn_call.sty) is Some(ret_ty) {
+                                let ret_ptr = self.llds.create_alloca_sized(ret_ty);
+                                args.push(ret_ptr);
+                                sret_ptr = Some(ret_ptr);
+                            } else {
+                                let size_val = self.size_of_stype(fn_call.sty, ctx);
+                                let ret_ptr = self.llds.create_alloca_unsized(size_val);
+                                args.push(ret_ptr);
+                                sret_ptr = Some(ret_ptr);
+                            }
+                        }
+                        CgParam::TypeMeta => {
+                            let self_sty = fn_call.sty;
+                            let tm = self.rt_typemeta_of(move self_sty, ctx);
+                            args.push(tm);
+                        }
+                        CgParam::GenericArg(_, ga_idx) => {
+                            panic; // EnumVariantSymbol 调用不应该有泛型参数
+                        }
+                        CgParam::FnArgVal(arg_idx1, _, _) => {
+                            let arg = *fn_call.desugared_args.index(arg_idx1).deref();
+                            let mut cg_val = self.cg_xvalue(arg, ctx);
+                            cg_val = self.adjust_to_direct(arg.get_stype(), cg_val);
+                            args.push(cg_val);
+                        }
+                        CgParam::FnArgRef(arg_idx2, _, _) => {
+                            let arg = *fn_call.desugared_args.index(arg_idx2).deref();
+                            let mut cg_val = self.cg_xvalue(arg, ctx);
+                            if !cg_val.indirect {
+                                if self.cgtype_of(arg.get_stype()) is Some(cgty) {
+                                    let alloca = self.llds.create_alloca_sized(cgty);
+                                    self.llds.create_store(cg_val, alloca);
+                                    cg_val = alloca;
+                                } else {
+                                    panic;
+                                }
+                            }
+                            args.push(cg_val);
+                        }
+                    }
+                }
+
+                let call = self.llds.create_call(callee, args.as_slice().deref());
+                if sret_ptr is Some(r) {
+                    return r;
+                } else {
+                    return call; // 应该执行不到
+                }
+            }
+        }
+        panic; // todo 其他情况暂未实现
+    }
+
+    fn cg_method_call(&mut self, method_call: *MethodCallValue, ctx: *CgContext) -> CgValue {
+
+        let fsym = method_call.resolved_method.get_or_panic();
+        let receiver = method_call.desugared_receiver.get_or_panic();
+        let base_sty = receiver.get_stype().strip_pointer();
+
+        let signature = self.signature_of_fsym(fsym);
+        let fnty = self.functype_of_sig(signature);
+
+        let di_loc = self.debug_loc(ctx.ll_func, method_call.expr.span().start);
+        let cg_receiver = self.cg_xvalue(receiver, ctx);
+
+        // 场景一： 在 trait 里面实现的默认方法, 用 self 调用成员函数的时候是间接调用
+        if fsym.parent_sym is Some(parent) {
+            if parent is trait_sym: *TraitSymbol {
+                if base_sty.type_symbol is assoc: *AssociatedTypeSymbol && assoc.is_self_ty() {
+                    let obj = self.adjust_to_direct(receiver.get_stype(), cg_receiver);
+                    let obj_typemeta = self.rt_typemeta_of(base_sty, ctx);
+
+                    let trait_ty = self.rt_typemeta_of(ctx.self_sty().get_or_panic(), ctx);
+                    let find_impl = self.llds.get_ext_fn_in_core("zinc_core_find_impl");
+                    let found_impl = self.llds.create_call(find_impl, &[obj_typemeta, trait_ty] as Slice<CgValue>);
+                
+                    let method = self.access_impl_vtable(found_impl, trait_sym.index_of_method(fsym).get_or_panic());
+                    let mut sret_ptr: Option<CgValue> = None;
+                    let mut args: Vec<CgValue> = Vec::new();
+                    // receiver
+                    args.push(obj);
+                    // sret
+                    if signature.index_of_sret() is Some(_) {
+                        if self.cgtype_of(method_call.sty) is Some(ret_ty) {
+                            let ret_ptr = self.llds.create_alloca_sized(ret_ty);
+                            args.push(ret_ptr);
+                            sret_ptr = Some(ret_ptr);
+                        } else {
+                            let size_val = self.size_of_stype(method_call.sty, ctx);
+                            let ret_ptr = self.llds.create_alloca_unsized(size_val);
+                            args.push(ret_ptr);
+                            sret_ptr = Some(ret_ptr);
+                        }
+                    }
+                    // typemeta
+                    let tm = self.rt_typemeta_of(move base_sty, ctx);
+                    args.push(tm);
+
+                    self.cg_method_call_args(method_call, &mut args, ctx);
+
+                    self.llds.set_di_loc(di_loc);
+                    let call = self.llds.create_call(fnty, method, args.as_slice().deref());
+                    self.llds.reset_di_loc();
+
+                    if sret_ptr is Some(r) {
+                        return r;
+                    } else {
+                        return call;
+                    }
+                }
+            }
+        }
+        // 场景二： TypeParam 调用函数, 是虚函数调用
+        if base_sty.type_symbol is type *TypeParamSymbol {
+            let obj = self.adjust_to_direct(receiver.get_stype(), cg_receiver);
+            let obj_typemeta = self.rt_typemeta_of(base_sty, ctx);
+            
+            let method_parent = fsym.parent_sym.get_or_panic();
+            if method_parent is trait_sym: *TraitSymbol {
+                let trait_ty = self.rt_typemeta_of(trait_sym.to_sty(), ctx);
+                let find_impl = self.llds.get_ext_fn_in_core("zinc_core_find_impl");
+                let found_impl = self.llds.create_call(find_impl, &[obj_typemeta, trait_ty] as Slice<CgValue>);
+
+                let method = self.access_impl_vtable(found_impl, trait_sym.index_of_method(fsym).get_or_panic());
+                let mut sret_ptr: Option<CgValue> = None;
+                let mut args: Vec<CgValue> = Vec::new();
+                // receiver
+                args.push(obj);
+                // sret
+                if signature.index_of_sret() is Some(_) {
+                    if self.cgtype_of(method_call.sty) is Some(ret_ty) {
+                        let ret_ptr = self.llds.create_alloca_sized(ret_ty);
+                        args.push(ret_ptr);
+                        sret_ptr = Some(ret_ptr);
+                    } else {
+                        let size_val = self.size_of_stype(method_call.sty, ctx);
+                        let ret_ptr = self.llds.create_alloca_unsized(size_val);
+                        args.push(ret_ptr);
+                        sret_ptr = Some(ret_ptr);
+                    }
+                }
+                // typemeta
+                let tm = self.rt_typemeta_of(move base_sty, ctx);
+                args.push(tm);
+
+                self.cg_method_call_args(method_call, &mut args, ctx);
+
+                self.llds.set_di_loc(di_loc);
+                let call = self.llds.create_call(fnty, method, args.as_slice().deref());
+                self.llds.reset_di_loc();
+
+                if sret_ptr is Some(r) {
+                    return r;
+                } else {
+                    return call;
+                }
+            } else {
+                panic; // 这种情况不应该发生, 因为只有 trait 才能有 virtual 方法
+            }
+        }
+        // 场景三： FatPtr 调用 virtual 函数, 是虚函数调用
+        if method_call.receiver.get_stype().is_fat_pointer() {
+            let obj = self.access_fatptr_field(cg_receiver, 0);
+            let obj_typemeta = self.access_fatptr_field(cg_receiver, 1);
+            let vtable = self.access_fatptr_field(cg_receiver, 2);
+            if base_sty.type_symbol is trait_sym: *TraitSymbol {
+                let method_idx = trait_sym.index_of_method(fsym).get_or_panic();
+                let method_addr = self.llds.create_gep(self.llds.type_thin_ptr(), vtable, self.llds.get_const_int64(method_idx as UInt64).as_value());
+                let method = self.llds.create_load(self.llds.type_thin_ptr(), method_addr);
+                let mut sret_ptr: Option<CgValue> = None;
+                let mut args: Vec<CgValue> = Vec::new();
+                // receiver
+                args.push(obj);
+                // sret
+                if signature.index_of_sret() is Some(_) {
+                    if self.cgtype_of(method_call.sty) is Some(ret_ty) {
+                        let ret_ptr = self.llds.create_alloca_sized(ret_ty);
+                        args.push(ret_ptr);
+                        sret_ptr = Some(ret_ptr);
+                    } else {
+                        let size_val = self.size_of_stype(method_call.sty, ctx);
+                        let ret_ptr = self.llds.create_alloca_unsized(size_val);
+                        args.push(ret_ptr);
+                        sret_ptr = Some(ret_ptr);
+                    }
+                }
+                // typemeta
+                args.push(obj_typemeta);
+
+                self.cg_method_call_args(method_call, &mut args, ctx);
+
+                self.llds.set_di_loc(di_loc);
+                let call = self.llds.create_call(fnty, method, args.as_slice().deref());
+                self.llds.reset_di_loc();
+
+                if sret_ptr is Some(r) {
+                    return r;
+                } else {
+                    return call;
+                }
+            } else {
+                panic; // 这种情况不应该发生, 因为 fatptr 目前一定指向 trait symbol
+            }
+        }
+
+        // 场景四： 下面是 non-virtual method call 场景
+        let callee = self.cg_func_decl(fsym);
+        let obj = self.adjust_to_direct(receiver.get_stype(), cg_receiver);
+        let mut sret_ptr: Option<CgValue> = None;
+        let mut args: Vec<CgValue> = Vec::new();
+        // receiver
+        args.push(obj); 
+        // sret
+        if signature.index_of_sret() is Some(_) {
+            if self.cgtype_of(method_call.sty) is Some(ret_ty) {
+                let ret_ptr = self.llds.create_alloca_sized(ret_ty);
+                args.push(ret_ptr);
+                sret_ptr = Some(ret_ptr);
+            } else {
+                let size_val = self.size_of_stype(method_call.sty, ctx);
+                let ret_ptr = self.llds.create_alloca_unsized(size_val);
+                args.push(ret_ptr);
+                sret_ptr = Some(ret_ptr);
+            }
+        }
+        // typemeta
+        let tm = self.rt_typemeta_of(move base_sty, ctx);
+        args.push(tm);
+
+        self.cg_method_call_args(method_call, &mut args, ctx);
+
+        self.llds.set_di_loc(di_loc);
+        let call = self.llds.create_call(callee, args.as_slice().deref());
+        self.llds.reset_di_loc();
+
+        if sret_ptr is Some(r) {
+            return r;
+        } else {
+            return call;
+        }
+    }
+
+    fn cg_method_call_args(&mut self, method_call: *MethodCallValue, args: &mut Vec<CgValue>, ctx: *CgContext) {
+        let signature = self.signature_of_fsym(method_call.resolved_method.get_or_panic());
+
+        for ref param in signature.params {
+            match param {
+                CgParam::Receiver(_) => {
+                    continue; // receiver 参数已经在 cg_method_call 中处理了, 这里不需要再处理
+                }
+                CgParam::SRet => {
+                    continue;
+                }
+                CgParam::TypeMeta => {
+                    continue;
+                }
+                CgParam::GenericArg(_, ga_idx) => {
+                    let ga_sty = *method_call.generic_args.ty_args.index(ga_idx).deref();
+                    let tm = self.rt_typemeta_of(move ga_sty, ctx);
+                    args.push(tm);
+                }
+                CgParam::FnArgVal(arg_idx1, _, _) => {
+                    // method 的 desugared_args 没有保存 receiver
+                    let arg = *method_call.desugared_args.index(arg_idx1-1).deref();
+                    let mut cg_val = self.cg_xvalue(arg, ctx);
+                    cg_val = self.adjust_to_direct(arg.get_stype(), cg_val);
+                    args.push(cg_val);
+                }
+                CgParam::FnArgRef(arg_idx2, _, _) => {
+                    // method 的 desugared_args 没有保存 receiver
+                    let arg = *method_call.desugared_args.index(arg_idx2-1).deref();
+                    let mut cg_val = self.cg_xvalue(arg, ctx);
+                    if !cg_val.indirect {
+                        if self.cgtype_of(arg.get_stype()) is Some(cgty) {
+                            let alloca = self.llds.create_alloca_sized(cgty);
+                            self.llds.create_store(cg_val, alloca);
+                            cg_val = alloca;
+                        } else {
+                            panic;
+                        }
+                    }
+                    args.push(cg_val);
+                }
+            }
+        }
+    }
+
+    fn fill_in_agg_value(&mut self, ptr: CgValue, agg: *AggregateValue, ctx: *CgContext) {
+        if self.cgtype_of(agg.sty) is Some(cgty) {
+            let mut i: UInt = 0;
+            for field in agg.transformed_init {
+                let field_ty = self.cgtype_of(field.get_stype()).get_or_panic();
+                let size_of_field = self.llds.storage_size_of(field_ty);
+                if size_of_field > 0 {
+                    let field_ptr = self.llds.create_struct_gep(cgty, ptr, i);
+                    let f = self.cg_xvalue(field, ctx);
+                    if f.indirect {
+                        self.llds.create_memcpy(field_ptr, f, self.llds.get_const_int64(size_of_field as UInt64).as_value());
+                    } else {
+                        self.llds.create_store(f, field_ptr);
+                    }
+                }
+                i += 1;
+            }
+        } else {
+            let mut addr = ptr;
+            for field in agg.transformed_init {
+                let f = self.cg_xvalue(field, ctx);
+                let tm = self.rt_typemeta_of(field.get_stype(), ctx);
+                addr = self.llds.align_pointer_to_typemeta(addr, tm);
+                let fsize = self.size_of_stype(field.get_stype(), ctx);
+                if f.indirect {
+                    self.llds.create_memcpy(addr, f, fsize);
+                } else {
+                    self.llds.create_store(f, addr);
+                }
+                addr = self.llds.create_gep(self.llds.type_int8(), addr, fsize);
+            }
+        }
+    }
+
+    fn fill_in_arr_value(&mut self, ptr: CgValue, arr: *ArrayLiteralValue, ctx: *CgContext) {
+        if arr.sty.args.ty_args.is_empty() {
+            return;
+        }
+
+        let elem_sty = arr.sty.args.ty_arg(0);
+        if self.cgtype_of(arr.sty) is Some(cgty) {
+            let mut i: UInt = 0;
+            let elem_ty = self.cgtype_of(elem_sty).get_or_panic();
+            // todo: 这里需要做优化, 假如整个数组字面量中大部分是常量, 我们应该直接保存一个常量数组,
+            // 然后 memcpy 到局部变量中, 在把少数几个元素单独指定。这样生成出来的指令数量会少得多。
+            for elem in arr.elements {
+                let size_of_elem = self.llds.storage_size_of(elem_ty);
+                if size_of_elem > 0 {
+                    let field_ptr = self.llds.create_struct_gep(cgty, ptr, i);
+                    let f = self.cg_xvalue(elem, ctx);
+                    if f.indirect {
+                        self.llds.create_memcpy(field_ptr, f, self.llds.get_const_int64(size_of_elem as UInt64).as_value());
+                    } else {
+                        self.llds.create_store(f, field_ptr);
+                    }
+                }
+                i += 1;
+            }
+        } else {
+            let mut addr = ptr;
+            for elem in arr.elements {
+                let f = self.cg_xvalue(elem, ctx);
+                let tm = self.rt_typemeta_of(elem_sty, ctx);
+                addr = self.llds.align_pointer_to_typemeta(addr, tm);
+                let fsize = self.size_of_stype(elem_sty, ctx);
+                if f.indirect {
+                    self.llds.create_memcpy(addr, f, fsize);
+                } else {
+                    self.llds.create_store(f, addr);
+                }
+                addr = self.llds.create_gep(self.llds.type_int8(), addr, fsize);
+            }
+        }
+    }
+
+    fn fill_in_repeat_value(&mut self, ptr: CgValue, repeat: *RepeatValue, ctx: *CgContext) {
+        if repeat.sty.args.ty_args.is_empty() {
+            return;
+        }
+        // todo: 需要优化。比如如果元素是基础类型, 可以简单翻译成 memset
+        let elem_sty = repeat.sty.args.ty_arg(0);
+        let mut elem = self.cg_xvalue(repeat.element, ctx);
+        if !elem.indirect {
+            let elem_ty = self.cgtype_of(elem_sty).get_or_panic();
+            let alloca = self.llds.create_alloca_sized(elem_ty);
+            self.llds.create_store(elem, alloca);
+            elem = alloca;
+            elem.indirect = true;
+        }
+        let count = self.llds.get_const_int64(repeat.sty.args.ty_args.len() as UInt64).as_value();
+        let elem_tm = self.rt_typemeta_of(elem_sty, ctx);
+        let callee = self.llds.get_ext_fn_in_core("zinc_core_fill_in_repeat");
+        self.llds.create_call(callee, &[elem, count, ptr, elem_tm] as Slice<CgValue>);
+    }
+
+    fn fill_in_tuple_value(&mut self, ptr: CgValue, tup: *TupleValue, ctx: *CgContext) {
+        if tup.sty.args.ty_args.is_empty() {
+            return;
+        }
+        if self.cgtype_of(tup.sty) is Some(cgty) {
+            let mut i: UInt = 0;
+            for field in tup.elements {
+                let field_ty = self.cgtype_of(field.get_stype()).get_or_panic();
+                let size_of_field = self.llds.storage_size_of(field_ty);
+                if size_of_field > 0 {
+                    let field_ptr = self.llds.create_struct_gep(cgty, ptr, i);
+                    let f = self.cg_xvalue(field, ctx);
+                    if f.indirect {
+                        self.llds.create_memcpy(field_ptr, f, self.llds.get_const_int64(size_of_field as UInt64).as_value());
+                    } else {
+                        self.llds.create_store(f, field_ptr);
+                    }
+                }
+                i += 1;
+            }
+        } else {
+            let mut addr = ptr;
+            for field in tup.elements {
+                let f = self.cg_xvalue(field, ctx);
+                let tm = self.rt_typemeta_of(field.get_stype(), ctx);
+                addr = self.llds.align_pointer_to_typemeta(addr, tm);
+                let fsize = self.size_of_stype(field.get_stype(), ctx);
+                if f.indirect {
+                    self.llds.create_memcpy(addr, f, fsize);
+                } else {
+                    self.llds.create_store(f, addr);
+                }
+                addr = self.llds.create_gep(self.llds.type_int8(), addr, fsize);
+            }
+        }
+    }
+
+    fn adjust_to_direct(&mut self, sty: *SType, v: CgValue) -> CgValue {
+        if !v.indirect {
+            return v;
+        }
+
+        if self.cgtype_of(sty) is Some(ty) {
+            return self.llds.create_load(ty, v);
+        } else {
+            panic "type must be accessed by pointer";
+        }
+    }
+
+    // 如果当前的 sty 是多层指针, 比如 &&&S, 把它变换成一层指针 &S
+    fn load_to_single_ptr_level(&mut self, sty: *SType, v: CgValue) -> CgValue {
+
+        if sty.is_thin_pointer() {
+            let mut base = self.adjust_to_direct(sty, v);
+            let pointee_sty = sty.args.ty_arg(0);
+            if pointee_sty.is_thin_pointer() {
+                let mut r = self.llds.create_load(self.llds.type_thin_ptr(), base);
+                return self.load_to_single_ptr_level(move pointee_sty, r);
+            } else {
+                return base;
+            }
+        } else {
+            if v.indirect {
+                return v;
+            } else {
+                if self.cgtype_of(sty) is Some(cgty) {
+                    let alloca = self.llds.create_alloca_sized(cgty);
+                    self.llds.create_store(v, alloca);
+                    return alloca;
+                }
+                let sty_name = sty.to_string();
+                let msg = f"BUG: a unsized CgValue is not indirect. Type: $(sty_name)";
+                panic msg.as_str().deref();
+            }
+        }
+    }
+
+    fn extract_option_payload(&mut self, enum_value: CgValue, enum_sty: *SType, ctx: *CgContext) -> CgValue {
+        let option_arg = enum_sty.args.ty_arg(0);
+        if self.can_option_niche_opt(option_arg) {
+            // 编译时确定性没有 tag 的场景
+            return enum_value;
+        } else if self.calc_typeof_builtin_option(option_arg) is Some(cgty) {
+            // 编译时确定性有 tag 的场景
+            if enum_value.indirect {
+                return self.llds.create_struct_gep(cgty, enum_value, 1_u);
+            } else {
+                let mut r = self.llds.extract_value(enum_value, 1);
+                return self.load_to_single_ptr_level(option_arg, r);
+            }
+        } else {
+            // 编译时不确定, 运行时判断 有没有 tag
+            let option_typemeta = self.rt_typemeta_of(enum_sty, ctx);
+            let option_size = self.access_typemeta_size(option_typemeta);
+
+            let payload_typemeta = self.rt_typemeta_of(option_arg, ctx);
+            let payload_size = self.access_typemeta_size(payload_typemeta);
+
+            let same_size = self.llds.create_icmp_eq(option_size, payload_size);
+            let offset = self.llds.create_select(
+                    same_size,
+                    self.llds.get_const_int64(0).as_value(),
+                    self.llds.get_const_int64(8).as_value()
+                );
+            let payload_value = self.llds.create_gep(self.llds.type_int8(), enum_value, offset);
+            return payload_value;
+        }
+    }
+}

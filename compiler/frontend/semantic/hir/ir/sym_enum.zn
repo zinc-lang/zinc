@@ -1,0 +1,258 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::source_code::*;
+
+impl EnumSymbol {
+    pub fn new(node: *EnumDecl) -> *Self {
+        let sym = box {
+            .enum_node = move node,
+            .parent_sym = None,
+            .generics = GenericParams::new(),
+            .variants = (type Vec<*EnumVariantSymbol>)::new(),
+            .symbol_table = SymbolTable::new(),
+            .all_impls = (type Vec<*ImplSymbol>)::new(),
+            .cache = (type HashMap<GenericArgs, *SType>)::new(),
+        }: EnumSymbol;
+        return sym;
+    }
+
+    pub fn qualifiers(&self) -> QualifierList {
+        return self.enum_node.qualifiers();
+    }
+
+    pub fn has_payload(&self) -> Bool {
+        for ev in self.variants {
+            if ev.fields.len() > 0 {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+impl Symbol for EnumSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        return self.enum_node as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return self.enum_node.short_name();
+    }
+
+    fn mangle_name(&self) -> String {
+        if self.parent_sym is Some(ps) {
+            let mut res = ps.export_key();
+            res.push_str("::");
+            res.push_str(self.short_name().as_str().deref());
+            return res;
+        } else {
+            return self.short_name();
+        }
+    }
+
+    fn export_key(&self) -> String {
+        return self.mangle_name();
+    }
+
+    fn export_value(&self) -> String {
+        let mut res = String::new();
+        self.enum_node.qualifiers().to_string_inplace(&mut res);
+        res.push_str("enum ");
+        res.push_str(self.short_name().as_str().deref());
+        res.push_str(self.generics.export_value().as_str().deref());
+
+        let where_conds = self.generics.export_constraints();
+        res.push_str(where_conds.as_str().deref());
+
+        res.push_str(" {");
+
+        for v in self.variants {
+            res.push_str("\n");
+            res.push_str(v.export_value().as_str().deref());
+        }
+        res.push_str("\n}");
+        return res;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_sym;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_sym = Some(ss);
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return self.enum_node.qualifiers().get(QualifierKind::Pub);
+    }
+}
+
+impl ScopeSymbol for EnumSymbol {
+    fn sym_table(&mut self) -> &mut SymbolTable {
+        return &mut self.symbol_table;
+    }
+}
+
+impl TypeSymbol for EnumSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        let mut res = String::new();
+        res.push_str(self.mangle_name().as_str().deref());
+        res.push_str(args.to_string().as_str().deref());
+        return res;
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return self.all_impls;
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(cached) {
+            return cached;
+        } else {
+            let sty = box {
+                .type_symbol = self as *EnumSymbol as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    fn to_sty(*self) -> *SType {
+        let args = self.generics.to_generic_args();
+        return self.to_sty(move args);
+    }
+}
+
+impl EnumVariantSymbol {
+    pub fn new(node: *EnumVariantDecl) -> *Self {
+        let sym = box {
+            .variant_node = move node,
+            .parent_enum = None,
+            .next_overload = None,
+            .fields = (type Vec<*SType>)::new(),
+            .symbol_table = SymbolTable::new(),
+        }: EnumVariantSymbol;
+        return sym;
+    }
+
+    // todo: 考虑带有参数默认值的情况
+    pub fn accept_params(&self, c: UInt) -> Bool {
+        return self.fields.len() == c;
+    }
+
+    pub fn find_overload(*self, c: UInt) -> Option<*EnumVariantSymbol> {
+        let mut ev: *EnumVariantSymbol = self;
+        if ev.accept_params(c) {
+            return Some(ev);
+        }
+        while ev.next_overload is Some(n) {
+            ev = n;
+            if n.accept_params(c) {
+                return Some(n);
+            }
+        }
+        return None;
+    }
+
+    pub fn type_params_in_ctx(&self) -> Vec<*TypeParamSymbol> {
+        if self.parent_enum is Some(esym) {
+            return esym.generics.ty_params;
+        }
+        return (type Vec<*TypeParamSymbol>)::new();
+    }
+
+    pub fn payload_tuple_type(&self) -> *SType {
+        let mut ga = GenericArgs::new();
+        for f in self.fields {
+            ga.ty_args.push(f);
+        }
+        return TupleSymbol::new().to_sty(ga);
+    }
+
+    pub fn tag_num(&self) -> UInt64 {
+        let e = self.parent_enum.get_or_panic();
+        let mut i: UInt64 = 0;
+        for ev in e.variants {
+            if ev as *raw EnumVariantSymbol as UInt ==
+                self as &EnumVariantSymbol as *raw EnumVariantSymbol as UInt {
+                return i;
+            }
+            i += 1;
+        }
+        return -1_i as UInt64;
+    }
+}
+
+impl Symbol for EnumVariantSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        return self.variant_node as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return self.variant_node.short_name();
+    }
+
+    fn mangle_name(&self) -> String {
+        if self.parent_enum is Some(pe) {
+            let mut res = pe.export_key();
+            res.push_str("::");
+            res.push_str(self.short_name().as_str().deref());
+            res.push_str("/");
+            let params = self.fields.len().to_string();
+            res.push_str(params.as_str().deref());
+            return res;
+        } else {
+            return self.short_name();
+        }
+    }
+
+    fn export_key(&self) -> String {
+        return self.mangle_name();
+    }
+
+    fn export_value(&self) -> String {
+        let mut res = String::new();
+        res.push_str(self.short_name().as_str().deref());
+        if self.fields.len() == 0 {
+            // unit variant
+        } else {
+            // tuple variant
+            res.push_str("(");
+            let mut first = true;
+            for f in self.fields {
+                if first {
+                    first = false;
+                } else {
+                    res.push_str(", ");
+                }
+                res.push_str(f.export_value().as_str().deref());
+            }
+            res.push_str(")");
+        }
+        res.push_str(",");
+        return res;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        if self.parent_enum is Some(e) {
+            return Some(e as *EnumSymbol as *ScopeSymbol);
+        } else {
+            return None;
+        }
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        if ss is enum_sym: *EnumSymbol {
+            self.parent_enum = Some(enum_sym);
+        }
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl ScopeSymbol for EnumVariantSymbol {
+    fn sym_table(&mut self) -> &mut SymbolTable {
+        return &mut self.symbol_table;
+    }
+}

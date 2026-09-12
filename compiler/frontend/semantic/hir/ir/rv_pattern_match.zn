@@ -1,0 +1,45 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use super::*;
+
+impl PatternMatchValue {
+    fn new(e: *ExpressionNode, operand: *RValue, pat: *Pattern) -> *Self {
+        return box {
+            .expr = move e,
+            .parent_node = None,
+            .operand = move operand,
+            .pattern = move pat,
+            .local_bindings = (type Vec<*VarSymbol>)::new(),
+        }: PatternMatchValue;
+    }
+}
+
+impl XValue for PatternMatchValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return SType::sty_bool();
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        // sty 只能是 Bool 类型
+    }
+
+    fn dump(&self) {
+
+    }
+}
+
+impl RValue for PatternMatchValue {
+
+}

@@ -1,0 +1,60 @@
+
+pub enum Ordering {
+    Less = -1,
+    Equal = 0,
+    Greater = 1,
+}
+
+// todo `other` 的类型应该是泛型参数，这样才能支持一个类型与多个不同类型的比较
+pub trait PartialEq {
+
+    fn eq(&self, other: &Self) -> Bool;
+
+    fn ne(&self, other: &Self) -> Bool;
+}
+
+pub trait Eq : PartialEq {
+
+}
+
+pub trait PartialOrd: PartialEq
+{
+    // Required method
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering>;
+
+    // Provided methods
+    fn lt(&self, other: &Self) -> Bool;
+    fn le(&self, other: &Self) -> Bool;
+    fn gt(&self, other: &Self) -> Bool;
+    fn ge(&self, other: &Self) -> Bool;
+}
+
+pub trait Ord: Eq + PartialOrd {
+    // Required method
+    fn cmp(&self, other: &Self) -> Ordering;
+
+    // Provided methods
+    // fn max(&self, other: &Self) -> &Self {
+    //     if self.cmp(other) == Ordering::Greater {
+    //         return self;
+    //     } else {
+    //         return other;
+    //     }
+    // }
+    // fn min(&self, other: &Self) -> &Self {
+    //     if self.cmp(other) == Ordering::Less {
+    //         return self;
+    //     } else {
+    //         return other;
+    //     }
+    // }
+    // fn clamp(&self, min: &Self, max: &Self) -> &Self {
+    //     if self.cmp(min) == Ordering::Less {
+    //         return min;
+    //     } else if self.cmp(max) == Ordering::Greater {
+    //         return max;
+    //     } else {
+    //         return self;
+    //     }
+    // }
+}

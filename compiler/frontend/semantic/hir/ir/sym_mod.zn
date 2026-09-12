@@ -1,0 +1,85 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+
+impl ModSymbol {
+    pub fn new(node: *ModDecl) -> *Self {
+        return box {
+            .mod_node = move node,
+            .parent_sym = None,
+            .is_imported = false,
+            .symbol_table = SymbolTable::new()
+        }: ModSymbol;
+    }
+}
+
+impl Symbol for ModSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        return self.mod_node as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return self.mod_node.short_name();
+    }
+
+    fn mangle_name(&self) -> String {
+        return self.export_key();
+    }
+
+    fn export_key(&self) -> String {
+        let mut res: String = String::new();
+
+        if !(self.short_name().is_empty()) {
+            res.push_str("::");
+            res.push_str(self.short_name().as_str().deref());
+        }
+
+        let mut parent_sym = self.parent_scope();
+        while parent_sym is Some(ss) {
+            if ss is p: *ModSymbol {
+                if !(p.short_name().is_empty()) {
+                    let mut new_res = String::new();
+                    new_res.push_str("::");
+                    new_res.push_str(p.short_name().as_str().deref());
+                    new_res.push_str(res.as_str().deref());
+                    res = new_res;
+
+                    parent_sym = p.parent_scope();
+                }
+            } else {
+                break;
+            }
+        }
+        return res;
+    }
+
+    fn export_value(&self) -> String {
+        let mut res = String::new();
+        if self.visibility() is Some(_) {
+            res.push_str("pub ");
+        }
+        res.push_str("mod ");
+        let name = self.mod_node.short_name();
+        res.push_str(name.as_str().deref());
+        res.push_str(";");
+        return res;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_sym;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_sym = Some(ss);
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return self.mod_node.qualifier_list.get(QualifierKind::Pub);
+    }
+}
+
+impl ScopeSymbol for ModSymbol {
+    fn sym_table(&mut self) -> &mut SymbolTable {
+        return &mut self.symbol_table;
+    }
+}

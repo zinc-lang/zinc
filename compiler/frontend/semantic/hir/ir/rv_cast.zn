@@ -1,0 +1,62 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use super::*;
+
+impl CastValue {
+    fn new(e: *AsExpr, op: *RValue, target_sty: *SType) -> *Self {
+        return box {
+            .expr = e as *ExpressionNode,
+            .parent_node = None,
+            .operand = move op,
+            .target_sty = move target_sty,
+            .resolved_kind = ResolvedCastKind::Err,
+            .is_refutable = false,
+        }: CastValue;
+    }
+
+    fn create(op: *RValue, target_sty: *SType) -> *Self {
+        let e = op.expr_node() as *ExpressionNode;
+        let kind = resolve_type_cast_kind(op.get_stype(), target_sty);
+        return box {
+            .expr = move e,
+            .parent_node = None,
+            .operand = move op,
+            .target_sty = move target_sty,
+            .resolved_kind = move kind,
+            .is_refutable = false,
+        }: CastValue;
+    }
+}
+
+impl XValue for CastValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.target_sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.target_sty = move sty;
+    }
+
+    fn dump(&self) {
+        self.operand.dump();
+        print("  ");
+        print(self.resolved_kind);
+    }
+}
+
+impl RValue for CastValue {
+
+}

@@ -1,0 +1,105 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::syntax::token::*;
+use super::*;
+
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use ::self::frontend::diagnostic::*;
+
+impl AggregateValue {
+    fn new(init: *StructInitExpr) -> *Self {
+        let mut named_init = (type HashMap<String, *RValue>)::new();
+        let mut default_value: Option<*RValue> = None;
+
+        let span = init.span();
+        return box {
+            .expr = move init,
+            .parent_node = None,
+            .named_init = move named_init,
+            .field_token = (type HashMap<String, Token>)::new(),
+            .default_value = move default_value,
+            .transformed_init = (type Vec<*RValue>)::new(),
+            .sty = SType::sty_invalid(span),
+        }: AggregateValue;
+    }
+
+    fn ordered_init(&self) -> Vec<*RValue> {
+        let mut ordered: Vec<*RValue> = (type Vec<*RValue>)::new();
+        if self.sty.type_symbol is struct_sym: *StructSymbol {
+            for field in struct_sym.fields {
+                let name = field.short_name();
+                if self.named_init.at(&name) is Some(init) {
+                    ordered.push(move init);
+                }
+                else if self.default_value is Some(dv) {
+                    // 从 dv 中获取成员的值
+                    let name_token = self.field_token.at(&name).get_or_panic();
+                    let dv_field = FieldRValue::create(name_token.source_span, name_token, dv);
+                    
+                    let mut mappings = TypeMapping::new();
+                    mappings.unify(self.sty.type_symbol.to_sty(), self.sty);
+                    let vs = find_field(self.sty, name_token.raw_str());
+                    if vs is Some(var_sym) {
+                        dv_field.sty = mappings.subst(var_sym.stype);
+                    } else {
+                        DiagnosticEngine::get().emit_name_not_found(name_token.raw_str(), name_token.source_span);
+                    }
+
+                    ordered.push(move dv_field as *RValue);
+                }
+                else if field.init is Some(i) {
+                    ordered.push(move i);
+                }
+                else {
+                    let struct_sty = self.sty.to_string();
+                    let msg = f"AggregateValue::ordered_init: missing value for field '$(name)' in $(struct_sty).";
+                    panic msg.as_str().deref();
+                }
+            }
+            if ordered.len() != struct_sym.fields.len() {
+                panic;
+            }
+        }
+        else if self.sty.type_symbol is union_sym: *UnionSymbol {
+            for kv in self.named_init { // 只有一个元素
+                ordered.push(kv.1);
+            }
+        }
+        else {
+            panic "AggregateValue::ordered_init: type information is missing.";
+        }
+        return ordered;
+    }
+}
+
+impl XValue for AggregateValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+        print("{...}: ");
+        print(self.sty.type_symbol.short_name());
+    }
+}
+
+impl RValue for AggregateValue {
+
+}

@@ -1,0 +1,137 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::stmt::*;
+use ::self::frontend::source_code::*;
+
+impl BlockSentence {
+    pub fn new(stmt: *StatementNode) -> *Self {
+        return box {
+            .stmt = move stmt,
+            .parent_stmt = None,
+            .sentences = (type Vec<*Sentence>)::new(),
+            .symbol_table = (type SymbolTable)::new(),
+            .local_vars = (type Vec<*VarSymbol>)::new(),
+            .inner_items = (type Vec<*Symbol>)::new(),
+        }: BlockSentence;
+    }
+
+    pub fn add_local(&mut self, var: *VarSymbol) {
+        self.local_vars.push(var);
+
+        self.symbol_table.add_child(move var);
+    }
+
+    pub fn add_sentence(*self, sen: *Sentence) {
+        let blk: *BlockSentence = self;
+        sen.set_parent_scope(blk as *ScopeSymbol);
+        self.sentences.push(move sen);
+    }
+
+    pub fn add_inner_item(*self, item: *Symbol) {
+        let blk: *BlockSentence = self;
+        item.set_parent_scope(blk as *ScopeSymbol);
+        self.inner_items.push(move item);
+    }
+
+    pub fn is_empty(&self) -> Bool {
+        return self.sentences.len() == 0;
+    }
+
+    pub fn collect_all_locals(&self, all: &mut Vec<*VarSymbol>) {
+        for v in self.local_vars {
+            all.push(move v);
+        }
+        for s in self.sentences {
+            if s is blk: *BlockSentence {
+                blk.collect_all_locals(all);
+            }
+            if s is br_bool: *BranchBool {
+                br_bool.then_br.collect_all_locals(all);
+                if br_bool.else_br is Some(else_blk) {
+                    else_blk.collect_all_locals(all);
+                }
+            }
+            if s is br: *BranchMultiple {
+                for b in br.branches {
+                    b.block.collect_all_locals(all);
+                    b.operation.collect_all_locals(all);
+                }
+            }
+            if s is for_loop: *ForLoopSentence {
+                for_loop.body.collect_all_locals(all);
+            }
+            if s is while_loop: *WhileLoopSentence {
+                while_loop.body.collect_all_locals(all);
+            }
+            if s is do_while_loop: *DoWhileLoopSentence {
+                do_while_loop.body.collect_all_locals(all);
+            }
+        }
+    }
+
+    pub fn contains_return_or_panic(&self) -> Bool {
+        for s in self.sentences {
+            if s is type *BranchReturn {
+                return true;
+            }
+            if s is type *BranchPanic {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+impl Sentence for BlockSentence {
+    fn stmt_node(&self) -> *StatementNode {
+        return self.stmt as *StatementNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_stmt;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_stmt = Some(ss);
+    }
+}
+
+impl Symbol for BlockSentence {
+    fn syntax_node(&self) -> *SyntaxNode {
+        return self.stmt as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return String::new();
+    }
+
+    fn mangle_name(&self) -> String {
+        return String::new();
+    }
+
+    fn export_key(&self) -> String {
+        return String::new();
+    }
+
+    fn export_value(&self) -> String {
+        return String::new();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_stmt;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_stmt = Some(ss);
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl ScopeSymbol for BlockSentence {
+    fn sym_table(&mut self) -> &mut SymbolTable {
+        return &mut self.symbol_table;
+    }
+}

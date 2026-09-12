@@ -1,0 +1,88 @@
+use ::self::primitives::string::ToString;
+use ::self::cmp::{Eq, PartialEq, PartialOrd, Ord, Ordering};
+use ::self::hash::{Hash, Hasher};
+use ::self::primitives::clone::Clone;
+use ::self::primitives::default::Default;
+
+impl ToString for Char {
+    fn to_string_inplace(&self, buf: &mut String) {
+        // todo 支持 utf8 转换
+        buf.data.push(*self as UInt32 as UInt8);
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl PartialEq for Char {
+    fn eq(&self, other: &Self) -> Bool {
+        return *self == *other;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return *self != *other;
+    }
+}
+
+impl Eq for Char {}
+
+impl PartialOrd for Char {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if *self < *other {
+            return Some(Ordering::Less);
+        }
+        else if *self == *other {
+            return Some(Ordering::Equal);
+        }
+        else {
+            return Some(Ordering::Greater);
+        }
+    }
+    fn lt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Less);
+    }
+    fn le(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Greater));
+    }
+    fn gt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Greater);
+    }
+    fn ge(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Less));
+    }
+}
+
+impl Ord for Char {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if *self < *other {
+            return Ordering::Less;
+        }
+        else if *self == *other {
+            return Ordering::Equal;
+        }
+        else {
+            return Ordering::Greater;
+        }
+    }
+}
+
+impl Hash for Char {
+    fn hash(&self, state: &mut Hasher) {
+        state.combine(*self as UInt32 as UInt64);
+    }
+}
+
+impl Clone for Char {
+    fn clone(&self) -> Char {
+        return *self;
+    }
+}
+
+impl Default for Char {
+    fn default() -> Char {
+        return 0_u32 as Char;
+    }
+}

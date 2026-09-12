@@ -1,0 +1,77 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode, DummySyntaxNode};
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::source_code::*;
+use super::*;
+
+impl UnaryExprValue {
+    fn new(e: *UnaryExpr, operand: *RValue) -> *Self {
+        let mut kind = UnaryValueKind::Neg;
+        match e.kind {
+            UnaryExprKind::Neg => kind = UnaryValueKind::Neg;
+            UnaryExprKind::Not => kind = UnaryValueKind::Not;
+            UnaryExprKind::Box => kind = UnaryValueKind::Box;
+            UnaryExprKind::Move => kind = UnaryValueKind::Move;
+            _ => panic;
+        }
+
+        return box {
+            .expr = e as *ExpressionNode,
+            .kind = move kind,
+            .parent_node = None,
+            .operand = move operand,
+            .sty = SType::sty_invalid(e.span()),
+        }: UnaryExprValue;
+    }
+
+    fn create(span: SourceSpan, kind: UnaryValueKind, operand: *RValue) -> *Self {
+        let dummy = box {
+            .source_span = span,
+        }: DummySyntaxNode;
+
+        return box {
+            .expr = dummy as *ExpressionNode,
+            .kind = move kind,
+            .parent_node = None,
+            .operand = move operand,
+            .sty = SType::sty_invalid(span),
+        }: UnaryExprValue;
+    }
+
+}
+
+impl XValue for UnaryExprValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+        match self.kind {
+            UnaryValueKind::Neg => print("-");
+            UnaryValueKind::Not => print("!");
+            UnaryValueKind::ToWeak => print("weak ");
+            UnaryValueKind::Box => print("box ");
+            UnaryValueKind::Move => print("move ");
+        }
+        self.operand.dump();
+    }
+}
+
+impl RValue for UnaryExprValue {
+
+}

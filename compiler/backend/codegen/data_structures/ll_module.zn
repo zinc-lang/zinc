@@ -1,0 +1,185 @@
+use super::*;
+use super::super::*;
+
+extern fn llds_create(p: Ptr, len: UInt) -> Ptr;
+extern fn llds_setup_compile_unit(ds: Ptr, entry: Ptr, len: UInt);
+extern fn llds_destroy(ds: Ptr);
+extern fn llds_get_or_insert_global(ds: Ptr, name: Ptr, len: UInt, ty: Ptr) -> Ptr;
+extern fn llds_get_function(ds: Ptr, name: Ptr, len: UInt) -> Ptr;
+extern fn llds_get_const_null(ds: Ptr) -> Ptr;
+extern fn llds_get_null_value_of(ds: Ptr, ty: Ptr) -> Ptr;
+extern fn llds_get_const_int1(ds: Ptr, v: Bool) -> Ptr;
+extern fn llds_get_const_int8(ds: Ptr, v: UInt8) -> Ptr;
+extern fn llds_get_const_int16(ds: Ptr, v: UInt16) -> Ptr;
+extern fn llds_get_const_int32(ds: Ptr, v: UInt32) -> Ptr;
+extern fn llds_get_const_int64(ds: Ptr, v: UInt64) -> Ptr;
+extern fn llds_get_const_f32(ds: Ptr, v: F32) -> Ptr;
+extern fn llds_get_const_f64(ds: Ptr, v: F64) -> Ptr;
+extern fn llds_get_const_struct(ds: Ptr, fields: *raw CgConst, len: UInt, llty: Ptr) -> Ptr;
+extern fn llds_get_const_array(ds: Ptr, elems: *raw CgConst, len: UInt, llty: Ptr) -> Ptr;
+extern fn llds_get_const_array_gv(ds: Ptr, elems: *raw CgConst, len: UInt, llty: Ptr) -> Ptr;
+extern fn llds_get_ext_fn_in_core(ds: Ptr, name: Ptr, len: UInt) -> Ptr;
+extern fn llds_get_const_string(ds: Ptr, name: Ptr, len: UInt) -> Ptr;
+extern fn llds_dump_module_llir(ds: Ptr);
+
+impl LLDataStructures {
+    fn new(name: Str) -> *LLDataStructures {
+        return box {
+            .ds = unsafe(llds_create(name.raw_ptr(), name.len()))
+        }: LLDataStructures;
+    }
+
+    fn setup_entry_source(&self, entry: Str) {
+        unsafe(llds_setup_compile_unit(self.ds, entry.raw_ptr(), entry.len()));
+    }
+
+    fn get_or_insert_global(&self, name: Str, ty: CgType) -> CgGlobal {
+        let ll_value = unsafe(llds_get_or_insert_global(self.ds, name.raw_ptr(), name.len(), ty.llty));
+        return {
+            .value = ll_value,
+        }: CgGlobal;
+    }
+
+    fn get_function(&self, name: Str) -> Option<CgFunc> {
+        unsafe {
+            let r = llds_get_function(self.ds, name.raw_ptr(), name.len());
+            if r as UInt == 0 {
+                return None;
+            } else {
+                return Some({ .llfn = r }: CgFunc);
+            }
+        }
+    }
+
+    fn get_const_null(&self) -> CgConst {
+        let ll_value = unsafe(llds_get_const_null(self.ds));
+        return {
+            .value = ll_value,
+        }: CgConst;
+    }
+
+    fn get_null_value_of(&self, ty: CgType) -> CgConst {
+        let ll_value = unsafe(llds_get_null_value_of(self.ds, ty.llty));
+        return {
+            .value = ll_value,
+        }: CgConst;
+    }
+
+    fn get_const_int1(&self, v: Bool) -> CgConst {
+        let ll_value = unsafe(llds_get_const_int1(self.ds, v));
+        return {
+            .value = ll_value,
+        }: CgConst;
+    }
+
+    fn get_const_int8(&self, v: UInt8) -> CgConst {
+        let ll_value = unsafe(llds_get_const_int8(self.ds, v));
+        return {
+            .value = ll_value,
+        }: CgConst;
+    }
+
+    fn get_const_int16(&self, v: UInt16) -> CgConst {
+        let ll_value = unsafe(llds_get_const_int16(self.ds, v));
+        return {
+            .value = ll_value,
+        }: CgConst;
+    }
+
+    fn get_const_int32(&self, v: UInt32) -> CgConst {
+        let ll_value = unsafe(llds_get_const_int32(self.ds, v));
+        return {
+            .value = ll_value,
+        }: CgConst;
+    }
+
+    fn get_const_int64(&self, v: UInt64) -> CgConst {
+        let ll_value = unsafe(llds_get_const_int64(self.ds, v));
+        return {
+            .value = ll_value,
+        }: CgConst;
+    }
+
+    fn get_const_f32(&self, v: F32) -> CgConst {
+        let ll_value = unsafe(llds_get_const_f32(self.ds, v));
+        return {
+            .value = ll_value,
+        }: CgConst;
+    }
+
+    fn get_const_f64(&self, v: F64) -> CgConst {
+        let ll_value = unsafe(llds_get_const_f64(self.ds, v));
+        return {
+            .value = ll_value,
+        }: CgConst;
+    }
+
+    fn get_const_struct(&self, ty: CgType, fields: Slice<CgConst>) -> CgConst {
+        // 需要确保 ty 是 StructType
+        let ll_value = unsafe(llds_get_const_struct(self.ds, fields.raw_ptr(), fields.len(), ty.llty));
+        return {
+            .value = ll_value,
+        }: CgConst;
+    }
+
+    fn get_const_array(&self, ty: CgType, elems: Slice<CgConst>) -> CgConst {
+        let ll_value = unsafe(llds_get_const_array(self.ds, elems.raw_ptr(), elems.len(), ty.llty));
+        return {
+            .value = ll_value,
+        }: CgConst;
+    }
+
+    fn cg_const_array_gv(&self, ty: CgType, elems: Slice<CgConst>) -> CgConst {
+        let ll_value = unsafe(llds_get_const_array_gv(self.ds, elems.raw_ptr(), elems.len(), ty.llty));
+        return {
+            .value = ll_value,
+        }: CgConst;
+    }
+
+    fn get_const_string(&self, s: Str) -> CgConst {
+        let gv = unsafe(llds_get_const_string(self.ds, s.raw_ptr(), s.len())); 
+        return {
+            .value = gv
+        }: CgConst;
+    }
+
+    fn get_ext_fn_in_core(&self, name: Str) -> CgFunc {
+        let ll_fn = unsafe(llds_get_ext_fn_in_core(self.ds, name.raw_ptr(), name.len()));
+        if ll_fn as UInt == 0 {
+            let msg = f"BUG: get extern function '$(name)' failed";
+            panic msg.as_str().deref();
+        }
+        return {
+            .llfn = ll_fn,
+        }: CgFunc;
+    }
+
+    // 这个函数做了这件事:
+    // uint64_t a = typemeta->align;
+    // result = (void *)(((uintptr_t)p + a - 1) & ~(a - 1));
+    fn align_pointer_to_typemeta(&self, ptr: CgValue, tm: CgValue) -> CgValue {
+        let align_addr = self.create_struct_gep(self.type_ZnTypeMeta(), tm, 4_u);
+        let align = self.create_load(self.type_int8(), align_addr);
+        let align64 = self.create_zext(align, self.type_int64());
+        return self.align_pointer_to(ptr, align64);
+    }
+
+    // result = (void *)(((uintptr_t)p + a - 1) & ~(a - 1));
+    fn align_pointer_to(&self, ptr: CgValue, align64: CgValue) -> CgValue {
+        let ptr_int64 = self.create_ptr_to_int(ptr);
+        let lhs1 = self.create_add(ptr_int64, align64);
+        let lhs2 = self.create_sub(lhs1, self.get_const_int64(1).as_value());
+
+        let rhs1 = self.create_sub(align64, self.get_const_int64(1).as_value());
+        let rhs2 = self.create_bit_not(rhs1);
+
+        let res = self.create_bit_and(lhs2, rhs2);
+        let mut p = self.create_int_to_ptr(res);
+        p.indirect = true;
+        return p;
+    }
+
+    fn dump_module_llir(&self) {
+        unsafe(llds_dump_module_llir(self.ds));
+    }
+}

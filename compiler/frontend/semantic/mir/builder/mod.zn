@@ -1,0 +1,517 @@
+mod sentences;
+mod values;
+
+use ::self::frontend::semantic::*;
+use ::self::frontend::semantic::mir::ir::*;
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::hir::builder::resolver::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::token::*;
+use std::collections::hashset::HashSet;
+
+struct CfgBuilder {
+    semantic_model: *SemanticModel,
+    resolver: Resolver,
+    func_sym: *FuncSymbol,
+    basic_blocks: Vec<*BasicBlock>,
+    block_stack: Vec<*BlockSentence>,
+    temps: Vec<*VarSymbol>,
+    cached_lvalue: HashMap<UInt, *LValue>,
+    cached_rvalue: HashMap<UInt, *RValue>,
+
+    // 循环开始的地方和结束的地方, key 是 *LoopSentence
+    loop_start: HashMap<UInt, *BasicBlock>,
+    loop_end: HashMap<UInt, *BasicBlock>,
+}
+
+struct BasicBlockChunk {
+    start: *BasicBlock,
+    end: *BasicBlock,
+}
+
+impl CfgBuilder {
+    fn new(sm: *SemanticModel, func_sym: *FuncSymbol, r: Resolver) -> Self {
+        return {
+            .semantic_model = move sm,
+            .resolver = move r,
+            .func_sym = move func_sym,
+            .basic_blocks = (type Vec<*BasicBlock>)::new(),
+            .block_stack = (type Vec<*BlockSentence>)::new(),
+            .temps = (type Vec<*VarSymbol>)::new(),
+            .cached_lvalue = (type HashMap<UInt, *LValue>)::new(),
+            .cached_rvalue = (type HashMap<UInt, *RValue>)::new(),
+            .loop_start = (type HashMap<UInt, *BasicBlock>)::new(),
+            .loop_end = (type HashMap<UInt, *BasicBlock>)::new(),
+        }: CfgBuilder;
+    }
+
+    fn build(&mut self) -> Option<*CFG> {
+        if self.func_sym.body is Some(body) {
+
+            let bb_pair = self.trans_block(body);
+            // drop params
+            for p in self.func_sym.params {
+                self.drop_var_sym(move p, bb_pair.end);
+            }
+            return Some(box {
+                .func_sym = self.func_sym,
+                .basic_blocks = bb_pair.topological_order(),
+            }: CFG);
+        } else {
+            return None;
+        }
+    }
+
+    fn new_bb(&mut self) -> *BasicBlock {
+        let bb = box {
+            .index = 0_u,
+            .debug_string = String::new(),
+            .outside_block = self.nearest_block(),
+            .steps = (type Vec<Step>)::new(),
+            .terminator = None,
+            .incomings = (type Vec<*BasicBlock>)::new(),
+        }: BasicBlock;
+        return bb;
+    }
+
+    fn new_bb(&mut self, name: String) -> *BasicBlock {
+        let bb = box {
+            .index = 0_u,
+            .debug_string = move name,
+            .outside_block = self.nearest_block(),
+            .steps = (type Vec<Step>)::new(),
+            .terminator = None,
+            .incomings = (type Vec<*BasicBlock>)::new(),
+        }: BasicBlock;
+        return bb;
+    }
+
+    fn new_temp(&mut self, v: *RValue, bb: *BasicBlock) -> *LocalVar {
+
+        let sty = v.get_stype();
+        if sty.is_invalid() {
+            panic;
+        }
+        let var_sym = VarSymbol::create(v.expr_node().span(), sty);
+        self.nearest_block().add_local(var_sym);
+        self.temps.push(var_sym);
+
+        let local = LocalVar::create(v.expr_node().span(), var_sym);
+        if has_copy_fn(sty) {
+            let copy = CopyValue::create(v.expr_node(), v);
+            bb.add_step(move copy as *XValue);
+        }
+
+        bb.add_step(WriteValue::create(v, local as *LValue));
+        return local;
+    }
+
+    fn nearest_block(&self) -> *BlockSentence {
+        if self.block_stack.is_empty() {
+            panic "BUG: block_stack is empty in CfgBuilder::nearest_block.";
+        }
+        let len = self.block_stack.len();
+        return *self.block_stack.index(len-1).deref();
+    }
+
+    fn drop_lvalue(&mut self, lvar: *LValue, bb: *BasicBlock) {
+        // if access by raw pointer, ignore dtor
+        if lvar is d: *DerefLValue {
+            let sty = d.operand.get_stype();
+            if sty.type_symbol is type *RawPointerImmutSymbol ||
+                sty.type_symbol is type *RawPointerMutSymbol {
+                return;
+            }
+        }
+
+        if has_destructor(lvar.get_stype()) {
+            let d = DtorValue::create(lvar.expr_node().span(), move lvar);
+            bb.add_step(move d as *XValue);
+        }
+    }
+
+    fn drop_var_sym(&mut self, vs: *VarSymbol, bb: *BasicBlock) {
+        let sty = vs.stype;
+        if has_destructor(sty) {
+            let local = LocalVar::create(vs.var_node.span(), vs);
+            let d = DtorValue::create(vs.var_node.span(), local as *LValue);
+            bb.add_step(move d as *XValue);
+        }
+    }
+
+    fn drop_locals_when_exit_block(&mut self, blk: *BlockSentence, bb: *BasicBlock) {
+        // 如果 block 包含 return/panic 则不需要执行了
+        if blk.contains_return_or_panic() {
+            return;
+        }
+        // 逆序遍历
+        let mut i: UInt = blk.local_vars.len();
+        while i > 0 {
+            let var: *VarSymbol = *blk.local_vars.index(i - 1).deref();
+            self.drop_var_sym(move var, bb);
+            i -= 1;
+        }
+    }
+
+    fn drop_locals_until_exit_block(&mut self, blk: UInt, bb: *BasicBlock) {
+        // 逆序遍历
+        let mut i: UInt = self.block_stack.len();
+        while i > 0 {
+            let block: *BlockSentence = *self.block_stack.index(i - 1).deref();
+            self.drop_locals_when_exit_block(block, bb);
+            if block as *raw BlockSentence as UInt == blk {
+                return;
+            }
+            i -= 1;
+        }
+        panic "BUG: [drop_locals_until_exit_block] target block does not found in block_stack";
+    }
+
+    fn drop_all_except(&mut self, except_var: Option<*VarSymbol>, bb: *BasicBlock) {
+
+        let mut except_var_i: UInt = 0;
+        if except_var is Some(v) {
+            except_var_i = v as *raw VarSymbol as UInt;
+        }
+        // 逆序遍历
+        let mut i: UInt = self.block_stack.len();
+        while i > 0 {
+            let block: *BlockSentence = *self.block_stack.index(i - 1).deref();
+
+            let mut j: UInt = block.local_vars.len();
+            while j > 0 {
+                let var: *VarSymbol = *block.local_vars.index(j - 1).deref();
+                let var_int = var as *raw VarSymbol as UInt;
+                if var_int != except_var_i {
+                    self.drop_var_sym(var, bb);
+                }
+                j -= 1;
+            }
+            i -= 1;
+        }
+
+        for p in self.func_sym.params {
+            if p as *raw VarSymbol as UInt != except_var_i {
+                self.drop_var_sym(move p, bb);
+            }
+        }
+    }
+
+    fn insert_copy(&mut self, rval: *RValue, bb: *BasicBlock) {
+        if !has_copy_fn(rval.get_stype()) {
+            return;
+        }
+        let copy = CopyValue::create(rval.expr_node(), rval);
+        bb.add_step(move copy as *XValue);
+    }
+
+    fn insert_copy_if_needed(&mut self, rval: *RValue, bb: *BasicBlock) {
+        if !has_copy_fn(rval.get_stype()) {
+            return;
+        }
+
+        // 临时变量是不需要 copy 的
+        match rval {
+            cast_rv: *CastValue => {
+                match cast_rv.resolved_kind {
+                    // 这些都不需要做 拷贝
+                    ResolvedCastKind::ArcToWeak => return;
+                    ResolvedCastKind::BoolToInt => return;
+                    ResolvedCastKind::IntToInt => return;
+                    ResolvedCastKind::IntToFloat => return;
+                    ResolvedCastKind::EnumToInt => return;
+                    ResolvedCastKind::FloatExt => return;
+                    ResolvedCastKind::FloatTrunc => return;
+                    ResolvedCastKind::FloatToInt => return;
+                    ResolvedCastKind::CharToUInt32 => return;
+                    ResolvedCastKind::UInt32ToChar => return;
+                    ResolvedCastKind::ArrayRefToSlice => return;
+                    ResolvedCastKind::MutBorrowToImmut => return;
+                    ResolvedCastKind::PointerSafeToUnsafe => return;
+                    ResolvedCastKind::PointerUnsafeToSafe => return;
+                    ResolvedCastKind::UnsafePointerToUnsafePointer => return;
+                    ResolvedCastKind::UnsafePointerToUInt => return;
+                    ResolvedCastKind::UIntToUnsafePointer => return;
+                    ResolvedCastKind::DerefCast(_) => return;
+                    ResolvedCastKind::DerefMutCast(_) => return;
+                    ResolvedCastKind::ArcToWeak => {
+                        let copy = CopyValue::create(rval.expr_node(), rval);
+                        bb.add_step(move copy as *XValue);
+                        return;
+                    }
+                    _ => {
+                        self.insert_copy_if_needed(cast_rv.operand, bb);
+                        return;
+                    }
+                }
+            }
+            type *QualifiedPathValue => return;
+            type *WriteValue => return;
+            type *LiteralValue => return;
+            type *AggregateValue => return;
+            type *TupleValue => return;
+            type *ArrayLiteralValue => return;
+            type *RepeatValue => return;
+            type *BinaryExprValue => return;
+            type *UnaryExprValue => return;
+            type *AddressofValue => return;
+            type *PatternMatchValue => return;
+            type *FnCallValue => return;
+            type *MethodCallValue => return;
+            type *InterpolationValue => return;
+            type *CompileTimeValue => return;
+            type *DtorValue => return;
+            type *CopyValue => return;
+            type *ReBorrowValue => return;
+            type *MovedValue => return;
+            ctx_rv: *ContextValue => return self.insert_copy_if_needed(ctx_rv.inner, bb);
+            ty_asc_rv: *TypeAscriptionValue => return self.insert_copy_if_needed(ty_asc_rv.inner, bb);
+
+            deref_rv: *DerefRValue => {
+                // deref 的结果需要 copy, raw pointer 除外
+                let op_sty = deref_rv.operand.get_stype();
+                if op_sty.type_symbol is type *RawPointerImmutSymbol ||
+                    op_sty.type_symbol is type *RawPointerImmutSymbol {
+                    return;
+                } else {
+                    let copy = CopyValue::create(rval.expr_node(), rval);
+                    bb.add_step(move copy as *XValue);
+                }
+            }
+            _ => {
+                let copy = CopyValue::create(rval.expr_node(), rval);
+                bb.add_step(move copy as *XValue);
+            }
+        }
+    }
+
+    fn handle_temps_after_stmt(&mut self, bb: *BasicBlock) {
+        // for t in self.temps {
+        //     self.drop_var_sym(t.var_sym, move bb);
+        // }
+        self.temps.clear();
+    }
+
+}
+
+
+fn has_destructor(sty: *SType) -> Bool {
+    let ty = sty.canonical();
+    let ts = ty.type_symbol;
+    if ts is type *ArcPointerSymbol || ts is type *WeakPointerSymbol {
+        return true;
+    }
+    if ts is type *BorrowImmutSymbol || ts is type *BorrowMutSymbol ||
+        ts is type *RawPointerImmutSymbol || ts is type *RawPointerMutSymbol{
+        return false;
+    }
+    if ts is type *TypeParamSymbol {
+        return true;
+    }
+    if ts is type *UnionSymbol {
+        return false;
+    }
+    if ts is type *ArraySymbol {
+        if ty.args.ty_args.is_empty() {
+            return false;
+        } else {
+            return has_destructor(ty.args.ty_arg(0));
+        }
+    }
+    if ts is type *TupleSymbol {
+        for t in ty.args.ty_args {
+            if has_destructor(t) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if ts is struct_sym: *StructSymbol {
+        if has_impl_drop(struct_sym as *TypeSymbol) {
+            return true;
+        }
+        for f in struct_sym.fields {
+            if has_destructor(f.stype) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if ts is enum_sym: *EnumSymbol {
+        if has_impl_drop(enum_sym as *TypeSymbol) {
+            return true;
+        }
+        for v in enum_sym.variants {
+            for f in v.fields {
+                if has_destructor(move f) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    if ts is type *TraitSymbol {
+        return false;
+    }
+
+    // 还有 lambda 等类型
+    return false;
+}
+
+fn has_copy_fn(sty: *SType) -> Bool {
+    let ty = sty.canonical();
+    let ts = ty.type_symbol;
+    if ts is type *ArcPointerSymbol || ts is type *WeakPointerSymbol {
+        return true;
+    }
+    if ts is type *BorrowImmutSymbol || ts is type *BorrowMutSymbol ||
+        ts is type *RawPointerImmutSymbol || ts is type *RawPointerMutSymbol{
+        return false;
+    }
+    if ts is type *TypeParamSymbol {
+        return true;
+    }
+    if ts is type *UnionSymbol {
+        return false;
+    }
+    if ts is type *ArraySymbol {
+        if ty.args.ty_args.is_empty() {
+            return false;
+        } else {
+            return has_copy_fn(ty.args.ty_arg(0));
+        }
+    }
+    if ts is type *TupleSymbol {
+        for t in ty.args.ty_args {
+            if has_copy_fn(t) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if ts is struct_sym: *StructSymbol {
+        for f in struct_sym.fields {
+            if has_copy_fn(f.stype) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if ts is enum_sym: *EnumSymbol {
+        for v in enum_sym.variants {
+            for f in v.fields {
+                if has_copy_fn(move f) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    return false;
+}
+
+fn has_impl_drop(ts: *TypeSymbol) -> Bool {
+    for i in ts.related_impls() {
+        if i.trait_sty is Some(trait_sty) {
+            let key = trait_sty.type_symbol.export_key();
+            if key.as_str().deref().eq(&"::std::ops::drop::Drop") {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+impl BasicBlockChunk {
+
+    fn topological_order(&self) -> Vec<*BasicBlock> {
+        let mut all = (type HashSet<UInt>)::new();
+        setup_incomings(self.start, &mut all);
+
+        let mut ordered = (type Vec<*BasicBlock>)::new();
+
+        let mut to_be_visit = (type Vec<*BasicBlock>)::new();
+        to_be_visit.push(self.start);
+
+        while !to_be_visit.is_empty() {
+            let first: Option<*BasicBlock> = to_be_visit.pop_front();
+            if first is Some(cur) {
+                ordered.push(cur);
+                if cur.terminator is Some(terminator) {
+                    if !(terminator is type *BrBackward) {
+                        let successors = terminator.successors();
+                        for s in successors {
+                            s.index += 1;
+                            if s.index == s.incomings.len() {
+                                to_be_visit.push(move s);
+                            }
+                        }
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        // 设置 index
+        let mut i: UInt = 0;
+        for bb in ordered {
+            bb.index = i;
+            i += 1;
+        }
+        return ordered;
+    }
+
+    fn dump(&self) {
+        let bbs = self.topological_order();
+        for bb in bbs {
+            bb.dump();
+        }
+    }
+}
+
+fn setup_incomings(bb: *BasicBlock, visited: &mut HashSet<UInt>) {
+    let bb_i = bb as *raw BasicBlock as UInt;
+    if visited.contains(&bb_i) {
+        return;
+    }
+    visited.insert(bb_i);
+
+    if bb.terminator is Some(terminator) {
+        if !(terminator is type *BrBackward) {
+            let successors = terminator.successors();
+            for s in successors {
+                s.incomings.push(bb);
+                setup_incomings(move s, visited);
+            }
+        }
+    }
+}
+
+fn extract_logical_and_chain(v: *RValue) -> Option<Vec<*RValue>> {
+    let mut res = (type Vec<*RValue>)::new();
+    if rec_extract_logical_and_chain(v, &mut res) {
+        return Some(move res);
+    } else {
+        return None;
+    }
+}
+
+fn rec_extract_logical_and_chain(v: *RValue, res: &mut Vec<*RValue>) -> Bool {
+    if v is be: *BinaryExprValue {
+        if be.op.token_kind is TokenKind::Punctuation(PunctuationKind::AndAnd) {
+            return rec_extract_logical_and_chain(be.lhs, res) && rec_extract_logical_and_chain(be.rhs, res);
+        }
+        else if be.op.token_kind is TokenKind::Punctuation(PunctuationKind::OrOr) {
+            return false;
+        }
+        else {
+            res.push(be as *RValue);
+        }
+    } else {
+        res.push(v);
+    }
+    return true;
+}

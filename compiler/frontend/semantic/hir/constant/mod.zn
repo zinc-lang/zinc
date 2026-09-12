@@ -1,0 +1,380 @@
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::DiagnosticEngine;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::semantic::hir::ir::*;
+
+mod int;
+mod float;
+mod char;
+mod byte;
+mod str;
+
+trait ConstValue {
+    virtual fn span(&self) -> SourceSpan;
+    virtual fn to_string(&self) -> String;
+    virtual fn structural_eq(&self, other: &ConstValue) -> Bool;
+}
+
+fn const_value_from_rvalue(rv: *RValue) -> Option<*ConstValue> {
+    match rv {
+        lit_rv: *LiteralValue => {
+            return const_value_from_lit_token(lit_rv.expr.token);
+        }
+        agg_rv: *AggregateValue => {
+            let struct_cvalue = box {
+                .expr = agg_rv.expr,
+                .fields = (type Vec<*ConstValue>)::new(),
+            }:StructCValue;
+            let fields_init = agg_rv.ordered_init();
+            for f in fields_init {
+                let ocv = const_value_from_rvalue(move f);
+                if ocv is Some(cv) {
+                    struct_cvalue.fields.push(move cv);
+                } else {
+                    return None;
+                }
+            }
+            return Some(move struct_cvalue as *ConstValue);
+        }
+        tup_rv: *TupleValue => {
+            let tup_cvalue = box {
+                .expr = tup_rv.expr,
+                .elements = (type Vec<*ConstValue>)::new(),
+            }: TupleCValue;
+            for e in tup_rv.elements {
+                let ocv = const_value_from_rvalue(move e);
+                if ocv is Some(cv) {
+                    tup_cvalue.elements.push(move cv);
+                } else {
+                    return None;
+                }
+            }
+            return Some(move tup_cvalue as *ConstValue);
+        }
+        arr_lit_rv: *ArrayLiteralValue => {
+            let arr_cvalue = box {
+                .expr = arr_lit_rv.expr as *ExpressionNode,
+                .elements = (type Vec<*ConstValue>)::new(),
+            }: ArrayCValue;
+            for e in arr_lit_rv.elements {
+                let ocv = const_value_from_rvalue(move e);
+                if ocv is Some(cv) {
+                    arr_cvalue.elements.push(move cv);
+                } else {
+                    return None;
+                }
+            }
+            return Some(move arr_cvalue as *ConstValue);
+        }
+        repeat_rv: *RepeatValue => {
+            let opt_elem = const_value_from_rvalue(repeat_rv.element);
+            let opt_len = const_value_from_rvalue(repeat_rv.len);
+
+            if opt_elem is Some(elem) && opt_len is Some(len) {
+                if len is clen: *IntegerCValue {
+                    let arr_cvalue = box {
+                        .expr = repeat_rv.expr as *ExpressionNode,
+                        .elements = (type Vec<*ConstValue>)::new(),
+                    }: ArrayCValue;
+                    let mut i: UInt64 = 0;
+                    while i < clen.value {
+                        arr_cvalue.elements.push(elem);
+                        i += 1;
+                    }
+                    return Some(move arr_cvalue as *ConstValue);
+                }
+            }
+            return None;
+        }
+        rd_rv: *ReadValue => {
+            if rd_rv.sym_var.is_const() {
+                if rd_rv.sym_var.init is Some(init) {
+                    return const_value_from_rvalue(init);
+                }
+            }
+            return None;
+        }
+        qp_rv: *QualifiedPathValue => {
+            if qp_rv.symbol is ev_sym: *EnumVariantSymbol {
+                let ec = box {
+                    .expr = qp_rv.expr,
+                    .enum_variant = move ev_sym,
+                    .elements = (type Vec<*ConstValue>)::new(),
+                }: EnumCValue;
+                return Some(move ec as *ConstValue);
+            }
+            return None;
+        }
+        _ => return None;
+    }
+    return None;
+}
+
+fn const_value_from_lit_token(t: Token) -> Option<*ConstValue> {
+    if t.token_kind is TokenKind::Keyword(KeywordKind::KW_TRUE) {
+        return Some(box {
+            .token = t,
+            .value = true,
+        }: BoolCValue as *ConstValue);
+    }
+    if t.token_kind is TokenKind::Keyword(KeywordKind::KW_FALSE) {
+        return Some(box {
+            .token = t,
+            .value = false,
+        }: BoolCValue as *ConstValue);
+    }
+    if t.token_kind is TokenKind::Literal(k) {
+        match k {
+            LiteralKind::LIT_CHAR => {
+                let v = box CharCValue::new(t);
+                return Some(move v as *ConstValue);
+            }
+            LiteralKind::LIT_STR => {
+                let s = t.raw_str();
+                let v = box StringCValue::new(t);
+                return Some(move v as *ConstValue);
+            }
+            LiteralKind::LIT_STR_INTERPOLATION => {
+                // should not support, interpolation is not compile time evaluatable
+                return None;
+            }
+            LiteralKind::LIT_BYTE => {
+                let v = box ByteCValue::new(move t);
+                return Some(move v as *ConstValue);
+            }
+            LiteralKind::LIT_INT => {
+                let v = box IntegerCValue::new(move t);
+                return Some(move v as *ConstValue);
+            }
+            LiteralKind::LIT_FLOAT => {
+                let v = box FloatCValue::new(move t);
+                return Some(move v as *ConstValue);
+            }
+        }
+    }
+    return None;
+}
+
+struct IntegerCValue {
+    token: Token,
+    sign: Bool,
+    value: UInt64,
+    suffix: String,
+}
+
+struct CharCValue {
+    token: Token,
+    codepoint: UInt32,
+}
+
+struct BoolCValue {
+    token: Token,
+    value: Bool,
+}
+
+struct ByteCValue {
+    token: Token,
+    value: UInt8,
+}
+
+struct StringCValue {
+    token: Token,
+    value: String,
+}
+
+struct FloatCValue {
+    token: Token,
+    value: F64,
+    suffix: String,
+}
+
+struct StructCValue {
+    expr: *ExpressionNode,
+    fields: Vec<*ConstValue>,
+}
+
+struct ArrayCValue {
+    expr: *ExpressionNode,
+    elements: Vec<*ConstValue>,
+}
+
+struct EnumCValue {
+    expr: *ExpressionNode,
+    enum_variant: *EnumVariantSymbol,
+    elements: Vec<*ConstValue>,
+}
+
+struct TupleCValue {
+    expr: *ExpressionNode,
+    elements: Vec<*ConstValue>,
+}
+
+struct BorrowCValue {
+    expr: *ExpressionNode,
+    borrowed: *ConstValue,
+}
+
+impl ConstValue for BoolCValue {
+    fn span(&self) -> SourceSpan {
+        return self.token.source_span;
+    }
+
+    fn structural_eq(&self, other: &ConstValue) -> Bool {
+        if other is o: &BoolCValue {
+            return self.value == o.value;
+        } else {
+            return false;
+        }
+    }
+
+    fn to_string(&self) -> String {
+        return self.value.to_string();
+    }
+}
+
+impl ConstValue for StructCValue {
+    fn span(&self) -> SourceSpan {
+        return self.expr.span();
+    }
+
+    fn structural_eq(&self, other: &ConstValue) -> Bool {
+        if other is o: &StructCValue {
+            if self.fields.len() != o.fields.len() {
+                return false;
+            }
+            let len = self.fields.len();
+            let mut i: UInt = 0;
+            while i < len {
+                let lhs: *ConstValue = *self.fields.index(i).deref();
+                let rhs: *ConstValue = *o.fields.index(i).deref();
+                if !lhs.structural_eq(&*rhs) {
+                    return false;
+                }
+                i += 1;
+            }
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    fn to_string(&self) -> String {
+        return String::new();
+    }
+}
+
+impl ConstValue for ArrayCValue {
+    fn span(&self) -> SourceSpan {
+        return self.expr.span();
+    }
+
+    fn structural_eq(&self, other: &ConstValue) -> Bool {
+        if other is o: &ArrayCValue {
+            if self.elements.len() != o.elements.len() {
+                return false;
+            }
+            let len = self.elements.len();
+            let mut i: UInt = 0;
+            while i < len {
+                let lhs: *ConstValue = *self.elements.index(i).deref();
+                let rhs: *ConstValue = *o.elements.index(i).deref();
+                if !lhs.structural_eq(&*rhs) {
+                    return false;
+                }
+                i += 1;
+            }
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    fn to_string(&self) -> String {
+        return String::new();
+    }
+}
+
+impl ConstValue for TupleCValue {
+    fn span(&self) -> SourceSpan {
+        return self.expr.span();
+    }
+
+    fn structural_eq(&self, other: &ConstValue) -> Bool {
+        if other is o: &TupleCValue {
+            if self.elements.len() != o.elements.len() {
+                return false;
+            }
+            let len = self.elements.len();
+            let mut i: UInt = 0;
+            while i < len {
+                let lhs: *ConstValue = *self.elements.index(i).deref();
+                let rhs: *ConstValue = *o.elements.index(i).deref();
+                if !lhs.structural_eq(&*rhs) {
+                    return false;
+                }
+                i += 1;
+            }
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    fn to_string(&self) -> String {
+        return String::new();
+    }
+}
+
+impl ConstValue for EnumCValue {
+    fn span(&self) -> SourceSpan {
+        return self.expr.span();
+    }
+
+    fn structural_eq(&self, other: &ConstValue) -> Bool {
+        if other is o: &EnumCValue {
+            if self.enum_variant as *raw EnumVariantSymbol as UInt != 
+                o.enum_variant as *raw EnumVariantSymbol as UInt {
+                return false;
+            }
+            if self.elements.len() != o.elements.len() {
+                return false;
+            }
+            let len = self.elements.len();
+            let mut i: UInt = 0;
+            while i < len {
+                let lhs: *ConstValue = *self.elements.index(i).deref();
+                let rhs: *ConstValue = *o.elements.index(i).deref();
+                if !lhs.structural_eq(&*rhs) {
+                    return false;
+                }
+                i += 1;
+            }
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    fn to_string(&self) -> String {
+        return String::new();
+    }
+}
+
+impl ConstValue for BorrowCValue {
+    fn span(&self) -> SourceSpan {
+        return self.expr.span();
+    }
+
+    fn structural_eq(&self, other: &ConstValue) -> Bool {
+        if other is o: &BorrowCValue {
+            return self.borrowed.structural_eq.(&*o.borrowed);
+        } else {
+            return false;
+        }
+    }
+
+    fn to_string(&self) -> String {
+        return String::new();
+    }
+}

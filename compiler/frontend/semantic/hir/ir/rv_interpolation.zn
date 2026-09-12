@@ -1,0 +1,188 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::semantic::hir::builder::resolver::*;
+use ::self::frontend::diagnostic::*;
+use ::self::frontend::source_code::*;
+
+use super::*;
+
+impl InterpolationValue {
+    fn new(e: *LiteralExpr, sty: *SType) -> *Self {
+        return box {
+            .expr = e,
+            .parent_node = None,
+            .parts = (type Vec<InterpolationPart>)::new(),
+            .sty = move sty,
+        }: InterpolationValue;
+    }
+
+    fn name_resolve(&mut self, resolve_ctx: ResolveContext, resolver: &Resolver) {
+        self.parts.clear();
+        let lexed_parts = self.lex_parts();
+
+        for ref part in lexed_parts {
+            if part is InterpolationLexPart::Var(var) {
+                if var.is_empty() {
+                    DiagnosticEngine::get().emit_invalid_ident_name(self.expr.span(), f"<empty>");
+                    continue;
+                }
+                if KeywordKind::from_str(var.as_str().deref()) is Some(_) {
+                    DiagnosticEngine::get().emit_invalid_ident_name(self.expr.span(), var);
+                    continue;
+                }
+
+                let found = resolver.lookup(resolve_ctx, &var);
+                if found is Some(sym) {
+                    if sym is vsym: *VarSymbol {
+                        self.parts.push(InterpolationPart::Var(move vsym));
+                    } else {
+                        DiagnosticEngine::get().emit_name_not_found(var, self.expr.span());
+                    }
+                } else {
+                    DiagnosticEngine::get().emit_name_not_found(var, self.expr.span());
+                }
+            }
+            else if part is InterpolationLexPart::Str(s) {
+                self.parts.push(InterpolationPart::Str(move s));
+            }
+        }
+    }
+
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        for ref part in self.parts {
+            if part is InterpolationPart::Var(vsym) {
+                self.ensure_var_can_tostring(move vsym);
+            }
+        }
+    }
+
+    fn ensure_var_can_tostring(&self, vsym: *VarSymbol) {
+        if !ensure_type_valid(vsym.stype, self.expr.span()) {
+            return;
+        }
+        let sty = strip_pointer_except_weak(vsym.stype);
+        for i in sty.type_symbol.related_impls() {
+            if i.trait_sty is Some(trait_sty) {
+                let key = trait_sty.type_symbol.export_key();
+                if key.as_str().deref().eq(&"::std::primitives::string::ToString") {
+                    return;
+                }
+            }
+        }
+
+        DiagnosticEngine::get().emit_not_tostring(sty.to_string(), self.expr.span());
+    }
+
+    fn lex_parts(&mut self) -> Vec<InterpolationLexPart> {
+        let mut result = (type Vec<InterpolationLexPart>)::new();
+
+        let span = self.expr.span();
+        // 在 type check 的时候解析 字符串插值，构建 parts
+        let s = self.expr.token.raw_str();
+        let content = s.slice(1, s.len()-2).deref(); // 去掉头尾的双引号
+
+        let mut i: UInt = 0;
+        let len = content.len();
+        while i < len {
+            let c = content.index(i);
+
+            if c == b'$' && i < len - 1 && content.index(i + 1) == b'(' {
+                // lex ident (应该忽略空格一类的, 后续再改进, 支持表达式/内嵌注释等)
+                let mut idx = i + 2;
+                let mut ident = String::new();
+                while idx < len {
+                    let b = content.index(idx);
+                    if b == b'_' || (b >= b'a' && b <= b'z') ||
+                        (b >= b'A' && b <= b'Z') ||
+                        (b >= b'0' && b <= b'9') {
+                        ident.push(b);
+                        idx += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if content.index(idx) != b')' {
+                    DiagnosticEngine::get().emit_illegal_string_interpolation(span);
+                    return result;
+                }
+
+                result.push(InterpolationLexPart::Var(move ident));
+                idx += 1;
+                i = idx;
+            }
+            else {
+                let mut substr = String::new();
+                let mut idx = i;
+                while idx < len {
+                    // 考虑转义
+                    let cur = content.index(idx);
+                    if cur == b'\\' && idx < len - 1 {
+                        let next = content.index(idx + 1);
+                        if next == b't' { idx += 2; substr.push(b'\t'); }
+                        else if next == b'r' { idx += 2; substr.push(b'\r'); }
+                        else if next == b'n' { idx += 2; substr.push(b'\n'); }
+                        else if next == b'0' { idx += 2; substr.push(b'\0'); }
+                        else if next == b'\\' { idx += 2; substr.push(b'\\'); }
+                        else if next == b'"' { idx += 2; substr.push(b'"'); }
+                        else if next == b'\n' { idx += 2; }
+                        else {
+                            idx += 1;
+                            DiagnosticEngine::get().emit_invalid_escape(span);
+                            return result;
+                        }
+                    }
+                    else {
+                        if cur == b'$' && idx < len - 1 && content.index(idx+1) == b'(' {
+                            break;
+                        }
+                        substr.push(cur);
+                        idx += 1;
+                    }
+                }
+                i = idx;
+                result.push(InterpolationLexPart::Str(move substr));
+            }
+        }
+        return result;
+    }
+}
+
+impl XValue for InterpolationValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        // 检查 sty 是 String 类型
+    }
+
+    fn dump(&self) {
+        print("f\"...\"");
+    }
+}
+
+impl RValue for InterpolationValue {
+
+}
+
+enum InterpolationLexPart {
+    Str(String),
+    Var(String),
+}

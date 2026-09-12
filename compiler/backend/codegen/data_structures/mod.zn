@@ -1,0 +1,130 @@
+mod ll_module;
+mod ll_type;
+mod ir_builder;
+
+type Ptr = *raw UInt8;
+extern fn llds_global_has_initializer(g: Ptr) -> Bool;
+extern fn llds_global_set_initializer(g: Ptr, v: Ptr);
+extern fn llds_function_is_empty(f: Ptr) -> Bool;
+extern fn llds_function_entry_basicblock(f: Ptr) -> Ptr;
+extern fn llds_dump_function(f: Ptr);
+extern fn llds_is_struct_type(ty: Ptr) -> Bool;
+extern fn llds_is_pointer_type(ty: Ptr) -> Bool;
+extern fn llds_type_of_value(v: Ptr) -> Ptr;
+
+pub struct LLDataStructures {
+    ds: Ptr,
+}
+
+pub struct CgValue {
+    value: Ptr, // 对应 llvm::Value*
+    indirect: Bool,
+}
+
+impl CgValue {
+    fn null() -> CgValue {
+        return { .value = unsafe(0_u as Ptr), .indirect = false }: CgValue;
+    }
+
+    fn get_type(&self) -> CgType {
+        let ty = unsafe(llds_type_of_value(self.value));
+        return { .llty = ty }: CgType;
+    }
+}
+
+pub struct CgGlobal {
+    value: Ptr, // 对应 llvm::GlobalVariable*
+}
+
+impl CgGlobal {
+    pub fn as_value(&self) -> CgValue {
+        return {
+            .value = self.value,
+            .indirect = true,
+        }: CgValue;
+    }
+
+    pub fn as_const(&self) -> CgConst {
+        return {
+            .value = self.value
+        }: CgConst;
+    }
+
+    pub fn has_initializer(&self) -> Bool {
+        return unsafe(llds_global_has_initializer(self.value));
+    }
+
+    pub fn set_initializer(&self, v: CgConst) {
+        return unsafe(llds_global_set_initializer(self.value, v.value));
+    }
+}
+
+pub struct CgConst {
+    value: Ptr, // 对应 llvm::Constant*
+}
+
+impl CgConst {
+    pub fn as_value(&self) -> CgValue {
+        return {
+            .value = self.value,
+            .indirect = false,
+        }: CgValue;
+    }
+}
+
+pub struct CgType {
+    llty: Ptr,  // 对应 llvm::Type*
+}
+
+impl CgType {
+    fn is_struct_ty(&self) -> Bool {
+        return unsafe(llds_is_struct_type(self.llty));
+    }
+
+    fn is_pointer_ty(&self) -> Bool {
+        return unsafe(llds_is_pointer_type(self.llty));
+    }
+}
+
+pub struct CgFunc {
+    llfn: Ptr,  // 对应 llvm::Function*
+}
+
+impl CgFunc {
+    pub fn null() -> CgFunc {
+        return {
+            .llfn = unsafe(0_u as Ptr)
+        }: CgFunc;
+    }
+
+    pub fn as_const(&self) -> CgConst {
+        return {
+            .value = self.llfn
+        }: CgConst;
+    }
+
+    pub fn is_empty(&self) -> Bool {
+        return unsafe(llds_function_is_empty(self.llfn));
+    }
+
+    pub fn entry_bb(&self) -> Option<CgBasicBlock> {
+        let bb = unsafe(llds_function_entry_basicblock(self.llfn));
+        if bb as UInt == 0 {
+            return None;
+        } else {
+            return Some({ .bb = bb }: CgBasicBlock);
+        }
+    }
+
+    pub fn dump(&self) {
+        unsafe(llds_dump_function(self.llfn));
+    }
+}
+
+pub struct CgFuncType {
+    llfnty: Ptr, // 对应 llvm::FunctionType*
+}
+
+pub struct CgBasicBlock {
+    bb: Ptr, // 对应 llvm::BasicBlock*
+}

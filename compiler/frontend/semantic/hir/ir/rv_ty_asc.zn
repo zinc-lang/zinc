@@ -1,0 +1,46 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use super::*;
+
+impl TypeAscriptionValue {
+    fn new(e: *TypeAscriptionExpr, inner: *RValue, ty: *SType) -> *Self {
+        return box {
+            .expr = move e,
+            .parent_node = None,
+            .inner = move inner,
+            .type_ascription = move ty,
+        }: TypeAscriptionValue;
+    }
+}
+
+impl XValue for TypeAscriptionValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.type_ascription;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        // 检查 sty 是否和 type_ascription 匹配
+    }
+
+    fn dump(&self) {
+        self.inner.dump();
+        print(" : ");
+        print(self.type_ascription.to_string());
+    }
+}
+
+impl RValue for TypeAscriptionValue {
+
+}

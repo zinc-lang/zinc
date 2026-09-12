@@ -1,0 +1,89 @@
+use ::self::primitives::string::ToString;
+use ::self::cmp::{Eq, PartialEq, PartialOrd, Ord, Ordering};
+use ::self::hash::{Hash, Hasher};
+use ::self::primitives::clone::Clone;
+use ::self::primitives::default::Default;
+
+impl ToString for Bool {
+    fn to_string_inplace(&self, buf: &mut String) {
+        let s = if *self then "true" else "false";
+        buf.push_str(s);
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl PartialEq for Bool {
+    fn eq(&self, other: &Self) -> Bool {
+        return *self == *other;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return *self != *other;
+    }
+}
+
+impl Eq for Bool {}
+
+impl PartialOrd for Bool {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if *self == *other {
+            return Some(Ordering::Equal);
+        }
+        else if *other {
+            return Some(Ordering::Less);
+        }
+        else {
+            return Some(Ordering::Greater);
+        }
+    }
+    fn lt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Less);
+    }
+    fn le(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Greater));
+    }
+    fn gt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Greater);
+    }
+    fn ge(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Less));
+    }
+}
+
+impl Ord for Bool {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if *self == *other {
+            return Ordering::Equal;
+        }
+        else if *other {
+            return Ordering::Less;
+        }
+        else {
+            return Ordering::Greater;
+        }
+    }
+}
+
+impl Hash for Bool {
+    fn hash(&self, state: &mut Hasher) {
+        let v: UInt64 = if *self then 1_u64 else 0_u64;
+        state.combine(v);
+    }
+}
+
+impl Clone for Bool {
+    fn clone(&self) -> Bool {
+        return *self;
+    }
+}
+
+impl Default for Bool {
+    fn default() -> Bool {
+        return false;
+    }
+}

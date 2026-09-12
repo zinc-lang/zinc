@@ -1,0 +1,363 @@
+
+// 这个版本的 hashmap 使用 robin hood 算法实现。
+// 等后续 SIMD 支持完成, 再改用 swisstable 实现。
+use ::self::cmp::Eq;
+use ::self::hash::Hash;
+use ::self::hash::default_hasher;
+use ::self::primitives::slice::ItemRef;
+use ::self::primitives::slice::ItemRefMut;
+use ::self::collections::vec::VecIter;
+
+pub struct HashMap<K, V> {
+    table: Vec<Entry<K, V>>,
+    size: UInt,
+}
+
+pub enum Entry<K, V> {
+    Occupied(K, V, UInt),
+    Vacant,
+    Tombstone,
+}
+
+// todo: K 的约束条件不应该写到类型定义这里, 应该写到构造函数那里
+// 构造函数应该提供多种重载形式：
+// fn new() -> Self where K: Eq + Hash {}  如果 K 满足约束, 构造函数就把 K 类型实现的 trait 里面的函数, 保存到成员变量里面去, 其它函数用这些函数指针
+// fn new(hash_fn: *HashFn<K>) -> Self {}  如果 K 不满足约束, 就要求用户把 eq/hash 函数通过构造函数传递进去, 也保存到成员变量里面, 供其它函数使用
+// 在 get/contains 函数上一律不应该有泛型约束。
+// 按 Zinc 的设计思路, Hasher/Allocator 这种 trait 一定不能做成泛型参数搞 static dispatch, 而应该学 C++ 的 pmr 的设计思路用 dynamic dispatch
+impl<K, V> HashMap<K, V> where K: Eq + Hash {
+
+    pub fn new() -> Self {
+        return Self::with_capacity(7);
+    }
+
+    pub fn with_capacity(cap: UInt) -> Self {
+        let mut table = (type Vec<Entry<K, V>>)::with_capacity(cap);
+        let mut i: UInt = 0;
+        while (i < cap) {
+            table.push((type Entry<K,V>)::Vacant);
+            i += 1;
+        }
+        return {
+            .table = move table,
+            .size = 0,
+        }: HashMap<K, V>;
+    }
+
+    pub fn len(&self) -> UInt {
+        return self.size;
+    }
+
+    pub fn is_empty(&self) -> Bool {
+        return self.size == 0;
+    }
+
+    pub fn capacity(&self) -> UInt {
+        return self.table.len();
+    }
+
+    pub fn ref_count(&self) -> UShort {
+        return self.table.ref_count();
+    }
+
+    fn ideal_index(&self, key: &K) -> UInt {
+        let mut hasher = default_hasher();
+        key.hash(&mut hasher);
+        return (hasher.finish() as UInt) % self.table.len();
+    }
+
+    fn probe_distance(&self, key: &K, index: UInt) -> UInt {
+        let ideal_index = self.ideal_index(key);
+        if (index >= ideal_index) {
+            return index - ideal_index;
+        } else {
+            return index + self.table.len() - ideal_index;
+        }
+    }
+
+    fn resize(&mut self) {
+        let mut new_capacity = self.table.len() * 2 + 1;
+        if new_capacity < 7 {
+            new_capacity = 7;
+        }
+        let mut new_table = Self::with_capacity(new_capacity);
+
+        for entry in self.table {
+            if entry is Entry::Occupied(key, value, _) {
+                new_table.insert(move key, move value);
+            }
+        }
+
+        self.table = new_table.table;
+    }
+
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        if self.table.len() == 0 {
+            self.resize();
+        } else if ((self.size as F64 / self.table.len() as F64) > 0.75) {
+            self.resize();
+        }
+        self.table.to_unique();
+
+        let mut index: UInt = self.ideal_index(&key);
+        let mut key = move key;
+        let mut value = move value;
+        let mut distance: UInt = 0;
+
+        while (true) {
+            let entry = unsafe(self.table.get_unchecked_mut(index));
+            if entry is Entry::Occupied(existing_key, existing_value, existing_distance) {
+                if existing_key.eq(&key) { // 找到了
+                    *entry = Entry::Occupied(move key, move value, distance);
+                    return Some(move existing_value);
+                }
+                // Robin Hood: take from the rich (existing entry with larger distance)
+                if distance > existing_distance {
+                    *entry = Entry::Occupied(move key, move value, distance);
+                    key = move existing_key;
+                    value = move existing_value;
+                }
+
+            } else {
+                *entry = Entry::Occupied(move key, move value, distance);
+                self.size += 1;
+                return None;
+            }
+
+            distance += 1;
+            index = (index + 1) % self.table.len();
+        }
+        return None;
+    }
+
+    pub fn to_unique(&mut self) {
+        self.table.to_unique();
+    }
+
+    // todo 参数类型应该更灵活一些, 比如 String 作为 Key 的时候应该允许用 Str 做查询
+    pub fn get<'a>(&'a self, key: &K) -> Option<ItemRef<'a, V>> {
+        if self.size == 0 {
+            return None;
+        }
+
+        let mut index = self.ideal_index(key);
+        let mut distance: UInt = 0;
+
+        unsafe {
+            while (true) {
+                let entry = self.table.get_unchecked(index);
+                match entry {
+                    Entry::Occupied(ref existing_key, ref value, existing_distance) => {
+                        if (existing_key.eq(key)) {
+                            return Some({
+                                .ptr = self.table.ptr as *(),
+                                .size = self.size,
+                                .item = value,
+                            } : ItemRef<'a, V>);
+                        }
+                        // if (distance > existing_distance) {
+                        //     return None;
+                        // }
+                    }
+                    Entry::Vacant => return None;
+                    Entry::Tombstone => {}
+                }
+
+                distance += 1;
+                index = (index + 1) % self.table.len();
+            }
+        }
+        return None;
+    }
+
+    pub fn get_mut<'a>(&'a mut self, key: &K) -> Option<ItemRefMut<'a, V>> {
+        if self.size == 0 {
+            return None;
+        }
+        self.table.to_unique();
+
+        let mut index = self.ideal_index(key);
+        let mut distance: UInt = 0;
+
+        unsafe {
+            while (true) {
+                match self.table.get_unchecked_mut(index) {
+                    Entry::Occupied(ref existing_key, ref mut value, existing_distance) => {
+                        if (existing_key.eq(key)) {
+                            return Some({
+                                .ptr = self.table.ptr as *(),
+                                .size = self.size,
+                                .item = value,
+                            } : ItemRefMut<'a, V>);
+                        }
+                        // if (distance > existing_distance) {
+                        //     return None;
+                        // }
+                    }
+                    Entry::Vacant => return None;
+                    Entry::Tombstone => {}
+                }
+
+                distance += 1;
+                index = (index + 1) % self.table.len();
+            }
+        }
+        return None;
+    }
+
+    pub fn at(&self, key: &K) -> Option<V> {
+        match self.get(key) {
+            Some(item_ref) => {
+                let item: &V = item_ref.item;
+                return Some(*item);
+            }
+            None => return None;
+        }
+    }
+
+    // todo 提供 Entry 系列 API
+
+    pub fn contains(&self, key: &K) -> Bool {
+        if self.size == 0 {
+            return false;
+        }
+
+        let mut index = self.ideal_index(key);
+        let mut distance: UInt = 0;
+
+        unsafe {
+            while (true) {
+                match self.table.get_unchecked(index) {
+                    Entry::Occupied(existing_key, value, existing_distance) => {
+                        if (existing_key.eq(key)) {
+                            return true;
+                        }
+                        // if (distance > existing_distance) {
+                        //     return false;
+                        // }
+                    }
+                    Entry::Vacant => return false;
+                    _ => {}
+                }
+
+                distance += 1;
+                index = (index + 1) % self.table.len();
+            }
+        }
+        return false;
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        if self.size == 0 {
+            return None;
+        }
+
+        self.table.to_unique();
+
+        let mut index = self.ideal_index(key);
+        let mut distance: UInt = 0;
+
+        unsafe {
+            while(true) {
+                let entry = self.table.get_unchecked_mut(index);
+                match entry {
+                    Entry::Occupied(ref existing_key, ref mut value, ref existing_distance) => {
+                        if (existing_key.eq(key)) {
+                            let zero: V = std::intrinsic::zeroed(<V>);
+                            let old_value = std::mem::replace(value, move zero);
+                            *entry = Entry::Tombstone;
+                            self.size -= 1;
+                            return Some(move old_value);
+                        }
+                        // if (distance > *existing_distance) {
+                        //     return None;
+                        // }
+                    }
+                    Entry::Vacant => return None;
+                    Entry::Tombstone => {}
+                }
+
+                distance += 1;
+                index = (index + 1) % self.table.len();
+            }
+        }
+        return None;
+    }
+
+    pub fn merge(&mut self, other: &HashMap<K, V>) {
+        self.to_unique();
+        for entry in other.table {
+            match entry {
+                Entry::Occupied(k, v, _) => {
+                    self.insert(move k, move v);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.size = 0;
+        self.to_unique();
+        self.table.clear();
+    }
+
+    pub fn keys(&self) -> Vec<K> {
+        let mut res = (type Vec<K>)::with_capacity(self.size);
+        for entry in self.table {
+            if entry is Entry::Occupied(k, _, _) {
+                res.push(move k);
+            }
+        }
+        return res;
+    }
+
+    pub fn values(&self) -> Vec<V> {
+        let mut res = (type Vec<V>)::with_capacity(self.size);
+        for entry in self.table {
+            if entry is Entry::Occupied(_, v, _) {
+                res.push(move v);
+            }
+        }
+        return res;
+    }
+
+}
+
+// todo 实现 traits
+pub struct HashMapIter<'a, K, V> {
+    vec_iter: VecIter<'a, Entry<K, V> >,
+}
+
+impl<'a, K, V> Iterator for HashMapIter<'a, K, V> {
+    type Item = (K, V);
+
+    fn next<'n>(&'n mut self) -> Option<&'n (K, V)> {
+        while true {
+            let r = self.vec_iter.next();
+            if r is Some(entry) {
+                unsafe {
+                    if entry is Entry::Occupied(ref k, _, _) {
+                        let ptr = k as &K as *raw K as *raw (K, V) as &(K, V);
+                        return Some(ptr);
+                    } else {
+                        continue;
+                    }
+                }
+            } else {
+                return None;
+            }
+        }
+        return None;
+    }
+}
+
+impl<K, V> Iterable for HashMap<K, V> {
+    type Iter<'i> = HashMapIter<'i, K, V>;
+
+    fn iter<'a>(&'a self) -> HashMapIter<'a, K, V> {
+        return {
+            .vec_iter = self.table.iter(),
+        }: HashMapIter<K, V>;
+    }
+}

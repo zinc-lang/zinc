@@ -1,0 +1,133 @@
+use ::self::primitives::string::ToString;
+use ::self::cmp::{Eq, PartialEq, PartialOrd, Ord, Ordering};
+use ::self::hash::{Hash, Hasher};
+use ::self::primitives::clone::Clone;
+use ::self::primitives::default::Default;
+
+impl Int16 {
+    pub fn reverse_bits(self) -> Int16 {
+        return ::self::intrinsic::reverse_bits(<Int16>, self);
+    }
+
+    pub fn rotate_left(self, n: UInt32) -> Int16 {
+        return ::self::intrinsic::rotate_left(<Int16>, self, n);
+    }
+
+    pub fn rotate_right(self, n: UInt32) -> Int16 {
+        return ::self::intrinsic::rotate_right(<Int16>, self, n);
+    }
+
+    pub fn bit_and(self, n: Int16) -> Int16 {
+        return ::self::intrinsic::bit_and(<Int16>, self, n);
+    }
+
+    pub fn bit_or(self, n: Int16) -> Int16 {
+        return ::self::intrinsic::bit_or(<Int16>, self, n);
+    }
+
+    pub fn bit_xor(self, n: Int16) -> Int16 {
+        return ::self::intrinsic::bit_xor(<Int16>, self, n);
+    }
+
+    pub fn bit_not(self) -> Int16 {
+        return ::self::intrinsic::bit_not(<Int16>, self);
+    }
+
+    pub fn bit_shl(self, n: UInt32) -> Int16 {
+        return ::self::intrinsic::bit_shl(<Int16>, self, n);
+    }
+
+    pub fn bit_shr(self, n: UInt32) -> Int16 {
+        return ::self::intrinsic::bit_shr(<Int16>, self, n);
+    }
+}
+
+impl ToString for Int16 {
+    fn to_string_inplace(&self, buf: &mut String) {
+        let n: Int16 = *self;
+        if (n < 0) {
+            buf.push(b'-');
+            let uv: UInt64 = (-(n + 1)) as UInt64 + 1;
+            uv.to_string_inplace(buf);
+        } else {
+            let m = n as UInt64;
+            m.to_string_inplace(buf);
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl PartialEq for Int16 {
+    fn eq(&self, other: &Self) -> Bool {
+        return *self == *other;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return *self != *other;
+    }
+}
+
+impl Eq for Int16 {}
+
+impl PartialOrd for Int16 {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if *self < *other {
+            return Some(Ordering::Less);
+        }
+        else if *self == *other {
+            return Some(Ordering::Equal);
+        }
+        else {
+            return Some(Ordering::Greater);
+        }
+    }
+    fn lt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Less);
+    }
+    fn le(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Greater));
+    }
+    fn gt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Greater);
+    }
+    fn ge(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Less));
+    }
+}
+
+impl Ord for Int16 {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if *self < *other {
+            return Ordering::Less;
+        }
+        else if *self == *other {
+            return Ordering::Equal;
+        }
+        else {
+            return Ordering::Greater;
+        }
+    }
+}
+
+impl Hash for Int16 {
+    fn hash(&self, state: &mut Hasher) {
+        state.combine(*self as UInt64);
+    }
+}
+
+impl Clone for Int16 {
+    fn clone(&self) -> Int16 {
+        return *self;
+    }
+}
+
+impl Default for Int16 {
+    fn default() -> Int16 {
+        return 0;
+    }
+}

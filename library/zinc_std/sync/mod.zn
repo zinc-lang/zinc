@@ -1,0 +1,16 @@
+
+// mutex
+// 要支持 Mutex , 需要编译器首先支持
+// 1. const fn 及其导入导出, 否则 Mutex 没法被用做 static 变量, 因为 static 变量要求常量初始化表达式
+// 2. lambda 特性, 否则 lock 函数没法实现
+//
+// 注意 Mutex 是 UnSized 类型, 而变量绑定不能是 UnSized 类型, 只能用指向这个类型的指针作为变量。 比如当全局变量使用的时候, 示例如下：
+// static G_Mutex: &'static Mutex<String> = &Mutex::new(String::new());
+
+
+// rwlock
+// condvar
+// lazy
+
+
+// atomic

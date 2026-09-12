@@ -1,0 +1,233 @@
+use super::super::ast::{SyntaxNode, DummySyntaxNode, LibOrExe, SyntaxTree, Qualifier, QualifierList, DeclNode, StatementNode, PatternNode, TypeNode, ExpressionNode};
+use super::super::ast::ty::*;
+use super::super::super::source_code::{SourceLoc, SourceSpan, SourceManager};
+use super::super::super::diagnostic::DiagnosticEngine;
+use super::super::lexer::{Lexer, LexerMode};
+use super::super::token::{Token, TokenKind, KeywordKind, PunctuationKind};
+
+use super::FileParser;
+
+static MAX_TYPE_RECURSION_DEPTH: UInt = 2000;
+
+impl FileParser {
+    fn parse_type(&mut self) -> *TypeNode {
+        self.parse_type_recursion_depth += 1;
+
+        if self.parse_type_recursion_depth > MAX_TYPE_RECURSION_DEPTH {
+            let t = self.lexer.peek(0);
+            DiagnosticEngine::get().emit_compiler_recursion_exceed_limit(t.source_span);
+            self.parse_type_recursion_depth -= 1;
+            return box {
+                .source_span = t.source_span,
+            }: DummySyntaxNode as *TypeNode;
+        }
+
+        let ty = self.do_parse_type();
+        self.parse_type_recursion_depth -= 1;
+        return ty;
+    }
+
+    fn do_parse_type(&mut self) -> *TypeNode {
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Lifetime {
+            let lifetime = self.lexer.next();
+            let ty = box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .lifetime = lifetime,
+            }: LifetimeType;
+            return ty;
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::Star) {
+            let ty = self.parse_pointer_like_type();
+            return ty;
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::Borrow) {
+            let ty = self.parse_borrow_type();
+            return ty;
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::LBracket) {
+            let ty = self.parse_array_type();
+            return ty;
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::LParen) {
+            let ty = self.parse_tuple_type();
+            return ty;
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_FN_LOWER) ||
+                t.token_kind is TokenKind::Keyword(KeywordKind::KW_FN_UPPER) ||
+                t.token_kind is TokenKind::Keyword(KeywordKind::KW_FN_UPPER_MUT) {
+            let ty = self.parse_fn_type();
+            return ty;
+        }
+        else if t.token_kind is TokenKind::Identifier ||
+                t.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_LOWER) ||
+                t.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_UPPER) ||
+                t.token_kind is TokenKind::Punctuation(PunctuationKind::ColonColon) {
+
+            let ty = self.parse_named_type();
+            return ty;
+        }
+        else {
+             DiagnosticEngine::get().emit_unknown_type(t.source_span, t.raw_str());
+             return box {
+                .source_span = t.source_span,
+            }: DummySyntaxNode as *TypeNode;
+        }
+    }
+
+    fn parse_pointer_like_type(&mut self) -> *TypeNode {
+        let star = self.lexer.next();
+        if self.lexer.peek(0).token_kind is TokenKind::Keyword(KeywordKind::KW_WEAK) {
+            let kw_weak = self.lexer.next();
+            let ty_arg = self.parse_type();
+            let ty = box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .star = star,
+                .kw_weak = kw_weak,
+                .ty_arg = ty_arg,
+            }: WeakType;
+            return ty;
+        }
+        else if self.lexer.peek(0).token_kind is TokenKind::Keyword(KeywordKind::KW_RAW) {
+            let kw_raw = self.lexer.next();
+            let mut kw_mut = Token::invalid(kw_raw.source_span);
+            if self.lexer.peek(0).token_kind is TokenKind::Keyword(KeywordKind::KW_MUT) {
+                kw_mut = self.lexer.next();
+            }
+            let ty_arg = self.parse_type();
+            let ty = box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .star = star,
+                .kw_raw = kw_raw,
+                .kw_mut = kw_mut,
+                .ty_arg = ty_arg,
+            }: RawPointerType;
+            return ty;
+        }
+        else {
+            if self.lexer.peek(0).token_kind is TokenKind::Keyword(KeywordKind::KW_MUT) {
+                let kw_mut = self.lexer.next();
+                DiagnosticEngine::get().emit_mut_arc(kw_mut.source_span);
+            }
+            let ty_arg = self.parse_type();
+            let ty = box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .star = star,
+                .ty_arg = ty_arg,
+            }: ArcType;
+            return ty;
+        }
+    }
+
+    fn parse_borrow_type(&mut self) -> *TypeNode {
+        let amp = self.lexer.next();
+        let mut lifetime = Token::invalid(amp.source_span);
+        if self.lexer.peek(0).token_kind is TokenKind::Lifetime {
+            lifetime = self.lexer.next();
+        }
+        let mut kw_mut = Token::invalid(amp.source_span);
+        if self.lexer.peek(0).token_kind is TokenKind::Keyword(KeywordKind::KW_MUT) {
+            kw_mut = self.lexer.next();
+        }
+        let ty_arg = self.parse_type();
+        let ty = box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .amp = amp,
+            .lifetime = lifetime,
+            .kw_mut = kw_mut,
+            .ty_arg = ty_arg,
+        }: BorrowType;
+        return ty;
+    }
+
+    fn parse_array_type(&mut self) -> *TypeNode {
+        let lbracket = self.lexer.next();
+        let ty_arg = self.parse_type();
+        let semicolon = self.expect_token(TokenKind::Punctuation(PunctuationKind::Semi));
+        let size_expr = self.parse_expression();
+        let rbracket = self.expect_token(TokenKind::Punctuation(PunctuationKind::RBracket));
+        let ty = box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .lbracket = lbracket,
+            .ty_arg = ty_arg,
+            .semicolon = semicolon,
+            .size_expr = size_expr,
+            .rbracket = rbracket,
+        }: ArrayType;
+        return ty;
+    }
+
+    fn parse_tuple_type(&mut self) -> *TypeNode {
+        let lparen = self.lexer.next();
+        let mut ty_args: Vec<*TypeNode> = Vec::new();
+        while true {
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::RParen) {
+                break;
+            }
+            let ty_arg = self.parse_type();
+            ty_args.push(move ty_arg);
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Comma) {
+                self.lexer.next();
+            }
+            else {
+                break;
+            }
+        }
+        let rparen = self.expect_token(TokenKind::Punctuation(PunctuationKind::RParen));
+        let ty = box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .lparen = move lparen,
+            .ty_args = move ty_args,
+            .rparen = move rparen,
+        }: TupleType;
+        return ty;
+    }
+
+    fn parse_fn_type(&mut self) -> *TypeNode {
+        let kw_fn = self.lexer.next();
+        // todo 补充支持泛型参数
+
+        let lparen = self.expect_token(TokenKind::Punctuation(PunctuationKind::LParen));
+        let mut param_types: Vec<*TypeNode> = Vec::new();
+        while true {
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::RParen) {
+                break;
+            }
+            let param_ty = self.parse_type();
+            param_types.push(param_ty);
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Comma) {
+                self.lexer.next();
+            }
+            else {
+                break;
+            }
+        }
+        let rparen = self.expect_token(TokenKind::Punctuation(PunctuationKind::RParen));
+        let mut arrow = Token::invalid(rparen.source_span);
+        let mut return_type: Option<*TypeNode> = None;
+        if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::ThinArrow) {
+            arrow = self.lexer.next();
+            return_type = Some(self.parse_type());
+        }
+        let ty = box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_fn = kw_fn,
+            .lparen = lparen,
+            .param_types = param_types,
+            .rparen = rparen,
+            .arrow = arrow,
+            .return_type = return_type,
+        }: FnType;
+        return ty;
+    }
+
+    fn parse_named_type(&mut self) -> *TypeNode {
+        let path = self.parse_segmented_name(true);
+
+        let ty = box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .name = move path,
+        }: NamedType;
+        return ty;
+    }
+}

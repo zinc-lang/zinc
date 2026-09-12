@@ -1,0 +1,115 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::*;
+use super::*;
+
+impl EnumVariantPattern {
+    fn new(n: *EnumVariantPatternNode, sym: *EnumVariantSymbol) -> *Self {
+        return box {
+            .node = move n as *PatternNode,
+            .enum_ctor_sym = move sym,
+            .elements = (type Vec<*Pattern>)::new(),
+            .matches_with = None,
+            .payload = None,
+        }: EnumVariantPattern;
+    }
+
+    fn create(sym: *EnumVariantSymbol, span: SourceSpan) -> *Self {
+        let dummy = box {
+            .source_span = span
+        }: DummySyntaxNode as *PatternNode;
+        return box {
+            .node = move dummy as *PatternNode,
+            .enum_ctor_sym = move sym,
+            .elements = (type Vec<*Pattern>)::new(),
+            .matches_with = None,
+            .payload = None,
+        }: EnumVariantPattern;
+    }
+}
+
+impl Pattern for EnumVariantPattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+        self.matches_with = Some(expr);
+
+        let payload = VariantPayloadValue::create(expr, self.enum_ctor_sym);
+        let mut i: UInt = 0;
+        while i < self.elements.len() {
+            let pat: *Pattern = *self.elements.index(i).deref();
+            let elem_value = TupleAccessRValue::create(payload as *RValue, i);
+            pat.destructure(move elem_value, is_refutable);
+            i += 1;
+        }
+
+        self.payload = Some(payload);
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        let mut all_bindings = (type Vec<*VarSymbol>)::new();
+        for e in self.elements {
+            let b = e.collect_all_bindings();
+            for i in b {
+                all_bindings.push(move i);
+            }
+        }
+        return all_bindings;
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        let mw = self.matches_with.get_or_panic("BUG: pattern does not know what expression it matches with");
+        let expr_ty = ctx.infer(mw); // 按道理如果这里推导失败应该转为检查模式
+        if !ensure_type_valid(expr_ty, mw.expr_node().span()) {
+            return;
+        }
+
+        let sty = strip_pointer_except_weak(expr_ty);
+        let esym = self.enum_ctor_sym.parent_enum.get_or_panic();
+        let enum_formal_ty = esym.to_sty();
+
+        let mut mappings = TypeMapping::new();
+        let r = mappings.unify(enum_formal_ty, sty);
+        if !r {
+            DiagnosticEngine::get().emit_type_mismatch(enum_formal_ty.to_string(), sty.to_string(), self.node.span());
+        }
+
+        let expect_len = self.enum_ctor_sym.fields.len();
+        let actual_len = self.elements.len();
+        if expect_len < actual_len {
+            // tuple模式里面包含的元素个数大于类型参数的个数
+            DiagnosticEngine::get().emit_tuple_len_not_match(expect_len, actual_len, self.node.span());
+            return;
+        }
+        else if expect_len > actual_len {
+            let mut last_is_rest = false;
+            if actual_len >= 1 {
+                let last: *Pattern = *self.elements.index(actual_len - 1).deref();
+                last_is_rest = last is type *RestPattern;
+            }
+            if !last_is_rest {
+                DiagnosticEngine::get().emit_tuple_len_not_match(expect_len, actual_len, self.node.span());
+                return;
+            }
+        }
+
+        if self.payload is Some(payload) {
+            let payload_sty = ctx.infer(payload);
+            if !(payload_sty.type_symbol is type *TupleSymbol) {
+                DiagnosticEngine::get().emit_type_mismatch(f"tuple", payload_sty.to_string(), self.node.span());
+                return;
+            }
+        } else {
+            panic;
+        }
+
+        for e in self.elements {
+            e.type_check(ctx);
+        }
+    }
+}

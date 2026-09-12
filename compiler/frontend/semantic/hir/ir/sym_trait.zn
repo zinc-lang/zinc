@@ -1,0 +1,227 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::source_code::*;
+
+use std::collections::hashset::HashSet;
+
+impl TraitSymbol {
+    pub fn new(node: *TraitDecl) -> *Self {
+        let self_ty = AssociatedTypeSymbol::self_ty_in_trait(node);
+        let sym = box {
+            .trait_decl = move node,
+            .parent_sym = None,
+            .generics = GenericParams::new(),
+            .self_ty = self_ty,
+            .symbol_table = SymbolTable::new(),
+            .associated_types = (type Vec<*AssociatedTypeSymbol>)::new(),
+            .methods = (type Vec<*FuncSymbol>)::new(),
+            .inherit_traits = (type Vec<*SType>)::new(),
+            .cache = (type HashMap<GenericArgs, *SType>)::new(),
+        }: TraitSymbol;
+        self_ty.parent_sym = Some(sym as *ScopeSymbol);
+        return sym;
+    }
+
+    pub fn qualifiers(&self) -> QualifierList {
+        return self.trait_decl.qualifiers();
+    }
+
+    pub fn find_method(&self, method_token: Token, arg_count: UInt) -> Vec<*FuncSymbol> {
+        let method = method_token.raw_str();
+        // 考虑 trait 菱形继承场景, 这里用 HashSet 把函数去重一下更好
+        let mut results = (type Vec<*FuncSymbol>)::new();
+        let mut unique = (type HashSet<UInt>)::new();
+
+        for m in self.methods {
+            if m.short_name().eq(&method) &&
+                m.accept_params(arg_count) {
+
+                let mi = m as *raw FuncSymbol as UInt;
+                if !unique.contains(&mi) {
+                    results.push(move m);
+                    unique.insert(mi);
+                }
+            }
+        }
+        // 还需要查找 parent trait
+        for parent in self.inherit_traits {
+            if parent.type_symbol is pts: *TraitSymbol {
+                let res = pts.find_method(method_token, arg_count);
+                for r in res {
+                    let ri = r as *raw FuncSymbol as UInt;
+                    if !unique.contains(&ri) {
+                        results.push(move r);
+                        unique.insert(ri);
+                    }
+                }
+            }
+        }
+        return results;
+    }
+
+    pub fn is_inherited_from(&self, tr: *TraitSymbol) -> Bool {
+        if tr.mangle_name().as_str().deref().eq(&"::std::primitives::Any") {
+            return true;
+        }
+        for parent in self.inherit_traits {
+            if parent.type_symbol is pts: *TraitSymbol {
+                if pts as *raw TraitSymbol as UInt == tr as *raw TraitSymbol as UInt {
+                    return true;
+                }
+                if pts.is_inherited_from(tr) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    pub fn super_traits_symbols(&self) -> Vec<*TraitSymbol> {
+        let mut results = (type Vec<*TraitSymbol>)::new();
+
+        // 没有把 Any 带上, 主要是因为这个函数只是搜集函数表用的, Any 没有成员函数
+
+        for parent in self.inherit_traits {
+            if parent.type_symbol is pts: *TraitSymbol {
+                results.push(pts);
+                let super_parents = pts.super_traits_symbols();
+                results.extend_from_slice(super_parents.as_slice().deref());
+            }
+        }
+        // todo 做额外的两轮遍历, 过滤掉重复的 trait, 解决菱形继承问题
+        return results;
+    }
+
+    pub fn methods_of_total(&self) -> Vec<*FuncSymbol> {
+        let mut results = (type Vec<*FuncSymbol>)::new();
+        results.extend_from_slice(self.methods.as_slice().deref());
+        for pts in self.super_traits_symbols() {
+            let super_methods = pts.methods;
+            results.extend_from_slice(super_methods.as_slice().deref());
+        }
+        return results;
+    }
+
+    pub fn index_of_method(&self, method: *FuncSymbol) -> Option<UInt> {
+        let total_methods = self.methods_of_total();
+        let mut i: UInt = 0;
+        for f in total_methods {
+            if f as *raw FuncSymbol as UInt == method as *raw FuncSymbol as UInt {
+                return Some(i);
+            }
+            i += 1;
+        }
+        return None;
+    }
+}
+
+impl Symbol for TraitSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        return self.trait_decl as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return self.trait_decl.short_name();
+    }
+
+    fn mangle_name(&self) -> String {
+        if self.parent_sym is Some(ps) {
+            let mut res = ps.export_key();
+            res.push_str("::");
+            res.push_str(self.short_name().as_str().deref());
+            return res;
+        } else {
+            return self.short_name();
+        }
+    }
+
+    fn export_key(&self) -> String {
+        return self.mangle_name();
+    }
+
+    fn export_value(&self) -> String {
+        let mut res = String::new();
+        self.trait_decl.qualifiers().to_string_inplace(&mut res);
+        res.push_str("trait ");
+        res.push_str(self.short_name().as_str().deref());
+        res.push_str(self.generics.export_value().as_str().deref());
+
+        if !self.inherit_traits.is_empty() {
+            res.push_str(" : ");
+
+            let mut is_first = true;
+            for base in self.inherit_traits {
+                if is_first {
+                    is_first = false;
+                } else {
+                    res.push_str(" + ");
+                }
+                let base_str = base.to_string();
+                res.push_str(base_str.as_str().deref());
+            }
+        }
+        
+        let where_conds = self.generics.export_constraints();
+        res.push_str(where_conds.as_str().deref());
+
+        res.push_str(" {");
+        for at in self.associated_types {
+            res.push_str("\n");
+            res.push_str(at.export_value().as_str().deref());
+        }
+        for m in self.methods {
+            res.push_str("\n");
+            res.push_str(m.export_value().as_str().deref());
+        }
+        res.push_str("\n} \n");
+        return res;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_sym;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_sym = Some(ss);
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return self.trait_decl.qualifiers().get(QualifierKind::Pub);
+    }
+}
+
+impl ScopeSymbol for TraitSymbol {
+    fn sym_table(&mut self) -> &mut SymbolTable {
+        return &mut self.symbol_table;
+    }
+}
+
+impl TypeSymbol for TraitSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        let mut res = String::new();
+        res.push_str(self.mangle_name().as_str().deref());
+        res.push_str(args.to_string().as_str().deref());
+        return res;
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(cached) {
+            return cached;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    fn to_sty(*self) -> *SType {
+        let args = self.generics.to_generic_args();
+        return self.to_sty(move args);
+    }
+}

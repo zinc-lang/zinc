@@ -1,0 +1,178 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::source_code::*;
+
+impl AssociatedTypeSymbol {
+    pub fn new(node: *AssociatedTypeDecl) -> *Self {
+        let span = node.span();
+        let sym = box {
+            .assocty_decl = Some(move node),
+            .dummy_node = None,
+            .parent_sym = None,
+            .generics = GenericParams::new(),
+            .target_sty = InvalidSymbol::new(span).to_sty(),
+            .upper_bounds = (type Vec<*SType>)::new(),
+            .symbol_table = SymbolTable::new(),
+            .cache = (type HashMap<GenericArgs, *SType>)::new(),
+        }: AssociatedTypeSymbol;
+        return sym;
+    }
+
+    pub fn self_ty_in_trait(tr: *TraitDecl) -> *Self {
+        let span = tr.name.source_span;
+        let dummy = box {
+            .source_span = tr.span()
+        }: DummySyntaxNode;
+        return box {
+            .assocty_decl = None,
+            .dummy_node = Some(move dummy),
+            .parent_sym = None,
+            .generics = GenericParams::new(),
+            .target_sty = InvalidSymbol::new(span).to_sty(),
+            .upper_bounds = (type Vec<*SType>)::new(),
+            .symbol_table = SymbolTable::new(),
+            .cache = (type HashMap<GenericArgs, *SType>)::new(),
+        }: AssociatedTypeSymbol;
+    }
+
+    pub fn self_ty_in_impl(i: *ImplDecl) -> *Self {
+        let span = i.kw_impl.source_span;
+        let dummy = box {
+            .source_span = i.span()
+        }: DummySyntaxNode;
+        return box {
+            .assocty_decl = None,
+            .dummy_node = Some(move dummy),
+            .parent_sym = None,
+            .generics = GenericParams::new(),
+            .target_sty = InvalidSymbol::new(span).to_sty(),
+            .upper_bounds = (type Vec<*SType>)::new(),
+            .symbol_table = SymbolTable::new(),
+            .cache = (type HashMap<GenericArgs, *SType>)::new(),
+        }: AssociatedTypeSymbol;
+    }
+
+    pub fn in_trait(&self) -> Bool {
+        if self.parent_sym is Some(p) {
+            return p is type *TraitSymbol;
+        }
+        return false;
+    }
+
+    pub fn in_impl(&self) -> Bool {
+        if self.parent_sym is Some(p) {
+            return p is type *ImplSymbol;
+        }
+        return false;
+    }
+
+    pub fn is_self_ty(&self) -> Bool {
+        return self.assocty_decl is None;
+    }
+
+}
+
+impl Symbol for AssociatedTypeSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        if self.assocty_decl is Some(n) {
+            return n as *SyntaxNode;
+        }
+        if self.dummy_node is Some(d) {
+            return d as *SyntaxNode;
+        }
+        panic "unreachable";
+    }
+
+    fn short_name(&self) -> String {
+        if self.assocty_decl is Some(n) {
+            return n.short_name();
+        } else {
+            return "Self".to_string();
+        }
+    }
+
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+
+    fn export_value(&self) -> String {
+        let mut res = String::new();
+
+        res.push_str("type ");
+        res.push_str(self.short_name().as_str().deref());
+        res.push_str(self.generics.export_value().as_str().deref());
+        if !self.upper_bounds.is_empty() {
+            res.push_str(": ");
+            let mut first = true;
+            for b in self.upper_bounds {
+                if first {
+                    first = false;
+                } else {
+                    res.push_str(" + ");
+                }
+                res.push_str(b.export_value().as_str().deref());
+            }
+        }
+        res.push_str(";");
+        return res;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        if self.parent_sym is Some(t) {
+            return Some(t as *ScopeSymbol);
+        } else {
+            return None;
+        }
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_sym = Some(ss);
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        if self.assocty_decl is Some(n) {
+            return n.qualifiers().get(QualifierKind::Pub);
+        } 
+        return None;
+    }
+}
+
+impl TypeSymbol for AssociatedTypeSymbol {
+
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        let mut res = String::new();
+        res.push_str(self.mangle_name().as_str().deref());
+        res.push_str(args.to_string().as_str().deref());
+        return res;
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(cached) {
+            return cached;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    fn to_sty(*self) -> *SType {
+        let args = self.generics.to_generic_args();
+        return self.to_sty(move args);
+    }
+}
+
+impl ScopeSymbol for AssociatedTypeSymbol {
+    fn sym_table(&mut self) -> &mut SymbolTable {
+        return &mut self.symbol_table;
+    }
+}

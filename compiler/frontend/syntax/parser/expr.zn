@@ -1,0 +1,1120 @@
+use super::super::ast::{SyntaxNode, DummySyntaxNode, LibOrExe, SyntaxTree, Qualifier, QualifierList, DeclNode, StatementNode, PatternNode, TypeNode, ExpressionNode, SegmentedName, SegmentedPart};
+use super::super::ast::expr::*;
+use super::super::ast::decl::{FnParamDecl, GenericTypeParamDecl, WhereCondDecl};
+use super::super::ast::stmt::BlockStmt;
+use super::super::super::source_code::{SourceLoc, SourceSpan, SourceManager};
+use super::super::super::diagnostic::DiagnosticEngine;
+use super::super::lexer::{Lexer, LexerMode};
+use super::super::token::{Token, TokenKind, KeywordKind, PunctuationKind, LiteralKind};
+
+use super::FileParser;
+
+static MAX_EXPR_RECURSION_DEPTH: UInt = 2000;
+
+impl FileParser {
+    pub fn parse_expression(&mut self) -> *ExpressionNode {
+        self.parse_expr_recursion_depth += 1;
+
+        let t = self.lexer.peek(0);
+        if self.parse_expr_recursion_depth > MAX_EXPR_RECURSION_DEPTH {
+            DiagnosticEngine::get().emit_compiler_recursion_exceed_limit(t.source_span);
+            self.parse_expr_recursion_depth -= 1;
+            return box {
+                .source_span = t.source_span,
+            }: DummySyntaxNode as *ExpressionNode;
+        }
+
+        if t.token_kind is TokenKind::Keyword(KeywordKind::KW_IF) {
+            let e = self.parse_ternary_expr();
+            self.parse_expr_recursion_depth -= 1;
+            return e;
+        }
+        else {
+            let e = self.parse_assign_expr();
+            self.parse_expr_recursion_depth -= 1;
+            return e;
+        }
+    }
+
+    fn parse_ternary_expr(&mut self) -> *TernaryExpr {
+        let kw_if = self.expect_token(TokenKind::Keyword(KeywordKind::KW_IF));
+        let cond = self.parse_expression();
+        let kw_then = self.expect_token(TokenKind::Keyword(KeywordKind::KW_THEN));
+        let then_branch = self.parse_expression();
+        let kw_else = self.expect_token(TokenKind::Keyword(KeywordKind::KW_ELSE));
+        let else_branch = self.parse_expression();
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_if = kw_if,
+            .condition = move cond,
+            .kw_then = kw_then,
+            .then_branch = move then_branch,
+            .kw_else = kw_else,
+            .else_branch = move else_branch,
+        }: TernaryExpr;
+    }
+
+    fn parse_assign_expr(&mut self) -> *ExpressionNode {
+        let left = self.parse_range_expr();
+
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Punctuation(PunctuationKind::Assign) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::AddAssign) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::SubAssign) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::MulAssign) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::DivAssign) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::PercentAssign) {
+        
+            let op = self.lexer.next();
+            let right = self.parse_assign_expr();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .lhs = move left,
+                .assign_op = op,
+                .rhs = move right,
+            }: AssignExpr;
+        }
+        else {
+            return left;
+        }
+    }
+
+    fn parse_range_expr(&mut self) -> *ExpressionNode {
+        let left = self.parse_or_expr();
+
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Punctuation(PunctuationKind::RangeOpen) || 
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::RangeClose) {
+            let op = self.lexer.next();
+            let right = self.parse_or_expr();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .lhs = move left,
+                .op = op,
+                .rhs = move right,
+            }: BinaryExpr;
+        }
+        else {
+            return left;
+        }
+    }
+
+    fn parse_or_expr(&mut self) -> *ExpressionNode {
+        let left = self.parse_and_expr();
+
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Punctuation(PunctuationKind::OrOr) {
+            let op = self.lexer.next();
+            let right = self.parse_or_expr();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .lhs = move left,
+                .op = op,
+                .rhs = move right,
+            }: BinaryExpr;
+        }
+        else {
+            return left;
+        }
+    }
+
+    fn parse_and_expr(&mut self) -> *ExpressionNode {
+        let left = self.parse_cmp_expr();
+
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Punctuation(PunctuationKind::AndAnd) {
+            let op = self.lexer.next();
+            let right = self.parse_and_expr();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .lhs = move left,
+                .op = op,
+                .rhs = move right,
+            }: BinaryExpr;
+        }
+        else {
+            return left;
+        }
+    }
+
+    fn parse_cmp_expr(&mut self) -> *ExpressionNode {
+        let left = self.parse_add_expr();
+
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Punctuation(PunctuationKind::EqEq) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::NotEq) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::Lt) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::LtEq) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::Gt) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::GtEq) {
+            
+            let op = self.lexer.next();
+            let right = self.parse_cmp_expr();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .lhs = move left,
+                .op = op,
+                .rhs = move right,
+            }: BinaryExpr;
+        }
+        else {
+            return left;
+        }
+    }
+
+    fn parse_add_expr(&mut self) -> *ExpressionNode {
+        let left = self.parse_mul_expr();
+
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Punctuation(PunctuationKind::Plus) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::Minus) {
+            
+            let op = self.lexer.next();
+            let right = self.parse_add_expr();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .lhs = move left,
+                .op = op,
+                .rhs = move right,
+            }: BinaryExpr;
+        }
+        else {
+            return left;
+        }
+    }
+
+    fn parse_mul_expr(&mut self) -> *ExpressionNode {
+        let left = self.parse_cast_expr();
+
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Punctuation(PunctuationKind::Star) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::Div) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::Percent) {
+            
+            let op = self.lexer.next();
+            let right = self.parse_mul_expr();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .lhs = move left,
+                .op = op,
+                .rhs = move right,
+            }: BinaryExpr;
+        }
+        else {
+            return left;
+        }
+    }
+
+    fn parse_cast_expr(&mut self) -> *ExpressionNode {
+        let mut left = self.parse_unary_expr();
+
+        let mut t = self.lexer.peek(0);
+        while true {
+            if t.token_kind is TokenKind::Keyword(KeywordKind::KW_AS) {
+                let kw_as = self.lexer.next();
+                let ty = self.parse_type();
+
+                let e = box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lhs = move left,
+                    .kw_as = kw_as,
+                    .rhs = move ty,
+                }: AsExpr;
+                left = move e;
+
+                t = self.lexer.peek(0);
+            }
+            else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_IS) {
+                let kw_is = self.lexer.next();
+                let pat = self.parse_pattern();
+
+                let e = box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lhs = move left,
+                    .kw_is = kw_is,
+                    .rhs = move pat,
+                }: IsExpr;
+                left = move e;
+
+                t = self.lexer.peek(0);
+            }
+            else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    fn parse_unary_expr(&mut self) -> *ExpressionNode {
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Punctuation(PunctuationKind::Bang) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::Minus) ||
+            t.token_kind is TokenKind::Punctuation(PunctuationKind::Star) ||
+            t.token_kind is TokenKind::Keyword(KeywordKind::KW_BOX) ||
+            t.token_kind is TokenKind::Keyword(KeywordKind::KW_YIELD) ||
+            t.token_kind is TokenKind::Keyword(KeywordKind::KW_MOVE) ||
+            t.token_kind is TokenKind::Keyword(KeywordKind::KW_AWAIT) {
+            
+            let op = self.lexer.next();
+            let tk = op.token_kind;
+            let mut kind = UnaryExprKind::Not;
+            match tk {
+                TokenKind::Punctuation(PunctuationKind::Bang) => kind = UnaryExprKind::Not;
+                TokenKind::Punctuation(PunctuationKind::Minus) => kind = UnaryExprKind::Neg;
+                TokenKind::Punctuation(PunctuationKind::Star) => kind = UnaryExprKind::Deref;
+                TokenKind::Keyword(KeywordKind::KW_BOX) => kind = UnaryExprKind::Box;
+                TokenKind::Keyword(KeywordKind::KW_YIELD) => kind = UnaryExprKind::Yield;
+                TokenKind::Keyword(KeywordKind::KW_MOVE) => kind = UnaryExprKind::Move;
+                TokenKind::Keyword(KeywordKind::KW_AWAIT) => kind = UnaryExprKind::Await;
+                _ => panic;
+            };
+
+            let operand = self.parse_unary_expr();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .op1 = op,
+                .op2 = Token::invalid(op.source_span),
+                .op3 = Token::invalid(op.source_span),
+                .operand = move operand,
+                .kind = move kind,
+            }: UnaryExpr;
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::Borrow) {
+            let borrow = self.lexer.next();
+            let mut kind = UnaryExprKind::Ref;
+
+            let mut op2 = Token::invalid(borrow.source_span);
+            let mut op3 = Token::invalid(borrow.source_span);
+
+            let t2 = self.lexer.peek(0);
+            if t2.token_kind is TokenKind::Keyword(KeywordKind::KW_MUT) {
+                let kw_mut = self.lexer.next();
+                op2 = kw_mut;
+                kind = UnaryExprKind::RefMut;
+            } else if t2.token_kind is TokenKind::Keyword(KeywordKind::KW_RAW) {
+                let kw_raw = self.lexer.next();
+                let t3 = self.lexer.peek(0);
+                if t3.token_kind is TokenKind::Keyword(KeywordKind::KW_MUT) {
+                    let kw_mut = self.lexer.next();
+                    op2 = kw_raw;
+                    op3 = kw_mut;
+                    kind = UnaryExprKind::RefRawMut;
+                } else {
+                    op2 = kw_raw;
+                    kind = UnaryExprKind::RefRaw;
+                }
+            }
+
+            let operand = self.parse_unary_expr();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .op1 = borrow,
+                .op2 = move op2,
+                .op3 = move op3,
+                .operand = move operand,
+                .kind = move kind,
+            }: UnaryExpr;
+        }
+        else {
+            return self.parse_post_expr();
+        }
+    }
+
+    fn parse_post_expr(&mut self) -> *ExpressionNode {
+        let mut expr = self.parse_field_access();
+
+        let mut t = self.lexer.peek(0);
+        while t.token_kind is TokenKind::Punctuation(PunctuationKind::Question) ||
+                t.token_kind is TokenKind::Punctuation(PunctuationKind::LBracket) ||
+                t.token_kind is TokenKind::Punctuation(PunctuationKind::Dot) ||
+                t.token_kind is TokenKind::Punctuation(PunctuationKind::LParen) {
+
+            expr = self.parse_post_expr_suffix(expr);
+            t = self.lexer.peek(0);
+        }
+        return expr;
+    }
+
+    fn parse_post_expr_suffix(&mut self, lhs: *ExpressionNode) -> *ExpressionNode {
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Punctuation(PunctuationKind::Question) {
+            let op = self.lexer.next();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .expr = move lhs,
+                .question = op,
+            }: QuestionExpr;
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::LBracket) {
+            let lbracket = self.lexer.next();
+            let index = self.parse_expression();
+            let rbracket = self.expect_token(TokenKind::Punctuation(PunctuationKind::RBracket));
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .base = move lhs,
+                .lbracket = lbracket,
+                .index = move index,
+                .rbracket = rbracket,
+            }: IndexExpr;
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::Dot) {
+            let dot = self.lexer.next();
+
+            let t2 = self.lexer.peek(0);
+            if t2.token_kind is TokenKind::Identifier ||
+                t2.token_kind is TokenKind::Literal(LiteralKind::LIT_INT) {
+                // 这个分支应该走不进来, 已经被处理过了
+                let member_name = self.lexer.next();
+                return box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .base = move lhs,
+                    .dot = dot,
+                    .member = member_name,
+                }: MemberAccessExpr;
+            }
+            else if t2.token_kind is TokenKind::Punctuation(PunctuationKind::LBrace) {
+                let trailing = self.parse_lambda_block();
+                if lhs is callee: *FnCallExpr {
+                    callee.args.push({
+                            .parent_node = callee as *SyntaxNode as *weak SyntaxNode,
+                            .named = Token::invalid(t2.source_span),
+                            .value = move trailing,
+                        }: FnArg);
+                    return callee;
+                } else {
+                    let mut args : Vec<FnArg> = Vec::new();
+                    args.push({
+                        .parent_node = lhs as *weak ExpressionNode as *weak SyntaxNode,
+                        .named = Token::invalid(t2.source_span),
+                        .value = move trailing,
+                    }: FnArg);
+                    let call = box {
+                        .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                        .callee = move lhs,
+                        .type_args = (type Vec<*TypeNode>)::new(),
+                        .lparen = Token::invalid(t2.source_span),
+                        .args = move args,
+                        .rparen = Token::invalid(t2.source_span),
+                    }: FnCallExpr;
+                    return call;
+                }
+            }
+            else {
+                return lhs;
+            }
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::LParen) {
+            let lparen = self.lexer.next();
+            
+            let call_expr = box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .callee = move lhs,
+                .type_args = (type Vec<*TypeNode>)::new(),
+                .lparen = lparen,
+                .args = (type Vec<FnArg>)::new(),
+                .rparen = Token::invalid(lparen.source_span),
+            }: FnCallExpr;
+
+            let has_type_arg = self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Lt);
+            if has_type_arg {
+                while true {
+                    self.lexer.next();
+                    if self.lexer.peek(0, LexerMode::Lazy).token_kind is TokenKind::Punctuation(PunctuationKind::Gt) {
+                        break;
+                    }
+                    let ty = self.parse_type();
+                    call_expr.type_args.push(move ty);
+
+                    if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Comma) {
+                        continue;
+                    }
+                    else {
+                        break;
+                    }
+                }
+                self.expect_token(LexerMode::Lazy, TokenKind::Punctuation(PunctuationKind::Gt));
+            }
+
+            let t2 = self.lexer.peek(0);
+            if has_type_arg &&
+                !(t2.token_kind is TokenKind::Punctuation(PunctuationKind::RParen)) {
+                // 泛型参数和函数参数之间要有逗号分隔
+                self.expect_token(TokenKind::Punctuation(PunctuationKind::Comma));
+            }
+
+            while true {
+                let t3 = self.lexer.peek(0);
+                if t3.token_kind is TokenKind::Punctuation(PunctuationKind::RParen) {
+                    break;
+                }
+                // 解析命名参数
+                if t3.token_kind is TokenKind::Punctuation(PunctuationKind::Dot) {
+                    let dot = self.lexer.next();
+                    let param_name = self.expect_token(TokenKind::Identifier);
+                    let assign = self.expect_token(TokenKind::Punctuation(PunctuationKind::Assign));
+                    let arg = self.parse_expression();
+
+                    let fn_arg: FnArg = {
+                        .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                        .named = param_name,
+                        .value = move arg,
+                    }: FnArg;
+                    call_expr.args.push(move fn_arg);
+                } else {
+                    let arg = self.parse_expression();
+                    let invalid_token = Token::invalid(arg.span());
+                    let fake_parent = self.dummy() as *SyntaxNode as *weak SyntaxNode;
+                    let fn_arg: FnArg = {
+                        .parent_node = move fake_parent,
+                        .named = move invalid_token,
+                        .value = move arg,
+                    }: FnArg;
+                    call_expr.args.push(move fn_arg);
+                }
+
+                if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Comma) {
+                    self.lexer.next();
+                    continue;
+                }
+                else {
+                    break;
+                }
+            }
+
+            call_expr.rparen = self.expect_token(TokenKind::Punctuation(PunctuationKind::RParen));
+
+            // 函数调用表达式 后面允许使用 type ascription, 这是为了方便后续通过返回类型做类型推导
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Colon) {
+                let colon = self.lexer.next();
+                let ty = self.parse_type();
+                return box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .expr = move call_expr,
+                    .colon = colon,
+                    .ty = move ty,
+                }: TypeAscriptionExpr;
+            }
+            else {
+                return call_expr;
+            }
+        }
+        else {
+            return lhs;
+        }
+    }
+
+    fn parse_field_access(&mut self) -> *ExpressionNode {
+        let mut res = self.parse_primary_expr();
+
+        while true {
+            let t = self.lexer.peek(0);
+            if !(t.token_kind is TokenKind::Punctuation(PunctuationKind::Dot)) {
+                break;
+            }
+            let t2 = self.lexer.peek(1);
+            if t2.token_kind is TokenKind::Identifier ||
+                t2.token_kind is TokenKind::Literal(LiteralKind::LIT_INT) {
+                let dot = self.lexer.next();
+                let member_name = self.lexer.next();
+                res = box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .base = res,
+                    .dot = dot,
+                    .member = member_name,
+                }: MemberAccessExpr;
+            }
+            else {
+                break;
+            }
+        }
+        return res;
+    }
+
+    fn parse_primary_expr(&mut self) -> *ExpressionNode {
+        let t0 = self.lexer.peek(0);
+        let t1 = self.lexer.peek(1);
+        if t0.token_kind is TokenKind::Literal(_) {
+            let lit = self.lexer.next();
+            let expr = box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .token = lit,
+            }: LiteralExpr;
+            // literal 后面允许使用 type ascription
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Colon) {
+                let colon = self.lexer.next();
+                let ty = self.parse_type();
+                return box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .expr = move expr,
+                    .colon = colon,
+                    .ty = move ty,
+                }: TypeAscriptionExpr;
+            }
+            else {
+                return expr;
+            }
+        }
+        else if t0.token_kind is TokenKind::Keyword(KeywordKind::KW_TRUE) ||
+                t0.token_kind is TokenKind::Keyword(KeywordKind::KW_FALSE) {
+            let lit = self.lexer.next();
+            let expr = box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .token = lit,
+            }: LiteralExpr;
+            return expr;
+        }
+        else if t0.token_kind is TokenKind::Punctuation(PunctuationKind::LBracket) {
+            // 数组字面量
+            let lbracket = self.lexer.next();
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::RBracket) {
+                // 空数组字面量 []
+                let rbracket = self.expect_token(TokenKind::Punctuation(PunctuationKind::RBracket));
+                return box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lbracket = lbracket,
+                    .elements = (type Vec<*ExpressionNode>)::new(),
+                    .rbracket = rbracket,
+                }: ArrayLiteralExpr;
+            }
+            let first = self.parse_expression();
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::RBracket) {
+                // [e] 只有一个元素的数组
+                let rbracket = self.expect_token(TokenKind::Punctuation(PunctuationKind::RBracket));
+                let mut elements : Vec<*ExpressionNode> = Vec::new();
+                elements.push(first);
+                return box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lbracket = lbracket,
+                    .elements = move elements,
+                    .rbracket = rbracket,
+                }: ArrayLiteralExpr;
+            }
+            else if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Semi) {
+                // [expr; expr] 形式的数组字面量
+                let semicolon = self.lexer.next();
+                let count = self.parse_expression();
+                let rbracket = self.expect_token(TokenKind::Punctuation(PunctuationKind::RBracket));
+
+                return box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lbracket = lbracket,
+                    .element = move first,
+                    .semicolon = semicolon,
+                    .repeat = move count,
+                    .rbracket = rbracket,
+                }: ArrayRepeatLiteralExpr;
+            }
+            else {
+                // [expr, expr, ...] 形式的数组字面量
+                let mut elements : Vec<*ExpressionNode> = Vec::new();
+                elements.push(first);
+
+                while self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Comma) {
+                    self.lexer.next();
+                    let element = self.parse_expression();
+                    elements.push(element);
+                }
+
+                let rbracket = self.expect_token(TokenKind::Punctuation(PunctuationKind::RBracket));
+                return box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lbracket = lbracket,
+                    .elements = move elements,
+                    .rbracket = rbracket,
+                }: ArrayLiteralExpr;
+            }
+        }
+        else if ((t0.token_kind is TokenKind::Keyword(KeywordKind::KW_UNSAFE) &&
+                t1.token_kind is TokenKind::Punctuation(PunctuationKind::LParen)) ||
+                (t0.token_kind is TokenKind::Keyword(KeywordKind::KW_CONST) &&
+                t1.token_kind is TokenKind::Punctuation(PunctuationKind::LParen))) {
+            // unsafe(expr) 或 const(expr) 形式的表达式
+            let kw = self.lexer.next();
+            let lparen = self.expect_token(TokenKind::Punctuation(PunctuationKind::LParen));
+            let expr = self.parse_expression();
+            let rparen = self.expect_token(TokenKind::Punctuation(PunctuationKind::RParen));
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .kw_context = kw,
+                .lparen = lparen,
+                .expr = move expr,
+                .rparen = rparen,
+            }: ContextExpr;
+        }
+        else if t0.token_kind is TokenKind::Punctuation(PunctuationKind::LParen) {
+            // 可能性：
+            // 1. 小括号表达式
+            // 2. unit/tuple
+            // 3. lambda expr
+            // 4. (type xx as tr)::static_method()
+            let lparen = self.lexer.next();
+
+            if self.lexer.peek(0).token_kind is TokenKind::Keyword(KeywordKind::KW_TYPE) {
+                // (type xx as tr)::method() 形式的表达式
+                let kw_type = self.lexer.next();
+                let name = self.parse_type();
+                
+                let mut kw_as: Token = Token::invalid(kw_type.source_span);
+                let mut trait_ty: Option<*TypeNode> = None;
+                if self.lexer.peek(0).token_kind is TokenKind::Keyword(KeywordKind::KW_AS) {
+                    kw_as = self.lexer.next();
+                    trait_ty = Some(self.parse_type());
+                }
+
+                let rparen = self.expect_token(TokenKind::Punctuation(PunctuationKind::RParen));
+                let colon_colon = self.expect_token(TokenKind::Punctuation(PunctuationKind::ColonColon));
+                let rest = self.parse_segmented_name(false);
+
+                return box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lparen = lparen,
+                    .kw_type = kw_type,
+                    .ty = move name,
+                    .kw_as = move kw_as,
+                    .trait_ty = move trait_ty,
+                    .rparen = rparen,
+                    .rest_parts = move rest,
+                }: QualifiedPathExpr;
+            }
+
+            // 后续再确定是函数参数列表还是tuple expression
+            let mut elements: Vec<ExprAndType> = Vec::new();
+            let mut last = lparen;
+            while true {
+                let mut t = self.lexer.peek(0);
+                if t.token_kind is TokenKind::Punctuation(PunctuationKind::RParen) {
+                    break;
+                }
+                let expr = self.parse_expression();
+                if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Colon) {
+                    let colon = self.lexer.next();
+                    let ty = self.parse_type();
+                    elements.push({ .expr = move expr, .ty = Some(ty)}: ExprAndType);
+                }
+                else {
+                    elements.push({ .expr = move expr, .ty = None}: ExprAndType);
+                }
+
+                t = self.lexer.peek(0);
+                last = t;
+
+                if t.token_kind is TokenKind::Punctuation(PunctuationKind::Comma) {
+                    self.lexer.next();
+                    continue;
+                }
+                else {
+                    break;
+                }
+            }
+            let rparen = self.expect_token(TokenKind::Punctuation(PunctuationKind::RParen));
+            let possibility = possible_arrow_lambda(&elements);
+
+            if possibility is IsLambda::Yes {
+                // lambda expr
+                // optional return type
+                let mut return_type: Option<*TypeNode> = None;
+                if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Colon) {
+                    self.lexer.next();
+                    return_type = Some(self.parse_type());
+                }
+
+                let fat_arrow = self.expect_token(TokenKind::Punctuation(PunctuationKind::FatArrow));
+                let body = self.parse_expression();
+
+                let params = convert_to_param_list(&elements);
+                return box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lambda_start = lparen,
+                    .qualifier_list = QualifierList::new(),
+                    .captures = (type Vec<LambdaCapture>)::new(),
+                    .generic_params = (type Vec<*GenericTypeParamDecl>)::new(),
+                    .params = move params,
+                    .return_type = move return_type,
+                    .where_conds = (type Vec<*WhereCondDecl>)::new(),
+                    .fat_arrow = fat_arrow,
+                    .body_expr = Some(move body),
+                    .body_block = None,
+                }: LambdaExpr;
+            }
+            else if possibility is IsLambda::Unknown {
+                let t = self.lexer.peek(0);
+                if t.token_kind is TokenKind::Punctuation(PunctuationKind::FatArrow) ||
+                    t.token_kind is TokenKind::Punctuation(PunctuationKind::ThinArrow) {
+                    // tuple expr
+                    let next = self.lexer.peek(0);
+
+                    let mut return_type: Option<*TypeNode> = None;
+                    if next.token_kind is TokenKind::Punctuation(PunctuationKind::ThinArrow) {
+                        self.lexer.next();
+                        return_type = Some(self.parse_type());
+                    }
+                    let fat_arrow = self.lexer.next();
+                    let body = self.parse_expression();
+                    let params: Vec<*FnParamDecl> = convert_to_param_list(&elements);
+                    return box {
+                        .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                        .lambda_start = lparen,
+                        .qualifier_list = QualifierList::new(),
+                        .captures = (type Vec<LambdaCapture>)::new(),
+                        .generic_params = (type Vec<*GenericTypeParamDecl>)::new(),
+                        .params = move params,
+                        .return_type = move return_type,
+                        .where_conds = (type Vec<*WhereCondDecl>)::new(),
+                        .fat_arrow = fat_arrow,
+                        .body_expr = Some(move body),
+                        .body_block = None,
+                    }: LambdaExpr;
+                }
+            }
+
+            // 后面一定是 TupleLiteral 或者 ParenExpr 的情况
+            if elements.len() == 1 && !(last.token_kind is TokenKind::Punctuation(PunctuationKind::Comma)) {
+                // 只有一个元素且没有逗号结尾, 是 ParenExpr
+                let e: &ExprAndType = elements.index(0).deref();
+                return box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lparen = lparen,
+                    .expr = e.expr,
+                    .rparen = rparen,
+                }: ParenExpr;
+            }
+            else {
+                // 否则是 TupleLiteral
+                let mut exprs: Vec<*ExpressionNode> = Vec::new();
+                for ref item in elements {
+                    exprs.push(item.expr);
+                }
+                return box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lparen = lparen,
+                    .elements = move exprs,
+                    .rparen = rparen,
+                }: TupleLiteralExpr;
+            }
+        }
+        else if t0.token_kind is TokenKind::Identifier ||
+                t0.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_LOWER) ||
+                t0.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_UPPER) ||
+                t0.token_kind is TokenKind::Keyword(KeywordKind::KW_SUPER) ||
+                t0.token_kind is TokenKind::Punctuation(PunctuationKind::ColonColon) {
+            // 可能性：
+            // 1. 变量/函数调用
+            // 2. lambda expr
+            let name: *SegmentedName = self.parse_segmented_name(false);
+
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .name = move name,
+            }: SegmentedNameExpr;
+        }
+        else if t0.token_kind is TokenKind::Punctuation(PunctuationKind::Dot) &&
+                t1.token_kind is TokenKind::Punctuation(PunctuationKind::LBrace) {
+            // lambda
+            let dot = self.lexer.next();
+            let lambda = self.parse_lambda_block();
+            return lambda;
+        }
+        else if t0.token_kind is TokenKind::Punctuation(PunctuationKind::LBrace) &&
+                (t1.token_kind is TokenKind::Punctuation(PunctuationKind::Dot) ||
+                t1.token_kind is TokenKind::Punctuation(PunctuationKind::Ellipsis)) {
+            // 结构体初始化
+            let struct_init_expr = box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .lbrace = t0,
+                .fields_init = (type Vec<FieldInitializer>)::new(),
+                .rbrace = Token::invalid(t0.source_span),
+            }: StructInitExpr;
+
+            let lbrace = self.lexer.next();
+            while true {
+                if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::RBrace) {
+                    break;
+                }
+
+                let t0 = self.lexer.peek(0);
+                let t1 = self.lexer.peek(1);
+                if t0.token_kind is TokenKind::Punctuation(PunctuationKind::Dot) &&
+                    t1.token_kind is TokenKind::Identifier {
+                    // .field = expr
+                    let dot = self.lexer.next();
+                    let field_name = self.expect_token(TokenKind::Identifier);
+                    let assign = self.expect_token(TokenKind::Punctuation(PunctuationKind::Assign));
+                    let field_value = self.parse_expression();
+
+                    let init = FieldInitializer::Named(dot, field_name, assign, field_value);
+                    struct_init_expr.fields_init.push(move init);
+                }
+                else if t0.token_kind is TokenKind::Punctuation(PunctuationKind::Ellipsis) {
+                    // ...
+                    let ellipsis = self.lexer.next();
+                    if !(t1.token_kind is TokenKind::Punctuation(PunctuationKind::RBrace)) {
+                        // ... expr
+                        let init = self.parse_expression();
+                        let initializer = FieldInitializer::Default(ellipsis, Some(init));
+                        struct_init_expr.fields_init.push(move initializer);
+                    } else {
+                        let initializer = FieldInitializer::Default(ellipsis, None);
+                        struct_init_expr.fields_init.push(move initializer);
+                    }
+                }
+                else {
+                    // error
+                    DiagnosticEngine::get().emit_unexpected_token(t0.source_span, t0.raw_str());
+                    self.lexer.next();
+                    break;
+                }
+                if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Comma) {
+                    self.lexer.next();
+                    continue;
+                }
+                else {
+                    break;
+                }
+            }
+            struct_init_expr.rbrace = self.expect_token(TokenKind::Punctuation(PunctuationKind::RBrace));
+
+            // struct初始化表达式 后面允许使用 type ascription
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Colon) {
+                let colon = self.lexer.next();
+                let ty = self.parse_type();
+                return box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .expr = struct_init_expr as *ExpressionNode,
+                    .colon = colon,
+                    .ty = move ty,
+                }: TypeAscriptionExpr;
+            }
+            else {
+                return struct_init_expr;
+            }
+        }
+        else {
+            DiagnosticEngine::get().emit_unknown_expression(t0.source_span, t0.raw_str());
+            self.lexer.next();
+        }
+        return box {
+            .source_span = t0.source_span,
+        }: DummySyntaxNode;
+    }
+
+    fn parse_segmented_name(&mut self, consider_generic: Bool) -> *SegmentedName {
+        let name: *SegmentedName = SegmentedName::new_segmented_name();
+        let mut t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Identifier ||
+            t.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_UPPER) ||
+            t.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_LOWER) ||
+            t.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_UPPER) ||
+            t.token_kind is TokenKind::Keyword(KeywordKind::KW_SUPER) {
+            let start = self.parse_segmented_part(consider_generic);
+            name.names.push(move start);
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::ColonColon) {
+            let start = box SegmentedPart::Empty;
+            name.names.push(move start);
+        }
+
+        t = self.lexer.peek(0);
+        while t.token_kind is TokenKind::Punctuation(PunctuationKind::ColonColon) {
+            self.lexer.next();
+            let part = self.parse_segmented_part(consider_generic);
+            name.names.push(move part);
+            t = self.lexer.peek(0);
+        }
+        return name;
+    }
+
+    fn parse_segmented_part(&mut self, consider_generic: Bool) -> *SegmentedPart {
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Identifier {
+            let name = self.lexer.next();
+            let t = self.lexer.peek(0);
+
+            if !(t.token_kind is TokenKind::Punctuation(PunctuationKind::Lt)) {
+                return box SegmentedPart::Ident(move name);
+            }
+            if !consider_generic {
+                return box SegmentedPart::Ident(move name);
+            }
+
+            // 下面是尝试解析泛型参数。
+            let left_angle = self.lexer.next();
+            if !(left_angle.token_kind is TokenKind::Punctuation(PunctuationKind::Lt)) { panic; }
+
+            let mut generic_args: Vec<*TypeNode> = Vec::new();
+            while true {
+                let ty = self.parse_type();
+                generic_args.push(move ty); // todo 后面需要记得检查 lifetime 一定要在 type 前面
+                let t = self.lexer.peek(0, LexerMode::Lazy);
+                if t.token_kind is TokenKind::Punctuation(PunctuationKind::Comma) {
+                    self.lexer.next();
+                    continue;
+                }
+                else {
+                    break;
+                }
+            }
+            let right_angle = self.lexer.next(LexerMode::Lazy);
+            if !(right_angle.token_kind is TokenKind::Punctuation(PunctuationKind::Gt)) {
+                DiagnosticEngine::get().emit_unexpected_token(right_angle.source_span, right_angle.raw_str());
+            }
+            return box SegmentedPart::WithGeneric(move name, move generic_args);
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_LOWER) ||
+            t.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_UPPER) ||
+            t.token_kind is TokenKind::Keyword(KeywordKind::KW_SUPER) {
+
+            let name = self.lexer.next();
+            return box SegmentedPart::Ident(move name);
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::ColonColon) {
+            return box SegmentedPart::Empty;
+        }
+        else {
+            DiagnosticEngine::get().emit_unexpected_token(t.source_span, t.raw_str());
+            self.lexer.next();
+            return box SegmentedPart::Empty;
+        }
+    }
+
+    fn parse_lambda_block(&mut self) -> *LambdaExpr {
+        // 小数点已经被吃掉，开头是大括号
+        let lbrace = self.expect_token(TokenKind::Punctuation(PunctuationKind::LBrace));
+        // todo 后续应该支持在 => 前面什么都没有的情况下，允许省略 =>
+
+        let qs = self.parse_qualifiers();
+        let mut captures = (type Vec<LambdaCapture>)::new();
+        if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::LBracket) {
+            captures = self.parse_lambda_captures();
+        }
+
+        let mut generic_params: Vec<*GenericTypeParamDecl> = Vec::new();
+        if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Lt) {
+            generic_params = self.parse_generic_type_params();
+        }
+        let mut params: Vec<*FnParamDecl> = Vec::new();
+        if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::LParen) {
+            params = self.parse_param_list();
+        }
+        let mut return_ty: Option<*TypeNode> = None;
+        if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::ThinArrow) {
+            self.lexer.next();
+            return_ty = Some(self.parse_type());
+        }
+        let mut where_conds: Vec<*WhereCondDecl> = (type Vec<*WhereCondDecl>)::new();
+        if self.lexer.peek(0).token_kind is TokenKind::Keyword(KeywordKind::KW_WHERE) {
+            where_conds = self.parse_where_conditions();
+        }
+
+        let fat_arrow = self.expect_token(TokenKind::Punctuation(PunctuationKind::FatArrow));
+
+        let block = box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_unsafe = Token::invalid(lbrace.source_span),
+            .lbrace = lbrace,
+            .stmts = (type Vec<*StatementNode>)::new(),
+            .decls = (type Vec<*DeclNode>)::new(),
+            .rbrace = Token::invalid(lbrace.source_span),
+        }: BlockStmt;
+
+        self.parse_block_items(block);
+        block.rbrace = self.expect_token(TokenKind::Punctuation(PunctuationKind::RBrace));
+
+        let lambda = box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .lambda_start = move lbrace,
+            .qualifier_list = move qs,
+            .captures = move captures,
+            .generic_params = move generic_params,
+            .params = move params,
+            .return_type = move return_ty,
+            .where_conds = move where_conds,
+            .fat_arrow = fat_arrow,
+            .body_expr = None,
+            .body_block = Some(move block),
+        }: LambdaExpr;
+        return lambda;
+    }
+
+    fn parse_lambda_captures(&mut self) -> Vec<LambdaCapture> {
+        self.expect_token(TokenKind::Punctuation(PunctuationKind::LBracket));
+
+        let mut captures: Vec<LambdaCapture> = Vec::new();
+        while true {
+            let t = self.lexer.peek(0);
+            if t.token_kind is TokenKind::Punctuation(PunctuationKind::RBracket) ||
+                t.token_kind is TokenKind::EndOfFile ||
+                t.token_kind is TokenKind::Invalid {
+                break;
+            }
+            if t.token_kind is TokenKind::Keyword(KeywordKind::KW_MOVE) {
+                let kw_move = self.lexer.next();
+                let ident = self.expect_token(TokenKind::Identifier);
+                captures.push(LambdaCapture::Move(kw_move, ident));
+            }
+            else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_REF) {
+                let kw_ref = self.lexer.next();
+                let t = self.lexer.peek(0);
+                if t.token_kind is TokenKind::Keyword(KeywordKind::KW_MUT) {
+                    let kw_mut = self.lexer.next();
+                    let ident = self.expect_token(TokenKind::Identifier);
+                    captures.push(LambdaCapture::RefMut(kw_ref, kw_mut, ident));
+                } else {
+                    let ident = self.expect_token(TokenKind::Identifier);
+                    captures.push(LambdaCapture::Ref(kw_ref, ident));
+                }
+            }
+            else if t.token_kind is TokenKind::Identifier {
+                let ident = self.lexer.next();
+                captures.push(LambdaCapture::Ident(ident));
+            }
+            else {
+                DiagnosticEngine::get().emit_unknown_capture_pattern(t.source_span, t.raw_str());
+                self.lexer.next();
+                break;
+            }
+
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Comma) {
+                self.lexer.next();
+                continue;
+            }
+            else {
+                break;
+            }
+        }
+        return captures;
+    }
+}
+
+enum IsLambda {
+    Yes, No, Unknown
+}
+
+fn possible_arrow_lambda(elems: &Vec<ExprAndType>) -> IsLambda {
+    if elems.len() == 0 {
+        return IsLambda::Unknown;
+    }
+    for ref item in elems {
+        if item.ty is Some(ty) {
+            return IsLambda::Yes; // 存在类型后缀, 一定是 lambda 参数列表
+        }
+        else if (item.expr is e: *SegmentedNameExpr) {
+            if (e.name.names.len() > 1) {
+                return IsLambda::No; // 表达式不是 single ident, 一定是 tuple
+            }
+        }
+        else {
+            return IsLambda::No; // 表达式不是 SegmentedNameExpr, 一定是 tuple
+        }
+    }
+    return IsLambda::Unknown;
+}
+
+struct ExprAndType {
+    expr: *ExpressionNode,
+    ty: Option<*TypeNode>,
+}
+
+fn convert_to_param_list(elems: &Vec<ExprAndType>) -> Vec<*FnParamDecl> {
+    let mut params: Vec<*FnParamDecl> = Vec::new();
+    panic "unimplemented";
+}

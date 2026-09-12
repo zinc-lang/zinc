@@ -1,0 +1,65 @@
+use std::time::Instant;
+
+struct Moment {
+    description: String,
+    duration: UInt64,
+}
+
+struct TimeLine {
+    start_point: Instant,
+    points: Vec<Moment>,
+}
+
+impl TimeLine {
+    fn new() -> Self {
+        return {
+            .start_point = Instant::now(),
+            .points = (type Vec<Moment>)::new(),
+        }: TimeLine;
+    }
+
+    fn record(&mut self, desc: String) {
+        let duration = self.start_point.elapsed_ms();
+        self.start_point = Instant::now();
+        self.points.push({
+            .description = move desc,
+            .duration = duration,
+        }: Moment);
+    }
+
+    fn print_report(&mut self) {
+        println("------- time consumed -------");
+
+        let mut longest: UInt = 0;
+        let mut total: UInt64 = 0;
+        for ref p in self.points {
+            if p.description.len() > longest {
+                longest = p.description.len();
+            }
+            total += p.duration;
+        }
+        self.points.push({
+            .description = f"[TOTAL]",
+            .duration = total,
+        }: Moment);
+
+        for ref p in self.points {
+            let mut c: UInt = print(p.description);
+            while c < longest {
+                print(" ");
+                c += 1;
+            }
+            print(" : ");
+            print(p.duration);
+            println(" ms");
+        }
+
+        println("-----------------------------");
+    }
+}
+
+impl Drop for TimeLine {
+    fn drop(&mut self) {
+        self.print_report();
+    }
+}

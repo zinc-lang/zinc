@@ -1,0 +1,450 @@
+use ::self::frontend::semantic::mir::ir::*;
+use ::self::frontend::semantic::hir::ir::*;
+use std::cmp::{Eq, PartialEq};
+use std::hash::{Hash, Hasher};
+
+use super::uint_set::UIntSet;
+
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::*;
+
+// 1. 搜集所有 lvalue 的 liveness
+//    1.1 检查变量 use before initialization (暂时强制要求变量定义必须初始化)
+//    1.2 检查变量 use after move
+// 2. 搜集借用的指向关系, 比较借用变量 r 和 被借用变量的 liveness
+//    2.1 检查借用类型的 liveness 小于等于被指向的对象的 liveness
+//    注意借用指针的指向不是一成不变的，它会更改指向目标
+// 3. drop check
+//    3.1 分辨哪些地方要调用析构函数、哪些地方不能调用，以及最特别的是哪些地方需要 drop flag
+
+struct LivenessChecker {
+    cfg: *CFG,
+    alive_locals_at_point: HashMap<LivePoint, UIntSet>, // 通过 LivePoint 查找哪些 *VarSymbol 在这里是活的
+    local_liveness: HashMap<UInt, UIntSet>, // 通过 *VarSymbol 查找它在哪些 LivePoint 上是活的
+}
+
+impl LivenessChecker {
+    fn new(cfg: *CFG) -> Self {
+        return {
+            .cfg = move cfg,
+            .alive_locals_at_point = (type HashMap<LivePoint, UIntSet>)::new(),
+            .local_liveness = (type HashMap<UInt, UIntSet>)::new(),
+        }: LivenessChecker;
+    }
+
+    // 注意: 需要第二轮遍历, 确保循环的时候 use after move 可以报错
+    fn determine_local_liveness(&mut self) {
+        for bb in self.cfg.basic_blocks {
+            self.visit_bb(move bb);
+        }
+        for bb in self.cfg.basic_blocks {
+            // 如果存在循环, 要保证被 move 后的变量没有被继续使用
+            if bb.terminator is Some(back: *BrBackward) {
+                self.handle_move_in_loop(back.target, bb);
+            }
+        }
+
+        // 遍历完毕, 已知每个点上活着哪些变量, 就可以得出每个变量在哪些点上活着
+        for ref kv in self.alive_locals_at_point {
+            let lp = kv.0;
+            let vars = &kv.1;
+
+            for var in vars {
+                if self.local_liveness.get_mut(&var) is Some(mut points) {
+                    points.deref_mut().insert(lp.to_uint());
+                } else {
+                    let mut points = UIntSet::new();
+                    points.insert(lp.to_uint());
+                    self.local_liveness.insert(var, move points);
+                }
+            }
+        }
+    }
+
+    // todo: complete lifetime check
+    fn check_lifetime(&mut self) {
+        for bb in self.cfg.basic_blocks {
+            for step in bb.steps {
+                if step.value is wv: *WriteValue {
+                    let sty = wv.dst.get_stype();
+                    if sty.type_symbol is type *BorrowImmutSymbol ||
+                        sty.type_symbol is type *BorrowMutSymbol {
+
+                        let src_lt = self.lifescope_of_value(wv.src);
+                        let dst_lt = self.lifescope_of_value(wv.dst);
+
+                        if dst_lt.lives_shorter_than(&src_lt) {
+                            DiagnosticEngine::get().emit_lives_not_longer_enough(wv.src.expr_node().span());
+                        }
+                    }
+                }
+            }
+            if bb.terminator is Some(ret: *BrRet) {
+                // TODO 检查返回值的生命周期是否与函数签名相匹配
+            }
+        }
+    }
+
+    fn lifescope_of_value(&self, xv: *XValue) -> LifeScope {
+
+        match xv {
+            lv: *LocalVar => {
+                if lv.sym_var.is_static() || lv.sym_var.is_const() {
+                    return LifeScope::Static;
+                }
+                let i = lv.sym_var as *raw VarSymbol as UInt;
+                if self.local_liveness.at(&i) is Some(ls) {
+                    return LifeScope::Local(move ls);
+                }
+            }
+            rv: *ReadValue => {
+                if rv.sym_var.is_static() || rv.sym_var.is_const() {
+                    return LifeScope::Static;
+                }
+                let i = rv.sym_var as *raw VarSymbol as UInt;
+                if self.local_liveness.at(&i) is Some(ls) {
+                    return LifeScope::Local(move ls);
+                }
+            }
+            addr: *AddressofValue => {
+                if extract_local(addr.operand as *XValue) is Some(vsym) {
+                    if vsym.is_static() || vsym.is_const() {
+                        return LifeScope::Static;
+                    }
+                    let i = vsym as *raw VarSymbol as UInt;
+                    if self.local_liveness.at(&i) is Some(ls) {
+                        return LifeScope::Local(move ls);
+                    }
+                }
+            }
+            _ => return LifeScope::Unknown;
+        }
+        return LifeScope::Unknown;
+    }
+
+    fn visit_bb(&mut self, bb: *BasicBlock) {
+        let mut alived: UIntSet = UIntSet::new(); // 保存的是 *VarSymbol
+        let mut dead: UIntSet = UIntSet::new(); // 保存的是 *VarSymbol
+
+        if bb.index == 0 {
+            // 入口, 用参数初始化
+            for param in self.cfg.func_sym.params {
+                let p = param as *raw VarSymbol as UInt;
+                alived.insert(p);
+            }
+        } else {
+            // 用 incoming 初始化
+            let mut is_first = true;
+            for incoming in bb.incomings {
+                let lp = last_live_point(incoming);
+                let mut a = self.alive_locals_at_point.at(&lp).get_or_panic();
+                if is_first {
+                    alived = move a;
+                    is_first = false;
+                } else {
+                    alived.intersect_set(&a); // 求集合的 交集
+                }
+            }
+        }
+
+        // 遍历所有 step, 关注 write/move/dtor
+        let mut step_idx: UInt = 0;
+        for step in bb.steps {
+            match step.value {
+                w: *WriteValue => {
+                    if extract_local(w.dst as *XValue) is Some(vsym) {
+                        let i = vsym as *raw VarSymbol as UInt;
+                        alived.insert(i);
+                        dead.remove(i);
+                    }
+                }
+                d: *DtorValue => {
+                    if d.no_need {
+                        continue;
+                    }
+                    if extract_local(d.src as *XValue) is Some(vsym) {
+                        let j = vsym as *raw VarSymbol as UInt;
+                        alived.remove(j);
+                        if vsym.drop_flag is None {
+                            // 这个变量现在本来就不是 alived 状态, 有两种可能:
+                            // 1. 变量已经析构
+                            // 2. 变量来自多个分支，其中某些分支中已经析构
+                            // 分析 incomings
+                            let incoming_liveness = self.preceding_liveness_of(bb, j);
+                            if incoming_liveness.len() == 0 {
+                                d.no_need = true;
+                            } else if incoming_liveness.len() == 1 && incoming_liveness.contains(0_u) {
+                                d.no_need = true;
+                            } else if incoming_liveness.len() == 2 {
+                                // 添加 drop flag
+                                if vsym.drop_flag is None {
+                                    let df = VarSymbol::create(vsym.var_node.span(), SType::sty_bool());
+                                    vsym.drop_flag = Some(move df);
+                                }
+                            }
+                        }
+                        if dead.contains(j) {
+                            d.no_need = true;
+                        } else {
+                            dead.insert(j);
+                        }
+                    }
+                }
+                m: *MovedValue => {
+                    if extract_local(m.src as *XValue) is Some(vsym) {
+                        let ri = vsym as *raw VarSymbol as UInt;
+                        alived.remove(ri);
+                        dead.insert(ri);
+                    }
+                }
+                rv: *ReadValue => {
+                    if extract_local(rv as *XValue) is Some(vsym) {
+                        let ri = vsym as *raw VarSymbol as UInt;
+                        let is_alive = alived.contains(ri);
+                        if !is_alive {
+                            let var_name = vsym.short_name();
+                            DiagnosticEngine::get().emit_use_after_dead(move var_name, rv.expr.span());
+                        }
+                    }
+                }
+                _ => { }
+            }
+
+            // 把所有现存依然存活的变量，都在这个点上记录下来。 todo: 生命周期检查
+            let current_point = LivePoint::new(bb.index, step_idx);
+            self.alive_locals_at_point.insert(move current_point, alived);
+            step_idx += 1;
+        }
+
+        // 在 terminator 这个点上的活着的变量也记录, 因为有些 BasicBlock 没有 steps 只有 terminator
+        let current_point = LivePoint::new(bb.index, step_idx);
+        self.alive_locals_at_point.insert(move current_point, move alived);
+    }
+
+    fn preceding_liveness_of(&self, bb: *BasicBlock, j: UInt) -> UIntSet {
+        let mut preceding_liveness = UIntSet::new();
+        for incoming in bb.incomings {
+            let last_lp = last_live_point(incoming);
+            if self.alive_locals_at_point.at(&last_lp) is Some(a) {
+                preceding_liveness.insert(a.contains(j) as UInt);
+            } else {
+                preceding_liveness.insert(0_u);
+            }
+        }
+        return preceding_liveness;
+    }
+
+    fn handle_move_in_loop(&self, from: *BasicBlock, to: *BasicBlock) {
+        let mut moved_vars = (type HashMap<UInt, UIntSet>)::new();
+        // 第一轮
+        let mut i = from.index;
+        while i <= to.index {
+            let bb = self.cfg.basic_blocks.at(i).get_or_panic();
+            self.revisit_loop_body(bb, &mut moved_vars);
+            i += 1;
+        }
+        // 第二轮
+        from.incomings.push(to);
+        i = from.index;
+        while i <= to.index {
+            let bb = self.cfg.basic_blocks.at(i).get_or_panic();
+            self.revisit_loop_body(bb, &mut moved_vars);
+            i += 1;
+        }
+    }
+
+    fn revisit_loop_body(&self, bb: *BasicBlock, moved_vars: &mut HashMap<UInt, UIntSet>) {
+
+        let mut moved = UIntSet::new();
+        for incoming in bb.incomings {
+            let i = incoming as *raw BasicBlock as UInt;
+            if moved_vars.at(&i) is Some(a) {
+                moved.union_set(&a);
+            }
+        }
+        for step in bb.steps {
+            if step.value is w: *WriteValue {
+                if w.dst is local: *LocalVar {
+                    let i = local.sym_var as *raw VarSymbol as UInt;
+                    moved.remove(i);
+                }
+            } else if step.value is d: *DtorValue {
+            } else if step.value is m: *MovedValue {
+                if m.src is rv: *ReadValue {
+                    let ri = rv.sym_var as *raw VarSymbol as UInt;
+                    moved.insert(ri);
+                }
+            } else if step.value is rv: *ReadValue {
+                let ri = rv.sym_var as *raw VarSymbol as UInt;
+                if !rv.sym_var.is_const() && !rv.sym_var.is_static() && moved.contains(ri) {
+                    let var_name = rv.sym_var.short_name();
+                    DiagnosticEngine::get().emit_use_after_dead(move var_name, rv.expr.span());
+                }
+            }
+        }
+
+        let bbi = bb as *raw BasicBlock as UInt;
+        moved_vars.insert(bbi, move moved);
+    }
+}
+
+fn last_live_point(bb: *BasicBlock) -> LivePoint {
+    let len = bb.steps.len();
+    return LivePoint::new(bb.index, len);
+}
+
+struct LivePoint {
+    bb_idx: UShort,
+    step_idx: UShort,
+}
+
+impl LivePoint {
+    fn new(bb_idx: UInt, step_idx: UInt) -> Self {
+        if bb_idx > 0xFFFF_FFFF { panic; }
+        if step_idx > 0xFFFF_FFFF { panic; }
+
+        return {
+            .bb_idx = bb_idx as UShort,
+            .step_idx = step_idx as UShort,
+        }: LivePoint;
+    }
+
+    fn from_uint(value: UInt) -> Self {
+        let bb_idx = value.bit_shr(32).bit_and(0xFFFF_FFFF);
+        let step_idx = value.bit_and(0xFFFF_FFFF);
+        return LivePoint::new(bb_idx as UInt, step_idx as UInt);
+    }
+
+    fn to_uint(&self) -> UInt {
+        let bb_idx = self.bb_idx as UInt;
+        let step_idx = self.step_idx as UInt;
+        return bb_idx.bit_shl(32) + step_idx;
+    }
+}
+
+impl PartialEq for LivePoint {
+    fn eq(&self, other: &Self) -> Bool {
+        return self.bb_idx == other.bb_idx && self.step_idx == other.step_idx;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !(self.bb_idx == other.bb_idx && self.step_idx == other.step_idx);
+    }
+}
+
+impl Eq for LivePoint {}
+
+impl Hash for LivePoint {
+    fn hash(&self, state: &mut Hasher) {
+        self.bb_idx.hash(state);
+        self.step_idx.hash(state);
+    }
+}
+
+fn extract_local(rv: *XValue) -> Option<*VarSymbol> {
+    match rv {
+        local_var: *LocalVar => {
+            if !local_var.sym_var.is_static() && !local_var.sym_var.is_const() {
+                return Some(local_var.sym_var);
+            } else {
+                return None;
+            }
+        }
+        read_val: *ReadValue => {
+            if !read_val.sym_var.is_static() && !read_val.sym_var.is_const() {
+                return Some(read_val.sym_var);
+            } else {
+                return None;
+            }
+        }
+        cast_rv: *CastValue => {
+            return extract_local(cast_rv.operand as *XValue);
+        }
+        ctx_rv: *ContextValue => {
+            return extract_local(ctx_rv.inner as *XValue);
+        }
+        ty_asc_rv: *TypeAscriptionValue => {
+            return extract_local(ty_asc_rv.inner as *XValue);
+        }
+        moved_rv: *MovedValue => {
+            return extract_local(moved_rv.src as *XValue);
+        }
+        _ => return None;
+    }
+    return None;
+}
+
+enum LifeScope {
+    Unknown,
+    Static,
+    Local(UIntSet),
+    Out(*LifetimeSymbol),
+}
+
+impl LifeScope {
+    fn lives_shorter_than(&self, other: &LifeScope) -> Bool {
+        if self is LifeScope::Unknown {
+            return false;
+        }
+        if other is LifeScope::Unknown {
+            return false;
+        }
+
+        match self {
+            LifeScope::Static => {
+                match other {
+                    LifeScope::Static => {
+                        return false;
+                    }
+                    LifeScope::Local(_) => {
+                        return true;
+                    }
+                    LifeScope::Out(_) => {
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+            LifeScope::Local(dst) => {
+                match other {
+                    LifeScope::Static => {
+                        return false;
+                    }
+                    LifeScope::Local(src) => {
+                        return src.is_subset_of(&dst);
+                    }
+                    LifeScope::Out(_) => {
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+            LifeScope::Out(_) => {
+                match other {
+                    LifeScope::Static => {
+                        return false;
+                    }
+                    LifeScope::Local(_) => {
+                        return true;
+                    }
+                    LifeScope::Out(_) => {
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        return false;
+    }
+
+    fn to_string(&self) -> String {
+        match self {
+            LifeScope::Unknown => return f"LifeScope::Unknown";
+            LifeScope::Static => return f"LifeScope::Static";
+            LifeScope::Local(_) => return f"LifeScope::Local";
+            LifeScope::Out(_) => return f"LifeScope::Out";
+        }
+        return String::new();
+    }
+}

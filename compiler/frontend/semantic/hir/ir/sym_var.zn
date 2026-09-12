@@ -1,0 +1,140 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::source_code::*;
+
+impl VarSymbol {
+    pub fn new(node: *SyntaxNode) -> *Self {
+        let span = node.span();
+        let sym = box {
+            .var_node = move node,
+            .parent_sym = None,
+            .is_mut_binding = false,
+            .drop_flag = None,
+            .stype = SType::sty_invalid(span),
+            .init = None,
+        }: VarSymbol;
+        return sym;
+    }
+
+    pub fn create(span: SourceSpan, sty: *SType) -> *Self {
+        let dummy = box {
+            .source_span = span
+        }: DummySyntaxNode;
+        let mut sym = VarSymbol::new(dummy as *SyntaxNode);
+        sym.stype = move sty;
+        return sym;
+    }
+
+    pub fn qualifiers(&self) -> QualifierList {
+        if self.var_node is vn: *VarDecl {
+            return vn.qualifiers();
+        }
+        return QualifierList::new();
+    }
+
+    pub fn is_static(&self) -> Bool {
+        if self.var_node is vn: *VarDecl {
+            return !vn.kw_static.is_invalid();
+        }
+        return false;
+    }
+
+    pub fn is_const(&self) -> Bool {
+        if self.var_node is vn: *VarDecl {
+            return !vn.kw_const.is_invalid();
+        }
+        return false;
+    }
+
+    pub fn is_mut(&mut self) -> Bool {
+        if self.is_mut_binding { // 编译器 desugar 的时候指定的情况
+            return true;
+        }
+        if self.var_node is vn: *VarDecl { // 对应源码是 var/mut/const 的情况
+            if !vn.kw_mut.is_invalid() {
+                self.is_mut_binding = true;
+                return true;
+            }
+        }
+        if self.var_node is n: *IdentPatternNode { // 对应源码是模式匹配的情况
+            if n.is_mut() {
+                self.is_mut_binding = true;
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+impl Symbol for VarSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        return self.var_node as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        if self.var_node is vn: *VarDecl {
+            return vn.short_name();
+        }
+        if self.var_node is vp: *IdentPatternNode {
+            return vp.name.to_string();
+        }
+        if self.var_node is p: *FnParamDecl {
+            return p.short_name();
+        }
+
+        return String::new();
+    }
+
+    fn mangle_name(&self) -> String {
+        if self.parent_sym is Some(ps) {
+            let mut res = ps.export_key();
+            res.push_str("::");
+            res.push_str(self.short_name().as_str().deref());
+            return res;
+        } else {
+            return self.short_name();
+        }
+    }
+
+    fn export_key(&self) -> String {
+        return self.mangle_name();
+    }
+
+    fn export_value(&self) -> String {
+        let mut res = String::new();
+        if self.var_node is vn: *VarDecl {
+            if !vn.kw_static.is_invalid() {
+                res.push_str("static ");
+            }
+            if !vn.kw_mut.is_invalid() {
+                res.push_str("mut ");
+            }
+            if !vn.kw_const.is_invalid() {
+                res.push_str("const ");
+            }
+        }
+        res.push_str(self.short_name().as_str().deref());
+        res.push_str(": ");
+        res.push_str(self.stype.export_value().as_str().deref());
+
+        if self.is_static() || self.is_const() {
+            res.push_str(";");
+        }
+        return res;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_sym;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_sym = Some(ss);
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return self.qualifiers().get(QualifierKind::Pub);
+    }
+
+}

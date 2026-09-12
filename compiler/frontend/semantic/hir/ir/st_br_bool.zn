@@ -1,0 +1,30 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::stmt::*;
+use ::self::frontend::source_code::*;
+
+impl BranchBool {
+    pub fn new(stmt: *IfStmt, cond: *RValue, then_br: *BlockSentence, else_br: Option<*BlockSentence>) -> *Self {
+        return box {
+            .stmt = move stmt,
+            .parent_stmt = None,
+            .cond = move cond,
+            .then_br = move then_br,
+            .else_br = move else_br,
+        }: BranchBool;
+    }
+}
+
+impl Sentence for BranchBool {
+    fn stmt_node(&self) -> *StatementNode {
+        return self.stmt as *StatementNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_stmt;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_stmt = Some(ss);
+    }
+}

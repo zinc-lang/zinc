@@ -1,0 +1,24 @@
+
+pub struct Lazy<T> {
+    creator: fn()->T,
+    initialized: AtomicPtr<T>,
+}
+
+pub fn lazy<T>(init: fn()->T) -> Lazy<T> {
+    return Lazy { .creator = init, .initialized = AtomicPtr::null() };
+}
+
+// 只实现 Deref 不实现 DerefMut
+impl<T> Deref for Lazy<T> {
+    type Target<'t> = &'t T;
+
+    fn deref<'s>(&'s self) -> &'s T {
+        if (self.initialized.load().is_null()) {
+            let v = box self.creator();
+            std::ptr::inc_strong_ref(v);
+            self.initialized.store(v as *raw T);
+        }
+        let p = self.initialized.load();
+        return unsafe(&*p);
+    }
+}

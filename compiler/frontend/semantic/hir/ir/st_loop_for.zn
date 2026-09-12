@@ -1,0 +1,49 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::stmt::*;
+use ::self::frontend::source_code::*;
+
+impl ForLoopSentence {
+    pub fn new(stmt: *ForStmt,
+                iterable: *RValue,
+                pattern: *Pattern,
+                body: *BlockSentence) -> *Self {
+
+        let iter = IteratorValue::new(iterable);
+        let iter_next = IteratorNextValue::new(iter);
+        let item = IteratorItemValue::new(iter_next);
+
+        return box {
+            .stmt = move stmt,
+            .parent_stmt = None,
+            .iterable = move iterable,
+            .pattern = move pattern,
+            .body = move body,
+            .iterator = move iter,
+            .iter_next = move iter_next,
+            .iter_item = move item,
+        }: ForLoopSentence;
+    }
+
+    
+}
+
+impl Sentence for ForLoopSentence {
+    fn stmt_node(&self) -> *StatementNode {
+        return self.stmt as *StatementNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_stmt;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_stmt = Some(ss);
+    }
+}
+
+impl LoopSentence for ForLoopSentence {
+    fn loop_body(&self) -> *BlockSentence {
+        return self.body;
+    }
+}

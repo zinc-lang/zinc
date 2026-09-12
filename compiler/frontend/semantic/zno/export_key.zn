@@ -1,0 +1,212 @@
+use super::*;
+
+use std::primitives::string::ToString;
+use std::hash::{Hash, Hasher};
+use std::cmp::{Eq, PartialEq};
+
+use ::self::frontend::syntax::ast::decl::UseDeclPath;
+
+impl ExportKey {
+    pub fn new() -> Self {
+        return {
+            .segmented_parts = (type Vec<String>)::new(),
+        }: ExportKey;
+    }
+
+    pub fn from_str(name: Str) -> Self {
+        let mut name = move name;
+        let mut segs = (type Vec<String>)::new();
+
+        while true {
+            if name.starts_with("::") {
+                name = name.sub_str(2);
+            }
+            
+            if name.is_empty() {
+                break;
+            }
+
+            let mut i: UInt = 0;
+            while i < name.len() {
+                let c = name.index(i);
+                if c == b':' {
+                    break;
+                }
+                i += 1;
+            }
+
+            let seg = name.sub_str(0, i);
+            segs.push(String::from_str(seg));
+
+            if i >= name.len() {
+                break;
+            }
+
+            name = name.sub_str(i);
+            if name.is_empty() {
+                break;
+            }
+        }
+        return {
+            .segmented_parts = move segs,
+        }: ExportKey;
+    }
+
+    pub fn from_slice(names: Slice<Str>) -> Self {
+        let mut segs = (type Vec<String>)::new();
+
+        let len: UInt = names.len();
+        let mut i: UInt = 0;
+        while i < len {
+            let name = unsafe(names.get_unchecked(i));
+            segs.push(name.to_string());
+            i += 1;
+        }
+        return {
+            .segmented_parts = move segs,
+        }: ExportKey;
+    }
+
+    pub fn from_use_path(path: &UseDeclPath) -> Self {
+        let mut segs = (type Vec<String>)::new();
+        for t in path.token_list {
+            segs.push(t.raw_str());
+        }
+        return {
+            .segmented_parts = move segs,
+        }: ExportKey;
+    }
+
+    pub fn is_primitive(&self) -> Bool {
+        if self.segmented_parts.len() != 1 {
+            return false;
+        }
+
+        let name: String = *self.segmented_parts.index(0).deref();
+        let name_str: Str = name.as_str().deref();
+        return name_str.eq(&"Bool") ||
+                name_str.eq(&"Char") ||
+                name_str.eq(&"F32") ||
+                name_str.eq(&"F64") ||
+                name_str.eq(&"Short") ||
+                name_str.eq(&"UShort") ||
+                name_str.starts_with("Int") ||
+                name_str.starts_with("UInt");
+    }
+
+    pub fn first(&self) -> String {
+        if self.segmented_parts.len() == 0 {
+            return String::new();
+        }
+        return *self.segmented_parts.index(0).deref();
+    }
+
+    pub fn last(&self) -> String {
+        if self.segmented_parts.len() == 0 {
+            return String::new();
+        }
+        let len = self.segmented_parts.len();
+        return *self.segmented_parts.index(len - 1).deref();
+    }
+
+    pub fn append(&self, part: String) -> ExportKey {
+        let mut segs = self.segmented_parts;
+        segs.push(part);
+        return {
+            .segmented_parts = move segs,
+        }: ExportKey;
+    }
+
+    pub fn suffix_from(&self, n: UInt) -> ExportKey {
+        if n >= self.segmented_parts.len() {
+            return {
+                .segmented_parts = (type Vec<String>)::new(),
+            }: ExportKey;
+        }
+
+        let mut segs = (type Vec<String>)::new();
+        let mut i: UInt = n;
+        let len = self.segmented_parts.len();
+        while i < len {
+            let s: String = *self.segmented_parts.index(i).deref();
+            segs.push(move s);
+            i += 1;
+        }
+        return {
+            .segmented_parts = move segs,
+        }: ExportKey;
+    }
+
+    pub fn prefix_n(&self, n: UInt) -> ExportKey {
+        if n >= self.segmented_parts.len() {
+            return *self;
+        }
+
+        let mut segs = (type Vec<String>)::new();
+        let mut i: UInt = 0;
+        while i < n {
+            let s: String = *self.segmented_parts.index(i).deref();
+            segs.push(move s);
+            i += 1;
+        }
+        return {
+            .segmented_parts = move segs,
+        }: ExportKey;
+    }
+}
+
+impl ToString for ExportKey {
+    fn to_string_inplace(&self, buf: &mut String) {
+        if self.segmented_parts.is_empty() {
+            return;
+        }
+        if self.is_primitive() {
+            let s = self.segmented_parts.index(0).deref().as_str().deref();
+            buf.push_str(s);
+            return;
+        }
+
+        for seg in self.segmented_parts {
+            buf.push_str("::");
+            buf.push_str(seg.as_str().deref());
+        }
+    }
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl Hash for ExportKey {
+    fn hash(&self, state: &mut Hasher) {
+        for ref p in self.segmented_parts {
+            p.hash(state);
+        }
+    }
+}
+
+impl PartialEq for ExportKey {
+    fn eq(&self, other: &Self) -> Bool {
+        if self.segmented_parts.len() != other.segmented_parts.len() {
+            return false;
+        }
+        let mut i: UInt = 0;
+        let len = self.segmented_parts.len();
+        while i < len {
+            let lhs = self.segmented_parts.index(i).deref();
+            let rhs = other.segmented_parts.index(i).deref();
+            if lhs.ne(rhs) {
+                return false;
+            }
+            i += 1;
+        }
+        return true;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl Eq for ExportKey {}

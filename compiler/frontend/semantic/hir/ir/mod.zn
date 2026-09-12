@@ -1,0 +1,914 @@
+
+mod invalid;
+
+mod sym_mod;
+mod sym_alias;
+mod sym_impl;
+mod sym_struct;
+mod sym_enum;
+mod sym_trait;
+mod sym_func;
+mod sym_bool;
+mod sym_char;
+mod sym_int;
+mod sym_float;
+mod sym_pointers;
+mod sym_param;
+mod sym_var;
+mod sym_assocty;
+mod sym_union;
+mod sym_tuple;
+mod sym_array;
+mod sym_extern_type;
+mod common;
+mod lifetime;
+mod stype;
+
+mod st_empty;
+mod st_expr;
+mod st_let;
+mod st_block;
+mod st_loop_for;
+mod st_loop_while;
+mod st_loop_dowhile;
+mod st_br_bool;
+mod st_br_break;
+mod st_br_continue;
+mod st_br_multi;
+mod st_br_panic;
+mod st_br_return;
+
+mod lv_deref;
+mod lv_field;
+mod lv_index;
+mod lv_local;
+mod lv_static;
+mod lv_tup_access;
+
+mod rv_addressof;
+mod rv_agg;
+mod rv_arr_lit;
+mod rv_arr_repeat;
+mod rv_binary;
+mod rv_cast;
+mod rv_ctx;
+mod rv_deref;
+mod rv_field;
+mod rv_fn_call;
+mod rv_index;
+mod rv_interpolation;
+mod rv_iter;
+mod rv_lit;
+mod rv_method_call;
+mod rv_pattern_match;
+mod rv_qual_path;
+mod rv_read;
+mod rv_select;
+mod rv_tup_access;
+mod rv_tup_lit;
+mod rv_ty_asc;
+mod rv_unary;
+mod rv_variant_payload;
+mod rv_write;
+
+mod pat_const;
+mod pat_lit;
+mod pat_binding;
+mod pat_type;
+mod pat_wildcard;
+mod pat_rest;
+mod pat_ref;
+mod pat_weak;
+mod pat_deref;
+mod pat_mut;
+mod pat_field;
+mod pat_struct;
+mod pat_tuple;
+mod pat_enumvariant;
+
+mod hir_visit;
+
+use std::cmp::{Eq, PartialEq};
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::syntax::ast::stmt::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+
+// 这个文件包含所有数据结构的定义，它们的成员函数一律写在对应的子模块中
+
+// syntax 中的 decl 对应 hir 中的 symbol
+
+pub trait Symbol {
+    virtual fn syntax_node(&self) -> *SyntaxNode;
+
+    virtual fn short_name(&self) -> String;
+    virtual fn mangle_name(&self) -> String;
+    virtual fn export_key(&self) -> String;
+    virtual fn export_value(&self) -> String;
+
+    virtual fn parent_scope(&self) -> Option<*ScopeSymbol>;
+    virtual fn set_parent_scope(&mut self, ss: *ScopeSymbol);
+
+    virtual fn visibility(&self) -> Option<Qualifier>; // 返回 pub qualifier
+}
+
+pub trait ScopeSymbol : Symbol {
+    virtual fn sym_table(&mut self) -> &mut SymbolTable;
+}
+
+pub struct SymbolTable {
+    symbols: HashMap<String, *Symbol>,
+    named_use_symbol: HashMap<String, *Symbol>,
+    star_use_symbol: HashMap<String, *Symbol>,
+}
+
+pub trait TypeSymbol : Symbol {
+    virtual fn to_string_with_args(&self, args: &GenericArgs) -> String;
+    virtual fn related_impls(&self) -> Vec<*ImplSymbol>;
+    virtual fn to_sty(*self, args: GenericArgs) -> *SType;
+    virtual fn to_sty(*self) -> *SType;
+}
+
+fn is_builtin_type_symbol(sym: *TypeSymbol) -> Bool {
+    if sym is type *TupleSymbol || sym is type *ArraySymbol || sym is type *FnLowerTypeSymbol ||
+        sym is type *FnUpperTypeSymbol || sym is type *FnUpperMutTypeSymbol ||
+        sym is type *BoolSymbol || sym is type *CharSymbol || sym is type *IntegerSymbol ||
+        sym is type *FloatSymbol || sym is type *PointerLikeSymbol {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+// 描述语义类型 semantic type
+pub struct SType {
+    type_symbol: *TypeSymbol,
+    args: GenericArgs,
+}
+
+pub struct ModSymbol {
+    mod_node: *ModDecl,
+    parent_sym: Option<*ScopeSymbol>,
+    is_imported: Bool,
+    symbol_table: SymbolTable,
+}
+
+pub struct GenericParams {
+    lt_params: Vec<*LifetimeSymbol>,
+    ty_params: Vec<*TypeParamSymbol>,
+    constraints: GenericConstraints,
+}
+
+pub struct GenericArgs {
+    lt_args: Vec<Lifetime>,
+    ty_args: Vec<*SType>,
+}
+
+pub struct ImplSymbol {
+    impl_node: *ImplDecl,
+    parent_sym: Option<*ScopeSymbol>,
+    generics: GenericParams,
+    self_ty: *AssociatedTypeSymbol, // todo 这个是不是换成 TypeAliasSymbol 更合适？
+    target_sty: *SType,
+    trait_sty: Option<*SType>,
+    associated_types: HashMap<String, *TypeAliasSymbol>,
+    reuse_sym: Option<*ReuseSymbol>,
+    methods: Vec<*FuncSymbol>,
+    symbol_table: SymbolTable,
+}
+
+pub struct TypeAliasSymbol {
+    type_alias_node: Option<*TypeAliasDecl>,
+    dummy_node: Option<*DummySyntaxNode>, // 用于描述 Self 类型
+    parent_sym: Option<*ScopeSymbol>,
+    generics: GenericParams,
+    target_sty: *SType,
+    symbol_table: SymbolTable,
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct StructSymbol {
+    struct_node: *StructDecl,
+    parent_sym: Option<*ScopeSymbol>,
+    generics: GenericParams,
+    fields: Vec<*VarSymbol>,
+    all_impls: Vec<*ImplSymbol>,
+    symbol_table: SymbolTable,
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct ReuseSymbol {
+    reuse_node: *ReuseDecl,
+    parent_sym: Option<*ScopeSymbol>,
+}
+
+pub struct TypeParamSymbol {
+    type_param_node: *DeclNode, // 可能是 GenericTypeParamDecl 或 Dummy
+    parent_sym: Option<*ScopeSymbol>,
+    cache: Option<*SType>,
+}
+
+pub struct LifetimeSymbol {
+    token: Token,
+    name: String,
+    parent_sym: Option<*ScopeSymbol>,
+    cache: Option<*SType>,
+}
+
+pub struct Lifetime {
+    token: Token,
+    resolved: Option<*LifetimeSymbol>,
+}
+
+pub struct GenericConstraints {
+    constraints: HashMap<UInt, Vec<*SType>>,
+}
+
+pub struct FuncSymbol {
+    func_node: *FuncDecl,
+    parent_sym: Option<*ScopeSymbol>,
+    generics: GenericParams,
+    params: Vec<*VarSymbol>,
+    symbol_table: SymbolTable,
+    return_sty: Option<*SType>,
+    body: Option<*BlockSentence>,
+    next_overload: Option<*FuncSymbol>,
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct VarSymbol {
+    var_node: *SyntaxNode,
+    parent_sym: Option<*ScopeSymbol>,
+    is_mut_binding: Bool,
+    drop_flag: Option<*VarSymbol>,
+    stype: *SType,
+    init: Option<*RValue>,
+}
+
+pub struct EnumVariantSymbol {
+    variant_node: *EnumVariantDecl,
+    parent_enum: Option<*EnumSymbol>,
+    next_overload: Option<*EnumVariantSymbol>,
+    fields: Vec<*SType>,
+    symbol_table: SymbolTable,
+}
+
+pub struct EnumSymbol {
+    enum_node: *EnumDecl,
+    parent_sym: Option<*ScopeSymbol>,
+    generics: GenericParams,
+    variants: Vec<*EnumVariantSymbol>,
+    symbol_table: SymbolTable,
+    all_impls: Vec<*ImplSymbol>,
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct UnionSymbol {
+    union_node: *UnionDecl,
+    parent_sym: Option<*ScopeSymbol>,
+    fields: Vec<*VarSymbol>,
+    symbol_table: SymbolTable,
+    all_impls: Vec<*ImplSymbol>,
+    cache: Option<*SType>,
+}
+
+pub struct TraitSymbol {
+    trait_decl: *TraitDecl,
+    parent_sym: Option<*ScopeSymbol>,
+    generics: GenericParams,
+    self_ty: *AssociatedTypeSymbol,
+    associated_types: Vec<*AssociatedTypeSymbol>,
+    symbol_table: SymbolTable,
+    methods: Vec<*FuncSymbol>,
+    inherit_traits: Vec<*SType>,
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct ExternTypeSymbol {
+    type_decl: *TypeAliasDecl,
+    parent_sym: Option<*ScopeSymbol>,
+    cache: Option<*SType>,
+}
+
+pub struct AssociatedTypeSymbol {
+    assocty_decl: Option<*AssociatedTypeDecl>,
+    dummy_node: Option<*DummySyntaxNode>, // 用于描述 Self 类型
+    parent_sym: Option<*ScopeSymbol>,
+    generics: GenericParams,
+    target_sty: *SType,
+    symbol_table: SymbolTable,
+    upper_bounds: Vec<*SType>,
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct TupleSymbol {
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct ArraySymbol {
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct FnLowerTypeSymbol {
+    // todo
+}
+
+pub struct FnUpperMutTypeSymbol {
+    // todo
+}
+
+pub struct FnUpperTypeSymbol {
+    // todo
+}
+
+pub struct LambdaSymbol {
+    // todo
+}
+
+pub struct BoolSymbol {
+    all_impls: Vec<*ImplSymbol>,
+}
+
+pub struct CharSymbol {
+    all_impls: Vec<*ImplSymbol>,
+}
+
+pub enum IntegerKind {
+    I8, I16, I32, I64, Isize, Ishort,
+    U8, U16, U32, U64, Usize, Ushort,
+}
+
+pub struct IntegerSymbol {
+    kind: IntegerKind,
+    all_impls: Vec<*ImplSymbol>,
+}
+
+pub enum FloatKind {
+    F32, F64
+}
+
+pub struct FloatSymbol {
+    kind: FloatKind,
+    all_impls: Vec<*ImplSymbol>,
+}
+
+pub trait PointerLikeSymbol: TypeSymbol {}
+
+pub struct ArcPointerSymbol {
+    generics: GenericParams,
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct WeakPointerSymbol {
+    generics: GenericParams,
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct BorrowImmutSymbol {
+    generics: GenericParams,
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct BorrowMutSymbol {
+    generics: GenericParams,
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct RawPointerImmutSymbol {
+    generics: GenericParams,
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct RawPointerMutSymbol {
+    generics: GenericParams,
+    cache: HashMap<GenericArgs, *SType>,
+}
+
+pub struct InvalidSymbol {
+    source_span: SourceSpan,
+    is_lifetime: Bool,
+    cache: Option<*SType>,
+}
+
+// syntax 中的 statement 对应 hir 中的 sentence
+
+pub trait Sentence {
+    virtual fn stmt_node(&self) -> *StatementNode;
+    virtual fn parent_scope(&self) -> Option<*ScopeSymbol>;
+    virtual fn set_parent_scope(&mut self, ss: *ScopeSymbol);
+}
+
+pub struct EmptySentence {
+    stmt: *StatementNode,
+    parent_stmt: Option<*ScopeSymbol>,
+}
+
+pub struct ExprSentence {
+    stmt: *StatementNode,
+    expr: *RValue,
+    parent_stmt: Option<*ScopeSymbol>,
+}
+
+pub struct LetSentence { // 如果一条 let 语句绑定了多个变量, 那么翻译成多条 LetSentence
+    stmt: *LetStmt,
+    parent_stmt: Option<*ScopeSymbol>,
+    local:*LocalVar,
+    init: *RValue,
+}
+
+pub struct CallCopyFnSentence { // 这一条基本是编译器隐式插入的
+    place: *LValue,
+}
+
+pub struct BlockSentence { // 这个类型同时实现 ScopeSymbol 以及 Sentence
+    stmt: *StatementNode,
+    parent_stmt: Option<*ScopeSymbol>,
+    sentences: Vec<*Sentence>,
+    symbol_table: SymbolTable,
+    local_vars: Vec<*VarSymbol>,
+    inner_items: Vec<*Symbol>,
+}
+
+pub trait LoopSentence: Sentence {
+    virtual fn loop_body(&self) -> *BlockSentence;
+}
+
+pub struct ForLoopSentence {
+    stmt: *ForStmt,
+    parent_stmt: Option<*ScopeSymbol>,
+    iterable: *RValue,
+    pattern: *Pattern,
+    body: *BlockSentence,
+    iterator: *IteratorValue,
+    iter_next: *IteratorNextValue,
+    iter_item: *IteratorItemValue,
+}
+
+pub struct WhileLoopSentence {
+    stmt: *WhileStmt,
+    parent_stmt: Option<*ScopeSymbol>,
+    cond: *RValue,
+    body: *BlockSentence,
+}
+
+pub struct DoWhileLoopSentence {
+    stmt: *DoWhileStmt,
+    parent_stmt: Option<*ScopeSymbol>,
+    cond: *RValue,
+    body: *BlockSentence,
+}
+
+pub struct BranchBreak {
+    stmt: *BreakStmt,
+    parent_stmt: Option<*ScopeSymbol>,
+    target: *LoopSentence,
+}
+
+pub struct BranchContinue {
+    stmt: *ContinueStmt,
+    parent_stmt: Option<*ScopeSymbol>,
+    target: *LoopSentence,
+}
+
+pub struct BranchReturn {
+    stmt: *ReturnStmt,
+    parent_stmt: Option<*ScopeSymbol>,
+    value: Option<*RValue>,
+}
+
+pub struct BranchPanic {
+    stmt: *PanicStmt,
+    parent_stmt: Option<*ScopeSymbol>,
+    msg: Option<*RValue>,
+}
+
+pub struct BranchBool {
+    stmt: *IfStmt,
+    parent_stmt: Option<*ScopeSymbol>,
+    cond: *RValue,
+    then_br: *BlockSentence,
+    else_br: Option<*BlockSentence>,
+}
+
+pub struct BranchArm {
+    stmt: *MatchArm,
+    block: *BlockSentence,
+    pattern_match: *PatternMatchValue,
+    operation: *BlockSentence,
+}
+
+pub struct BranchMultiple {
+    stmt: *MatchStmt,
+    parent_stmt: Option<*ScopeSymbol>,
+    value: *RValue,
+    branches: Vec<*BranchArm>,
+}
+
+// syntax 中的 expression 对应 hir 中的 xvalue
+
+pub trait XValue {
+    virtual fn expr_node(&self) -> *ExpressionNode;
+    virtual fn parent_scope(&self) -> Option<*ScopeSymbol>;
+    virtual fn set_parent_scope(&mut self, ss: *ScopeSymbol);
+    virtual fn get_stype(&self) -> *SType;
+    virtual fn set_stype(&mut self, sty: *SType);
+    virtual fn dump(&self);
+}
+
+pub trait LValue: XValue {}
+
+pub struct IndexLValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    base: *XValue,
+    index: *RValue,
+    sty: *SType,
+}
+
+pub struct FieldLValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    base: *XValue,
+    field: Token,
+    field_resolved: Option<*VarSymbol>,
+    sty: *SType,
+}
+
+pub struct TupleAccessLValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    base: *XValue,
+    index: UInt,
+    sty: *SType,
+}
+
+pub struct DerefLValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    operand: *XValue,
+    desugared_method: Option<*MethodCallValue>,
+    sty: *SType,
+}
+
+pub struct LocalVar {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    sym_var: *VarSymbol,
+}
+
+pub struct StaticVar {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    sym_var: *VarSymbol,
+}
+
+pub trait RValue: XValue {}
+
+pub struct ReadValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    sym_var: *VarSymbol,
+    sty: *SType,
+}
+
+pub struct IndexRValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    base: *RValue,
+    index: *RValue,
+    sty: *SType,
+}
+
+pub struct FieldRValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    base: *RValue,
+    field: Token,
+    field_resolved: Option<*VarSymbol>,
+    sty: *SType,
+}
+
+pub struct TupleAccessRValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    base: *RValue,
+    index: UInt,
+    sty: *SType,
+}
+
+pub struct DerefRValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    operand: *RValue,
+    desugared_method: Option<*MethodCallValue>,
+    sty: *SType,
+}
+
+pub struct VariantPayloadValue {
+    parent_node: Option<*ScopeSymbol>,
+    enum_value: *RValue,
+    enum_ctor_sym: *EnumVariantSymbol,
+    sty: *SType,
+}
+
+pub struct WriteValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    src: *RValue,
+    dst: *LValue,
+}
+
+pub struct QualifiedPathValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    qualified_ty: Option<*SType>,
+    qualified_trait: Option<*SType>,
+    symbol: *Symbol, // 可能是 FuncSymbol, EnumVariantSymbol, VarSymbol
+    sty: *SType,
+}
+
+pub struct ContextValue {
+    expr: *ContextExpr,
+    parent_node: Option<*ScopeSymbol>,
+    inner: *RValue,
+}
+
+pub struct LiteralValue {
+    expr: *LiteralExpr,
+    parent_node: Option<*ScopeSymbol>,
+    // value: *ConstValue,
+    sty: *SType,
+}
+
+pub struct TypeAscriptionValue {
+    expr: *TypeAscriptionExpr,
+    parent_node: Option<*ScopeSymbol>,
+    inner: *RValue,
+    type_ascription: *SType,
+}
+
+pub struct AggregateValue {
+    expr: *StructInitExpr,
+    parent_node: Option<*ScopeSymbol>,
+    named_init: HashMap<String, *RValue>,
+    field_token: HashMap<String, Token>,
+    default_value: Option<*RValue>,
+    transformed_init: Vec<*RValue>,
+    sty: *SType,
+}
+
+pub struct TupleValue {
+    expr: *TupleLiteralExpr,
+    parent_node: Option<*ScopeSymbol>,
+    elements: Vec<*RValue>,
+    sty: *SType,
+}
+
+pub struct ArrayLiteralValue {
+    expr: *ArrayLiteralExpr,
+    parent_node: Option<*ScopeSymbol>,
+    elements: Vec<*RValue>,
+    sty: *SType,
+}
+
+pub struct RepeatValue {
+    expr: *ArrayRepeatLiteralExpr,
+    parent_node: Option<*ScopeSymbol>,
+    element: *RValue,
+    len: *RValue,
+    sty: *SType,
+}
+
+pub struct BinaryExprValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    lhs: *RValue,
+    rhs: *RValue,
+    op: Token,
+    sty: *SType,
+}
+
+pub enum UnaryValueKind {
+    Neg, Not, ToWeak, Box, Move
+}
+
+pub struct UnaryExprValue { // 剔除取借用、解引用操作。这两类操作语义特殊。
+    expr: *ExpressionNode,
+    kind: UnaryValueKind,
+    parent_node: Option<*ScopeSymbol>,
+    operand: *RValue,
+    sty: *SType,
+}
+
+pub enum AddressofKind {
+    Ref, RefMut, RefRaw, RefRawMut,
+}
+
+pub struct AddressofValue { // 包含4种: &, &mut, &raw, &raw mut
+    expr: *ExpressionNode,
+    kind: AddressofKind,
+    parent_node: Option<*ScopeSymbol>,
+    operand: *RValue,
+    sty: *SType,
+}
+
+pub struct PatternMatchValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    operand: *RValue,
+    pattern: *Pattern,
+
+    local_bindings: Vec<*VarSymbol>,
+}
+
+pub struct CastValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    operand: *RValue,
+    target_sty: *SType,
+    resolved_kind: ResolvedCastKind,
+    is_refutable: Bool,
+}
+
+pub struct FnArgValue {
+    named: Token,
+    value: *RValue,
+}
+
+pub struct FnCallValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    callee: *RValue,
+    member_of: Option<*SType>,
+    generic_args: GenericArgs,
+    fn_args: Vec<FnArgValue>,
+    desugared_args: Vec<*RValue>,
+    sty: *SType,
+}
+
+pub struct MethodCallValue {
+    expr: *ExpressionNode,
+    parent_node: Option<*ScopeSymbol>,
+    receiver: *RValue,
+    desugared_receiver: Option<*RValue>,
+    method: Token,
+    resolved_method: Option<*FuncSymbol>,
+    generic_args: GenericArgs,
+    fn_args: Vec<FnArgValue>,
+    desugared_args: Vec<*RValue>,
+    sty: *SType,
+}
+
+pub struct SelectValue {
+    expr: *TernaryExpr,
+    parent_node: Option<*ScopeSymbol>,
+    cond: *RValue,
+    br_true: *RValue,
+    br_false: *RValue,
+    sty: *SType,
+}
+
+enum InterpolationPart {
+    Str(String),
+    Var(*VarSymbol),
+}
+
+pub struct InterpolationValue {
+    expr: *LiteralExpr,
+    parent_node: Option<*ScopeSymbol>,
+    parts: Vec<InterpolationPart>,
+    sty: *SType,
+}
+
+pub struct IteratorValue {
+    iterable: *RValue,
+    desugared_call: Option<*MethodCallValue>,
+    sty: *SType,
+}
+
+pub struct IteratorNextValue {
+    iterator: *IteratorValue,
+    desugared_call: Option<*MethodCallValue>,
+    sty: *SType,
+}
+
+pub struct IteratorItemValue {
+    iter_next: *IteratorNextValue,
+    desugared_pmv: Option<*PatternMatchValue>,
+    desugared_payload: Option<*VariantPayloadValue>,
+    sty: *SType,
+}
+
+pub struct InvalidValue {
+    expr: *ExpressionNode,
+}
+
+// syntax 中的 PatternNode 对应 hir 中的 Pattern
+
+pub trait Pattern {
+    virtual fn pattern_node(&self) -> *PatternNode;
+    virtual fn destructure(&mut self, expr: *RValue, is_refutable: Bool);
+    virtual fn collect_all_bindings(&self) -> Vec<*VarSymbol>;
+    virtual fn type_check(&mut self, ctx: &mut TypeCheckContext);
+}
+
+pub struct InvalidPattern {
+    node: *PatternNode,
+}
+
+pub struct LiteralPattern {
+    node: *LiteralPatternNode,
+    matches_with: Option<*RValue>,
+    stype: *SType,
+}
+
+pub struct VarBindingPattern {
+    node: *IdentPatternNode,
+    pat_sty: Option<*SType>,
+    var_sym: *VarSymbol,
+    matches_with: Option<*RValue>,
+}
+
+pub struct ConstPattern {
+    node: *PatternNode,
+    constant: *Symbol,
+    matches_with: Option<*RValue>,
+}
+
+pub struct TypeNamePattern {
+    node: *TypeNamePatternNode,
+    pat_sty: *SType,
+    matches_with: Option<*RValue>,
+}
+
+pub struct WildcardPattern {
+    node: *WildcardPatternNode,
+    matches_with: Option<*RValue>,
+}
+
+pub struct RestPattern {
+    node: *RestPatternNode,
+    matches_with: Option<*RValue>,
+}
+
+pub struct RefPattern {
+    node: *RefPatternNode,
+    inner: *Pattern,
+    matches_with: Option<*RValue>,
+}
+
+pub struct WeakPattern {
+    node: *WeakPatternNode,
+    inner: *Pattern,
+    matches_with: Option<*RValue>,
+}
+
+pub struct DerefPattern {
+    node: *DerefPatternNode,
+    inner: *Pattern,
+    matches_with: Option<*RValue>,
+}
+
+pub struct MutPattern {
+    node: *MutPatternNode,
+    inner: *Pattern,
+    matches_with: Option<*RValue>,
+}
+
+pub struct FieldPattern {
+    node: *FieldPatternNode,
+    inner: *Pattern,
+    struct_pat: *StructPattern,
+    matches_with: Option<*RValue>,
+}
+
+pub struct StructPattern {
+    node: *StructPatternNode,
+    struct_sty: Option<*SType>,
+    fields: Vec<*FieldPattern>,
+    rest: Option<*RestPattern>,
+    matches_with: Option<*RValue>,
+}
+
+pub struct TuplePattern {
+    node: *TuplePatternNode,
+    tuple_sty: Option<*SType>,
+    elements: Vec<*Pattern>,
+    matches_with: Option<*RValue>,
+}
+
+pub struct EnumVariantPattern {
+    node: *PatternNode,
+    enum_ctor_sym: *EnumVariantSymbol,
+    elements: Vec<*Pattern>,
+    matches_with: Option<*RValue>,
+    payload: Option<*VariantPayloadValue>,
+}
+
+// syntax 中的 TypeNode 对应 hir 中的 SType
+

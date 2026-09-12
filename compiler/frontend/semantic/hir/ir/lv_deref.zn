@@ -1,0 +1,63 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode, DummySyntaxNode};
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::source_code::*;
+use super::*;
+
+impl DerefLValue {
+    fn new(e: *UnaryExpr, operand: *XValue) -> *Self {
+        if !(e.kind is UnaryExprKind::Deref) {
+            panic "BUG: DerefLValue can only be created from a dereference unary expression";
+        }
+        return box {
+            .expr = e as *ExpressionNode,
+            .parent_node = None,
+            .operand = move operand,
+            .desugared_method = (type Option<*MethodCallValue>)::None,
+            .sty = SType::sty_invalid(e.span()),
+        }: DerefLValue;
+    }
+
+    fn create(span: SourceSpan, operand: *XValue) -> *Self {
+        let dummy = box {
+            .source_span = span,
+        }: DummySyntaxNode;
+
+        return box {
+            .expr = dummy as *ExpressionNode,
+            .parent_node = None,
+            .operand = move operand,
+            .desugared_method = (type Option<*MethodCallValue>)::None,
+            .sty = SType::sty_invalid(span),
+        }: DerefLValue;
+    }
+}
+
+impl XValue for DerefLValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+    fn dump(&self) {
+        print("*");
+        self.operand.dump();
+    }
+}
+
+impl LValue for DerefLValue {
+
+}

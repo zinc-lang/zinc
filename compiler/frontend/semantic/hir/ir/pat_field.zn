@@ -1,0 +1,56 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::diagnostic::*;
+use super::*;
+
+impl FieldPattern {
+    fn new(n: *FieldPatternNode, inner: *Pattern, struct_pat: *StructPattern) -> *Self {
+        return box {
+            .node = move n,
+            .inner = move inner,
+            .struct_pat = move struct_pat,
+            .matches_with = None,
+        }: FieldPattern;
+    }
+
+    fn field_name(&self) -> Token {
+        return self.node.name;
+    }
+
+    pub fn index_of_field(&self) -> Option<UInt> {
+        let name = self.field_name().raw_str();
+        if self.struct_pat.struct_sty is Some(sty) {
+            if sty.type_symbol is struct_sym: *StructSymbol {
+                return struct_sym.index_of_field(&name);
+            }
+        }
+        return None;
+    }
+}
+
+impl Pattern for FieldPattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+        self.matches_with = Some(expr);
+
+        self.inner.destructure(move expr, is_refutable);
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        return self.inner.collect_all_bindings();
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        let mw = self.matches_with.get_or_panic("BUG: pattern does not know what expression it matches with");
+        let mw_sty = ctx.infer(mw);
+
+        if ensure_type_valid(mw_sty, self.node.span()) {
+            self.inner.type_check(ctx);
+        }
+    }
+}

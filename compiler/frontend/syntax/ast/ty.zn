@@ -1,0 +1,447 @@
+use super::super::token::{Token, TokenKind, KeywordKind};
+use super::super::super::source_code::{SourceSpan, SourceManager};
+use super::{QualifierList, SegmentedName};
+use super::decl::{GenericTypeParamDecl, FnParamDecl};
+use super::{SyntaxNode, StatementNode, DeclNode, PatternNode, TypeNode, ExpressionNode};
+use super::visit::{SyntaxVisitor, VisitResult};
+
+pub struct NamedType {
+    parent_node: *weak SyntaxNode, 
+    name: *SegmentedName,
+}
+
+pub trait PointerLikeType : TypeNode {
+    fn pointee(&self) -> *TypeNode;
+}
+
+pub struct ArcType {
+    parent_node: *weak SyntaxNode, 
+    star: Token,
+    ty_arg: *TypeNode,
+}
+
+pub struct WeakType {
+    parent_node: *weak SyntaxNode, 
+    star: Token,
+    kw_weak: Token,
+    ty_arg: *TypeNode,
+}
+
+pub struct BorrowType {
+    parent_node: *weak SyntaxNode, 
+    amp: Token,
+    lifetime: Token, // optional
+    kw_mut: Token,
+    ty_arg: *TypeNode,
+}
+
+pub struct LifetimeType {
+    parent_node: *weak SyntaxNode, 
+    lifetime: Token,
+}
+
+pub struct RawPointerType {
+    parent_node: *weak SyntaxNode, 
+    star: Token,
+    kw_raw: Token,
+    kw_mut: Token,
+    ty_arg: *TypeNode,
+}
+
+pub struct ArrayType {
+    parent_node: *weak SyntaxNode,
+    lbracket: Token,
+    ty_arg: *TypeNode,
+    semicolon: Token,
+    size_expr: *ExpressionNode,
+    rbracket: Token,
+}
+
+pub struct TupleType {
+    parent_node: *weak SyntaxNode, 
+    lparen: Token,
+    ty_args: Vec<*TypeNode>,
+    rparen: Token,
+}
+
+pub struct FnType {
+    parent_node: *weak SyntaxNode, 
+    kw_fn: Token,
+    lparen: Token,
+    param_types: Vec<*TypeNode>,
+    rparen: Token,
+    arrow: Token,
+    return_type: Option<*TypeNode>,
+}
+
+// unimplemented
+pub struct ExistentialType {
+    parent_node: *weak SyntaxNode, 
+    kw_impl: Token,
+    trait_ty: *TypeNode,
+}
+
+impl SyntaxNode for NamedType {
+    fn span(&self) -> SourceSpan {
+        return self.name.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_named_type(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        return (type Vec<*SyntaxNode>)::new();
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl TypeNode for NamedType {
+    fn to_string(&self) -> String {
+        return self.name.to_string();
+    }
+}
+
+impl SyntaxNode for ArcType {
+    fn span(&self) -> SourceSpan {
+        return {
+            .start = self.star.span().start,
+            .end = self.ty_arg.span().end,
+        }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_arc_type(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.ty_arg as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PointerLikeType for ArcType {
+    fn pointee(&self) -> *TypeNode {
+        return self.ty_arg;
+    }
+}
+
+impl TypeNode for ArcType {
+    fn to_string(&self) -> String {
+        let mut s = String::new();
+        s.push(b'*');
+        let arg = self.ty_arg.to_string();
+        s.push_str(arg.as_str().deref());
+        return s;
+    }
+}
+
+impl SyntaxNode for WeakType {
+    fn span(&self) -> SourceSpan {
+        return {
+            .start = self.star.span().start,
+            .end = self.ty_arg.span().end,
+        }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_weak_type(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.ty_arg as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PointerLikeType for WeakType {
+    fn pointee(&self) -> *TypeNode {
+        return self.ty_arg;
+    }
+}
+
+impl TypeNode for WeakType {
+    fn to_string(&self) -> String {
+        let mut s = String::new();
+        s.push_str("*weak ");
+        let arg = self.ty_arg.to_string();
+        s.push_str(arg.as_str().deref());
+        return s;
+    }
+}
+
+impl SyntaxNode for BorrowType {
+    fn span(&self) -> SourceSpan {
+        return {
+            .start = self.amp.span().start,
+            .end = self.ty_arg.span().end,
+        }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_borrow_type(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.ty_arg as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PointerLikeType for BorrowType {
+    fn pointee(&self) -> *TypeNode {
+        return self.ty_arg;
+    }
+}
+
+impl TypeNode for BorrowType {
+    fn to_string(&self) -> String {
+        let mut s = String::new();
+        s.push_str("&");
+        if self.kw_mut.is_invalid() {
+            s.push_str(" ");
+        } else {
+            s.push_str("mut ");
+        }
+        let arg = self.ty_arg.to_string();
+        s.push_str(arg.as_str().deref());
+        return s;
+    }
+}
+
+impl SyntaxNode for LifetimeType {
+    fn span(&self) -> SourceSpan {
+        return self.lifetime.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_lifetime_type(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        return (type Vec<*SyntaxNode>)::new();
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl TypeNode for LifetimeType {
+    fn to_string(&self) -> String {
+        return self.lifetime.raw_str();
+    }
+}
+
+impl SyntaxNode for RawPointerType {
+    fn span(&self) -> SourceSpan {
+        return {
+            .start = self.star.span().start,
+            .end = self.ty_arg.span().end,
+        }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_raw_ptr_type(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.ty_arg as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PointerLikeType for RawPointerType {
+    fn pointee(&self) -> *TypeNode {
+        return self.ty_arg;
+    }
+}
+
+impl TypeNode for RawPointerType {
+    fn to_string(&self) -> String {
+        let mut s = String::new();
+        s.push_str("*raw ");
+        if !self.kw_mut.is_invalid() {
+            s.push_str("mut ");
+        }
+        let arg = self.ty_arg.to_string();
+        s.push_str(arg.as_str().deref());
+        return s;
+    }
+}
+
+impl SyntaxNode for ArrayType {
+    fn span(&self) -> SourceSpan {
+        return {
+            .start = self.lbracket.span().start,
+            .end = self.rbracket.span().end,
+        }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_array_type(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(2);
+        vec.push(self.ty_arg as *SyntaxNode);
+        vec.push(self.size_expr as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl TypeNode for ArrayType {
+    fn to_string(&self) -> String {
+        let mut s = String::new();
+        s.push_str("[");
+        let arg = self.ty_arg.to_string();
+        s.push_str("; ...]"); // todo 后续补充
+        return s;
+    }
+}
+
+impl SyntaxNode for TupleType {
+    fn span(&self) -> SourceSpan {
+        return {
+            .start = self.lparen.span().start,
+            .end = self.rparen.span().end,
+        }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_tuple_type(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut children: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        for ty_arg in self.ty_args {
+            children.push(move ty_arg as *SyntaxNode);
+        }
+        return children;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl TypeNode for TupleType {
+    fn to_string(&self) -> String {
+        let mut s = String::new();
+        s.push_str("(");
+        for arg in self.ty_args {
+            let a = arg.to_string();
+            s.push_str(a.as_str().deref());
+            s.push_str(", ");
+        }
+        s.push_str(")");
+        return s;
+    }
+}
+
+impl SyntaxNode for FnType {
+    fn span(&self) -> SourceSpan {
+        if self.return_type is Some(return_type) {
+            return {
+                .start = self.kw_fn.span().start,
+                .end = return_type.span().end,
+            }: SourceSpan;
+        } else {
+            return {
+                .start = self.kw_fn.span().start,
+                .end = self.rparen.span().end,
+            }: SourceSpan;
+        }
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_fn_type(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut children: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        for param_ty in self.param_types {
+            children.push(move param_ty as *SyntaxNode);
+        }
+        if self.return_type is Some(return_type) {
+            children.push(move return_type as *SyntaxNode);
+        }
+        return children;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl TypeNode for FnType {
+    fn to_string(&self) -> String {
+        return self.kw_fn.raw_str();
+    }
+}
+
+impl SyntaxNode for ExistentialType {
+    fn span(&self) -> SourceSpan {
+        return {
+            .start = self.kw_impl.span().start,
+            .end = self.trait_ty.span().end,
+        }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_existential_type(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.trait_ty as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl TypeNode for ExistentialType {
+    fn to_string(&self) -> String {
+        return self.trait_ty.to_string();
+    }
+}

@@ -1,0 +1,89 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::source_code::*;
+
+unsafe static mut G_TUPLE_SYMBOL: Option<*TupleSymbol> = None;
+
+impl TupleSymbol {
+    pub fn new() -> *TupleSymbol {
+        unsafe {
+            if G_TUPLE_SYMBOL is Some(s) {
+                return s;
+            } else {
+                let sym = box {
+                    .cache = (type HashMap<GenericArgs, *SType>)::new()
+                }: TupleSymbol;
+                G_TUPLE_SYMBOL = Some(sym);
+                return sym;
+            }
+        }
+    }
+}
+
+impl Symbol for TupleSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = SourceSpan::empty()
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return f"Tuple";
+    }
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+    fn export_value(&self) -> String {
+        return self.short_name();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+
+impl TypeSymbol for TupleSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        let mut res = String::new();
+        res.push_str("(");
+        for ty in args.ty_args {
+            res.push_str(ty.to_string().as_str().deref());
+            res.push_str(", ");
+        }
+        res.push_str(")");
+        return res;
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(t) {
+            return t;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    fn to_sty(*self) -> *SType {
+        let args = GenericArgs::new();
+        return self.to_sty(move args);
+    }
+}

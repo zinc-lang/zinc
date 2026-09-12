@@ -1,0 +1,326 @@
+use super::super::ast::{SyntaxNode, DummySyntaxNode, LibOrExe, SyntaxTree, Qualifier, QualifierList, DeclNode, StatementNode, PatternNode, TypeNode, ExpressionNode, SegmentedName};
+use super::super::ast::pattern::*;
+use super::super::super::source_code::{SourceLoc, SourceSpan, SourceManager};
+use super::super::super::diagnostic::DiagnosticEngine;
+use super::super::lexer::{Lexer, LexerMode};
+use super::super::token::{Token, TokenKind, KeywordKind, PunctuationKind};
+
+use super::FileParser;
+
+static MAX_PATTERN_RECURSION_DEPTH: UInt = 2000;
+
+impl FileParser {
+    pub fn parse_pattern(&mut self) -> *PatternNode {
+        self.parse_pattern_recursion_depth += 1;
+
+        if self.parse_pattern_recursion_depth > MAX_PATTERN_RECURSION_DEPTH {
+            let t = self.lexer.peek(0);
+            DiagnosticEngine::get().emit_compiler_recursion_exceed_limit(t.source_span);
+            self.parse_pattern_recursion_depth -= 1;
+            return box {
+                .source_span = t.source_span,
+            }: DummySyntaxNode as *PatternNode;
+        }
+
+        let pat = self.do_parse_pattern();
+        self.parse_pattern_recursion_depth -= 1;
+        return pat;
+    }
+
+    fn do_parse_pattern(&mut self) -> *PatternNode {
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Literal(_) {
+            return self.parse_literal_pattern();
+        }
+        if t.token_kind is TokenKind::Keyword(KeywordKind::KW_TRUE) ||
+            t.token_kind is TokenKind::Keyword(KeywordKind::KW_FALSE) {
+            let literal = self.lexer.next();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .literal = literal,
+            }: LiteralPatternNode;
+        }
+        else if t.raw_str().as_str().deref().eq(&"_") {
+            return self.parse_wildcard_pattern();
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::Ellipsis) {
+            return self.parse_rest_pattern();
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_TYPE) {
+            return self.parse_type_name_pattern();
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_REF) {
+            return self.parse_ref_pattern();
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_WEAK) {
+            return self.parse_weak_pattern();
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_MUT) {
+            return self.parse_mut_pattern();
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::Borrow) {
+            return self.parse_deref_pattern();
+        }
+        else if t.token_kind is TokenKind::Identifier ||
+                t.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_LOWER) ||
+                t.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_UPPER)  {
+            return self.parse_ident_pattern();
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::LParen) {
+            return self.parse_tuple_pattern();
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::LBrace) {
+            return self.parse_struct_pattern();
+        }
+        else {
+            DiagnosticEngine::get().emit_unknown_pattern(t.source_span, t.raw_str());
+            return box {
+                .source_span = t.source_span,
+            }: DummySyntaxNode as *PatternNode;
+        }
+    }
+
+    fn parse_literal_pattern(&mut self) -> *LiteralPatternNode {
+        let literal = self.lexer.next();
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .literal = literal,
+        }: LiteralPatternNode;
+    }
+
+    fn parse_wildcard_pattern(&mut self) -> *PatternNode {
+        let underscore = self.lexer.next();
+        if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Colon) {
+            let colon = self.lexer.next();
+            let ty = self.parse_type();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .kw_type = Token::invalid(underscore.span()),
+                .ty = move ty,
+            }: TypeNamePatternNode as *PatternNode;
+        } else {
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .underscore = underscore,
+            }: WildcardPatternNode as *PatternNode;
+        }
+    }
+
+    fn parse_rest_pattern(&mut self) -> *RestPatternNode {
+        let ellipsis = self.expect_token(TokenKind::Punctuation(PunctuationKind::Ellipsis));
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .ellipsis = ellipsis,
+        }: RestPatternNode;
+    }
+
+    fn parse_type_name_pattern(&mut self) -> *TypeNamePatternNode {
+        let kw_type = self.expect_token(TokenKind::Keyword(KeywordKind::KW_TYPE));
+        let ty = self.parse_type();
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_type = kw_type,
+            .ty = move ty,
+        }: TypeNamePatternNode;
+    }
+
+    fn parse_ref_pattern(&mut self) -> *RefPatternNode {
+        let kw_ref = self.expect_token(TokenKind::Keyword(KeywordKind::KW_REF));
+        let mut kw_mut = Token::invalid(kw_ref.source_span);
+        if self.lexer.peek(0).token_kind is TokenKind::Keyword(KeywordKind::KW_MUT) {
+            kw_mut = self.lexer.next();
+        }
+        let pat = self.parse_pattern();
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_ref = kw_ref,
+            .kw_mut = kw_mut,
+            .pattern = move pat,
+        }: RefPatternNode;
+    }
+
+    fn parse_weak_pattern(&mut self) -> *WeakPatternNode {
+        let kw_weak = self.expect_token(TokenKind::Keyword(KeywordKind::KW_WEAK));
+        let pat = self.parse_pattern();
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_weak = kw_weak,
+            .pattern = move pat,
+        }: WeakPatternNode;
+    }
+
+    fn parse_mut_pattern(&mut self) -> *MutPatternNode {
+        let kw_mut = self.expect_token(TokenKind::Keyword(KeywordKind::KW_MUT));
+        let pat = self.parse_pattern();
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_mut = kw_mut,
+            .pattern = move pat,
+        }: MutPatternNode;
+    }
+
+    fn parse_deref_pattern(&mut self) -> *DerefPatternNode {
+        let borrow = self.expect_token(TokenKind::Punctuation(PunctuationKind::Borrow));
+        let mut kw_mut = Token::invalid(borrow.source_span);
+        if self.lexer.peek(0).token_kind is TokenKind::Keyword(KeywordKind::KW_MUT) {
+            kw_mut = self.lexer.next();
+        }
+        let pat = self.parse_pattern();
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .borrow = borrow,
+            .kw_mut = kw_mut,
+            .pattern = move pat,
+        }: DerefPatternNode;
+    }
+
+    fn parse_ident_pattern(&mut self) -> *PatternNode {
+        let name = self.parse_segmented_name(false);
+
+        if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::LParen) {
+            return self.parse_enum_variant_pattern(move name);
+        }
+        else {
+            let mut ty: Option<*TypeNode> = None;
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Colon) {
+                self.lexer.next();
+                ty = Some(self.parse_type());
+            }
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .mutability = None,
+                .name = move name,
+                .ty = move ty,
+            }: IdentPatternNode;
+        }
+    }
+
+    fn parse_tuple_pattern(&mut self) -> *TuplePatternNode {
+        let lparen = self.expect_token(TokenKind::Punctuation(PunctuationKind::LParen));
+        let mut patterns: Vec<*PatternNode> = Vec::new();
+        while true {
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::RParen) {
+                break;
+            }
+            let pat = self.parse_pattern();
+            patterns.push(move pat);
+
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Comma) {
+                self.lexer.next();
+            }
+            else {
+                break;
+            }
+        }
+        let rparen = self.expect_token(TokenKind::Punctuation(PunctuationKind::RParen));
+
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .lparen = lparen,
+            .elements = move patterns,
+            .rparen = rparen,
+        }: TuplePatternNode;
+    }
+
+    fn parse_struct_pattern(&mut self) -> *StructPatternNode {
+        let lbrace = self.expect_token(TokenKind::Punctuation(PunctuationKind::LBrace));
+        let mut fields: Vec<*FieldPatternNode> = Vec::new();
+        let mut rest: Option<*RestPatternNode> = None;
+        while true {
+            let n = self.lexer.peek(0);
+            if n.token_kind is TokenKind::Punctuation(PunctuationKind::RBrace) {
+                break;
+            }
+            if n.token_kind is TokenKind::Punctuation(PunctuationKind::Ellipsis) {
+                let ellipsis = self.lexer.next();
+                rest = Some(box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .ellipsis = ellipsis,
+                }: RestPatternNode);
+                break;
+            }
+            let field = self.parse_field_pattern();
+            fields.push(move field);
+
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Comma) {
+                self.lexer.next();
+            }
+            else {
+                break;
+            }
+        }
+        let rbrace = self.expect_token(TokenKind::Punctuation(PunctuationKind::RBrace));
+
+        let mut ty: Option<*TypeNode> = None;
+        if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Colon) {
+            self.lexer.next();
+            ty = Some(self.parse_type());
+        }
+
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .lbrace = lbrace,
+            .fields = move fields,
+            .rest = move rest,
+            .rbrace = rbrace,
+            .ty = move ty,
+        }: StructPatternNode;
+    }
+
+    fn parse_field_pattern(&mut self) -> *FieldPatternNode {
+        // 不限制左右顺序 .a = pat  或者 pat = .a  都行
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Punctuation(PunctuationKind::Dot) {
+            let dot = self.lexer.next();
+            let name = self.expect_token(TokenKind::Identifier);
+            let eq = self.expect_token(TokenKind::Punctuation(PunctuationKind::Assign));
+            let pat = self.parse_pattern();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .name = name,
+                .dot = dot,
+                .pattern = move pat,
+            }: FieldPatternNode;
+        }
+        else {
+            let pat = self.parse_pattern();
+            let eq = self.expect_token(TokenKind::Punctuation(PunctuationKind::Assign));
+            let dot = self.expect_token(TokenKind::Punctuation(PunctuationKind::Dot));
+            let name = self.expect_token(TokenKind::Identifier);
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .name = name,
+                .dot = dot,
+                .pattern = move pat,
+            }: FieldPatternNode;
+        }
+    }
+
+    fn parse_enum_variant_pattern(&mut self, base: *SegmentedName) -> *EnumVariantPatternNode {
+        let lparen = self.expect_token(TokenKind::Punctuation(PunctuationKind::LParen));
+        let mut patterns: Vec<*PatternNode> = Vec::new();
+        while true {
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::RParen) {
+                break;
+            }
+            let pat = self.parse_pattern();
+            patterns.push(pat);
+
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Comma) {
+                self.lexer.next();
+            }
+            else {
+                break;
+            }
+        }
+        let rparen = self.expect_token(TokenKind::Punctuation(PunctuationKind::RParen));
+
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .base = move base,
+            .lparen = lparen,
+            .elements = move patterns,
+            .rparen = rparen,
+        }: EnumVariantPatternNode;
+    }
+}

@@ -1,0 +1,124 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use super::*;
+
+impl IteratorValue {
+    fn new(iterable: *RValue) -> *Self {
+        let span = iterable.expr_node().span();
+        return box {
+            .iterable = move iterable,
+            .desugared_call = (type Option<*MethodCallValue>)::None,
+            .sty = SType::sty_invalid(span),
+        }: IteratorValue;
+    }
+}
+
+impl XValue for IteratorValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.iterable.expr_node();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.iterable.parent_scope();
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.iterable.set_parent_scope(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+    }
+}
+
+impl RValue for IteratorValue {
+
+}
+
+impl IteratorNextValue {
+    fn new(iter: *IteratorValue) -> *Self {
+        let span = iter.expr_node().span();
+        return box {
+            .iterator = move iter,
+            .desugared_call = (type Option<*MethodCallValue>)::None,
+            .sty = SType::sty_invalid(span),
+        }: IteratorNextValue;
+    }
+}
+
+impl XValue for IteratorNextValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.iterator.expr_node();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.iterator.parent_scope();
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.iterator.set_parent_scope(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+    }
+}
+
+impl RValue for IteratorNextValue {
+
+}
+
+impl IteratorItemValue {
+    fn new(iter_next: *IteratorNextValue) -> *Self {
+        let span = iter_next.expr_node().span();
+        return box {
+            .iter_next = move iter_next,
+            .desugared_pmv = None,
+            .desugared_payload = None,
+            .sty = SType::sty_invalid(span),
+        }: IteratorItemValue;
+    }
+}
+
+impl XValue for IteratorItemValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.iter_next.expr_node();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.iter_next.parent_scope();
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.iter_next.set_parent_scope(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+    }
+}
+
+impl RValue for IteratorItemValue {
+
+}

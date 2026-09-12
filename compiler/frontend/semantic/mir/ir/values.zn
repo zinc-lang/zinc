@@ -1,0 +1,362 @@
+use super::*;
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::semantic::hir::constant::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::syntax::token::*;
+
+use std::meta::Type;
+
+impl ReBorrowValue {
+    fn create(v: *RValue, sty: *SType) -> *Self {
+        return box {
+            .src = move v,
+            .stype = move sty,
+        }: ReBorrowValue;
+    }
+}
+
+impl XValue for ReBorrowValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.src.expr_node();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return (type Option<*ScopeSymbol>)::None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.stype;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+    }
+
+    fn dump(&self) {
+        self.src.dump();
+        print(" to ");
+        print(self.stype.to_string());
+    }
+}
+
+impl RValue for ReBorrowValue {
+
+}
+
+impl PhiValue {
+    fn create(span: SourceSpan) -> *Self {
+        let dummy = box {
+            .source_span = move span
+        }: DummySyntaxNode;
+        return box {
+            .expr = move dummy as *ExpressionNode,
+            .incoming = (type Vec<(*RValue, *BasicBlock)>)::new(),
+            .for_alloca = false,
+        }: PhiValue;
+    }
+
+    fn add_incoming(&mut self, val: *RValue, bb: *BasicBlock) {
+        // 要确保 incoming 的类型一致
+        self.incoming.push((move val, move bb));
+    }
+}
+
+impl XValue for PhiValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return (type Option<*ScopeSymbol>)::None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+    }
+
+    fn get_stype(&self) -> *SType {
+        if self.incoming.len() == 0 {
+            panic "PhiValue has no incoming values.";
+        }
+        let item: (*RValue, *BasicBlock) = *self.incoming.index(0).deref();
+        let v: *RValue = item.0;
+        return v.get_stype();
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+
+    }
+
+    fn dump(&self) {
+    }
+}
+
+impl RValue for PhiValue {
+
+}
+
+impl CompileTimeValue {
+    fn create(val: *ConstValue, sty: *SType, span: SourceSpan) -> *Self {
+        let dummy = box {
+            .source_span = move span
+        }: DummySyntaxNode;
+        return box {
+            .expr = move dummy as *ExpressionNode,
+            .value = move val,
+            .stype = move sty,
+        }: CompileTimeValue;
+    }
+
+    fn create_true(span: SourceSpan) -> *Self {
+        return CompileTimeValue::create(
+                    box {
+                        .token = Token::invalid(span),
+                        .value = true,
+                    }: BoolCValue as *ConstValue,
+                    SType::sty_bool(),
+                    span
+                );
+    }
+
+    fn create_false(span: SourceSpan) -> *Self {
+        return CompileTimeValue::create(
+                    box {
+                        .token = Token::invalid(span),
+                        .value = false,
+                    }: BoolCValue as *ConstValue,
+                    SType::sty_bool(),
+                    span
+                );
+    }
+}
+
+impl XValue for CompileTimeValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.stype;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.stype = move sty;
+    }
+
+    fn dump(&self) {
+        let t = Type::of(&*self.value as &Any);
+        print(t.short_name());
+    }
+}
+
+impl RValue for CompileTimeValue {
+
+}
+
+impl DtorValue {
+    fn create(span: SourceSpan, src: *LValue) -> *Self {
+        let dummy = box {
+            .source_span = move span
+        }: DummySyntaxNode;
+        return box {
+            .expr = move dummy as *ExpressionNode,
+            .src = move src,
+            .no_need = false,
+        }: DtorValue;
+    }
+}
+
+impl XValue for DtorValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return (type Option<*ScopeSymbol>)::None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+    }
+
+    fn get_stype(&self) -> *SType {
+        return SType::sty_unit();
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+
+    }
+
+    fn dump(&self) {
+        self.src.dump();
+        if self.no_need {
+            print(" [no_need] ");
+        }
+        if self.src is local: *LocalVar {
+            if local.sym_var.drop_flag is Some(_) {
+                print(" [drop flag] ");
+            }
+        }
+    }
+}
+
+impl RValue for DtorValue {
+
+}
+
+
+impl CopyValue {
+    fn create(e: *ExpressionNode, src: *RValue) -> *Self {
+        return box {
+            .expr = move e,
+            .src = move src,
+        }: CopyValue;
+    }
+}
+
+impl XValue for CopyValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return (type Option<*ScopeSymbol>)::None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+    }
+
+    fn get_stype(&self) -> *SType {
+        return SType::sty_unit();
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+
+    }
+
+    fn dump(&self) {
+        self.src.dump();
+    }
+}
+
+impl RValue for CopyValue {
+
+}
+
+
+impl MovedValue {
+    fn create(e: *ExpressionNode, src: *RValue) -> *Self {
+        return box {
+            .expr = move e,
+            .src = move src,
+        }: MovedValue;
+    }
+}
+
+impl XValue for MovedValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return (type Option<*ScopeSymbol>)::None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.src.get_stype();
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.src.set_stype(move sty);
+    }
+
+    fn dump(&self) {
+        self.src.dump();
+    }
+}
+
+impl RValue for MovedValue {
+
+}
+
+impl AllocaValue {
+    fn create(val: *RValue) -> *Self {
+        return box {
+            .src = move val
+        }: AllocaValue;
+    }
+}
+
+impl XValue for AllocaValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.src.expr_node();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return (type Option<*ScopeSymbol>)::None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.src.get_stype();
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+    }
+
+    fn dump(&self) {
+    }
+}
+
+impl RValue for AllocaValue {
+
+}
+
+impl LoadValue {
+    fn create(val: *RValue) -> *Self {
+        return box {
+            .src = move val
+        }: LoadValue;
+    }
+}
+
+impl XValue for LoadValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.src.expr_node();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return (type Option<*ScopeSymbol>)::None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.src.get_stype();
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+    }
+
+    fn dump(&self) {
+    }
+}
+
+impl RValue for LoadValue {
+
+}

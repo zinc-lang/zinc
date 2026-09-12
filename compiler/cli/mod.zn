@@ -1,0 +1,13 @@
+pub mod options;
+pub mod session;
+pub mod timeline;
+
+fn run() {
+    let options = options::CliOptions::get();
+    options.validate();
+    
+    let compilation: session::Session = {
+        ...
+    };
+    compilation.compile();
+}

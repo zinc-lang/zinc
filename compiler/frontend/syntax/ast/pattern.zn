@@ -1,0 +1,444 @@
+use super::super::token::{Token, TokenKind, KeywordKind};
+use super::super::super::source_code::{SourceSpan, SourceManager};
+use super::{QualifierList, SegmentedName};
+use super::decl::{GenericTypeParamDecl, FnParamDecl};
+use super::expr::{LiteralExpr};
+use super::{SyntaxNode, StatementNode, DeclNode, PatternNode, TypeNode, ExpressionNode, upgrade_syntaxnode};
+use super::visit::{SyntaxVisitor, VisitResult};
+
+pub struct LiteralPatternNode {
+    parent_node: *weak SyntaxNode,
+    literal: Token,
+}
+
+pub struct IdentPatternNode {
+    parent_node: *weak SyntaxNode,
+    name: *SegmentedName,
+    mutability: Option<Bool>,
+    ty: Option<*TypeNode>,
+}
+
+pub struct TypeNamePatternNode {
+    parent_node: *weak SyntaxNode,
+    kw_type: Token,
+    ty: *TypeNode,
+}
+
+pub struct WildcardPatternNode {
+    parent_node: *weak SyntaxNode,
+    underscore: Token,
+}
+
+pub struct RestPatternNode {
+    parent_node: *weak SyntaxNode,
+    ellipsis: Token,
+}
+
+// todo: 感觉应该完整支持 ref / ref mut / ref raw / ref raw mut 四种模式
+// 为了一致性, 跟表达式里面的 & / &mut / &raw / &raw mut 四种取地址操作符对应
+pub struct RefPatternNode {
+    parent_node: *weak SyntaxNode,
+    kw_ref: Token,
+    kw_mut: Token,
+    pattern: *PatternNode,
+}
+
+pub struct WeakPatternNode {
+    parent_node: *weak SyntaxNode,
+    kw_weak: Token,
+    pattern: *PatternNode,
+}
+
+// todo: 这种是类似 rust 的 &x 模式, 但是这种模式很容易跟 TypeNamePatternNode 混淆, 所以有点犹豫是否应该删除
+pub struct DerefPatternNode {
+    parent_node: *weak SyntaxNode,
+    borrow: Token,
+    kw_mut: Token,
+    pattern: *PatternNode,
+}
+
+pub struct MutPatternNode {
+    parent_node: *weak SyntaxNode,
+    kw_mut: Token,
+    pattern: *PatternNode,
+}
+
+pub struct FieldPatternNode {
+    parent_node: *weak SyntaxNode,
+    dot: Token,
+    name: Token,
+    pattern: *PatternNode,
+}
+
+pub struct StructPatternNode {
+    parent_node: *weak SyntaxNode,
+    lbrace: Token,
+    fields: Vec<*FieldPatternNode>,
+    rest: Option<*RestPatternNode>,
+    rbrace: Token,
+    ty: Option<*TypeNode>,
+}
+
+pub struct TuplePatternNode {
+    parent_node: *weak SyntaxNode,
+    lparen: Token,
+    elements: Vec<*PatternNode>,
+    rparen: Token,
+}
+
+pub struct EnumVariantPatternNode {
+    parent_node: *weak SyntaxNode,
+    base: *SegmentedName,
+    lparen: Token,
+    elements: Vec<*PatternNode>,
+    rparen: Token,
+}
+
+impl SyntaxNode for LiteralPatternNode {
+    fn span(&self) -> SourceSpan {
+        return self.literal.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_literal_pattern(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        return (type Vec<*SyntaxNode>)::new();
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PatternNode for LiteralPatternNode {
+}
+
+impl IdentPatternNode {
+
+    fn is_mut(&mut self) -> Bool {
+        if self.mutability is Some(m) {
+            return m;
+        } else {
+            let m = self.determine_mutability();
+            self.mutability = Some(m);
+            return m;
+        }
+    }
+
+    fn determine_mutability(&self) -> Bool {
+        let mut current: Option<*weak SyntaxNode> = self.parent();
+        while current is Some(p) {
+            if !(p is type *weak PatternNode) {
+                return false;
+            }
+            if p is type *weak MutPatternNode {
+                return true;
+            }
+            let upgrade_result = upgrade_syntaxnode(move p);
+            if upgrade_result is Some(u) {
+                current = u.parent();
+            } else {
+                break;
+            }
+        }
+        return false;
+    }
+}
+
+impl SyntaxNode for IdentPatternNode {
+    fn span(&self) -> SourceSpan {
+        return self.name.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_ident_pattern(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut children: Vec<*SyntaxNode> = Vec::new();
+        if self.ty is Some(ty) {
+            children.push(move ty as *SyntaxNode);
+        }
+        return children;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PatternNode for IdentPatternNode {
+}
+
+impl SyntaxNode for TypeNamePatternNode {
+    fn span(&self) -> SourceSpan {
+        return self.kw_type.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_type_name_pattern(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.ty as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PatternNode for TypeNamePatternNode {
+}
+
+impl SyntaxNode for WildcardPatternNode {
+    fn span(&self) -> SourceSpan {
+        return self.underscore.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_wildcard_pattern(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        return (type Vec<*SyntaxNode>)::new();
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PatternNode for WildcardPatternNode {
+}
+
+impl SyntaxNode for RestPatternNode {
+    fn span(&self) -> SourceSpan {
+        return self.ellipsis.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_rest_pattern(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        return (type Vec<*SyntaxNode>)::new();
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PatternNode for RestPatternNode {
+}
+
+impl SyntaxNode for RefPatternNode {
+    fn span(&self) -> SourceSpan {
+        return self.kw_ref.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_ref_pattern(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut children: Vec<*SyntaxNode> = Vec::new();
+        children.push(self.pattern as *SyntaxNode);
+        return children;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PatternNode for RefPatternNode {
+}
+
+impl SyntaxNode for WeakPatternNode {
+    fn span(&self) -> SourceSpan {
+        return self.kw_weak.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_weak_pattern(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.pattern as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PatternNode for WeakPatternNode {
+}
+
+impl SyntaxNode for DerefPatternNode {
+    fn span(&self) -> SourceSpan {
+        return self.borrow.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_deref_pattern(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.pattern as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PatternNode for DerefPatternNode {
+}
+
+impl SyntaxNode for MutPatternNode {
+    fn span(&self) -> SourceSpan {
+        return self.kw_mut.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_mut_pattern(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.pattern as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PatternNode for MutPatternNode {
+}
+
+impl SyntaxNode for FieldPatternNode {
+    fn span(&self) -> SourceSpan {
+        return self.dot.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_field_pattern(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.pattern as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PatternNode for FieldPatternNode {
+}
+
+impl SyntaxNode for StructPatternNode {
+    fn span(&self) -> SourceSpan {
+        return self.lbrace.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_struct_pattern(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut children: Vec<*SyntaxNode> = Vec::new();
+        for field in self.fields {
+            children.push(move field as *SyntaxNode);
+        }
+        if self.ty is Some(ty) {
+            children.push(move ty as *SyntaxNode);
+        }
+        return children;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PatternNode for StructPatternNode {
+}
+
+impl SyntaxNode for TuplePatternNode {
+    fn span(&self) -> SourceSpan {
+        return self.lparen.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_tuple_pattern(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut children: Vec<*SyntaxNode> = Vec::new();
+        for element in self.elements {
+            children.push(move element as *SyntaxNode);
+        }
+        return children;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PatternNode for TuplePatternNode {
+}
+
+impl SyntaxNode for EnumVariantPatternNode {
+    fn span(&self) -> SourceSpan {
+        return self.base.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_enum_variant_pattern(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut children: Vec<*SyntaxNode> = Vec::new();
+        for element in self.elements {
+            children.push(move element as *SyntaxNode);
+        }
+        return children;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl PatternNode for EnumVariantPatternNode {
+}

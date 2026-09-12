@@ -1,0 +1,105 @@
+pub mod hir;
+pub mod mir;
+pub mod zno;
+mod sema_diags;
+
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::source_code::*;
+
+use self::hir::builder::*;
+use self::hir::builder::resolver::*;
+use self::hir::ir::*;
+use self::hir::checker::*;
+
+use self::mir::ir::*;
+use self::mir::builder::{CfgBuilder};
+
+pub struct SemanticModel {
+    syntax_tree: *SyntaxTree,
+    root_mod_sym: *ModSymbol,
+
+    main_fn: Option<*FuncSymbol>,
+    all_mod: Vec<*ModSymbol>,
+    all_impl: Vec<*ImplSymbol>,
+    all_struct: Vec<*StructSymbol>,
+    all_enum: Vec<*EnumSymbol>,
+    all_union: Vec<*UnionSymbol>,
+    all_trait: Vec<*TraitSymbol>,
+    all_alias: Vec<*TypeAliasSymbol>,
+    all_global: Vec<*VarSymbol>,
+    all_fn: Vec<*FuncSymbol>,
+    all_extern_type: Vec<*ExternTypeSymbol>,
+
+    all_cfg: HashMap<UInt, *CFG>,
+}
+
+impl SemanticModel {
+    pub fn new(syntax_tree: *SyntaxTree) -> Option<*Self> {
+        let mut builder = SemanticModelBuilder::new(syntax_tree);
+        let root_mod_sym = builder.build();
+
+        if root_mod_sym is Some(m) {
+            let model = box {
+                .syntax_tree = move syntax_tree,
+                .root_mod_sym = move m,
+
+                .main_fn = builder.main_fn,
+                .all_mod = (type Vec<*ModSymbol>)::new(),
+                .all_impl = (type Vec<*ImplSymbol>)::new(),
+                .all_struct = (type Vec<*StructSymbol>)::new(),
+                .all_enum = (type Vec<*EnumSymbol>)::new(),
+                .all_union = (type Vec<*UnionSymbol>)::new(),
+                .all_trait = (type Vec<*TraitSymbol>)::new(),
+                .all_alias = (type Vec<*TypeAliasSymbol>)::new(),
+                .all_global = (type Vec<*VarSymbol>)::new(),
+                .all_fn = (type Vec<*FuncSymbol>)::new(),
+                .all_extern_type = (type Vec<*ExternTypeSymbol>)::new(),
+                .all_cfg = (type HashMap<UInt, *CFG>)::new(),
+            }: SemanticModel;
+            return Some(move model);
+        }
+        return None;
+    }
+
+    pub fn clear(&mut self) {
+        // todo 解决循环引用问题
+        // SemanticModel 内部的各个节点之间有互相引用关系，会导致内存泄漏。
+        // 如果把其中一部分指针改成 weak，API 比较难用
+        // 我们可以用这样的办法解决泄漏问题：引入一个 clear 成员函数，通过根节点对所有节点做遍历，
+        // 把互相引用的指向关系都解除掉，然后再析构就没问题了
+    }
+
+    pub fn type_check(*self) {
+        let mut ctx = TypeCheckContext::new(self);
+        ctx.check_mod(self.root_mod_sym);
+    }
+
+    pub fn cfg_build(*self) {
+        let resolver = Resolver::new(self.root_mod_sym);
+        for f in self.all_fn {
+            let mut builder = CfgBuilder::new(self, f, resolver);
+            if builder.build() is Some(cfg) {
+                let key = f as *raw FuncSymbol as UInt;
+                cfg.check();
+                self.all_cfg.insert(key, move cfg);
+            }
+        }
+    }
+
+    pub fn dump_mir(&self, name: String) {
+        if name.is_empty() {
+            return;
+        }
+        for f in self.all_fn {
+            let mangle_name = f.mangle_name();
+            if f.short_name().eq(&name) || mangle_name.eq(&name) {
+                println("====== dump MIR =====");
+                println(mangle_name);
+                let key = f as *raw FuncSymbol as UInt;
+                if self.all_cfg.at(&key) is Some(cfg) {
+                    cfg.dump();
+                }
+            }
+        }
+    }
+}

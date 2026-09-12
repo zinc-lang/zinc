@@ -1,0 +1,53 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::syntax::token::*;
+
+use super::*;
+
+impl ContextValue {
+    fn new(e: *ContextExpr, v: *RValue) -> *Self {
+        return box {
+            .expr = move e,
+            .parent_node = None,
+            .inner = move v,
+        }: ContextValue;
+    }
+
+    fn is_unsafe_ctx(&self) -> Bool {
+        return self.expr.kw_context.token_kind is TokenKind::Keyword(KeywordKind::KW_UNSAFE);
+    }
+
+    fn is_const_ctx(&self) -> Bool {
+        return self.expr.kw_context.token_kind is TokenKind::Keyword(KeywordKind::KW_CONST);
+    }
+}
+
+impl XValue for ContextValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.inner.get_stype();
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.inner.set_stype(move sty);
+    }
+
+    fn dump(&self) {
+        self.inner.dump();
+    }
+}
+
+impl RValue for ContextValue {
+
+}

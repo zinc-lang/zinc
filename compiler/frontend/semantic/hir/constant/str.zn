@@ -1,0 +1,75 @@
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::DiagnosticEngine;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::semantic::hir::ir::*;
+
+use super::*;
+
+impl ConstValue for StringCValue {
+    fn span(&self) -> SourceSpan {
+        return self.token.source_span;
+    }
+
+    fn structural_eq(&self, other: &ConstValue) -> Bool {
+        if other is o: &StringCValue {
+            return self.value.eq(&o.value);
+        } else {
+            return false;
+        }
+    }
+
+    fn to_string(&self) -> String {
+        return self.value;
+    }
+}
+
+impl StringCValue {
+    fn new(t: Token) -> Self {
+        let mut tok_str = t.raw_str().as_str().deref();
+        tok_str = trim_quotes(tok_str);
+
+        let mut value = String::new();
+        let len = tok_str.len();
+        let mut i: UInt = 0;
+        while i < len {
+            let b = tok_str.index(i);
+            if b == b'\\' {
+                let second = tok_str.index(i+1);
+                if second == b't' { value.push(b'\t'); }
+                else if second == b'r' { value.push(b'\r'); }
+                else if second == b'n' { value.push(b'\n'); }
+                else if second == b'0' { value.push(0_u8); }
+                else if second == b'\\' { value.push(b'\\'); }
+                else if second == b'\'' { value.push(b'\''); }
+                else if second == b'"' { value.push(b'"'); }
+                else {
+                    DiagnosticEngine::get().emit_invalid_escape(t.source_span);
+                }
+                i += 1;
+            } else {
+                value.push(b);
+            }
+            i += 1;
+        }
+
+        return {
+            .token = move t,
+            .value = move value,
+        }: StringCValue;
+    }
+}
+
+// 去掉字符串首尾的双引号
+fn trim_quotes<'a>(s: Str<'a>) -> Str<'a> {
+    let mut start: UInt = 0;
+    let mut end = s.len();
+    if s.starts_with("\"") {
+        start += 1;
+        end -= 1;
+    }
+    if s.ends_with("\"") {
+        end -= 1;
+    }
+    return s.sub_str(start, end);
+}

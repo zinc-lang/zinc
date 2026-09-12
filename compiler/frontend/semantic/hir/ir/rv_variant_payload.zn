@@ -1,0 +1,49 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use super::*;
+
+impl VariantPayloadValue {
+    fn create(v: *RValue, ctor: *EnumVariantSymbol) -> *Self {
+        let span = v.expr_node().span();
+        return box {
+            .enum_value = move v,
+            .enum_ctor_sym = move ctor,
+            .parent_node = None,
+            .sty = SType::sty_invalid(span),
+        }: VariantPayloadValue;
+    }
+}
+
+impl XValue for VariantPayloadValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.enum_value.expr_node();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+        print("(");
+        self.enum_value.dump();
+        print(" ~ ");
+        print(self.enum_ctor_sym.short_name());
+        print(")");
+    }
+}
+
+impl RValue for VariantPayloadValue {
+
+}

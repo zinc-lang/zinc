@@ -1,0 +1,30 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use super::*;
+
+impl WildcardPattern {
+    fn new(n: *WildcardPatternNode) -> *Self {
+        return box {
+            .node = move n,
+            .matches_with = None,
+        }: WildcardPattern;
+    }
+}
+
+impl Pattern for WildcardPattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+        self.matches_with = Some(expr);
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        return (type Vec<*VarSymbol>)::new();
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        // 没什么需要检查的
+    }
+}

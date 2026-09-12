@@ -1,0 +1,79 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::syntax::token::*;
+use super::*;
+
+impl MethodCallValue {
+    fn new(e: *MemberAccessExpr, method: Token, receiver: *RValue) -> *Self {
+        let span = e.span();
+        return box {
+            .expr = move e as *ExpressionNode,
+            .parent_node = None,
+            .receiver = move receiver,
+            .desugared_receiver = None,
+            .method = move method,
+            .resolved_method = None,
+            .generic_args = GenericArgs::new(),
+            .fn_args = (type Vec<FnArgValue>)::new(),
+            .desugared_args = (type Vec<*RValue>)::new(),
+            .sty = SType::sty_invalid(span),
+        }: MethodCallValue;
+    }
+
+    fn create(desugared_receiver: *RValue,
+                method: *FuncSymbol,
+                generic_args: GenericArgs,
+                desugared_args: Vec<*RValue>,
+                return_sty: *SType) -> *Self {
+        let span = desugared_receiver.expr_node().span();
+        if desugared_receiver.get_stype().is_invalid() {
+            panic; // bug
+        }
+        let tok = method.func_node.name;
+        return box {
+            .expr = desugared_receiver.expr_node(),
+            .parent_node = None,
+            .receiver = desugared_receiver,
+            .desugared_receiver = Some(desugared_receiver),
+            .method = move tok,
+            .resolved_method = Some(move method),
+            .generic_args = move generic_args,
+            .fn_args = (type Vec<FnArgValue>)::new(),
+            .desugared_args = move desugared_args,
+            .sty = move return_sty,
+        }: MethodCallValue;
+    }
+}
+
+impl XValue for MethodCallValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+        self.receiver.dump();
+        print(".");
+        print(self.resolved_method.get_or_panic().short_name());
+        print("(...)");
+    }
+}
+
+impl RValue for MethodCallValue {
+
+}

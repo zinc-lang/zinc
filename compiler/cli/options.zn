@@ -1,0 +1,247 @@
+use std::fs::Path;
+
+pub struct CliOptions {
+    pub help: Bool,
+    pub diag_fmt: String,
+    pub entry_source_file: String,
+    pub version: String,
+    pub speak: String,
+    pub dump_ast: String,
+    pub dump_hir: String,
+    pub dump_mir: String,
+    pub dump_ll: String,
+    pub dump_llir: Bool,
+    pub link_cpp: Bool,
+    pub opt_level: UInt,
+    pub check_only: Bool,
+    pub search_paths: Vec<String>,
+    pub link_objects: Vec<String>,
+    pub extra_link: Vec<String>,
+    pub out_dir: String,
+    pub link_objects_found: Vec<String>,
+}
+
+fn parse_args() -> CliOptions {
+    let mut options: CliOptions =  {
+        .help = false,
+        .diag_fmt = "normal".to_string(),
+        .entry_source_file = String::new(),
+        .version = "0.1.0".to_string(),
+        .speak = "zh".to_string(),
+        .dump_ast = String::new(),
+        .dump_hir = String::new(),
+        .dump_mir = String::new(),
+        .dump_ll = String::new(),
+        .dump_llir = false,
+        .link_cpp = false,
+        .opt_level = 0_u,
+        .check_only = false,
+        .search_paths = (type Vec<String>)::new(),
+        .link_objects = (type Vec<String>)::new(),
+        .extra_link = (type Vec<String>)::new(),
+        .out_dir = String::new(),
+        .link_objects_found = (type Vec<String>)::new(),
+    }: CliOptions;
+    let args = std::env::args();
+    let mut i: UInt = 1;
+    let argc = args.len();
+    while i < argc {
+        let arg: Str = unsafe(*args.get_unchecked(i));
+        if arg.eq(&"--help") || arg.eq(&"-h") {
+            options.help = true;
+        } else if arg.eq(&"--version") || arg.eq(&"-v") {
+            if i + 1 < argc {
+                options.version = unsafe(args.get_unchecked(i + 1).to_string());
+                i += 1;
+            }
+        } else if arg.eq(&"-l") {
+            if i + 1 < argc {
+                options.link_objects.push(unsafe(args.get_unchecked(i + 1).to_string()));
+                i += 1;
+            }
+        } else if arg.eq(&"-L") {
+            if i + 1 < argc {
+                options.search_paths.push(unsafe(args.get_unchecked(i + 1).to_string()));
+                i += 1;
+            }
+        } else if arg.starts_with("--extra-link=") {
+            let link = arg.sub_str(13);
+            let stripped = trim_quotes(link);
+            let seperated = f" $(stripped) ";
+            options.extra_link.push(seperated);
+        } else if arg.eq(&"--link-c++") {
+            options.link_cpp = true;
+        } else if arg.eq(&"--check-only") {
+            options.check_only = true;
+        } else if arg.starts_with("--out-dir=") {
+            options.out_dir = arg.sub_str(10).to_string();
+        } else if (arg.starts_with("--speak=")) {
+            options.speak = arg.sub_str(8).to_string();
+        } else if (arg.starts_with("--diag-fmt=")) {
+            let df = arg.sub_str(11);
+            if df.ne(&"normal") && df.ne(&"simple") {
+                eprintln(f"Invalid diag format");
+                std::process::exit(1);
+            }
+            options.diag_fmt = df.to_string();
+        } else if (arg.starts_with("-O")) {
+            let level = arg.sub_str(2);
+            if level.eq(&"0") {
+                options.opt_level = 0_u;
+            } else if level.eq(&"1") {
+                options.opt_level = 1_u;
+            } else if level.eq(&"2") {
+                options.opt_level = 2_u;
+            } else if level.eq(&"3") {
+                options.opt_level = 3_u;
+            } else {
+                eprintln(f"Invalid optimization level: $(level)");
+                std::process::exit(1);
+            }
+        } else if (arg.starts_with("--dump-ast=")) {
+            options.dump_ast = arg.sub_str(11).to_string();
+        } else if (arg.starts_with("--dump-hir=")) {
+            options.dump_hir = arg.sub_str(10).to_string();
+        } else if (arg.starts_with("--dump-mir=")) {
+            options.dump_mir = arg.sub_str(11).to_string();
+        } else if arg.eq(&"--dump-llir") {
+            options.dump_llir = true;
+        } else if arg.starts_with("--dump-ll=") {
+            options.dump_ll = arg.sub_str(10).to_string();
+        } else if arg.ends_with(".zn") {
+            if options.entry_source_file.is_empty() {
+                options.entry_source_file = arg.to_string();
+            } else {
+                eprintln("Multiple source files provided.");
+                std::process::exit(1);
+            }
+        } else {
+            eprintln(f"Unknown option: $(arg)");
+            std::process::exit(1);
+        }
+        i += 1;
+    }
+    return options;
+}
+
+unsafe static mut G_CLI_OPTIONS: Option<CliOptions> = None;
+
+impl CliOptions {
+
+    pub fn get() -> &'static mut CliOptions {
+        unsafe {
+            if G_CLI_OPTIONS is Some(ref mut o) {
+                return unsafe(o as &'static mut CliOptions);
+            } else {
+                let option = parse_args();
+                G_CLI_OPTIONS = Some(move option);
+
+                if G_CLI_OPTIONS is Some(ref mut o) {
+                    return unsafe(o as &'static mut CliOptions);
+                } else {
+                    panic "unreachable";
+                }
+            }
+        }
+    }
+
+    pub fn validate(&mut self) {
+        if self.help {
+            print_help();
+        }
+        if self.entry_source_file.is_empty() {
+            eprintln("No source file provided.");
+            std::process::exit(1);
+        }
+
+        // todo 检查各个选项值的合法性
+
+        // 在 search_paths 里面寻找 link_objects，找到的结果保存到 link_objects_found 里面
+        for ref l in self.link_objects {
+            if self.find_file(l) is Some(found) {
+                self.link_objects_found.push(found);
+            }
+        }
+    }
+
+    fn find_file(&self, filename: &String) -> Option<String> {
+        let mut found: Vec<String> = (type Vec<String>)::new();
+        for path in self.search_paths {
+            let mut path = Path::new(path.as_str().deref());
+            path.join(filename.as_str().deref());
+            if path.exists() {
+                found.push(path.to_string());
+            }
+        }
+        if found.len() > 1 {
+            eprintln(f"Multiple files found for $(filename):");
+            for f in found {
+                eprintln(f"  $(f)");
+            }
+            return None;
+        } else if found.len() == 0 {
+            eprintln(f"File $(filename) is not found");
+            return None;
+        }
+        return Some(*found.index(0).deref());
+    }
+
+    pub fn dump(&self) {
+        println("Options:");
+        let {
+                help = .help,
+                diag_fmt = .diag_fmt,
+                entry_source_file = .entry_source_file,
+                version = .version,
+                speak = .speak,
+                dump_hir = .dump_hir,
+                dump_mir = .dump_mir,
+                dump_ll = .dump_ll,
+                dump_llir = .dump_llir,
+                search_paths = .search_paths,
+                link_objects = .link_objects,
+                out_dir = .out_dir,
+                link_objects_found = .link_objects_found
+        }: CliOptions = self;
+        println(f"  help: $(help)");
+        println(f"  diag_fmt: $(diag_fmt)");
+        println(f"  entry_source_file: $(entry_source_file)");
+        println(f"  version: $(version)");
+        println(f"  speak: $(speak)");
+        println(f"  dump_hir: $(dump_hir)");
+        println(f"  dump_mir: $(dump_mir)");
+        println(f"  dump_ll: $(dump_ll)");
+        println(f"  dump_llir: $(dump_llir)");
+        println(f"  out_dir: $(out_dir)");
+    }
+}
+
+fn print_help() {
+    println("zinc [options] <file>");
+    println("Options:");
+    println("  --help -h: show this help");
+    println("  --version -v: specify component version");
+    println("  --speak=zh|en: set language");
+    println("  --diag-fmt=normal|simple: set diagnostic format");
+    println("  --dump-hir=<fn>: debug the function's hir");
+    println("  --dump-mir=<fn>: debug the function's mir");
+    println("  --dump-ll=<fn>: debug the LLVM IR of the function");
+    println("  --dump-llir: debug all the LLVM IR of the module");
+    println("  -l <dir>: the file for zno files or object files");
+    println("  -L <dir>: add path to search path set");
+    println("  --out-dir=<dir>: write output to compiler-chosen filename in <dir>");
+}
+
+// 去掉字符串首尾的单双引号
+fn trim_quotes<'a>(s: Str<'a>) -> Str<'a> {
+    let mut start: UInt = 0;
+    let mut end = s.len();
+    if s.starts_with("\"") || s.starts_with("'") {
+        start += 1;
+        end -= 1;
+    }
+    if s.ends_with("\"") || s.ends_with("'") {
+        end -= 1;
+    }
+    return s.sub_str(start, end);
+}

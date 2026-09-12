@@ -1,0 +1,814 @@
+use super::super::token::{Token, TokenKind, KeywordKind};
+use super::super::super::source_code::{SourceSpan, SourceManager};
+use super::{QualifierList, SegmentedName};
+use super::decl::{GenericTypeParamDecl, FnParamDecl, WhereCondDecl};
+use super::stmt::{BlockStmt};
+use super::{SyntaxNode, StatementNode, DeclNode, PatternNode, TypeNode, ExpressionNode};
+use super::visit::{SyntaxVisitor, VisitResult};
+
+// todo 可以考虑让 then_branch 和 else_branch 也支持单个的跳转 statement
+// 包括 return & panic 等，很多时候会比较方便
+// 但是不要支持语句块。
+pub struct TernaryExpr {
+    parent_node: *weak SyntaxNode, 
+    kw_if: Token,
+    condition: *ExpressionNode,
+    kw_then: Token,
+    then_branch: *ExpressionNode,
+    kw_else: Token,
+    else_branch: *ExpressionNode,
+}
+
+pub struct ContextExpr {
+    parent_node: *weak SyntaxNode, 
+    kw_context: Token,
+    lparen: Token,
+    expr: *ExpressionNode,
+    rparen: Token,
+}
+
+pub struct AssignExpr {
+    parent_node: *weak SyntaxNode, 
+    lhs: *ExpressionNode,
+    assign_op: Token,
+    rhs: *ExpressionNode,
+}
+
+pub struct BinaryExpr {
+    parent_node: *weak SyntaxNode, 
+    lhs: *ExpressionNode,
+    op: Token,
+    rhs: *ExpressionNode,
+}
+
+pub struct IsExpr {
+    parent_node: *weak SyntaxNode, 
+    lhs: *ExpressionNode,
+    kw_is: Token,
+    rhs: *PatternNode,
+}
+
+pub struct AsExpr {
+    parent_node: *weak SyntaxNode, 
+    lhs: *ExpressionNode,
+    kw_as: Token,
+    rhs: *TypeNode,
+}
+
+// 前缀单目运算符
+// '-', '!'
+// '&', '&mut', '&raw', '&raw mut'
+// '*'
+// 'box', 'move', 'await', 'yield'
+enum UnaryExprKind {
+    Neg,
+    Not,
+    Ref,
+    RefMut,
+    RefRaw,
+    RefRawMut,
+    Deref,
+    Box,
+    Move,
+    Await,
+    Yield,
+}
+
+pub struct UnaryExpr {
+    parent_node: *weak SyntaxNode, 
+    op1: Token,
+    op2: Token, // optional
+    op3: Token, // optional
+    operand: *ExpressionNode,
+    kind: UnaryExprKind,
+}
+
+pub struct QuestionExpr {
+    parent_node: *weak SyntaxNode, 
+    expr: *ExpressionNode,
+    question: Token,
+}
+
+pub struct IndexExpr {
+    parent_node: *weak SyntaxNode, 
+    base: *ExpressionNode,
+    lbracket: Token,
+    index: *ExpressionNode,
+    rbracket: Token,
+}
+
+pub struct ParenExpr {
+    parent_node: *weak SyntaxNode, 
+    lparen: Token,
+    expr: *ExpressionNode,
+    rparen: Token,
+}
+
+pub struct MemberAccessExpr {
+    parent_node: *weak SyntaxNode, 
+    base: *ExpressionNode,
+    dot: Token,
+    member: Token,
+}
+
+pub struct FnArg {
+    parent_node: *weak SyntaxNode, 
+    named: Token,
+    value: *ExpressionNode,
+}
+
+impl FnArg {
+    pub fn is_named(&self) -> Bool {
+        return self.named.token_kind is TokenKind::Identifier;
+    }
+    pub fn span(&self) -> SourceSpan {
+        if self.is_named() {
+            let start = self.named.span().start;
+            let end = self.value.span().end;
+            return { .start = start, .end = end }: SourceSpan;
+        } else {
+            return self.value.span();
+        }
+    }
+}
+
+pub struct FnCallExpr {
+    parent_node: *weak SyntaxNode, 
+    callee: *ExpressionNode,
+    type_args: Vec<*TypeNode>,
+    lparen: Token,
+    args: Vec<FnArg>,
+    rparen: Token,
+}
+
+pub enum LambdaCapture {
+    Ident(Token), // by value capture
+    Move(Token, Token), // by value capture with move
+    Ref(Token, Token), // by reference capture
+    RefMut(Token, Token, Token), // by mutable reference capture
+}
+
+pub struct LambdaExpr {
+    parent_node: *weak SyntaxNode, 
+    lambda_start: Token,
+    qualifier_list: QualifierList,
+    captures: Vec<LambdaCapture>,
+    generic_params: Vec<*GenericTypeParamDecl>,
+    params: Vec<*FnParamDecl>,
+    return_type: Option<*TypeNode>,
+    where_conds: Vec<*WhereCondDecl>,
+    fat_arrow: Token,
+    body_expr: Option<*ExpressionNode>,
+    body_block: Option<*BlockStmt>,
+}
+
+pub enum FieldInitializer {
+    Named(Token, Token, Token, *ExpressionNode), // dot name assign init
+    Default(Token, Option<*ExpressionNode>), // ellipsis init
+}
+
+pub struct StructInitExpr {
+    parent_node: *weak SyntaxNode, 
+    lbrace: Token,
+    fields_init: Vec<FieldInitializer>,
+    rbrace: Token,
+}
+
+pub struct TupleLiteralExpr {
+    parent_node: *weak SyntaxNode, 
+    lparen: Token,
+    elements: Vec<*ExpressionNode>,
+    rparen: Token,
+}
+
+pub struct ArrayLiteralExpr {
+    parent_node: *weak SyntaxNode, 
+    lbracket: Token,
+    elements: Vec<*ExpressionNode>,
+    rbracket: Token,
+}
+
+pub struct ArrayRepeatLiteralExpr {
+    parent_node: *weak SyntaxNode, 
+    lbracket: Token,
+    element: *ExpressionNode,
+    semicolon: Token,
+    repeat: *ExpressionNode,
+    rbracket: Token,
+}
+
+pub struct LiteralExpr {
+    parent_node: *weak SyntaxNode, 
+    token: Token,
+}
+
+pub struct TypeAscriptionExpr {
+    parent_node: *weak SyntaxNode, 
+    expr: *ExpressionNode,
+    colon: Token,
+    ty: *TypeNode,
+}
+
+// 中间没有泛型参数
+// mod1::mod2::name
+pub struct SegmentedNameExpr {
+    parent_node: *weak SyntaxNode, 
+    name: *SegmentedName,
+}
+
+// 中间有泛型参数
+// (type mod1::S<T> as TR<U>)::method
+// (type mod1::S<T>)::method
+// (type mod1::S<T>::AssociatedType)::method
+// 注: 类型命名没能表现出该语法的特点，想不出更好的名字
+pub struct QualifiedPathExpr {
+    parent_node: *weak SyntaxNode, 
+    lparen: Token,
+    kw_type: Token,
+    ty: *TypeNode,
+    kw_as: Token,
+    trait_ty: Option<*TypeNode>,
+    rparen: Token,
+    rest_parts: *SegmentedName,
+}
+
+impl SyntaxNode for TernaryExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.kw_if.span().start;
+        let end = self.else_branch.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_ternary_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(3);
+        vec.push(self.condition as *SyntaxNode);
+        vec.push(self.then_branch as *SyntaxNode);
+        vec.push(self.else_branch as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for TernaryExpr {
+}
+
+impl SyntaxNode for ContextExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.kw_context.span().start;
+        let end = self.rparen.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_context_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.expr as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for ContextExpr {
+}
+
+impl SyntaxNode for AssignExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.lhs.span().start;
+        let end = self.rhs.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_assign_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(2);
+        vec.push(self.lhs as *SyntaxNode);
+        vec.push(self.rhs as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for AssignExpr {
+}
+
+impl SyntaxNode for BinaryExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.lhs.span().start;
+        let end = self.rhs.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_binary_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::new();
+        vec.push(self.lhs as *SyntaxNode);
+        vec.push(self.rhs as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for BinaryExpr {
+}
+
+impl SyntaxNode for IsExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.lhs.span().start;
+        let end = self.rhs.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_is_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::new();
+        vec.push(self.lhs as *SyntaxNode);
+        vec.push(self.rhs as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for IsExpr {
+}
+
+impl SyntaxNode for AsExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.lhs.span().start;
+        let end = self.rhs.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_as_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(2);
+        vec.push(self.lhs as *SyntaxNode);
+        vec.push(self.rhs as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for AsExpr {
+}
+
+impl SyntaxNode for UnaryExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.op1.span().start;
+        let end = self.operand.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_unary_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.operand as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for UnaryExpr {
+}
+
+impl SyntaxNode for QuestionExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.expr.span().start;
+        let end = self.question.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_question_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.expr as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for QuestionExpr {
+}
+
+impl SyntaxNode for IndexExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.base.span().start;
+        let end = self.rbracket.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_index_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(2);
+        vec.push(self.base as *SyntaxNode);
+        vec.push(self.index as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for IndexExpr {
+}
+
+impl SyntaxNode for ParenExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.lparen.span().start;
+        let end = self.rparen.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_paren_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.expr as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for ParenExpr {
+}
+
+impl SyntaxNode for MemberAccessExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.base.span().start;
+        let end = self.member.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_member_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(1);
+        vec.push(self.base as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for MemberAccessExpr {
+}
+
+impl SyntaxNode for FnCallExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.callee.span().start;
+        let end = self.rparen.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_call_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut arr: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        arr.push(self.callee as *SyntaxNode);
+        for ref arg in self.args {
+            arr.push(arg.value as *SyntaxNode);
+        }
+        return arr;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for FnCallExpr {
+}
+
+impl SyntaxNode for LambdaExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.lambda_start.span().start;
+        let end = if self.body_expr is Some(e) 
+                    then (e as *SyntaxNode).span().end
+                    else if self.body_block is Some(b)
+                        then (b as *SyntaxNode).span().end
+                        else start;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_lambda_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut arr: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        for param in self.params {
+            arr.push(move param as *SyntaxNode);
+        }
+        if self.return_type is Some(rt) {
+            arr.push(move rt as *SyntaxNode);
+        }
+        if self.body_expr is Some(e) {
+            arr.push(move e as *SyntaxNode);
+        }
+        if self.body_block is Some(b) {
+            arr.push(move b as *SyntaxNode);
+        }
+        return arr;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for LambdaExpr {
+}
+
+impl SyntaxNode for StructInitExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.lbrace.span().start;
+        let end = self.rbrace.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_struct_init_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut arr: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        for ref field in self.fields_init {
+            match field {
+                FieldInitializer::Named(_, _, _, init1) => arr.push(move init1 as *SyntaxNode);
+                FieldInitializer::Default(_, init2) => {
+                    if init2 is Some(i) {
+                        arr.push(move i as *SyntaxNode);
+                    }
+                }
+            }
+        }
+        return arr;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for StructInitExpr {
+}
+
+impl SyntaxNode for TupleLiteralExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.lparen.span().start;
+        let end = self.rparen.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_tuple_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut arr: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        for elem in self.elements {
+            arr.push(move elem as *SyntaxNode);
+        }
+        return arr;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for TupleLiteralExpr {
+}
+
+impl SyntaxNode for ArrayLiteralExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.lbracket.span().start;
+        let end = self.rbracket.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_array_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut arr: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        for elem in self.elements {
+            arr.push(move elem as *SyntaxNode);
+        }
+        return arr;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for ArrayLiteralExpr {
+}
+
+impl SyntaxNode for ArrayRepeatLiteralExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.lbracket.span().start;
+        let end = self.rbracket.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_array_repeat_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(2);
+        vec.push(self.element as *SyntaxNode);
+        vec.push(self.repeat as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for ArrayRepeatLiteralExpr {
+}
+
+impl SyntaxNode for LiteralExpr {
+    fn span(&self) -> SourceSpan {
+        return self.token.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_literal_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        return (type Vec<*SyntaxNode>)::new();
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for LiteralExpr {
+}
+
+impl SyntaxNode for TypeAscriptionExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.expr.span();
+        let end = self.ty.span();
+        return { .start = start.start, .end = end.end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_type_ascription_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(2);
+        vec.push(self.expr as *SyntaxNode);
+        vec.push(self.ty as *SyntaxNode);
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for TypeAscriptionExpr {
+}
+
+impl SyntaxNode for SegmentedNameExpr {
+    fn span(&self) -> SourceSpan {
+        return self.name.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_name_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        return (type Vec<*SyntaxNode>)::new();
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for SegmentedNameExpr {
+}
+
+impl SyntaxNode for QualifiedPathExpr {
+    fn span(&self) -> SourceSpan {
+        let start = self.lparen.span().start;
+        let end = self.rest_parts.span().end;
+        return { .start = start, .end = end }: SourceSpan;
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_path_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut arr: Vec<*SyntaxNode> = (type Vec<*SyntaxNode>)::new();
+        arr.push(self.ty as *SyntaxNode);
+        if self.trait_ty is Some(tt) {
+            arr.push(move tt as *SyntaxNode);
+        }
+        return arr;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for QualifiedPathExpr {
+}

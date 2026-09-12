@@ -1,0 +1,476 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::syntax::ast::stmt::*;
+use ::self::frontend::syntax::ast::visit::*;
+use ::self::frontend::syntax::ast::ty::*;
+use ::self::frontend::syntax::ast::expr::*;
+
+use ::self::frontend::semantic::hir::ir::*;
+
+use ::self::frontend::diagnostic::*;
+use ::self::frontend::source_code::*;
+
+use super::resolver::*;
+use super::exprs::ExprTransformer;
+
+struct StmtTransformer {
+    resolver: Resolver,
+    stmt_to_sentence: HashMap<UInt, *Sentence>,
+    block_chain: Vec<*BlockSentence>,
+    func_sym: *FuncSymbol,
+}
+
+impl StmtTransformer {
+
+    fn new(r: Resolver, fs: *FuncSymbol) -> Self {
+        return {
+            .resolver = move r,
+            .func_sym = move fs,
+            .stmt_to_sentence = (type HashMap<UInt, *Sentence>)::new(),
+            .block_chain = (type Vec<*BlockSentence>)::new(),
+        }: StmtTransformer;
+    }
+
+    // 结果保存在 FuncSymbol::body 字段里面
+    fn traverse(&mut self) {
+        if self.func_sym.func_node.body is Some(block) {
+            let bs = self.create_block(block);
+            self.func_sym.body = Some(bs);
+            bs.parent_stmt = Some(self.func_sym as *ScopeSymbol);
+
+            for s in block.stmts {
+                self.visit_stmt(s);
+            }
+            self.exit_block(bs);
+        }
+    }
+
+    fn mapping(&mut self, node: *SyntaxNode, st: *Sentence) {
+        let key = node as *raw SyntaxNode as UInt;
+        self.stmt_to_sentence.insert(key, move st);
+    }
+
+    fn nearest_block(&self) -> *BlockSentence {
+        let len = self.block_chain.len();
+        if len == 0 {
+            panic "BUG: block chain is empty";
+        }
+        return *self.block_chain.index(len - 1).deref();
+    }
+
+    fn create_block(&mut self, block: *StatementNode) -> *BlockSentence {
+        let bs = BlockSentence::new(block);
+        self.mapping(block as *SyntaxNode, bs as *Sentence);
+        if self.block_chain.is_empty() {
+            bs.parent_stmt = Some(self.func_sym as *ScopeSymbol);
+        } else {
+            bs.parent_stmt = Some(self.nearest_block() as *ScopeSymbol);
+        }
+        self.block_chain.push(bs);
+        return bs;
+    }
+
+    fn exit_block(&mut self, bs: *BlockSentence) {
+        let back = self.block_chain.pop();
+        if back is Some(b) {
+            if b as *raw BlockSentence as UInt == bs as *raw BlockSentence as UInt {
+                return;
+            }
+        }
+        panic "BUG: exit block is not the last of block_chain";
+    }
+
+    fn get_ctx(&self) -> ResolveContext {
+        let mut scope: Option<*ScopeSymbol> = None;
+        let mut outer: Option<*SType> = None;
+        if self.func_sym.parent_sym is Some(trait_sym: *TraitSymbol) {
+            scope = Some(trait_sym as *ScopeSymbol);
+            outer = Some(trait_sym.self_ty.to_sty());
+        }
+        if self.func_sym.parent_sym is Some(impl_sym: *ImplSymbol) {
+            scope = Some(impl_sym as *ScopeSymbol);
+            outer = Some(impl_sym.self_ty.to_sty());
+        }
+
+        let blk = self.nearest_block();
+
+        let ctx = {
+            .entry_scope = blk as *ScopeSymbol,
+            .path_scope = blk as *ScopeSymbol,
+            .self_sty = move outer,
+        }: ResolveContext;
+        return ctx;
+    }
+
+    fn expr_trans(&self) -> ExprTransformer {
+        return {
+            .current_block = self.nearest_block(),
+            .func_sym = self.func_sym,
+            .expr_to_sentence = (type HashMap<UInt, *Sentence>)::new(),
+            .resolver = self.resolver,
+        }: ExprTransformer;
+    }
+
+    fn visit_stmt(&mut self, n: *StatementNode) {
+        match n {
+            block: *BlockStmt => {
+                let bs = self.visit_block(move block);
+                self.nearest_block().add_sentence(bs);
+            }
+            empty: *EmptyStmt => self.visit_empty_stmt(move empty);
+            let_stmt: *LetStmt => self.visit_let_stmt(move let_stmt);
+            expr: *ExprStmt => self.visit_expr_stmt(move expr);
+            if_stmt: *IfStmt => self.visit_if_stmt(move if_stmt);
+            match_stmt: *MatchStmt => self.visit_match_stmt(move match_stmt);
+            while_stmt: *WhileStmt => self.visit_while_stmt(move while_stmt);
+            dw_stmt: *DoWhileStmt => self.visit_dowhile_stmt(move dw_stmt);
+            for_stmt: *ForStmt => self.visit_for_stmt(move for_stmt);
+            ret_stmt: *ReturnStmt => self.visit_return_stmt(move ret_stmt);
+            panic_stmt: *PanicStmt => self.visit_panic_stmt(move panic_stmt);
+            break_stmt: *BreakStmt => self.visit_break_stmt(move break_stmt);
+            cont_stmt: *ContinueStmt => self.visit_continue_stmt(move cont_stmt);
+            goto_stmt: *GotoStmt => self.visit_goto_stmt(move goto_stmt);
+            label_stmt: *LabelStmt => self.visit_label_stmt(move label_stmt);
+
+            invalid: *DummySyntaxNode => {}
+
+            _ => panic "unknown statement in StmtTransformer::visit_stmt";
+        }
+    }
+
+    fn visit_block(&mut self, block: *BlockStmt) -> *BlockSentence{
+        let bs = self.create_block(block);
+
+        // todo resolve internal decls inside block
+
+        for s in block.stmts {
+            self.visit_stmt(s);
+        }
+        self.exit_block(bs);
+
+        // 由调用方添加
+        // self.nearest_block().add_sentence(bs);
+        return bs;
+    }
+
+    fn visit_empty_stmt(&mut self, stmt: *EmptyStmt) {
+        // do nothing
+    }
+
+    fn visit_let_stmt(&mut self, stmt: *LetStmt) {
+
+        let pat = self.resolver.resolve_pattern(self.get_ctx(), stmt.pattern);
+
+        let mut etrans = self.expr_trans();
+        let init = etrans.visit_expr(stmt.init_expr);
+
+        pat.destructure(init, false);
+        if contains_refutable_pattern(pat) {
+            DiagnosticEngine::get().emit_irrefutable_pattern_only(stmt.pattern.span());
+        }
+
+        let bindings = pat.collect_all_bindings();
+
+        if bindings.is_empty() {
+            // 如果没有引入变量绑定，初始化表达式也要执行
+            let expr_st = ExprSentence::new(stmt as *StatementNode, init);
+            self.nearest_block().add_sentence(expr_st as *Sentence);
+        } else {
+            // 初始化所有的变量绑定
+            for b in bindings {
+                self.nearest_block().add_local(b);
+
+                if b.init is Some(i) {
+                    let local = LocalVar::new(stmt.init_expr, b);
+                    let s = LetSentence::new(stmt, local, move i);
+                    self.nearest_block().add_sentence(s as *Sentence);
+                } else {
+                    panic "BUG: binding without initializer should have been rejected in parser";
+                }
+            }
+        }
+    }
+
+    fn visit_expr_stmt(&mut self, stmt: *ExprStmt) {
+
+        let mut etrans = self.expr_trans();
+        let e = etrans.visit_expr(stmt.expr);
+
+        let expr_st = ExprSentence::new(stmt as *StatementNode, e);
+        self.nearest_block().add_sentence(expr_st as *Sentence);
+    }
+
+    fn visit_if_stmt(&mut self, if_stmt: *IfStmt) {
+        let blk = self.create_block(if_stmt as *StatementNode);
+
+        let mut etrans = self.expr_trans();
+        let cond = etrans.visit_expr(if_stmt.condition);
+
+        let then_br = self.visit_block(if_stmt.then_branch);
+
+        if if_stmt.else_branch is Some(else_block) {
+            if else_block is eb: *BlockStmt{
+                let else_br = self.visit_block(move eb);
+                let if_sen = BranchBool::new(if_stmt, move cond, move then_br, Some(move else_br));
+                blk.add_sentence(if_sen as *Sentence);
+            }
+            else {
+                let else_br = self.create_block(else_block as *StatementNode);
+                self.visit_stmt(else_block);
+                self.exit_block(else_br);
+
+                let if_sen = BranchBool::new(if_stmt, move cond, move then_br, Some(move else_br));
+                blk.add_sentence(if_sen as *Sentence);
+            }
+        } else {
+            let if_sen = BranchBool::new(if_stmt, move cond, move then_br, None);
+            blk.add_sentence(if_sen as *Sentence);
+        }
+
+        self.exit_block(blk);
+
+        self.nearest_block().add_sentence(move blk);
+    }
+
+    fn visit_match_stmt(&mut self, match_stmt: *MatchStmt)  {
+        let match_blk = self.create_block(match_stmt as *StatementNode);
+
+        let mut etrans = self.expr_trans();
+        let match_value = etrans.visit_expr(match_stmt.match_expr);
+
+        let br_multi = BranchMultiple::new(match_stmt, match_value);
+        for arm in match_stmt.arms {
+            let arm_blk = self.create_block(arm as *StatementNode);
+
+            let pat = self.resolver.resolve_pattern(self.get_ctx(), arm.pattern);
+            let pmv = PatternMatchValue::new(match_stmt.match_expr, match_value, move pat);
+
+            for v in pmv.pattern.collect_all_bindings() {
+                let df = VarSymbol::create(v.var_node.span(), SType::sty_bool());
+                v.drop_flag = Some(move df);
+
+                arm_blk.add_local(v);
+            }
+
+            if arm.action is act_block: *BlockStmt {
+                let action = self.visit_block(move act_block);
+                let br_arm = box {
+                    .stmt = move arm,
+                    .block = arm_blk,
+                    .pattern_match = move pmv,
+                    .operation = move action,
+                }: BranchArm;
+                br_multi.branches.push(move br_arm);
+            } else {
+                let action = self.create_block(arm.action as *StatementNode);
+                self.visit_stmt(arm.action);
+                self.exit_block(action);
+
+                let br_arm = box {
+                    .stmt = move arm,
+                    .block = arm_blk,
+                    .pattern_match = move pmv,
+                    .operation = move action,
+                }: BranchArm;
+                br_multi.branches.push(move br_arm);
+            }
+            self.exit_block(move arm_blk);
+        }
+
+        match_blk.add_sentence(move br_multi);
+        self.exit_block(match_blk);
+        self.nearest_block().add_sentence(move match_blk);
+    }
+
+    fn visit_while_stmt(&mut self, while_stmt: *WhileStmt)  {
+        let while_blk = self.create_block(while_stmt as *StatementNode);
+
+        let mut etrans = self.expr_trans();
+        let while_cond = etrans.visit_expr(while_stmt.condition);
+
+        // 暂时随便指定一个 block 作为 body, 后面再修改掉
+        let while_loop = WhileLoopSentence::new(while_stmt, move while_cond, self.nearest_block());
+        self.mapping(while_stmt as *SyntaxNode, while_loop as *Sentence);
+
+        let body = self.visit_block(while_stmt.body);
+        while_loop.body = move body;
+
+        while_blk.add_sentence(move while_loop);
+
+        self.exit_block(while_blk);
+        self.nearest_block().add_sentence(move while_blk);
+    }
+
+    fn visit_dowhile_stmt(&mut self, dw_stmt: *DoWhileStmt)  {
+        let dw_blk = self.create_block(dw_stmt as *StatementNode);
+
+        // 暂时随便指定一个 block 作为 body, 后面再修改掉
+        let dw_loop = DoWhileLoopSentence::new(dw_stmt, InvalidValue::new(dw_stmt.condition) as *RValue, self.nearest_block());
+        self.mapping(dw_stmt as *SyntaxNode, dw_loop as *Sentence);
+
+        let body = self.visit_block(dw_stmt.body);
+        dw_loop.body = move body;
+
+        let mut etrans = self.expr_trans();
+        let dw_cond = etrans.visit_expr(dw_stmt.condition);
+        dw_loop.cond = move dw_cond;
+
+        dw_blk.add_sentence(move dw_loop);
+
+        self.exit_block(dw_blk);
+        self.nearest_block().add_sentence(move dw_blk);
+    }
+
+    fn visit_for_stmt(&mut self, for_stmt: *ForStmt)  {
+        let for_blk = self.create_block(for_stmt as *StatementNode);
+
+        let mut etrans = self.expr_trans();
+        let iterable = etrans.visit_expr(for_stmt.iterable);
+
+        let pat = self.resolver.resolve_pattern(self.get_ctx(), for_stmt.pattern);
+
+        let for_loop = ForLoopSentence::new(for_stmt, iterable, pat, self.nearest_block());
+        self.mapping(for_stmt as *SyntaxNode, for_loop as *Sentence);
+
+        pat.destructure(for_loop.iter_item, false);
+        if contains_refutable_pattern(pat) {
+            DiagnosticEngine::get().emit_irrefutable_pattern_only(for_stmt.pattern.span());
+        }
+
+        // 记录局部变量
+        // for_blk.add_local(for_loop.iterator_local);
+        for local in for_loop.pattern.collect_all_bindings() {
+            for_blk.add_local(move local);
+        }
+        let body = self.visit_block(for_stmt.body);
+        for_loop.body = move body;
+
+        for_blk.add_sentence(move for_loop);
+
+        self.exit_block(for_blk);
+        self.nearest_block().add_sentence(move for_blk);
+    }
+
+    fn visit_return_stmt(&mut self, ret_stmt: *ReturnStmt)  {
+        if ret_stmt.return_expr is Some(e) {
+            let mut etrans = self.expr_trans();
+            let cond = etrans.visit_expr(move e);
+            let ret_sen = BranchReturn::new(ret_stmt, Some(move cond));
+            let blk = self.nearest_block();
+            blk.add_sentence(ret_sen as *Sentence);
+        } else {
+            let ret_sen = BranchReturn::new(ret_stmt, None);
+            let blk = self.nearest_block();
+            blk.add_sentence(ret_sen as *Sentence);
+        }
+    }
+
+    fn visit_panic_stmt(&mut self, panic_stmt: *PanicStmt)  {
+        if panic_stmt.panic_expr is Some(e) {
+            let mut etrans = self.expr_trans();
+            let v = etrans.visit_expr(move e);
+            let panic_sen = BranchPanic::new(panic_stmt, Some(move v));
+            let blk = self.nearest_block();
+            blk.add_sentence(panic_sen as *Sentence);
+        } else {
+            let panic_sen = BranchPanic::new(panic_stmt, None);
+            let blk = self.nearest_block();
+            blk.add_sentence(panic_sen as *Sentence);
+        }
+    }
+
+    fn visit_break_stmt(&mut self, stmt: *BreakStmt)  {
+        let loop = find_nearest_loop(stmt as *SyntaxNode);
+        if loop is Some(l) {
+            let key = l as *raw StatementNode as UInt;
+            let sentence = self.stmt_to_sentence.at(&key).get_or_panic("BUG: loop sentence is not found");
+
+            if sentence is loop_sentence: *LoopSentence {
+                let br = BranchBreak::new(move stmt, move loop_sentence);
+                let blk = self.nearest_block();
+                blk.add_sentence(move br);
+            } else {
+                panic "BUG: loop statement's sentence is not LoopSentence";
+            }
+        } else {
+            DiagnosticEngine::get().emit_jump_not_in_loop(stmt.span(), "break");
+        }
+    }
+
+    fn visit_continue_stmt(&mut self, stmt: *ContinueStmt)  {
+        let loop = find_nearest_loop(stmt as *SyntaxNode);
+        if loop is Some(l) {
+            let key = l as *raw StatementNode as UInt;
+            let sentence = self.stmt_to_sentence.at(&key).get_or_panic("BUG: loop sentence is not found");
+
+            if sentence is loop_sentence: *LoopSentence {
+                let br = BranchContinue::new(move stmt, move loop_sentence);
+                let blk = self.nearest_block();
+                blk.add_sentence(move br);
+            } else {
+                panic "BUG: loop statement's sentence is not LoopSentence";
+            }
+        } else {
+            DiagnosticEngine::get().emit_jump_not_in_loop(stmt.span(), "continue");
+        }
+    }
+
+    fn visit_goto_stmt(&mut self, stmt: *GotoStmt)  {
+        panic "goto is unimplemented";
+    }
+
+    fn visit_label_stmt(&mut self, stmt: *LabelStmt)  {
+        panic "label is unimplemented";
+    }
+}
+
+fn contains_refutable_pattern(pat: *Pattern) -> Bool {
+    if pat is type *EnumVariantPattern {
+        return true;
+    }
+    if pat is tup: *TuplePattern {
+        for e in tup.elements {
+            if contains_refutable_pattern(e) {
+                return true;
+            }
+        }
+    }
+    if pat is strct: *StructPattern {
+        for f in strct.fields {
+            if contains_refutable_pattern(f.inner) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn find_nearest_loop(n: *SyntaxNode) -> Option<*StatementNode> {
+    let mut n = move n;
+    while true {
+        if n is w: *WhileStmt {
+            return Some(w as *StatementNode);
+        }
+        if n is d: *DoWhileStmt {
+            return Some(d as *StatementNode);
+        }
+        if n is f: *ForStmt {
+            return Some(f as *StatementNode);
+        }
+        if n is type *DeclNode {
+            return None;
+        }
+
+        if n.parent() is Some(wp) {
+            if upgrade_syntaxnode(wp) is Some(p) {
+                n = p;
+                continue;
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
+    return None;
+}

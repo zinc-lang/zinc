@@ -1,0 +1,81 @@
+
+use ::self::primitives::string::ToString;
+// write 函数应该分为 write_all write_partial
+
+extern type FILE;
+extern fn fwrite(buffer: *raw UInt8, size: UInt, count: UInt, stream: *raw mut FILE) -> UInt;
+extern fn fflush(stream: *raw mut FILE) -> UInt;
+extern fn strlen(s: *raw UInt8) -> UInt;
+extern fn zinc_core_stdin() -> *raw mut FILE;
+extern fn zinc_core_stdout() -> *raw mut FILE;
+extern fn zinc_core_stderr() -> *raw mut FILE;
+
+unsafe fn print_cstr(cstr: *raw UInt8) -> UInt {
+    unsafe {
+        let len = strlen(cstr);
+        return fwrite(cstr, 1, len, zinc_core_stdout());
+    }
+}
+
+pub fn print_str(str: Str) -> UInt {
+    unsafe {
+        return fwrite(str.pointer as *raw UInt8, 1, str.length, zinc_core_stdout());
+    }
+}
+
+// 注: 后续需要加锁
+// 注: 从性能角度考虑，参数应该设计成 AsRef<Str> 类型。但是因为 zinc 没有 AsRef 这样的 trait，所以需要 as Str 这样的特殊语法糖支持。
+pub fn print<T>(msg: T) -> UInt  where T: ToString {
+    let s: String = msg.to_string();
+    let str: Str = s.as_str().deref();
+    unsafe {
+        let r = fwrite(str.pointer as *raw UInt8, 1, str.length, zinc_core_stdout());
+        fflush(zinc_core_stdout());
+        return r;
+    }
+}
+
+pub fn println() -> UInt {
+    let new_line: Str = "\n";
+    unsafe {
+        fwrite(new_line.pointer as *raw UInt8, 1, new_line.length, zinc_core_stdout());
+        fflush(zinc_core_stdout());
+    }
+    return 1;
+}
+
+pub fn println<T>(msg: T) -> UInt  where T: ToString {
+
+    let new_line: Str = "\n";
+    let r = print(msg);
+    unsafe {
+        let r = fwrite(new_line.pointer as *raw UInt8, 1, new_line.length, zinc_core_stdout());
+        fflush(zinc_core_stdout());
+        return r + 1;
+    }
+}
+
+pub fn eprint<T>(msg: T) -> UInt  where T: ToString {
+    let s: String = msg.to_string();
+    let str = s.as_str().deref();
+    unsafe {
+        return fwrite(str.pointer as *raw UInt8, 1, str.length, zinc_core_stderr());
+    }
+}
+
+pub fn eprintln() -> UInt {
+    let new_line: Str = "\n";
+    unsafe {
+        return fwrite(new_line.pointer as *raw UInt8, 1, new_line.length, zinc_core_stderr());
+    }
+    return 1;
+}
+
+pub fn eprintln<T>(msg: T) -> UInt  where T: ToString {
+    let new_line: Str = "\n";
+    let r = eprint(msg);
+    unsafe {
+        return fwrite(new_line.pointer as *raw UInt8, 1, new_line.length, zinc_core_stderr());
+    }
+    return r + 1;
+}

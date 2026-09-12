@@ -1,0 +1,171 @@
+use super::*;
+use super::data_structures::*;
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::hir::constant::*;
+
+impl CodeGenerator {
+    fn codegen_items(&mut self) {
+        if self.comp_name.as_str().deref().eq(&"std") {
+            self.codegen_primitives_in_std();
+        }
+
+        // codegen types
+        for s in self.semantic_model.all_struct {
+            if s.generics.ty_params.is_empty() {
+                self.cg_struct_typemeta(move s);
+            } else {
+                self.cg_struct_generic_typemeta(move s);
+            }
+        }
+        for e in self.semantic_model.all_enum {
+            if e.generics.ty_params.is_empty() {
+                self.cg_enum_typemeta(move e);
+            } else {
+                self.cg_enum_generic_typemeta(move e);
+            }
+        }
+        for t in self.semantic_model.all_trait {
+            self.cg_trait_typemeta(move t);
+        }
+        for u in self.semantic_model.all_union {
+            self.cg_union_typemeta(move u);
+        }
+
+        // globals
+        for g in self.semantic_model.all_global {
+
+            // 先看缓存
+            let gv_name = g.mangle_name();
+            let gv_type = self.cgtype_of(g.stype).get_or_panic();
+            let gv = self.llds.get_or_insert_global(gv_name.as_str().deref(), gv_type);
+            if gv.has_initializer() {
+                continue; // 已经生成了
+            }
+
+            // g.init
+            if g.init is Some(init_expr) {
+                if const_value_from_rvalue(init_expr) is Some(cv) {
+                    let mut cg_init = self.cg_const_value(move cv, init_expr.get_stype());
+                    gv.set_initializer(cg_init);
+                } else {
+                    panic; // 理应提前报错
+                }
+            }
+        }
+
+        // declarations
+        for f in self.semantic_model.all_fn {
+            self.cg_func_decl(f);
+        }
+        for e in self.semantic_model.all_enum {
+            for ev in e.variants {
+                self.cg_ev_decl(move ev);
+            }
+        }
+
+        // impl declarations
+        for i in self.semantic_model.all_impl {
+            self.cg_impl_typemeta(move i);
+        }
+
+        // definitions
+        for f in self.semantic_model.all_fn {
+            self.cg_func_body(f);
+        }
+        for e in self.semantic_model.all_enum {
+            for ev in e.variants {
+                self.cg_ev_body(move ev);
+            }
+        }
+
+        self.cg_component_meta();
+    }
+
+    fn codegen_main_func(&mut self, f: *FuncSymbol) {
+        let main_ty = self.llds.type_function(self.llds.type_int32(), 
+            &[self.llds.type_int32(), self.llds.type_thin_ptr()] as Slice<CgType>);
+
+        let main_fn = self.llds.create_fn(main_ty, "main");
+        let entry_bb = self.llds.create_bb("entry", main_fn);
+        let saved_insert_point = self.llds.save_ip();
+        self.llds.set_insert_point(entry_bb);
+
+        // 调用 zinc_core_component_init
+        let gv_comp_meta = self.cg_component_meta();
+        let init_fn = self.llds.get_ext_fn_in_core("zinc_core_component_init");
+        self.llds.create_call(init_fn, &[gv_comp_meta.as_const().as_value()] as Slice<CgValue>);
+
+        // 保存 main 函数的 argc/argv 参数
+        let set_arg_fn = self.llds.get_ext_fn_in_core("zinc_core_set_main_args");
+        let argc = self.llds.get_arg(main_fn, 0_u);
+        let argv = self.llds.get_arg(main_fn, 1_u);
+        self.llds.create_call(set_arg_fn, &[argc, argv] as Slice<CgValue>);
+
+        // 调用 zinc_core_protect_stack
+        let protect_stack_fn = self.llds.get_ext_fn_in_core("zinc_core_protect_stack");
+        self.llds.create_call(protect_stack_fn, &[] as Slice<CgValue>);
+
+        // 调用用户定义的 main
+        let user_main_fn = self.cg_func_decl(f);
+        self.llds.create_call(user_main_fn, &[] as Slice<CgValue>);
+        self.llds.create_ret(self.llds.get_const_int32(0_u32).as_value());
+
+        self.llds.restore_ip(saved_insert_point);
+        self.llds.verify_function(main_fn);
+    }
+
+    fn cg_component_meta(&mut self) -> CgGlobal {
+        let mut name = f"zn.component.";
+        name.push_str(self.comp_name.as_str().deref());
+
+        let comp_meta = self.llds.get_or_insert_global(name.as_str().deref(), self.llds.type_ZnComponent());
+        if comp_meta.has_initializer() {
+            return comp_meta; // 已经生成了
+        }
+
+        let mut ll_fields: Vec<CgConst> = (type Vec<CgConst>)::new();
+        let gv_name = self.llds.get_const_string(self.comp_name.as_str().deref());
+        ll_fields.push(gv_name);
+
+        let mut all_typemeta: Vec<CgConst> = (type Vec<CgConst>)::new();
+        for tm in self.all_typemeta {
+            let c = { .value = unsafe(tm as Ptr) }: CgConst;
+            all_typemeta.push(c);
+        }
+        let all_typemeta_arr = self.llds.cg_const_array_gv(self.llds.type_thin_ptr(), all_typemeta.as_slice().deref());
+        ll_fields.push(all_typemeta_arr);
+
+        let mut all_generic_typemeta: Vec<CgConst> = (type Vec<CgConst>)::new();
+        for tm in self.all_generic_typemeta {
+            let c = { .value = unsafe(tm as Ptr) }: CgConst;
+            all_generic_typemeta.push(c);
+        }
+        let all_generic_typemeta_arr = self.llds.cg_const_array_gv(self.llds.type_thin_ptr(), all_generic_typemeta.as_slice().deref());
+        ll_fields.push(all_generic_typemeta_arr);
+
+        let mut all_impl_typemeta: Vec<CgConst> = (type Vec<CgConst>)::new();
+        for tm in self.all_impl_typemeta {
+            let c = { .value = unsafe(tm as Ptr) }: CgConst;
+            all_impl_typemeta.push(c);
+        }
+        let all_impl_typemeta_arr = self.llds.cg_const_array_gv(self.llds.type_thin_ptr(), all_impl_typemeta.as_slice().deref());
+        ll_fields.push(all_impl_typemeta_arr);
+
+        // 搜集所有 imports
+        let mut all_imports: Vec<CgConst> = (type Vec<CgConst>)::new();
+        for i in self.semantic_model.syntax_tree.all_imports() {
+            let iname = f"zn.component.$(i)";
+            let gv = self.llds.get_or_insert_global(iname.as_str().deref(), self.llds.type_ZnComponent());
+            all_imports.push(gv.as_const());
+        }
+        let imports = self.llds.cg_const_array_gv(self.llds.type_thin_ptr(), all_imports.as_slice().deref());
+        ll_fields.push(imports);
+
+        let has_init = self.llds.get_const_int8(0_u8);
+        ll_fields.push(has_init);
+
+        let comp_struct = self.llds.get_const_struct(self.llds.type_ZnComponent(), ll_fields.as_slice().deref());
+        comp_meta.set_initializer(comp_struct);
+        return comp_meta;
+    }
+}

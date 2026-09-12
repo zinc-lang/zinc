@@ -1,0 +1,2421 @@
+mod type_cast;
+mod type_mapping;
+mod type_utils;
+
+use ::self::frontend::semantic::*;
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::hir::builder::resolver::*;
+use ::self::frontend::semantic::hir::constant::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::syntax::ast::stmt::*;
+use ::self::frontend::syntax::ast::decl::*;
+
+use type_cast::*;
+use type_mapping::*;
+use type_utils::*;
+
+use std::collections::hashset::HashSet;
+
+pub struct TypeCheckContext {
+    visited: HashSet<UInt>,
+    fsym: Option<*FuncSymbol>,
+    sema_model: *SemanticModel,
+    cached_results: HashMap<UInt, *SType>,
+}
+
+// 当前的类型推导实现比较简略, 很多场景理论上可以推导但依然报了编译错误
+// 但在早期版本这不是很重要, 要求用户多写一些类型标记, 从可读性角度也未尝不是件好事
+// 后续编写完整的 spec 的时候再详细讨论, 类型推导能力的具体规格
+impl TypeCheckContext {
+    fn new(sm: *SemanticModel) -> Self {
+        return {
+            .visited = (type HashSet<UInt>)::new(),
+            .fsym = None,
+            .sema_model = move sm,
+            .cached_results = (type HashMap<UInt, *SType>)::new(),
+        }: TypeCheckContext;
+    }
+
+    fn resolver(&self) -> Resolver {
+        return Resolver::new(self.sema_model.root_mod_sym);
+    }
+
+    fn check_block(&mut self, blk: *BlockSentence) {
+        let key = blk as *raw BlockSentence as UInt;
+        if self.visited.contains(&key) {
+            return;
+        } else {
+            self.visited.insert(key);
+        }
+
+        for i in blk.inner_items {
+            let mut ctx = TypeCheckContext::new(self.sema_model);
+            ctx.check_sym(move i);
+        }
+
+        for s in blk.sentences {
+            self.check_sentence(move s);
+        }
+    }
+
+    fn check_sentence(&mut self, s: *Sentence) {
+        match s {
+            _: *EmptySentence => {}
+            es: *ExprSentence => {
+                let sty = self.infer(es.expr as *XValue);
+                ensure_type_valid(sty, es.stmt.span());
+            }
+            ls: *LetSentence => {
+                let init = ls.local.sym_var.init
+                        .get_or_panic("BUG: var declaration in let statement is not initialized");
+
+                if ls.local.sym_var.stype.is_invalid() {
+                    let rhs = self.infer(init as *XValue);
+                    ensure_type_valid(rhs, init.expr_node().span());
+                    ls.local.sym_var.stype = move rhs;
+                } else {
+                    let lhs_ty = ls.local.sym_var.stype;
+                    if ensure_type_valid(lhs_ty, ls.local.sym_var.var_node.span()) {
+                        let rhs = self.infer(init as *XValue);
+                        if rhs.is_invalid() {
+                            self.check_value(move init, lhs_ty);
+                        } else {
+                            let k = resolve_type_cast_kind(rhs, lhs_ty);
+                            let new_init = add_implicit_cast(init, k, lhs_ty);
+                            ls.local.sym_var.init = Some(new_init);
+                            ls.init = move new_init;
+                        }
+                    }
+                }
+            }
+            bs: *BlockSentence => self.check_block(move bs);
+            fs: *ForLoopSentence => {
+                let span = fs.iterable.expr_node().span();
+
+                let iterable_sty = self.infer(fs.iterable as *XValue);
+                if !ensure_type_valid(iterable_sty, span) {
+                    return;
+                }
+                let iterator_sty = self.infer(fs.iterator as *XValue);
+                if !ensure_type_valid(iterator_sty, span) {
+                    return;
+                }
+                let iter_next_sty = self.infer(fs.iter_next as *XValue);
+                if !ensure_type_valid(iter_next_sty, span) {
+                    return;
+                }
+                let iter_item_sty = self.infer(fs.iter_item as *XValue);
+                if !ensure_type_valid(iter_item_sty, span) {
+                    return;
+                }
+                for local in fs.pattern.collect_all_bindings() {
+                    let init = local.init.get_or_panic("BUG: local in for loop is not init");
+                    let sty = self.infer(init as *XValue);
+                    if ensure_type_valid(sty, init.expr_node().span()) {
+                        local.stype = move sty;
+                    }
+                }
+                self.check_block(fs.body);
+            }
+            ws: *WhileLoopSentence => {
+                self.check_value(ws.cond, SType::sty_bool());
+                self.check_block(ws.body);
+            }
+            dws: *DoWhileLoopSentence => {
+                self.check_value(dws.cond, SType::sty_bool());
+                self.check_block(dws.body);
+            }
+            br_break: *BranchBreak => {}
+            br_continue: *BranchContinue => {}
+            br_ret: *BranchReturn => {
+                if self.fsym is Some(fsym) {
+                    let ret_sty = fsym.return_sty.get_or_panic();
+
+                    if br_ret.value is Some(ret_val) {
+                        let value_sty = self.infer(ret_val as *XValue);
+                        if value_sty.is_invalid() {
+                            self.check_value(ret_val, ret_sty);
+                        } else {
+                            let k = resolve_type_cast_kind(value_sty, ret_sty);
+                            let new_ret = add_implicit_cast(ret_val, k, ret_sty);
+                            br_ret.value = Some(move new_ret);
+                        }
+                    } else {
+                        if !ret_sty.is_unit() {
+                            DiagnosticEngine::get().emit_return_type_mismatch(br_ret.stmt.span());
+                        }
+                    }
+                } else {
+                    DiagnosticEngine::get().emit_return_must_inside_fn(br_ret.stmt.span());
+                }
+            }
+            br_panic: *BranchPanic => {
+                if br_panic.msg is Some(msg) {
+                    self.check_value(msg, self.resolver().sty_str());
+                }
+            }
+            br_bool: *BranchBool => {
+                self.check_value(br_bool.cond, SType::sty_bool());
+                self.check_block(br_bool.then_br);
+                if br_bool.else_br is Some(else_br) {
+                    self.check_block(else_br);
+                }
+            }
+            br_mult: *BranchMultiple => {
+                let sty = self.infer(br_mult.value as *XValue);
+                if ensure_type_valid(sty, br_mult.value.expr_node().span()) {
+                    for arm in br_mult.branches {
+                        self.infer(arm.pattern_match as *XValue);
+                        self.check_block(arm.operation);
+                    }
+                }
+            }
+            _ => {
+                panic "BUG: unknown sentence in TypeCheckContext::check_sentence";
+            }
+        }
+    }
+
+    fn infer(&mut self, v: *XValue) -> *SType {
+
+        // let vi = v as *raw XValue as UInt;
+        // if self.cached_results.at(&vi) is Some(t) {
+        //     return t;
+        // }
+
+        let mut sty = self.do_infer(v);
+        sty = sty.canonical();
+
+        // 把 Self 类型替换为当前上下文中的 Self 类型
+        if self.fsym is Some(func_sym) {
+            if func_sym.parent_sym is Some(isym: *ImplSymbol) {
+                sty = subst_self_ty(sty, isym.self_ty.target_sty);
+            }
+        }
+
+        if !sty.is_invalid() {
+            v.set_stype(sty);
+            // self.cached_results.insert(vi, sty);
+        }
+
+        return sty;
+    }
+
+    fn do_infer(&mut self, v: *XValue) -> *SType {
+        match v {
+            invalid: *InvalidValue => {
+                return SType::sty_invalid(invalid.expr.span());
+            }
+
+            // LValue
+            idx_lv: *IndexLValue => {
+                self.check_value(idx_lv.index, SType::sty_uint());
+                let base_sty = self.infer(idx_lv.base as *XValue);
+                if ensure_type_valid(base_sty, idx_lv.base.expr_node().span()) {
+                    // 目前仅支持了 Array 类型, 后续应该支持所有实现了 IndexMut trait 的类型 (包括 SliceMut)
+                    let stripped_base_sty = strip_pointer_except_weak(base_sty);
+                    if stripped_base_sty.type_symbol is arr_sym: *ArraySymbol {
+                        return stripped_base_sty.args.ty_arg(0, idx_lv.expr.span());
+                    }
+                }
+                return SType::sty_invalid(idx_lv.expr.span());
+            }
+            field_lv: *FieldLValue => {
+                let field_name = field_lv.field.raw_str();
+                let field_span = field_lv.field.span();
+
+                let base_sty = self.infer(field_lv.base as *XValue);
+                if ensure_type_valid(base_sty, field_lv.base.expr_node().span()) {
+
+                    let stripped_base_sty = strip_pointer_except_weak(base_sty);
+                    if stripped_base_sty.type_symbol is type *UnionSymbol {
+                        self.requires_unsafe_context(field_lv.expr as *SyntaxNode);
+                    }
+
+                    let vs = find_field(stripped_base_sty, field_name);
+                    if vs is Some(var_sym) {
+                        field_lv.field_resolved = Some(var_sym);
+                        let mut mappings = TypeMapping::new();
+                        mappings.unify(stripped_base_sty.type_symbol.to_sty(), stripped_base_sty);
+                        return mappings.subst(var_sym.stype);
+                    } else {
+                        DiagnosticEngine::get().emit_name_not_found(move field_name, field_span);
+                    }
+
+                }
+                return SType::sty_invalid(move field_span);
+            }
+            tup_lv: *TupleAccessLValue => {
+                let base_sty = self.infer(tup_lv.base as *XValue);
+                if ensure_type_valid(base_sty, tup_lv.base.expr_node().span()) {
+                    let stripped_base_sty = strip_pointer_except_weak(base_sty);
+                    if stripped_base_sty.type_symbol is tup_sym: *TupleSymbol {
+                        let len: UInt = stripped_base_sty.args.ty_args.len();
+                        let idx: UInt = tup_lv.index;
+                        if idx >= len {
+                            DiagnosticEngine::get().emit_tuple_index_out_of_range(len, idx, tup_lv.expr.span());
+                        } else {
+                            return stripped_base_sty.args.ty_arg(idx);
+                        }
+                    } else {
+                        DiagnosticEngine::get().emit_type_mismatch(f"tuple", base_sty.to_string(), tup_lv.base.expr_node().span());
+                    }
+                }
+                return SType::sty_invalid(tup_lv.expr.span());
+            }
+            deref_lv: *DerefLValue => {
+                let operand_sty = self.infer(deref_lv.operand as *XValue);
+                return self.infer_deref_lvalue(move operand_sty, move deref_lv);
+            }
+            lvar: *LocalVar => {
+                if !lvar.sym_var.stype.is_invalid() {
+                    return lvar.sym_var.stype;
+                }
+                if lvar.sym_var.init is Some(init) {
+                    let init_sty = self.infer(init as *XValue);
+                    if !init_sty.is_invalid() {
+                        return init_sty;
+                    }
+                }
+                return SType::sty_invalid(lvar.expr.span());
+            }
+            svar: *StaticVar => {
+                if svar.sym_var.qualifiers().has(QualifierKind::Unsafe) {
+                    self.requires_unsafe_context(svar.expr as *SyntaxNode);
+                }
+                if !svar.sym_var.stype.is_invalid() {
+                    return svar.sym_var.stype;
+                }
+                if svar.sym_var.init is Some(init) {
+                    let init_sty = self.infer(init as *XValue);
+                    if !init_sty.is_invalid() {
+                        return init_sty;
+                    }
+                }
+                return SType::sty_invalid(svar.expr.span());
+            }
+            // RValue
+            rv: *ReadValue => {
+                if rv.sym_var.qualifiers().has(QualifierKind::Unsafe) {
+                    self.requires_unsafe_context(rv.expr as *SyntaxNode);
+                }
+                if !rv.sty.is_invalid() {
+                    return rv.sty;
+                }
+                return rv.sym_var.stype;
+            }
+            idx_rv: *IndexRValue => {
+                self.check_value(idx_rv.index, SType::sty_uint());
+                let base_sty = self.infer(idx_rv.base as *XValue);
+                if ensure_type_valid(base_sty, idx_rv.base.expr_node().span()) {
+                    // 目前仅支持了 Array 类型, 后续应该支持所有实现了 IndexMut trait 的类型 (包括 SliceMut)
+                    let stripped_base_sty = strip_pointer_except_weak(base_sty);
+                    if stripped_base_sty.type_symbol is arr_sym: *ArraySymbol {
+                        return stripped_base_sty.args.ty_arg(0, idx_rv.expr.span());
+                    }
+                }
+                return SType::sty_invalid(idx_rv.expr.span());
+            }
+            field_rv: *FieldRValue => {
+                let field_name = field_rv.field.raw_str();
+                let field_span = field_rv.field.span();
+
+                let base_sty = self.infer(field_rv.base as *XValue);
+                if ensure_type_valid(base_sty, field_rv.base.expr_node().span()) {
+
+                    let stripped_base_sty = strip_pointer_except_weak(base_sty);
+                    if stripped_base_sty.type_symbol is type *UnionSymbol {
+                        self.requires_unsafe_context(field_rv.expr as *SyntaxNode);
+                    }
+
+                    let vs = find_field(stripped_base_sty, field_name);
+                    if vs is Some(var_sym) {
+                        field_rv.field_resolved = Some(var_sym);
+
+                        let mut mappings = TypeMapping::new();
+                        mappings.unify(stripped_base_sty.type_symbol.to_sty(), stripped_base_sty);
+                        return mappings.subst(var_sym.stype);
+                    } else {
+                        DiagnosticEngine::get().emit_name_not_found(move field_name, field_span);
+                    }
+                }
+                return SType::sty_invalid(move field_span);
+            }
+            tup_rv: *TupleAccessRValue => {
+                let base_sty = self.infer(tup_rv.base as *XValue);
+                if ensure_type_valid(base_sty, tup_rv.base.expr_node().span()) {
+                    let stripped_base_sty = strip_pointer_except_weak(base_sty);
+                    if stripped_base_sty.type_symbol is tup_sym: *TupleSymbol {
+                        let len: UInt = stripped_base_sty.args.ty_args.len();
+                        let idx: UInt = tup_rv.index;
+                        if idx >= len {
+                            DiagnosticEngine::get().emit_tuple_index_out_of_range(len, idx, tup_rv.expr.span());
+                        } else {
+                            return stripped_base_sty.args.ty_arg(idx);
+                        }
+                    } else {
+                        DiagnosticEngine::get().emit_type_mismatch(f"tuple", base_sty.to_string(), tup_rv.base.expr_node().span());
+                    }
+                }
+                return SType::sty_invalid(tup_rv.expr.span());
+            }
+            deref_rv: *DerefRValue => {
+                let operand_sty = self.infer(deref_rv.operand as *XValue);
+                return self.infer_deref_rvalue(move operand_sty, move deref_rv);
+            }
+            vp_rv: *VariantPayloadValue => {
+                let span = vp_rv.enum_value.expr_node().span();
+                let mut enum_sty = self.infer(vp_rv.enum_value as *XValue);
+                enum_sty = enum_sty.strip_pointer();
+
+                if ensure_type_valid(enum_sty, span) {
+                    if enum_sty.type_symbol is esym: *EnumSymbol {
+                        let pat_enum_sym = vp_rv.enum_ctor_sym.parent_enum.get_or_panic();
+
+                        if esym as *raw EnumSymbol as UInt == pat_enum_sym as *raw EnumSymbol as UInt {
+                            let mut mappings = TypeMapping::new();
+                            mappings.unify(pat_enum_sym.to_sty(), enum_sty);
+
+                            let mut args = GenericArgs::new();
+                            for ty in vp_rv.enum_ctor_sym.fields {
+                                args.ty_args.push(mappings.subst(ty));
+                            }
+
+                            return TupleSymbol::new().to_sty(move args); // 返回 tuple 类型
+                        } else {
+                            DiagnosticEngine::get().emit_type_mismatch(
+                                enum_sty.to_string(),
+                                pat_enum_sym.to_sty().to_string(),
+                                span
+                            );
+                        }
+                    } else {
+                        DiagnosticEngine::get().emit_type_mismatch(f"enum", enum_sty.to_string(), span);
+                    }
+                }
+                return SType::sty_invalid(span);
+            }
+            wv: *WriteValue => {
+                let src_sty = self.infer(wv.src as *XValue);
+                let dst_sty = self.infer(wv.dst as *XValue);
+
+                if src_sty.is_invalid() && dst_sty.is_invalid() {
+                    DiagnosticEngine::get().emit_type_infer_failed(wv.src.expr_node().span());
+                }
+                else if !src_sty.is_invalid() && dst_sty.is_invalid() {
+                    self.check_value(wv.dst, src_sty);
+                }
+                else if src_sty.is_invalid() && !dst_sty.is_invalid() {
+                    self.check_value(wv.src, dst_sty);
+                }
+                else {
+                    let k = resolve_type_cast_kind(src_sty, dst_sty);
+                    // todo 有一部分 cast 是不允许隐式发生的
+                    let cast = add_implicit_cast(wv.src, k, dst_sty);
+                    wv.src = move cast;
+                }
+
+                self.check_mutability(wv.dst);
+                return SType::sty_unit();
+            }
+            qp: *QualifiedPathValue => {
+                if qp.symbol is fsym: *FuncSymbol { // 把函数作为一等公民使用
+                    DiagnosticEngine::get().emit_unimplemented(qp.expr.span(), "first class function");
+                    return SType::sty_invalid(qp.expr.span());
+                }
+                else if qp.symbol is evsym: *EnumVariantSymbol {
+                    if evsym.fields.len() != 0 { // 只有 None 这种不带参数的允许直接使用
+                        DiagnosticEngine::get().emit_unimplemented(qp.expr.span(), "first class enum variant");
+                        return SType::sty_invalid(qp.expr.span());
+                    }
+
+                    let esym = evsym.parent_enum.get_or_panic();
+                    let enum_formal_ty = esym.to_sty();
+                    if esym.generics.ty_params.is_empty() { // 没有泛型参数需要推理
+                        return enum_formal_ty;
+                    }
+
+                    let mut mappings = TypeMapping::new();
+                    if qp.qualified_ty is Some(qty) {
+                        let r = mappings.unify(enum_formal_ty, qty);
+                        if !r {
+                            // DiagnosticEngine::get().emit_type_mismatch(enum_formal_ty.to_string(), qty.to_string(), qp.expr.span());
+                            return SType::sty_invalid(qp.expr.span());
+                        }
+                    }
+                    // 确保 enum 的泛型参数都被推理出来了
+                    for p in esym.generics.ty_params {
+                        let key = p as *raw TypeParamSymbol as UInt;
+                        if !mappings.ty_mapping.contains(&key) {
+                            // DiagnosticEngine::get().emit_generic_param_infer_failed(p.short_name(), qp.expr.span());
+                            return SType::sty_invalid(qp.expr.span());
+                        } 
+                    }
+                    return mappings.subst(enum_formal_ty);
+                }
+                else if qp.symbol is vsym: *VarSymbol {
+                    if !vsym.stype.is_invalid() {
+                        return vsym.stype;
+                    }
+                    if vsym.init is Some(init) {
+                        return self.infer(init as *XValue);
+                    }
+                    return SType::sty_invalid(vsym.var_node.span());
+                }
+                else {
+                    return SType::sty_invalid(qp.expr.span());
+                }
+            }
+            ctx_rv: *ContextValue => {
+                return self.infer(ctx_rv.inner as *XValue);
+            }
+            lit_rv: *LiteralValue => {
+                if lit_rv.expr.token.token_kind is TokenKind::Literal(k) {
+                    match k {
+                        LiteralKind::LIT_CHAR => {
+                            let sty = SType::sty_char();
+                            Resolver::import_builtin_impls(sty.type_symbol);
+                            return sty;
+                        }
+                        LiteralKind::LIT_STR => { return self.resolver().sty_str(); }
+                        LiteralKind::LIT_BYTE => {
+                            let sty = IntegerSymbol::new(IntegerKind::U8).to_sty();
+                            Resolver::import_builtin_impls(sty.type_symbol);
+                            return sty;
+                        }
+                        LiteralKind::LIT_INT => {
+                            let sty = IntegerCValue::new(lit_rv.expr.token).stype_from_suffix();
+                            Resolver::import_builtin_impls(sty.type_symbol);
+                            return sty;
+                        }
+                        LiteralKind::LIT_FLOAT => {
+                            let sty = FloatCValue::new(lit_rv.expr.token).stype_from_suffix();
+                            Resolver::import_builtin_impls(sty.type_symbol);
+                            return sty;
+                        }
+                        LiteralKind::LIT_STR_INTERPOLATION => {
+                            panic "BUG: String interpolation should be covered by InterpolationValue";
+                        }
+                    }
+                }
+                if lit_rv.expr.token.token_kind is TokenKind::Keyword(KeywordKind::KW_TRUE) {
+                    return SType::sty_bool();
+                }
+                if lit_rv.expr.token.token_kind is TokenKind::Keyword(KeywordKind::KW_FALSE) {
+                    return SType::sty_bool();
+                }
+                return SType::sty_invalid(lit_rv.expr.span());
+            }
+            ty_asc_rv: *TypeAscriptionValue => {
+                if ensure_type_valid(ty_asc_rv.type_ascription, ty_asc_rv.expr.ty.span()) {
+                    self.check_value(ty_asc_rv.inner, ty_asc_rv.type_ascription);
+                }
+                return ty_asc_rv.type_ascription;
+            }
+            agg_rv: *AggregateValue => {
+                if agg_rv.default_value is Some(dv) {
+                    let agg_ty = self.infer(dv as *XValue);
+                    if !agg_ty.is_invalid() {
+                        self.check_aggregate_fields(agg_ty, agg_rv);
+                    }
+                    return agg_ty;
+                } else {
+                    return SType::sty_invalid(agg_rv.expr.span());
+                }
+            }
+            tup_lit: *TupleValue => {
+                let mut args = GenericArgs::new();
+                for e in tup_lit.elements {
+                    let ety = self.infer(e as *XValue);
+                    if ety.is_invalid() {
+                        return ety;
+                    } else {
+                        args.ty_args.push(move ety);
+                    }
+                }
+                return TupleSymbol::new().to_sty(move args);
+            }
+            arr_lit: *ArrayLiteralValue => {
+                if arr_lit.elements.is_empty() {
+                    let args = GenericArgs::new();
+                    return ArraySymbol::new().to_sty(move args);
+                }
+                let mut elem_sty = SType::sty_invalid(arr_lit.expr.span());
+                for e in arr_lit.elements {
+                    let ety = self.infer(e as *XValue);
+                    if !ety.is_invalid() {
+                        elem_sty = move ety;
+                        break;
+                    }
+                }
+                if elem_sty.is_invalid() {
+                    return elem_sty;
+                }
+
+                for e in arr_lit.elements {
+                    self.check_value(e, elem_sty);
+                }
+                let mut args = GenericArgs::new();
+                let mut i: UInt = 0;
+                while i < arr_lit.elements.len() {
+                    args.ty_args.push(elem_sty);
+                    i += 1;
+                }
+                return ArraySymbol::new().to_sty(move args);
+            }
+            repeat_lit: *RepeatValue => {
+                let elem_sty = self.infer(repeat_lit.element as *XValue);
+                if ensure_type_valid(elem_sty, repeat_lit.element.expr_node().span()) {
+                    if repeat_lit.len is lit: *LiteralValue &&
+                        lit.expr.token.token_kind is TokenKind::Literal(k) &&
+                        k is LiteralKind::LIT_INT {
+
+                        let cint = IntegerCValue::new(lit.expr.token);
+                        let mut args = GenericArgs::new();
+                        let mut i: UInt = 0;
+                        while i < cint.value as UInt {
+                            args.ty_args.push(elem_sty);
+                            i += 1;
+                        }
+                        return ArraySymbol::new().to_sty(args);
+                    } else {
+                        DiagnosticEngine::get().emit_unimplemented(repeat_lit.len.expr_node().span(), "non-literal array length");
+                    }
+                }
+                return SType::sty_invalid(repeat_lit.expr.span());
+            }
+            binary_rv: *BinaryExprValue => {
+                // 逻辑运算, 加减乘除求余, 比较运算
+                let mut left_sty = self.infer(binary_rv.lhs as *XValue);
+                let mut right_sty = self.infer(binary_rv.rhs as *XValue);
+                if left_sty.is_invalid() && right_sty.is_invalid() {
+                    DiagnosticEngine::get().emit_type_infer_failed(binary_rv.expr.span());
+                    return left_sty;
+                }
+                // 裸指针和整数做加减是特殊情况, 两边类型不一样
+                if binary_rv.op.token_kind is TokenKind::Punctuation(k) {
+                    if k is PunctuationKind::Plus {
+                        if is_raw_pointer(left_sty) {
+                            self.check_value(binary_rv.rhs, SType::sty_uint());
+                            return left_sty;
+                        }
+                        if is_raw_pointer(right_sty) {
+                            self.check_value(binary_rv.lhs, SType::sty_uint());
+                            return right_sty;
+                        }
+                    }
+                    if k is PunctuationKind::Minus {
+                        if is_raw_pointer(left_sty) {
+                            self.check_value(binary_rv.rhs, SType::sty_uint());
+                            return left_sty;
+                        }
+                    }
+                }
+
+                // 其它情况两边类型都要一样
+                if left_sty.is_invalid() && !right_sty.is_invalid() {
+                    self.check_value(binary_rv.lhs, right_sty);
+                    left_sty = right_sty;
+                }
+                else if !left_sty.is_invalid() && right_sty.is_invalid() {
+                    self.check_value(binary_rv.rhs, left_sty);
+                    right_sty = left_sty;
+                }
+                else {
+                    if !stype_eq_regardless_lifetime(left_sty, right_sty) {
+                        DiagnosticEngine::get().emit_type_not_same(binary_rv.expr.span());
+                        return left_sty;
+                    }
+                }
+
+                left_sty = left_sty.canonical();
+                right_sty = right_sty.canonical();
+
+                // 哪些运算符支持哪些类型是有限制的
+                if binary_rv.op.token_kind is TokenKind::Punctuation(k) {
+                    if k is PunctuationKind::Lt || k is PunctuationKind::LtEq || 
+                        k is PunctuationKind::Gt || k is PunctuationKind::GtEq ||
+                        k is PunctuationKind::EqEq || k is PunctuationKind::NotEq {
+
+                        if left_sty.type_symbol.mangle_name().as_str().deref().eq(&"::std::primitives::str::Str") {
+                            DiagnosticEngine::get().emit_unimplemented(binary_rv.op.source_span, "operator overload");
+                        }
+                        if !left_sty.is_builtin_comparable() {
+                            DiagnosticEngine::get().emit_unsupported_operator(binary_rv.op.source_span);
+                        }
+                        return SType::sty_bool();
+                    }
+                    else if k is PunctuationKind::AndAnd || k is PunctuationKind::OrOr {
+                        // 两边都是 Bool 类型
+                        self.check_value(binary_rv.lhs, SType::sty_bool());
+                        self.check_value(binary_rv.rhs, SType::sty_bool());
+                        return SType::sty_bool();
+                    }
+                    else if k is PunctuationKind::Plus || k is PunctuationKind::Minus ||
+                        k is PunctuationKind::Star || k is PunctuationKind::Div || k is PunctuationKind::Percent {
+                        if left_sty.type_symbol is type *IntegerSymbol {
+                            return left_sty;
+                        }
+                        if left_sty.type_symbol is type *FloatSymbol {
+                            return left_sty;
+                        }
+                        DiagnosticEngine::get().emit_unsupported_operator(binary_rv.op.source_span);
+                        return SType::sty_invalid(binary_rv.expr.span());
+                    }
+                    else {
+                        panic "BUG: unhandled binary operator in TypeCheckContext::do_infer.";
+                    }
+                }
+                return SType::sty_invalid(binary_rv.expr.span());
+            }
+            unary_rv: *UnaryExprValue => {
+                let op_sty = self.infer(unary_rv.operand as *XValue);
+                if op_sty.is_invalid() {
+                    return op_sty;
+                }
+
+                match unary_rv.kind {
+                    UnaryValueKind::Neg => {
+                        if op_sty.type_symbol is type *IntegerSymbol {
+                            return op_sty;
+                        }
+                        if op_sty.type_symbol is type *FloatSymbol {
+                            return op_sty;
+                        }
+                        DiagnosticEngine::get().emit_unsupported_operator(unary_rv.expr.span());
+                        return SType::sty_invalid(unary_rv.expr.span());
+                    }
+                    UnaryValueKind::Not => {
+                        if op_sty.type_symbol is type *IntegerSymbol {
+                            return op_sty;
+                        }
+                        if op_sty.type_symbol is type *BoolSymbol {
+                            return op_sty;
+                        }
+                        DiagnosticEngine::get().emit_unsupported_operator(unary_rv.expr.span());
+                        return SType::sty_invalid(unary_rv.expr.span());
+                    }
+                    UnaryValueKind::ToWeak => {
+                        if op_sty.type_symbol is type *ArcPointerSymbol {
+                            let mut args = op_sty.args;
+                            return WeakPointerSymbol::new().to_sty(move args);
+                        }
+                        DiagnosticEngine::get().emit_unsupported_operator(unary_rv.expr.span());
+                        return SType::sty_invalid(unary_rv.expr.span());
+                    }
+                    UnaryValueKind::Box => {
+                        let mut args = GenericArgs::new();
+                        args.ty_args.push(move op_sty);
+                        return ArcPointerSymbol::new().to_sty(move args);
+                    }
+                    UnaryValueKind::Move => {
+                        return op_sty;
+                    }
+                }
+
+                return SType::sty_invalid(unary_rv.expr.span());
+            }
+            addr_rv: *AddressofValue => {
+                let op_sty = self.infer(addr_rv.operand as *XValue);
+                if op_sty.is_invalid() {
+                    return op_sty;
+                }
+
+                let mut args = GenericArgs::new();
+                args.ty_args.push(op_sty);
+                match addr_rv.kind {
+                    AddressofKind::Ref => {
+                        return BorrowImmutSymbol::new().to_sty(move args);
+                    }
+                    AddressofKind::RefMut => {
+                        self.check_mutability(addr_rv.operand);
+                        return BorrowMutSymbol::new().to_sty(move args);
+                    }
+                    AddressofKind::RefRaw => {
+                        self.requires_unsafe_context(addr_rv.expr as *SyntaxNode);
+                        return RawPointerImmutSymbol::new().to_sty(move args);
+                    }
+                    AddressofKind::RefRawMut => {
+                        self.check_mutability(addr_rv.operand);
+                        self.requires_unsafe_context(addr_rv.expr as *SyntaxNode);
+                        return RawPointerMutSymbol::new().to_sty(move args);
+                    }
+                }
+                return SType::sty_invalid(addr_rv.expr.span());
+            }
+            pmv: *PatternMatchValue => {
+                self.check_pattern_match_value(move pmv);
+                return SType::sty_bool();
+            }
+            cast_rv: *CastValue => {
+                if ensure_type_valid(cast_rv.target_sty, cast_rv.expr.span()) {
+                    let inner_ty = self.infer(cast_rv.operand as *XValue);
+                    if inner_ty.is_invalid() {
+                        self.check_value(cast_rv.operand, cast_rv.target_sty);
+                        cast_rv.resolved_kind = ResolvedCastKind::SameType;
+                    } else {
+                        let k = resolve_type_cast_kind(inner_ty, cast_rv.target_sty);
+                        if k is ResolvedCastKind::Err {
+                            DiagnosticEngine::get().emit_cast_error(inner_ty.to_string(), cast_rv.target_sty.to_string(), v.expr_node().span());
+                        }
+                        if k is ResolvedCastKind::PointerUnsafeToSafe {
+                            self.requires_unsafe_context(cast_rv.expr as *SyntaxNode);
+                        }
+                        cast_rv.resolved_kind = k;
+                    }
+                }
+                return cast_rv.target_sty;
+            }
+            fn_call: *FnCallValue => {
+                return self.infer_fn_call(move fn_call);
+            }
+            method_call: *MethodCallValue => {
+                return self.check_method_call(move method_call, (type Option<*SType>)::None);
+            }
+            select_rv: *SelectValue => {
+                self.check_value(select_rv.cond, SType::sty_bool());
+
+                let br1 = self.infer(select_rv.br_true as *XValue);
+                let br2 = self.infer(select_rv.br_false as *XValue);
+                if br1.is_invalid() && br2.is_invalid() {
+                    DiagnosticEngine::get().emit_type_infer_failed(select_rv.expr.span());
+                    return SType::sty_invalid(select_rv.expr.span());
+                }
+                else if !br1.is_invalid() && br2.is_invalid() {
+                    self.check_value(select_rv.br_false, br1);
+                    return br1;
+                }
+                else if br1.is_invalid() && !br2.is_invalid() {
+                    self.check_value(select_rv.br_true, br2);
+                    return br2;
+                }
+                else {
+                    // 此处应该求 br1 和 br2 的最小公共父类型
+                    if stype_eq_regardless_lifetime(br1, br2) {
+                        return strip_lifetime(br1);
+                    } else {
+                        DiagnosticEngine::get().emit_type_mismatch(br1.to_string(), br2.to_string(), select_rv.expr.span());
+                        return SType::sty_invalid(select_rv.expr.span());
+                    }
+                }
+            }
+            interpolation: *InterpolationValue => {
+                // 注: 全局变量初始化必须是常量, 不能用插值表达式, 所以这种表达式一定出现在函数里面
+                interpolation.type_check(self as &mut TypeCheckContext);
+                return self.resolver().sty_string();
+            }
+            iter: *IteratorValue => {
+                let iterable_sty = self.infer(iter.iterable as *XValue);
+                let span = iter.expr_node().span();
+                if ensure_type_valid(iterable_sty, span) {
+                    // FIXME 内置数组类型需要特殊处理
+                    if iterable_sty.type_symbol is type *ArraySymbol {
+                        DiagnosticEngine::get().emit_unimplemented(span, "array iteration");
+                    }
+                    if extract_iter_in_iterable(iterable_sty) is Some(method_iter) {
+                        let receiver: *RValue = auto_ref_and_deref(method_iter.iterable_param_sty, iterable_sty, iter.iterable);
+                        let desugared_method = MethodCallValue::create(
+                            move receiver, method_iter.iter_method, GenericArgs::new(), (type Vec<*RValue>)::new(), method_iter.iter_sty
+                        );
+                        iter.desugared_call = Some(move desugared_method);
+                        return method_iter.iter_sty;
+                    } else {
+                        DiagnosticEngine::get().emit_not_iterable(iterable_sty.to_string(), span);
+                        return SType::sty_invalid(span);
+                    }
+                }
+                return SType::sty_invalid(span);
+            }
+            iter_next: *IteratorNextValue => {
+                let iterator_sty = self.infer(iter_next.iterator as *XValue);
+                let span = iter_next.expr_node().span();
+                if ensure_type_valid(iterator_sty, span) {
+                    if extract_item_in_iterator(iterator_sty) is Some(method_next) {
+
+                        let receiver: *RValue = auto_ref_and_deref(method_next.iterator_param_sty, iterator_sty, iter_next.iterator as *RValue);
+                        let option_item_sty = self.resolver().sty_option(method_next.item_sty);
+
+                        let borrow_item_sty = BorrowImmutSymbol::new().to_sty(GenericArgs::from1(method_next.item_sty));
+                        let option_borrow_item_sty = self.resolver().sty_option(borrow_item_sty);
+
+                        let desugared_method = MethodCallValue::create(
+                            move receiver, method_next.next_method, GenericArgs::new(), (type Vec<*RValue>)::new(), option_borrow_item_sty
+                        );
+                        iter_next.desugared_call = Some(move desugared_method);
+                        return option_item_sty;
+                    } else {
+                        DiagnosticEngine::get().emit_not_iterator(iterator_sty.to_string(), span);
+                        return SType::sty_invalid(span);
+                    }
+                }
+                return SType::sty_invalid(span);
+            }
+            iter_item: *IteratorItemValue => {
+                let iter_next_sty = self.infer(iter_item.iter_next as *XValue);
+                let span = iter_item.expr_node().span();
+
+                if ensure_type_valid(iter_next_sty, span) {
+                    if iter_next_sty.type_symbol.export_key().as_str().deref().eq(&"::std::primitives::option::Option") {
+                        let s = String::from_str("Some");
+                        let option_some = self.resolver().lookup_prelude(&s).get_or_panic("BUG: Option::Some symbol is not found");
+                        if option_some is ev_sym: *EnumVariantSymbol {
+                            let ev_pat = EnumVariantPattern::create(ev_sym, span);
+                            let pmv = PatternMatchValue::new(iter_item.expr_node(), iter_item.iter_next as *RValue, move ev_pat as *Pattern);
+                            let payload = VariantPayloadValue::create(iter_item.iter_next as *RValue, move ev_sym);
+                            payload.sty = iter_next_sty.args.ty_arg(0);
+
+                            iter_item.desugared_pmv = Some(move pmv);
+                            iter_item.desugared_payload = Some(move payload);
+
+                            return iter_next_sty.args.ty_arg(0);
+                        } else {
+                            panic "BUG: primitive Option::Some is not EnumVariantSymbol";
+                        }
+                    } else {
+                        panic "BUG: IteratorNextValue's stype should be Option<_>";
+                    }
+                }
+                return SType::sty_invalid(span);
+            }
+
+            _ => {
+                panic "BUG: unknown XValue in TypeCheckContext::do_infer.";
+            }
+        }
+        return SType::sty_invalid(v.expr_node().span());
+    }
+
+    fn check_value(&mut self, v: *XValue, stype: *SType) {
+        let sty = stype.canonical();
+        if !sty.is_invalid() {
+            v.set_stype(sty);
+        }
+        match v {
+            invalid: *InvalidValue => { }
+
+            // LValue
+            idx_lv: *IndexLValue => {
+                expect_type_eq(sty, self.infer(idx_lv as *XValue), idx_lv.expr.span());
+            }
+            field_lv: *FieldLValue => {
+                expect_type_eq(sty, self.infer(field_lv as *XValue), field_lv.expr.span());
+            }
+            tup_lv: *TupleAccessLValue => {
+                expect_type_eq(sty, self.infer(tup_lv as *XValue), tup_lv.expr.span());
+            }
+            deref_lv: *DerefLValue => {
+                expect_type_eq(sty, self.infer(deref_lv as *XValue), deref_lv.expr.span());
+            }
+            lvar: *LocalVar => {
+                if lvar.sym_var.stype.is_invalid() {
+                    lvar.sym_var.stype = sty;
+                }
+                else {
+                    expect_type_eq(sty, lvar.sym_var.stype, lvar.expr.span());
+                }
+            }
+            svar: *StaticVar => {
+                if svar.sym_var.stype.is_invalid() {
+                    svar.sym_var.stype = sty;
+                }
+                else {
+                    expect_type_eq(sty, svar.sym_var.stype, svar.expr.span());
+                }
+            }
+            // RValue
+            rv: *ReadValue => {
+                if rv.sty.is_invalid() {
+                    rv.sty = sty;
+                }
+                expect_type_eq(sty, rv.sym_var.stype, rv.expr.span());
+            }
+            idx_rv: *IndexRValue => {
+                expect_type_eq(sty, self.infer(idx_rv as *XValue), idx_rv.expr.span());
+            }
+            field_rv: *FieldRValue => {
+                expect_type_eq(sty, self.infer(field_rv as *XValue), field_rv.expr.span());
+            }
+            tup_rv: *TupleAccessRValue => {
+                expect_type_eq(sty, self.infer(tup_rv as *XValue), tup_rv.expr.span());
+            }
+            deref_rv: *DerefRValue => {
+                expect_type_eq(sty, self.infer(deref_rv as *XValue), deref_rv.expr.span());
+            }
+            vp_rv: *VariantPayloadValue => {
+                expect_type_eq(sty, self.infer(vp_rv as *XValue), vp_rv.enum_value.expr_node().span());
+            }
+            wv: *WriteValue => {
+                expect_type_eq(sty, self.infer(wv as *XValue), wv.expr.span());
+            }
+            qp: *QualifiedPathValue => {
+                // 这个可能带有泛型参数
+                if qp.symbol is evsym: *EnumVariantSymbol {
+                    if evsym.fields.len() != 0 { // 只有 None 这种不带参数的允许直接使用
+                        DiagnosticEngine::get().emit_unimplemented(qp.expr.span(), "first class enum variant");
+                        return;
+                    }
+
+                    let esym = evsym.parent_enum.get_or_panic();
+                    let enum_formal_ty = esym.to_sty();
+                    if esym.generics.ty_params.is_empty() { // 没有泛型参数需要推理
+                        expect_type_eq(sty, enum_formal_ty, qp.expr.span());
+                        return;
+                    }
+
+                    let mut mappings = TypeMapping::new();
+                    if qp.qualified_ty is Some(qty) {
+                        let r = mappings.unify(enum_formal_ty, qty);
+                        if !r {
+                            DiagnosticEngine::get().emit_type_mismatch(enum_formal_ty.to_string(), qty.to_string(), qp.expr.span());
+                            return;
+                        }
+                    }
+                    let r = mappings.unify(enum_formal_ty, sty);
+                    if !r {
+                        DiagnosticEngine::get().emit_type_mismatch(enum_formal_ty.to_string(), sty.to_string(), qp.expr.span());
+                        return;
+                    }
+                    // 确保 enum 的泛型参数都被推理出来了
+                    for p in esym.generics.ty_params {
+                        let key = p as *raw TypeParamSymbol as UInt;
+                        if !mappings.ty_mapping.contains(&key) {
+                            DiagnosticEngine::get().emit_generic_param_infer_failed(p.short_name(), qp.expr.span());
+                            return;
+                        } 
+                    }
+                } else {
+                    expect_type_eq(sty, self.infer(qp as *XValue), qp.expr.span());
+                }
+            }
+            ctx_rv: *ContextValue => {
+                self.check_value(ctx_rv.inner, sty);
+            }
+            lit_rv: *LiteralValue => {
+                let csty = sty.canonical();
+                if lit_rv.expr.token.token_kind is TokenKind::Literal(k) {
+                    match k {
+                        LiteralKind::LIT_CHAR => {
+                            expect_type_eq(csty, SType::sty_char(), lit_rv.expr.span());
+                        }
+                        LiteralKind::LIT_STR => {
+                            expect_type_eq(csty, self.resolver().sty_str(), lit_rv.expr.span());
+                        }
+                        LiteralKind::LIT_BYTE => {
+                            expect_type_eq(csty, IntegerSymbol::new(IntegerKind::U8).to_sty(), lit_rv.expr.span());
+                        }
+                        LiteralKind::LIT_INT => {
+                            let lit_ty = IntegerCValue::new(lit_rv.expr.token).stype_from_suffix();
+                            if !(csty.type_symbol is type *IntegerSymbol) {
+                                DiagnosticEngine::get().emit_type_mismatch(csty.to_string(), f"integer", lit_rv.expr.span());
+                                return;
+                            }
+                            if !lit_ty.is_invalid() {
+                                expect_type_eq(csty, lit_ty, lit_rv.expr.span());
+                            }
+                        }
+                        LiteralKind::LIT_FLOAT => {
+                            let lit_ty = FloatCValue::new(lit_rv.expr.token).stype_from_suffix();
+                            if !(csty.type_symbol is type *FloatSymbol) {
+                                DiagnosticEngine::get().emit_type_mismatch(csty.to_string(), f"float", lit_rv.expr.span());
+                                return;
+                            }
+                            if !lit_ty.is_invalid() {
+                                expect_type_eq(csty, lit_ty, lit_rv.expr.span());
+                            }
+                        }
+                        LiteralKind::LIT_STR_INTERPOLATION => {
+                            panic "BUG: String interpolation should be covered by InterpolationValue";
+                        }
+                    }
+                }
+                if lit_rv.expr.token.token_kind is TokenKind::Keyword(KeywordKind::KW_TRUE) {
+                    expect_type_eq(csty, SType::sty_bool(), lit_rv.expr.token.source_span);
+                }
+                if lit_rv.expr.token.token_kind is TokenKind::Keyword(KeywordKind::KW_FALSE) {
+                    expect_type_eq(csty, SType::sty_bool(), lit_rv.expr.token.source_span);
+                }
+            }
+            ty_asc_rv: *TypeAscriptionValue => {
+                if ensure_type_valid(ty_asc_rv.type_ascription, ty_asc_rv.expr.ty.span()) {
+                    expect_type_eq(sty, ty_asc_rv.type_ascription, ty_asc_rv.expr.ty.span());
+                    self.check_value(ty_asc_rv.inner, ty_asc_rv.type_ascription);
+                }
+            }
+            agg_rv: *AggregateValue => {
+                self.check_aggregate_fields(sty, agg_rv);
+                if agg_rv.default_value is Some(dv) {
+                    self.check_value(dv, sty);
+                }
+            }
+            tup_lit: *TupleValue => {
+                if !(sty.type_symbol is type *TupleSymbol) {
+                    DiagnosticEngine::get().emit_type_mismatch(sty.to_string(), f"tuple", tup_lit.expr.span());
+                    return;
+                }
+                if sty.args.ty_args.len() != tup_lit.elements.len() {
+                    let tup_ty = self.infer(tup_lit as *XValue);
+                    DiagnosticEngine::get().emit_type_mismatch(sty.to_string(), tup_ty.to_string(), tup_lit.expr.span());
+                    return;
+                }
+                let mut i: UInt = 0;
+                while i < tup_lit.elements.len() {
+                    let elem: *RValue = *tup_lit.elements.index(i).deref();
+                    self.check_value(move elem, sty.args.ty_arg(i));
+                    i += 1;
+                }
+            }
+            arr_lit: *ArrayLiteralValue => {
+                if !(sty.type_symbol is type *ArraySymbol) {
+                    DiagnosticEngine::get().emit_type_mismatch(sty.to_string(), f"array", arr_lit.expr.span());
+                    return;
+                }
+                if sty.args.ty_args.len() != arr_lit.elements.len() {
+                    let arr_ty = self.infer(arr_lit as *XValue);
+                    DiagnosticEngine::get().emit_type_mismatch(sty.to_string(), arr_ty.to_string(), arr_lit.expr.span());
+                    return;
+                }
+                let mut i: UInt = 0;
+                while i < arr_lit.elements.len() {
+                    let elem: *RValue = *arr_lit.elements.index(i).deref();
+                    self.check_value(move elem, sty.args.ty_arg(i));
+                    i += 1;
+                }
+            }
+            repeat_lit: *RepeatValue => {
+                if !(sty.type_symbol is type *ArraySymbol) {
+                    DiagnosticEngine::get().emit_type_mismatch(sty.to_string(), f"array", repeat_lit.expr.span());
+                    return;
+                }
+                self.check_value(repeat_lit.element, sty.args.ty_arg(0));
+
+                if repeat_lit.len is lit: *LiteralValue &&
+                    lit.expr.token.token_kind is TokenKind::Literal(k) &&
+                    k is LiteralKind::LIT_INT {
+
+                    let cint = IntegerCValue::new(lit.expr.token);
+                    if cint.value as UInt != sty.args.ty_args.len() {
+                        DiagnosticEngine::get().emit_array_elem_count_mismatch(
+                            sty.args.ty_args.len(), cint.value as UInt, repeat_lit.expr.span()
+                        );
+                    }
+                } else {
+                    DiagnosticEngine::get().emit_unimplemented(repeat_lit.len.expr_node().span(), "non-literal array length");
+                }
+            }
+            binary_rv: *BinaryExprValue => {
+                expect_type_eq(sty, self.infer(binary_rv as *XValue), binary_rv.expr.span());
+            }
+            unary_rv: *UnaryExprValue => {
+                if unary_rv.kind is UnaryValueKind::Neg ||
+                    unary_rv.kind is UnaryValueKind::Not ||
+                    unary_rv.kind is UnaryValueKind::Move {
+                    self.check_value(unary_rv.operand, sty);
+                } else {
+                    expect_type_eq(sty, self.infer(unary_rv as *XValue), unary_rv.expr.span());
+                }
+            }
+            addr_rv: *AddressofValue => {
+                match addr_rv.kind {
+                    AddressofKind::Ref => {
+                        if !(sty.type_symbol is type *BorrowImmutSymbol) {
+                            DiagnosticEngine::get().emit_type_mismatch(sty.to_string(), f"borrow pointer", addr_rv.expr.span());
+                            return;
+                        }
+                    }
+                    AddressofKind::RefMut => {
+                        if !(sty.type_symbol is type *BorrowMutSymbol) {
+                            DiagnosticEngine::get().emit_type_mismatch(sty.to_string(), f"borrow mut pointer", addr_rv.expr.span());
+                            return;
+                        }
+                    }
+                    AddressofKind::RefRaw => {
+                        if !(sty.type_symbol is type *RawPointerImmutSymbol) {
+                            DiagnosticEngine::get().emit_type_mismatch(sty.to_string(), f"raw pointer", addr_rv.expr.span());
+                            return;
+                        }
+                        self.requires_unsafe_context(addr_rv.expr as *SyntaxNode);
+                    }
+                    AddressofKind::RefRawMut => {
+                        if !(sty.type_symbol is type *RawPointerMutSymbol) {
+                            DiagnosticEngine::get().emit_type_mismatch(sty.to_string(), f"raw mut pointer", addr_rv.expr.span());
+                            return;
+                        }
+                        self.requires_unsafe_context(addr_rv.expr as *SyntaxNode);
+                    }
+                }
+                self.check_value(addr_rv.operand, sty.args.ty_arg(0));
+            }
+            pmv: *PatternMatchValue => {
+                if !(sty.type_symbol is type *BoolSymbol) {
+                    DiagnosticEngine::get().emit_type_mismatch(sty.to_string(), f"Bool", pmv.expr.span());
+                    return;
+                }
+                self.check_pattern_match_value(move pmv);
+            }
+            cast_rv: *CastValue => {
+                let cast_sty = self.infer(cast_rv as *XValue);
+                expect_type_eq(sty, cast_sty, cast_rv.expr.span());
+            }
+            fn_call: *FnCallValue => {
+                self.check_fn_call(move fn_call, move sty);
+            }
+            method_call: *MethodCallValue => {
+                self.check_method_call(move method_call, Some(move sty));
+            }
+            select_rv: *SelectValue => {
+                self.check_value(select_rv.cond, SType::sty_bool());
+                self.check_value(select_rv.br_true, sty);
+                self.check_value(select_rv.br_false, sty);
+            }
+            interpolation: *InterpolationValue => {
+                expect_type_eq(sty, self.resolver().sty_string(), interpolation.expr.span());
+                self.infer(interpolation as *XValue);
+            }
+            iter: *IteratorValue => {
+                let iter_sty = self.infer(iter as *XValue);
+                expect_type_eq(sty, iter_sty, iter.iterable.expr_node().span());
+            }
+            iter_next: *IteratorNextValue => {
+                let iter_next_sty = self.infer(iter_next as *XValue);
+                expect_type_eq(sty, iter_next_sty, iter_next.iterator.expr_node().span());
+            }
+            iter_item: *IteratorItemValue => {
+                let item_sty = self.infer(iter_item as *XValue);
+                expect_type_eq(sty, item_sty, iter_item.iter_next.expr_node().span());
+            }
+
+            _ => {
+                panic "BUG: unknown XValue in TypeCheckContext::check_value.";
+            }
+        }
+    }
+
+    fn check_sym(&mut self, s: *Symbol) {
+        match s {
+            m: *ModSymbol => self.check_mod(move m);
+            i: *ImplSymbol => self.check_impl(move i);
+            st: *StructSymbol => self.check_struct(move st);
+            e: *EnumSymbol => self.check_enum(move e);
+            u: *UnionSymbol => self.check_union(move u);
+            tr: *TraitSymbol => self.check_trait(move tr);
+            ty: *TypeAliasSymbol => self.check_typealias(move ty);
+            v: *VarSymbol => self.check_global(move v);
+            f: *FuncSymbol => {
+                self.check_fn(f);
+
+                let mut overload = f.next_overload;
+                while overload is Some(of) {
+                    self.check_fn(of);
+                    overload = of.next_overload;
+                }
+            }
+            ex: *ExternTypeSymbol => self.check_extern(move ex);
+            _ => {
+                panic "BUG: SemanticModel::check_sym met unknown symbol";
+            }
+        }
+    }
+
+    fn check_mod(&mut self, m: *ModSymbol) {
+        self.sema_model.all_mod.push(m);
+        for s in m.symbol_table {
+            self.check_sym(s);
+        }
+    }
+
+    fn check_impl(&mut self, i: *ImplSymbol) {
+        self.sema_model.all_impl.push(i);
+        for f in i.methods {
+            self.check_fn(move f);
+        }
+
+        // 检查 impl 是否实现了 trait 里面所有的 assoc type & methods
+        if i.trait_sty is Some(trait_sty) {
+            self.check_impl_trait_completeness(i);
+
+            // union 不能实现 Drop
+            if i.target_sty.type_symbol is type *UnionSymbol &&
+                trait_sty.type_symbol.export_key().as_str().deref().eq(&"::std::ops::drop::Drop") {
+                DiagnosticEngine::get().emit_union_can_not_impl_drop(i.impl_node.span());
+            }
+        }
+
+    }
+
+    // todo 还应该反过来查一下, 是不是有不属于这个 trait 的方法写在了这个 impl 里面, 这么乱写代码不好维护
+    // 比如 impl 里面有一个方法名写错了跟 trait 里面的名字没对应上, 如果恰好 trait 里面的方法有默认实现, 编译器不报错
+    // 但用户会误以为方法的版本是 impl 里面那个而不是 trait 里面那个
+    fn check_impl_trait_completeness(&mut self, impl_sym: *ImplSymbol) {
+        if impl_sym.trait_sty is Some(trait_sty) {
+            if trait_sty.type_symbol is trait_sym: *TraitSymbol {
+                // 检查在 trait 中定义的 associated type 是否都被 impl 覆盖
+                for assoc in trait_sym.associated_types {
+                    let assoc_name = assoc.short_name();
+                    if impl_sym.associated_types.at(&assoc_name) is Some(alias) {
+                        let formal = &assoc.generics;
+                        let actual = &alias.generics;
+
+                        if formal.lt_params.len() != actual.lt_params.len() ||
+                            formal.ty_params.len() != actual.ty_params.len() {
+                            DiagnosticEngine::get().emit_mismatch_associated_type(assoc_name, alias.syntax_node().span());
+                        }
+                    } else {
+                        DiagnosticEngine::get().emit_missing_associated_type(assoc_name, impl_sym.impl_node.kw_impl.source_span);
+                    }
+                }
+
+                // associated func 要考虑重载、要考虑 generics & associated-type & Self-type & GAT, 要考虑默认实现
+                for fn_in_trait in trait_sym.methods {
+                    if fn_in_trait.body is Some(_) {
+                        continue; // 有默认实现就不查了
+                    }
+
+                    let fn_name = fn_in_trait.short_name();
+                    let mut found: Option<*FuncSymbol> = impl_sym.find_method(fn_name, fn_in_trait.params.len());
+                    if found is Some(fn_in_impl) {
+                        // 检查方法签名的匹配情况
+                        self.compare_method_signature(fn_in_trait, fn_in_impl);
+                    } else {
+                        DiagnosticEngine::get().emit_missing_method(fn_name, impl_sym.impl_node.kw_impl.source_span);
+                    }
+
+                }
+
+                // 未实现功能: 被实现的类型不允许带有复杂泛型参数 impl<T> MyType<Option<T>> {}
+                // 后续可以实现, zinc_core 中已经对此功能做了预留
+                for arg in impl_sym.target_sty.args.ty_args {
+                    if !(arg.type_symbol is type *TypeParamSymbol) {
+                        DiagnosticEngine::get().emit_unimplemented(impl_sym.impl_node.target_ty.span(), "impl target type with complex generic args");
+                    }
+                }
+                if impl_sym.target_sty.type_symbol is type *TypeParamSymbol {
+                    DiagnosticEngine::get().emit_unimplemented(impl_sym.impl_node.target_ty.span(), "impl target type is type parameter");
+                }
+            }
+        }
+    }
+
+    fn compare_method_signature(&mut self, fn_in_trait: *FuncSymbol, fn_in_impl: *FuncSymbol) {
+        // TODO
+    }
+
+    fn check_trait_impl_conflict(&self, tsym: *TypeSymbol) {
+        let mut trait_impls: HashSet<UInt> = HashSet::new();
+        for isym in tsym.related_impls() {
+            if isym.trait_sty is Some(trait_sty) {
+                if trait_sty.type_symbol is trait_sym: *TraitSymbol {
+                    let key = trait_sym as *raw TraitSymbol as UInt;
+                    if trait_impls.contains(&key) {
+                        DiagnosticEngine::get().emit_conflicting_trait_impl(trait_sym.short_name(), isym.impl_node.span());
+                    } else {
+                        trait_impls.insert(key);
+                    }
+                }
+            }
+        }
+    }
+
+    fn check_struct(&mut self, s: *StructSymbol) {
+        self.sema_model.all_struct.push(s);
+        for m in s.fields {
+            // 检查类型递归
+            self.check_recursive_member_field(s.to_sty(), m.stype, m.syntax_node().span());
+            // 检查成员不能是 unsized type
+            self.disallow_unsized_type(m.stype, m.syntax_node().span());
+
+            // 检查初始化表达式的类型是否合理
+            if m.init is Some(init) {
+                let rhs_sty = self.infer(init as *XValue);
+                if rhs_sty.is_invalid() {
+                    self.check_value(init, m.stype);
+                } else {
+                    let k = resolve_type_cast_kind(rhs_sty, m.stype);
+                    let cast = add_implicit_cast(init, k, m.stype);
+                    m.init = Some(move cast);
+                }
+            }
+        }
+
+        self.check_trait_impl_conflict(move s);
+    }
+
+    fn check_enum(&mut self, e: *EnumSymbol) {
+        self.sema_model.all_enum.push(e);
+        for ev in e.variants {
+            for ty in ev.fields {
+                // 检查类型递归
+                self.check_recursive_member_field(e.to_sty(), ty, ev.syntax_node().span());
+                // 检查成员不能是 unsized type
+                self.disallow_unsized_type(ty, ev.syntax_node().span());
+            }
+        }
+        self.check_trait_impl_conflict(move e);
+    }
+
+    fn check_union(&mut self, u: *UnionSymbol) {
+        self.sema_model.all_union.push(u);
+        for m in u.fields {
+            // 检查类型递归
+            self.check_recursive_member_field(u.to_sty(), m.stype, m.syntax_node().span());
+            // 检查成员不能是 unsized type
+            self.disallow_unsized_type(m.stype, m.syntax_node().span());
+        }
+    }
+
+    fn check_trait(&mut self, t: *TraitSymbol) {
+        self.sema_model.all_trait.push(t);
+        // 检查 trait 和继承而来的父类型成员 名字冲突
+        for base in t.inherit_traits {
+            if base.type_symbol is trait_sym: *TraitSymbol {
+                self.check_name_collision_in_trait(t, trait_sym);
+            }
+        }
+
+        for f in t.methods {
+            // 检查 virtual 函数签名
+            if f.qualifiers().has(QualifierKind::Virtual) {
+                if !f.has_receiver() {
+                    DiagnosticEngine::get().emit_func_can_not_be_virtual("fn do not have self parameter", f.func_node.span());
+                } else {
+                    let param = *f.params.index(0).deref();
+                    if param.stype.type_symbol is type *PointerLikeSymbol {
+                        let pointee_sty: *SType = param.stype.args.ty_arg(0);
+                        if pointee_sty.type_symbol is assoc: *AssociatedTypeSymbol &&
+                            assoc.is_self_ty() {
+                            // ok
+                        } else {
+                            DiagnosticEngine::get().emit_func_can_not_be_virtual("self parameter is not pointer to Self type", f.func_node.span());
+                        }
+                    } else {
+                        DiagnosticEngine::get().emit_func_can_not_be_virtual("self parameter is not pointer type", f.func_node.span());
+                    }
+                }
+
+                if f.return_sty is Some(rsty) && contains_associated_type(rsty) {
+                    DiagnosticEngine::get().emit_func_can_not_be_virtual("return type contains associated type", f.func_node.span());
+                }
+
+                let mut is_first = true;
+                for param in f.params {
+                    if is_first {
+                        is_first = false;
+                        continue;
+                    } else {
+                        if contains_associated_type(param.stype) {
+                            DiagnosticEngine::get().emit_func_can_not_be_virtual("parameter type contains associated type", f.func_node.span());
+                        }
+                    }
+                }
+            }
+            self.check_fn(move f);
+        }
+
+    }
+
+    fn check_typealias(&mut self, a: *TypeAliasSymbol) {
+        self.sema_model.all_alias.push(a);
+        // todo 检查类型递归
+    }
+
+    fn check_global(&mut self, g: *VarSymbol) {
+        self.sema_model.all_global.push(g);
+        self.disallow_unsized_type(g.stype, g.syntax_node().span());
+
+        // 检查类型声明和初始化表达式一致
+        if g.init is Some(init) {
+            let rhs_sty = self.infer(init as *XValue);
+            if rhs_sty.is_invalid() {
+                self.check_value(init, g.stype);
+            } else {
+                let k = resolve_type_cast_kind(rhs_sty, g.stype);
+                let cast = add_implicit_cast(init, k, g.stype);
+                g.init = Some(move cast);
+            }
+        } else {
+            DiagnosticEngine::get().emit_global_var_must_be_init(g.var_node.span());
+        }
+
+        if g.init is Some(init) {
+            if const_value_from_rvalue(init) is None {
+                DiagnosticEngine::get().emit_not_const_expr(init.expr_node().span());
+            }
+        }
+
+        // 如果没有 unsafe 修饰，类型必须满足 Send
+        if !g.qualifiers().has(QualifierKind::Unsafe) && !is_send_type(g.stype) {
+            DiagnosticEngine::get().emit_global_var_must_be_send(g.syntax_node().span());
+        }
+    }
+
+    fn check_main_fn(&mut self, f: *FuncSymbol) {
+        if !f.params.is_empty() {
+            DiagnosticEngine::get().emit_main_fn_params(f.func_node.span());
+        }
+
+        let mut return_sty = SType::sty_unit();
+        if f.return_sty is Some(rsty) {
+            return_sty = move rsty;
+        }
+        if !return_sty.is_unit() {
+            DiagnosticEngine::get().emit_main_fn_return_ty(f.func_node.span());
+        }
+    }
+
+    fn check_fn(&mut self, f: *FuncSymbol) {
+        self.sema_model.all_fn.push(f);
+        // TODO 如果是 extern fn 那么需要全局查找同名 extern fn, 它们的签名必须相同
+
+        if self.sema_model.syntax_tree.kind is LibOrExe::Exe(main_fn) {
+            if f.func_node as *raw FuncDecl as UInt == main_fn as *raw FuncDecl as UInt {
+                self.check_main_fn(f);
+            }
+        }
+
+        // 参数不允许 unsized 类型但返回要允许。
+        // 返回 unsized 类型直接取借用、或者直接 box 都是有用的。
+        for p in f.params {
+            if p.stype.is_invalid() {
+                DiagnosticEngine::get().emit_invalid_type(p.var_node.span());
+            }
+            self.disallow_unsized_type(p.stype, p.syntax_node().span());
+        }
+
+        self.fsym = Some(f);
+
+        if f.body is Some(blk) {
+            self.check_block(blk);
+        }
+
+        self.fsym = None;
+    }
+
+    fn check_extern(&mut self, t: *ExternTypeSymbol) {
+        self.sema_model.all_extern_type.push(move t);
+    }
+
+    fn check_recursive_member_field(&mut self, sty1: *SType, sty2: *SType, span: SourceSpan) {
+        // FIXME
+    }
+
+    fn disallow_unsized_type(&mut self, sty: *SType, span: SourceSpan) {
+        // FIXME
+    }
+
+    fn check_name_collision_in_trait(&mut self, trait_sym: *TraitSymbol, base_sym: *TraitSymbol) {
+        // FIXME
+    }
+
+    fn check_requires_constraint(&self, ty: *SType, upper: *SType, span: SourceSpan) {
+        if upper.type_symbol is upper_trait: *TraitSymbol {
+            let upper_sym_int = upper_trait as *raw TraitSymbol as UInt;
+
+            if ty.type_symbol is tp: *TypeParamSymbol {
+                let tp_int = tp as *raw TypeParamSymbol as UInt;
+                // 从当前 fsym 中找 tp 满足的约束
+                if self.fsym is Some(fsym) {
+                    let bounds = fsym.generics.constraints.upper_bounds(&tp_int);
+                    for b in bounds {
+                        if b.type_symbol is tr: *TraitSymbol {
+                            if tr as *raw TraitSymbol as UInt == upper_sym_int {
+                                return;
+                            }
+                            if tr.is_inherited_from(upper_trait) {
+                                return;
+                            }
+                        }
+                    }
+                    if fsym.parent_sym is Some(isym: *ImplSymbol) {
+                        let bounds = isym.generics.constraints.upper_bounds(&tp_int);
+                        for b in bounds {
+                            if b.type_symbol is tr: *TraitSymbol {
+                                if tr as *raw TraitSymbol as UInt == upper_sym_int {
+                                    return;
+                                }
+                                if tr.is_inherited_from(upper_trait) {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                if upper_trait.mangle_name().as_str().deref().eq(&"::std::primitives::Any") {
+                    return;
+                }
+                if upper_trait.mangle_name().as_str().deref().eq(&"::std::marker::Send") {
+                    if !is_send_type(ty) {
+                        DiagnosticEngine::get().emit_typeparam_not_conform_constraint(ty.to_string(), upper.to_string(), span);
+                    }
+                    return;
+                }
+                if upper_trait.mangle_name().as_str().deref().eq(&"::std::marker::Sync") {
+                    if !is_sync_type(ty) {
+                        DiagnosticEngine::get().emit_typeparam_not_conform_constraint(ty.to_string(), upper.to_string(), span);
+                    }
+                    return;
+                }
+                for isym in ty.type_symbol.related_impls() {
+                    if isym.trait_sty is Some(trait_sty) {
+                        if trait_sty.type_symbol as *raw TypeSymbol as UInt == upper_sym_int {
+                            return;
+                        }
+                    }
+                }
+            }
+            DiagnosticEngine::get().emit_typeparam_not_conform_constraint(ty.to_string(), upper.to_string(), span);
+        }
+    }
+
+    fn infer_fn_call(&mut self, fn_call: *FnCallValue) -> *SType {
+        if fn_call.callee is qpv: *QualifiedPathValue {
+            if qpv.symbol is fsym: *FuncSymbol {
+                let found = fsym.find_overload(fn_call.fn_args.len());
+                if found is Some(callee_fsym) {
+                    let mut constraints = GenericConstraints::new();
+                    qpv.symbol = callee_fsym as *Symbol;
+                    constraints.merge(&callee_fsym.generics.constraints);
+
+                    if callee_fsym.func_node.qualifiers().has(QualifierKind::Unsafe) ||
+                        callee_fsym.func_node.qualifiers().has(QualifierKind::Extern) {
+                        self.requires_unsafe_context(fn_call.expr as *SyntaxNode);
+                    }
+
+                    let mut caller_site_params = (type Vec<*TypeParamSymbol>)::new();
+                    if self.fsym is Some(caller_fsym) {
+                        caller_site_params = caller_fsym.type_params_in_ctx();
+                    }
+                    let callee_site_params = callee_fsym.type_params_except(&caller_site_params);
+                    if callee_site_params.is_empty() {
+                        // 没有泛型参数需要推导, 直接检查所有的参数
+                        let params_tys = callee_fsym.params_tys();
+                        fn_call.desugared_args = self.desugar_fn_args(&fn_call.fn_arg_values(), &params_tys);
+                        if callee_fsym.parent_sym is Some(isym: *ImplSymbol) {
+                            fn_call.member_of = Some(isym.target_sty);
+                        }
+                        return callee_fsym.return_sty.get_or_else(SType::sty_unit());
+                    } else {
+                        let mut mappings = TypeMapping::new();
+                        // 通过 full-qualified-syntax 推导
+                        if callee_fsym.parent_sym is Some(isym: *ImplSymbol) {
+                            constraints.merge(&isym.generics.constraints);
+                            // 类型定义处的 type param 和 impl 处的 type param 的映射
+                            mappings.unify(isym.target_sty.type_symbol.to_sty(), isym.target_sty);
+
+                            if qpv.qualified_ty is Some(actual_self_ty) {
+                                // impl 处的 type param 和 实际类型参数的映射
+                                mappings.unify(isym.target_sty, actual_self_ty.canonical());
+                            }
+                        }
+                        // 通过泛型实参列表和实际参数推导
+                        if !fn_call.generic_args.ty_args.is_empty() {
+                            // 允许不写泛型参数, 只要写了就要写全, 确保泛型实参的个数和形参一样多
+                            mappings.unify_all(&callee_fsym.generics.ty_params, &fn_call.generic_args.ty_args, fn_call.expr.span());
+                        }
+                        let mut i: UInt = 0;
+                        while i < fn_call.fn_args.len() {
+                            let fnarg = fn_call.fn_args.at(i).get_or_panic();
+                            let arg: *RValue = fnarg.value;
+                            let arg_ty: *SType = self.infer(arg as *XValue);
+                            if !arg_ty.is_invalid() {
+                                let param = callee_fsym.params.at(i).get_or_panic();
+                                let param_ty: *SType = param.stype;
+                                let r = mappings.unify(param_ty, arg_ty);
+                                if !r {
+                                    return SType::sty_invalid(fn_call.expr.span());
+                                }
+                            }
+                            i += 1;
+                        }
+
+                        // 确保泛型参数都推理出来了
+                        let mut generic_args = GenericArgs::new();
+                        for p in callee_site_params {
+                            let p_int = p as *raw TypeParamSymbol as UInt;
+                            if mappings.ty_mapping.at(&p_int) is Some(a) {
+                                let upper_bounds = constraints.upper_bounds(&p_int);
+                                for ub in upper_bounds {
+                                    self.check_requires_constraint(a, move ub, fn_call.expr.span());
+                                }
+                            } else {
+                                return SType::sty_invalid(fn_call.expr.span());
+                            }
+                        }
+
+                        for p in callee_fsym.generics.ty_params {
+                            let v = mappings.subst(p.to_sty());
+                            if self.stype_infer_finished(v) {
+                                generic_args.ty_args.push(move v);
+                            } else {
+                                return SType::sty_invalid(fn_call.expr.span());
+                            }
+                        }
+                        fn_call.generic_args = move generic_args;
+                        if callee_fsym.parent_sym is Some(isym: *ImplSymbol) {
+                            fn_call.member_of = Some(mappings.subst(isym.target_sty));
+                        }
+
+                        // 对参数列表做检查
+                        let mut params_tys = (type Vec<*SType>)::new();
+                        let mut args_values = (type Vec<*RValue>)::new();
+                        let mut j: UInt = 0;
+                        while j < fn_call.fn_args.len() {
+                            let param = callee_fsym.params.at(j).get_or_panic(); 
+                            let formal_param_ty = param.stype;
+                            let param_ty: *SType = mappings.subst(formal_param_ty);
+                            params_tys.push(move param_ty);
+
+                            let arg = fn_call.fn_args.at(j).get_or_panic();
+                            args_values.push(arg.value);
+
+                            j += 1;
+                        }
+                        fn_call.desugared_args = self.desugar_fn_args(&args_values, &params_tys);
+
+                        // 返回
+                        let formal_ret = callee_fsym.return_sty.get_or_else(SType::sty_unit());
+                        return mappings.subst(formal_ret);
+                    }
+
+                } else {
+                    DiagnosticEngine::get().emit_overload_not_found(qpv.expr.span(), fn_call.fn_args.len());
+                    return SType::sty_invalid(fn_call.expr.span());
+                }
+            }
+            else if qpv.symbol is evsym: *EnumVariantSymbol {
+                let found = evsym.find_overload(fn_call.fn_args.len());
+                if found is Some(callee_evsym) {
+                    let parent_enum = callee_evsym.parent_enum.get_or_panic();
+                    let mut constraints = parent_enum.generics.constraints;
+                    qpv.symbol = callee_evsym as *Symbol;
+                    let formal_return_ty = parent_enum.to_sty();
+                    let all_type_params = callee_evsym.type_params_in_ctx();
+                    if all_type_params.is_empty() {
+                        // 没有泛型参数需要推导, 直接检查所有的参数
+                        fn_call.desugared_args = self.desugar_fn_args(&fn_call.fn_arg_values(), &callee_evsym.fields);
+                        return formal_return_ty;
+                    } else {
+                        let mut mappings = TypeMapping::new();
+                        // 通过 full-qualified-syntax 推导
+                        if qpv.qualified_ty is Some(actual_self_ty) {
+                            mappings.unify(formal_return_ty, actual_self_ty);
+                        }
+                        // 通过 实际参数列表 推导
+                        let mut i: UInt = 0;
+                        while i < fn_call.fn_args.len() {
+                            let arg = fn_call.fn_args.at(i).get_or_panic();
+                            let arg_ty: *SType = self.infer(arg.value as *XValue);
+
+                            if !arg_ty.is_invalid() {
+                                let param_ty: *SType = *callee_evsym.fields.index(i).deref();
+                                let r = mappings.unify(param_ty, arg_ty);
+                                if !r {
+                                    return SType::sty_invalid(fn_call.expr.span());
+                                }
+                            }
+                            i += 1;
+                        }
+
+                        // 确保泛型参数都推理出来了
+                        let mut generic_args = GenericArgs::new();
+                        for p in all_type_params {
+                            let p_int = p as *raw TypeParamSymbol as UInt;
+                            if mappings.ty_mapping.at(&p_int) is Some(a) {
+                                let upper_bounds = constraints.upper_bounds(&p_int);
+                                for ub in upper_bounds {
+                                    self.check_requires_constraint(a, move ub, fn_call.expr.span());
+                                }
+                            } else {
+                                return SType::sty_invalid(fn_call.expr.span());
+                            }
+
+                            let v = mappings.subst(p.to_sty());
+                            if self.stype_infer_finished(v) {
+                                generic_args.ty_args.push(move v);
+                            } else {
+                                return SType::sty_invalid(fn_call.expr.span());
+                            }
+                        }
+                        fn_call.generic_args = move generic_args;
+                        // 对参数列表做检查
+                        let mut params_tys = (type Vec<*SType>)::new();
+                        let mut args_values = (type Vec<*RValue>)::new();
+                        let mut j: UInt = 0;
+                        while j < fn_call.fn_args.len() {
+                            let formal_param_ty = *callee_evsym.fields.index(j).deref();
+                            let param_ty: *SType = mappings.subst(formal_param_ty);
+                            params_tys.push(move param_ty);
+
+                            let arg = fn_call.fn_args.at(j).get_or_panic();
+                            args_values.push(arg.value);
+
+                            j += 1;
+                        }
+                        fn_call.desugared_args = self.desugar_fn_args(&args_values, &params_tys);
+
+                        return mappings.subst(formal_return_ty);
+                    }
+
+                } else {
+                    DiagnosticEngine::get().emit_overload_not_found(qpv.expr.span(), fn_call.fn_args.len());
+                    return SType::sty_invalid(fn_call.expr.span());
+                }
+            }
+        }
+        DiagnosticEngine::get().emit_expr_not_callable(fn_call.expr.span());
+        return SType::sty_invalid(fn_call.expr.span());
+    }
+
+    fn check_fn_call(&mut self, fn_call: *FnCallValue, return_ty: *SType) {
+        // 先判断 callee 的类型, 目前只处理了 fn/enum variant, 后续补上 lambda 以及函数类型的变量 fn Fn FnMut
+        let mut params_ty = (type Vec<*SType>)::new();
+        let mut formal_return_ty = SType::sty_unit();
+        let mut direct_type_params = (type Vec<*TypeParamSymbol>)::new();
+        let mut all_type_params = (type Vec<*TypeParamSymbol>)::new();
+        let mut constraints = GenericConstraints::new();
+
+        let mut mappings = TypeMapping::new();
+        if fn_call.callee is qpv: *QualifiedPathValue {
+            if qpv.symbol is fsym: *FuncSymbol {
+                let found = fsym.find_overload(fn_call.fn_args.len());
+                if found is Some(callee_fsym) {
+                    qpv.symbol = callee_fsym as *Symbol;
+                    constraints.merge(&callee_fsym.generics.constraints);
+
+                    if callee_fsym.func_node.qualifiers().has(QualifierKind::Unsafe) ||
+                        callee_fsym.func_node.qualifiers().has(QualifierKind::Extern) {
+                        self.requires_unsafe_context(fn_call.expr as *SyntaxNode);
+                    }
+
+                    for p in callee_fsym.params {
+                        params_ty.push(p.stype);
+                    }
+                    formal_return_ty = callee_fsym.return_sty.get_or_panic();
+                    all_type_params = callee_fsym.type_params_in_ctx();
+                    direct_type_params = callee_fsym.generics.ty_params;
+
+                    if callee_fsym.parent_sym is Some(isym: *ImplSymbol) {
+                        // 类型定义处的 type param 和 impl 处的 type param 的映射
+                        mappings.unify(isym.target_sty.type_symbol.to_sty(), isym.target_sty);
+                        constraints.merge(&isym.generics.constraints);
+                        if qpv.qualified_ty is Some(actual_self_ty) {
+                            // impl 处的 type param 和 实际类型参数的映射
+                            mappings.unify(isym.target_sty, actual_self_ty);
+                        }
+                    }
+
+                } else {
+                    DiagnosticEngine::get().emit_overload_not_found(qpv.expr.span(), fn_call.fn_args.len());
+                    return;
+                }
+            }
+            else if qpv.symbol is evsym: *EnumVariantSymbol {
+                let found = evsym.find_overload(fn_call.fn_args.len());
+                if found is Some(callee_evsym) {
+                    qpv.symbol = callee_evsym as *Symbol;
+                    params_ty = callee_evsym.fields;
+                    let parent_enum = callee_evsym.parent_enum.get_or_panic();
+                    formal_return_ty = parent_enum.to_sty();
+                    all_type_params = callee_evsym.type_params_in_ctx();
+                    constraints.merge(&parent_enum.generics.constraints);
+
+                    if qpv.qualified_ty is Some(actual_self_ty) {
+                        mappings.unify(formal_return_ty, actual_self_ty);
+                    }
+                } else {
+                    DiagnosticEngine::get().emit_overload_not_found(qpv.expr.span(), fn_call.fn_args.len());
+                    return;
+                }
+            }
+            else {
+                DiagnosticEngine::get().emit_expr_not_callable(qpv.expr.span());
+                return;
+            }
+        }
+
+        let arg_len = fn_call.fn_args.len();
+        if arg_len != params_ty.len() {
+            panic "BUG: actual args count does not equal to formal params count";
+        }
+
+        if !fn_call.generic_args.ty_args.is_empty() {
+            // 允许不写泛型参数, 只要写了就要写全, 确保泛型实参的个数和形参一样多
+            mappings.unify_all(&direct_type_params, &fn_call.generic_args.ty_args, fn_call.expr.span());
+        }
+        let r = mappings.unify(formal_return_ty, return_ty);
+        if !r {
+            DiagnosticEngine::get().emit_type_mismatch(formal_return_ty.to_string(), return_ty.to_string(), fn_call.expr.span());
+            return ;
+        }
+        
+        let mut i: UInt = 0;
+        while i < arg_len {
+            let fnarg = fn_call.fn_args.at(i).get_or_panic();
+            let arg = fnarg.value;
+            let arg_ty: *SType = self.infer(arg as *XValue);
+
+            if !arg_ty.is_invalid() {
+                let param_ty: *SType = *params_ty.index(i).deref();
+                let r = mappings.unify(param_ty, arg_ty);
+                if !r {
+                    DiagnosticEngine::get().emit_type_mismatch(param_ty.to_string(), arg_ty.to_string(), arg.expr_node().span());
+                    return;
+                }
+            }
+            i += 1;
+        }
+
+        // 确保泛型参数都推理出来了
+        let mut generic_args = GenericArgs::new();
+        for p in all_type_params {
+            let p_int = p as *raw TypeParamSymbol as UInt;
+
+            if mappings.ty_mapping.at(&p_int) is Some(a) {
+                let upper_bounds = constraints.upper_bounds(&p_int);
+                for ub in upper_bounds {
+                    self.check_requires_constraint(a, move ub, fn_call.expr.span());
+                }
+            } else {
+                DiagnosticEngine::get().emit_generic_param_infer_failed(p.short_name(), fn_call.expr.span());
+                return;
+            }
+        }
+
+        for p in direct_type_params {
+            let v = mappings.subst(p.to_sty());
+            if self.stype_infer_finished(v) {
+                generic_args.ty_args.push(move v);
+            } else {
+                DiagnosticEngine::get().emit_generic_param_infer_failed(p.short_name(), fn_call.expr.span());
+                return;
+            }
+        }
+        fn_call.generic_args = move generic_args;
+        if fn_call.callee is qpv: *QualifiedPathValue {
+            if qpv.symbol is fsym: *FuncSymbol {
+                if fsym.parent_sym is Some(isym: *ImplSymbol) {
+                    fn_call.member_of = Some(mappings.subst(isym.target_sty));
+                }
+            }
+        }
+
+        // 检查函数参数类型
+        let mut params_tys = (type Vec<*SType>)::new();
+        let mut args_values = (type Vec<*RValue>)::new();
+        let mut j: UInt = 0;
+        while j < fn_call.fn_args.len() {
+            let formal_param_ty = *params_ty.index(j).deref();
+            let param_ty: *SType = mappings.subst(formal_param_ty);
+            params_tys.push(move param_ty);
+
+            let arg = fn_call.fn_args.at(j).get_or_panic();
+            args_values.push(arg.value);
+
+            j += 1;
+        }
+        fn_call.desugared_args = self.desugar_fn_args(&args_values, &params_tys);
+    }
+
+    fn desugar_fn_args(&mut self, args: &Vec<*RValue>, stys: &Vec<*SType>) -> Vec<*RValue> {
+
+        let mut desugared_args = (type Vec<*RValue>)::new();
+        let mut j: UInt = 0;
+        while j < args.len() {
+            let arg: *RValue = *args.index(j).deref();
+            let arg_ty: *SType = self.infer(arg as *XValue);
+
+            let param_ty: *SType = *stys.index(j).deref();
+
+            if arg_ty.is_invalid() {
+                self.check_value(arg, param_ty);
+                desugared_args.push(arg);
+            } else {
+                let k = resolve_type_cast_kind(arg_ty, param_ty);
+                let cast = add_implicit_cast(arg, k, param_ty);
+                desugared_args.push(cast);
+            }
+            j += 1;
+        }
+        return desugared_args;
+    }
+
+    fn check_method_call(&mut self, method_call: *MethodCallValue, return_ty: Option<*SType>) -> *SType {
+        let arg_len = method_call.fn_args.len();
+        let receiver_ty = self.infer(method_call.receiver as *XValue);
+        if !ensure_type_valid(receiver_ty, method_call.expr.span()) {
+            return SType::sty_invalid(method_call.expr.span());
+        }
+
+        let stripped_receiver_ty = receiver_ty.strip_pointer();
+        // todo 如果是泛型参数类型, 寻找成员函数要从泛型约束中查找
+        let fsym = find_method(stripped_receiver_ty, method_call.method, arg_len + 1, self.fsym);
+        if fsym is Some(method_sym) {
+            method_call.resolved_method = Some(method_sym);
+            if method_sym.func_node.qualifiers().has(QualifierKind::Unsafe) {
+                self.requires_unsafe_context(method_call.expr as *SyntaxNode);
+            }
+
+            let mut mappings = TypeMapping::new();
+
+            if method_sym.parent_sym is Some(isym: *ImplSymbol) {
+                // 类型定义处的 type param 和 impl 处的 type param 的映射
+                mappings.unify(isym.target_sty.type_symbol.to_sty(), isym.target_sty);
+                mappings.unify(isym.target_sty, stripped_receiver_ty);
+            }
+            if method_sym.parent_sym is Some(trsym: *TraitSymbol) {
+                mappings.unify(trsym.to_sty(), stripped_receiver_ty);
+            }
+
+            if return_ty is Some(rsty) {
+                let formal_return_ty = method_sym.return_sty.get_or_panic();
+                let r = mappings.unify(formal_return_ty, rsty);
+                if !r {
+                    DiagnosticEngine::get().emit_type_mismatch(formal_return_ty.to_string(), rsty.to_string(), method_call.expr_node().span());
+                    return SType::sty_invalid(method_call.expr_node().span());
+                }
+            }
+
+            if !method_sym.generics.ty_params.is_empty() {
+                if method_call.generic_args.ty_args.is_empty() {
+                    // 暂未实现 自动推导方法本身带有的泛型参数
+                    DiagnosticEngine::get().emit_unimplemented(method_call.expr.span(),
+                        "type infer generic type arguments in methods");
+                    return SType::sty_invalid(method_call.expr.span());
+                }
+
+                // 显式指定的泛型参数, 检查所有参数
+                let actual_count = method_call.generic_args.ty_args.len();
+                let formal_count = method_sym.generics.ty_params.len();
+                if actual_count != formal_count {
+                    DiagnosticEngine::get().emit_generic_args_count_mismatch(f"method call", formal_count, actual_count, method_call.expr.span());
+                    return SType::sty_invalid(method_call.expr.span());
+                }
+
+                let mut i: UInt = 0;
+                while i < method_sym.generics.ty_params.len() {
+                    let arg_ty: *SType = method_call.generic_args.ty_arg(i);
+                    let param_ty: *SType = method_sym.generics.ty_param(i).to_sty();
+                    mappings.unify(param_ty, arg_ty);
+                    i += 1;
+                }
+
+                // 确保泛型参数都推理出来了
+                let mut generic_args = GenericArgs::new();
+                for p in method_sym.generics.ty_params {
+                    let p_int = p as *raw TypeParamSymbol as UInt;
+                    if !mappings.ty_mapping.contains(&p_int) {
+                        return SType::sty_invalid(method_call.expr.span());
+                    }
+
+                    let v = mappings.subst(p.to_sty());
+                    if self.stype_infer_finished(v) {
+                        generic_args.ty_args.push(move v);
+                    } else {
+                        return SType::sty_invalid(method_call.expr.span());
+                    }
+                }
+                method_call.generic_args = move generic_args;
+            }
+
+            // receiver 比较特殊, 支持 auto-ref / auto-deref
+            let receiver_param = *method_sym.params.index(0).deref();
+            let receiver_param_ty = mappings.subst(receiver_param.stype);
+            let desugared_receiver = auto_ref_and_deref(
+                receiver_param_ty, receiver_ty, method_call.receiver
+            );
+            mappings.unify(receiver_param_ty, desugared_receiver.get_stype());
+            method_call.desugared_receiver = Some(desugared_receiver);
+
+            if method_sym.parent_sym is Some(isym: *ImplSymbol) {
+                // impl 处的 type param 和 实际类型参数的映射
+                mappings.unify(isym.target_sty, desugared_receiver.get_stype().strip_pointer());
+                // 类型定义处的 type param 和 impl 处的 type param 的映射
+                mappings.unify(isym.target_sty.type_symbol.to_sty(), isym.target_sty);
+            }
+
+            let mut params_ty = (type Vec<*SType>)::new();
+            let mut is_first = true;
+            for p in method_sym.params {
+                if is_first { is_first = false; continue; }
+                params_ty.push(mappings.subst(p.stype));
+            }
+
+            // 检查函数参数类型
+            let mut desugared_args = (type Vec<*RValue>)::new();
+            let mut j: UInt = 0;
+            while j < arg_len {
+                let fn_arg = method_call.fn_args.at(j).get_or_panic();
+                let arg = fn_arg.value;
+                let arg_ty: *SType = self.infer(arg);
+                let param_ty: *SType = *params_ty.index(j).deref();
+
+                if arg_ty.is_invalid() {
+                    self.check_value(arg, param_ty);
+                    desugared_args.push(arg);
+                } else {
+                    let k = resolve_type_cast_kind(arg_ty, param_ty);
+                    let cast = add_implicit_cast(arg, k, param_ty);
+                    desugared_args.push(cast);
+                }
+                j += 1;
+            }
+
+            method_call.desugared_args = move desugared_args;
+
+            if method_sym.return_sty is Some(rsty) {
+                let r = mappings.subst(rsty);
+                
+                return r;
+            } else {
+                return SType::sty_unit();
+            }
+        }
+        return SType::sty_invalid(method_call.expr.span());
+    }
+
+    fn check_pattern_match_value(&mut self, pmv: *PatternMatchValue) {
+        let op_sty = self.infer(pmv.operand);
+        if ensure_type_valid(op_sty, pmv.expr.span()) {
+            pmv.pattern.destructure(pmv.operand, true);
+            pmv.pattern.type_check(self as &mut TypeCheckContext);
+        }
+    }
+
+    fn check_aggregate_fields(&mut self, sty: *SType, agg_rv: *AggregateValue) {
+        let agg_sty = sty.canonical();
+        let stripped_agg_sty = strip_pointer_except_weak(agg_sty);
+
+        if stripped_agg_sty.type_symbol is struct_sym: *StructSymbol {
+
+            if agg_rv.default_value is Some(dv) {
+                self.check_value(move dv, stripped_agg_sty);
+            }
+
+            let mut mappings = TypeMapping::new();
+            mappings.unify(struct_sym.to_sty(), stripped_agg_sty);
+
+            let named_init = agg_rv.named_init;
+            for ref kv in named_init {
+                let name: String = kv.0;
+                let init: *RValue = kv.1;
+
+                if struct_sym.find_field(&name) is Some(field) {
+                    let field_sty = mappings.subst(field.stype);
+                    let init_sty = self.infer(init as *XValue);
+                    if init_sty.is_invalid() {
+                        self.check_value(init, field_sty);
+                    } else {
+                        let k = resolve_type_cast_kind(init_sty, field_sty);
+                        let cast = add_implicit_cast(init, k, field_sty);
+                        agg_rv.named_init.insert(name, cast);
+                    }
+                } else {
+                    // named_init 里面如果也保存了 Token 更好, 这里可以拿到更准确的 SourceSpan
+                    DiagnosticEngine::get().emit_name_not_found(name, init.expr_node().span());
+                }
+            }
+        }
+        else if stripped_agg_sty.type_symbol is union_sym: *UnionSymbol {
+            let named_init = agg_rv.named_init;
+            for ref kv in named_init {
+                let name: String = kv.0;
+                let init: *RValue = kv.1;
+
+                if union_sym.find_field(&name) is Some(field) {
+                    let field_sty = field.stype;
+                    let init_sty = self.infer(init as *XValue);
+                    if init_sty.is_invalid() {
+                        self.check_value(init, field_sty);
+                    } else {
+                        let k = resolve_type_cast_kind(init_sty, field_sty);
+                        let cast = add_implicit_cast(init, k, field_sty);
+                        agg_rv.named_init.insert(name, cast);
+                    }
+                } else {
+                    // named_init 里面如果也保存了 Token 更好, 这里可以拿到更准确的 SourceSpan
+                    DiagnosticEngine::get().emit_name_not_found(name, init.expr_node().span());
+                }
+            }
+        }
+        else {
+            DiagnosticEngine::get().emit_type_mismatch(sty.to_string(), f"struct or union", agg_rv.expr.span());
+        }
+
+    }
+
+    fn stype_infer_finished(&self, sty: *SType) -> Bool {
+        if sty.type_symbol is tps: *TypeParamSymbol {
+            if self.fsym is Some(func_sym) {
+                let resolve_ctx = {
+                    .entry_scope = func_sym as *ScopeSymbol,
+                    .path_scope = func_sym as *ScopeSymbol,
+                    .self_sty = None,
+                }: ResolveContext;
+                // 在当前上下文找这个名字, 恰好能找到
+                let res = self.resolver().lookup(resolve_ctx, &tps.short_name());
+                if res is Some(found) {
+                    if found as *raw Symbol as UInt == tps as *raw TypeParamSymbol as UInt {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        } else {
+            for a in sty.args.ty_args {
+                if !self.stype_infer_finished(move a) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    fn requires_unsafe_context(&self, node: *SyntaxNode) {
+        if !is_inside_unsafe_context(node) {
+            DiagnosticEngine::get().emit_requires_unsafe_context(node.span());
+        }
+    }
+
+    fn infer_deref_lvalue(&self, operand_sty: *SType, deref_lv: *DerefLValue) -> *SType {
+        let op_ty_sym = operand_sty.type_symbol;
+        let span = deref_lv.expr.span();
+
+        if op_ty_sym is type *ArcPointerSymbol ||
+            op_ty_sym is type *BorrowMutSymbol {
+            return operand_sty.args.ty_arg(0);
+        } else if op_ty_sym is type *RawPointerMutSymbol {
+            self.requires_unsafe_context(deref_lv.expr as *SyntaxNode);
+            return operand_sty.args.ty_arg(0);
+        } else if implemented_derefmut_trait(operand_sty) is Some(info) {
+            let op: *RValue = lvalue_to_rvalue(deref_lv.operand);
+            let receiver: *RValue = AddressofValue::create(span, AddressofKind::Ref, op);
+            let desugared_method = MethodCallValue::create(
+                move receiver, info.method_sym, GenericArgs::new(), (type Vec<*RValue>)::new(), info.target_sty
+            );
+            deref_lv.desugared_method = Some(move desugared_method);
+            return self.infer_deref_lvalue(info.target_sty, move deref_lv);
+        } else {
+            DiagnosticEngine::get().emit_invalid_deref_lvalue(operand_sty.to_string(), span);
+            return SType::sty_invalid(move span);
+        }
+    }
+
+    fn infer_deref_rvalue(&self, operand_sty: *SType, deref_rv: *DerefRValue) -> *SType {
+        let op_ty_sym = operand_sty.type_symbol;
+        let span = deref_rv.expr.span();
+
+        if op_ty_sym is type *ArcPointerSymbol ||
+            op_ty_sym is type *BorrowMutSymbol ||
+            op_ty_sym is type *BorrowImmutSymbol {
+            return operand_sty.args.ty_arg(0);
+        } else if op_ty_sym is type *RawPointerMutSymbol ||
+            op_ty_sym is type *RawPointerImmutSymbol {
+            self.requires_unsafe_context(deref_rv.expr as *SyntaxNode);
+            return operand_sty.args.ty_arg(0);
+        } else if implemented_deref_trait(operand_sty) is Some(info) {
+            let receiver: *RValue = AddressofValue::create(span, AddressofKind::RefMut, deref_rv.operand);
+            let desugared_method = MethodCallValue::create(
+                move receiver, info.method_sym, GenericArgs::new(), (type Vec<*RValue>)::new(), info.target_sty
+            );
+            deref_rv.desugared_method = Some(move desugared_method);
+            return self.infer_deref_rvalue(info.target_sty, move deref_rv);
+        } else {
+            DiagnosticEngine::get().emit_invalid_deref_rvalue(operand_sty.to_string(), span);
+            return SType::sty_invalid(move span);
+        }
+    }
+
+    fn check_mutability(&mut self, xvalue: *XValue) {
+        match xvalue {
+            // lvalue
+            deref_lv: *DerefLValue => {
+                let op_sty = deref_lv.operand.get_stype();
+                if op_sty.type_symbol is type *ArcPointerSymbol ||
+                    op_sty.type_symbol is type *BorrowMutSymbol ||
+                    op_sty.type_symbol is type *RawPointerMutSymbol {
+                    return;
+                } else {
+                    self.check_mutability(deref_lv.operand);
+                    return;
+                }
+            }
+            field_lv: *FieldLValue => {
+                let op_sty = field_lv.base.get_stype();
+                if op_sty.type_symbol is type *ArcPointerSymbol ||
+                    op_sty.type_symbol is type *BorrowMutSymbol ||
+                    op_sty.type_symbol is type *RawPointerMutSymbol {
+                    return;
+                } else {
+                    self.check_mutability(field_lv.base);
+                    return;
+                }
+            }
+            idx_lv: *IndexLValue => {
+                let op_sty = idx_lv.base.get_stype();
+                if op_sty.type_symbol is type *ArcPointerSymbol ||
+                    op_sty.type_symbol is type *BorrowMutSymbol ||
+                    op_sty.type_symbol is type *RawPointerMutSymbol {
+                    return;
+                } else {
+                    self.check_mutability(idx_lv.base);
+                    return;
+                }
+            }
+            tup_lv: *TupleAccessLValue => {
+                let op_sty = tup_lv.base.get_stype();
+                if op_sty.type_symbol is type *ArcPointerSymbol ||
+                    op_sty.type_symbol is type *BorrowMutSymbol ||
+                    op_sty.type_symbol is type *RawPointerMutSymbol {
+                    return;
+                } else {
+                    self.check_mutability(tup_lv.base);
+                    return;
+                }
+            }
+            local_lv: *LocalVar => {
+                if !local_lv.sym_var.is_mut() {
+                    DiagnosticEngine::get().emit_write_to_immutable_variable(local_lv.sym_var.short_name(), local_lv.expr.span());
+                }
+            }
+            static_lv: *StaticVar => {
+                if !static_lv.sym_var.is_mut() {
+                    DiagnosticEngine::get().emit_write_to_immutable_variable(static_lv.sym_var.short_name(), static_lv.expr.span());
+                }
+            }
+
+            // rvalue
+            rd_rv: *ReadValue => {
+                if !rd_rv.sym_var.is_mut() {
+                    DiagnosticEngine::get().emit_write_to_immutable_variable(rd_rv.sym_var.short_name(), rd_rv.expr.span());
+                }
+            }
+            idx_rv: *IndexRValue => {
+                let op_sty = idx_rv.base.get_stype();
+                if op_sty.type_symbol is type *ArcPointerSymbol ||
+                    op_sty.type_symbol is type *BorrowMutSymbol ||
+                    op_sty.type_symbol is type *RawPointerMutSymbol {
+                    return;
+                } else {
+                    self.check_mutability(idx_rv.base);
+                    return;
+                }
+            }
+            field_rv: *FieldRValue => {
+                let op_sty = field_rv.base.get_stype();
+                if op_sty.type_symbol is type *ArcPointerSymbol ||
+                    op_sty.type_symbol is type *BorrowMutSymbol ||
+                    op_sty.type_symbol is type *RawPointerMutSymbol {
+                    return;
+                } else {
+                    self.check_mutability(field_rv.base);
+                    return;
+                }
+            }
+            deref_rv: *DerefRValue => {
+                let op_sty = deref_rv.operand.get_stype();
+                if op_sty.type_symbol is type *ArcPointerSymbol ||
+                    op_sty.type_symbol is type *BorrowMutSymbol ||
+                    op_sty.type_symbol is type *RawPointerMutSymbol {
+                    return;
+                } else {
+                    self.check_mutability(deref_rv.operand);
+                    return;
+                }
+            }
+            tup_rv: *TupleAccessRValue => {
+                let op_sty = tup_rv.base.get_stype();
+                if op_sty.type_symbol is type *ArcPointerSymbol ||
+                    op_sty.type_symbol is type *BorrowMutSymbol ||
+                    op_sty.type_symbol is type *RawPointerMutSymbol {
+                    return;
+                } else {
+                    self.check_mutability(tup_rv.base);
+                    return;
+                }
+            }
+            qpv: *QualifiedPathValue => {
+                DiagnosticEngine::get().emit_write_to_immutable_variable(qpv.symbol.short_name(), qpv.expr.span());
+            }
+            ctx_rv: *ContextValue => {
+                self.check_mutability(ctx_rv.inner);
+            }
+            ty_asc_rv: *TypeAscriptionValue => {
+                self.check_mutability(ty_asc_rv.inner);
+            }
+            cast_rv: *CastValue => {
+                self.check_mutability(cast_rv.operand);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn lvalue_to_rvalue(xval: *XValue) -> *RValue {
+    match xval {
+        rval: *RValue => return rval;
+
+        deref_lv: *DerefLValue => {
+            let deref_rv = box {
+                .expr = deref_lv.expr,
+                .parent_node = deref_lv.parent_node,
+                .operand = lvalue_to_rvalue(deref_lv.operand),
+                .desugared_method = deref_lv.desugared_method,
+                .sty = deref_lv.sty,
+            }: DerefRValue;
+            return deref_rv as *RValue;
+        }
+        field_lv: *FieldLValue => {
+            let field_rv = box {
+                .expr = field_lv.expr,
+                .parent_node = field_lv.parent_node,
+                .base = lvalue_to_rvalue(field_lv.base),
+                .field = field_lv.field,
+                .field_resolved = field_lv.field_resolved,
+                .sty = field_lv.sty,
+            }: FieldRValue;
+            return field_rv as *RValue;
+        }
+        idx_lv: *IndexLValue => {
+            let idx_rv = box {
+                .expr = idx_lv.expr,
+                .parent_node = idx_lv.parent_node,
+                .base = lvalue_to_rvalue(idx_lv.base),
+                .index = idx_lv.index,
+                .sty = idx_lv.sty,
+            }: IndexRValue;
+            return idx_rv as *RValue;
+        }
+        tup_lv: *TupleAccessLValue => {
+            let tup_rv = box {
+                .expr = tup_lv.expr,
+                .parent_node = tup_lv.parent_node,
+                .base = lvalue_to_rvalue(tup_lv.base),
+                .index = tup_lv.index,
+                .sty = tup_lv.sty,
+            }: TupleAccessRValue;
+            return tup_rv as *RValue;
+        }
+        local_lv: *LocalVar => {
+            let read_rv = box {
+                .expr = local_lv.expr,
+                .parent_node = local_lv.parent_node,
+                .sym_var = local_lv.sym_var,
+                .sty = local_lv.sym_var.stype,
+            }: ReadValue;
+            return read_rv as *RValue;
+        }
+        static_lv: *StaticVar => {
+            let read_rv = box {
+                .expr = static_lv.expr,
+                .parent_node = static_lv.parent_node,
+                .sym_var = static_lv.sym_var,
+                .sty = static_lv.sym_var.stype,
+            }: ReadValue;
+            return read_rv as *RValue;
+        }
+        _ =>  panic;
+    }
+}

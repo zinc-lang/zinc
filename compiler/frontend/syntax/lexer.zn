@@ -1,0 +1,693 @@
+use super::token::{LiteralKind, KeywordKind, PunctuationKind, TokenKind, Token};
+use super::super::source_code::{SourceSpan, SourceLoc, SourceManager};
+use super::super::diagnostic::DiagnosticEngine;
+
+// 主要区别在碰到 >= 这种字符的时候，
+// Greedy 模式返回 GtEq 一个 token
+// Lazy 模式返回 Gt, Eq 两个 token
+pub enum LexerMode {
+    Greedy, // 匹配越长越好
+    Lazy, // 匹配越短越好
+}
+
+pub struct Lexer {
+    file_id: UInt,
+    content: String,
+    cur_index: UInt,
+
+    token_buffer: Vec<Token>,
+}
+
+impl Lexer {
+    pub fn new(file_id: UInt, content: String) -> *Lexer {
+        return box {
+            .file_id = file_id,
+            .content = move content,
+            .cur_index = 0,
+            .token_buffer = (type Vec<Token>)::with_capacity(32),
+        }: Lexer;
+    }
+
+    pub fn next(&mut self, mode: LexerMode) -> Token {
+        if self.token_buffer.is_empty() {
+            let tok = self.do_next(mode);
+            self.token_buffer.push(move tok);
+        }
+
+        let front = self.token_buffer.pop_front();
+        if front is Some(t) {
+            return t;
+        } else {
+            return Token::eof();
+        }
+    }
+
+    pub fn next(&mut self) -> Token {
+        return self.next(LexerMode::Greedy);
+    }
+
+    pub fn peek(&mut self, n: UInt, mode: LexerMode) -> Token {
+        while self.token_buffer.len() <= n {
+            let tok = self.do_next(mode);
+            self.token_buffer.push(move tok);
+        }
+        if n < self.token_buffer.len() {
+            return *self.token_buffer.index(n).deref();
+        } else {
+            return Token::eof();
+        }
+    }
+
+    pub fn peek(&mut self, n: UInt) -> Token {
+        return self.peek(n, LexerMode::Greedy);
+    }
+
+    fn do_next(&mut self, mode: LexerMode) -> Token {
+        self.skip_comments();
+        if self.cur_index >= self.content.len() {
+            return Token::eof();
+        }
+        // 这里是核心逻辑，负责从 content 中解析出一个 token，并将其放入 token_buffer 中
+        let mut begin: UInt = self.cur_index;
+        let ch = self.peek_byte(0);
+        let next = self.peek_byte(1);
+
+        if ch >= b'0' && ch <= b'9' {
+            return self.lex_number();
+        } else if ch == b'`' { // raw ident
+            return self.lex_raw_ident();
+        } else if ch == b'\'' {
+            let opt_char_lit: Option<Token> = self.try_lex_char_literal();
+            if opt_char_lit is Some(token) {
+                return token;
+            } else {
+                // 不是合法的字符字面量，可能是生命周期
+                let opt_lifetime = self.try_lex_lifetime();
+                if opt_lifetime is Some(token) {
+                    return token;
+                } else {
+                    self.cur_index += 1;
+                    DiagnosticEngine::get().emit_invalid_char_or_lifetime(
+                        self.span_by_index(begin, self.cur_index));
+                    return Token::invalid(self.span_by_index(begin, self.cur_index));
+                }
+            }
+        } else if ch == b'b' && next == b'\'' {
+            self.cur_index += 1; // 跳过 b
+
+            let opt_char_lit: Option<Token> = self.try_lex_char_literal();
+            if opt_char_lit is Some(mut token) {
+                token.token_kind = TokenKind::Literal(LiteralKind::LIT_BYTE);
+                return token;
+            } else {
+                self.cur_index += 1;
+                DiagnosticEngine::get().emit_invalid_char_or_lifetime(
+                    self.span_by_index(begin, self.cur_index));
+                return Token::invalid(self.span_by_index(begin, self.cur_index));
+            }
+        } else if ch == 34 { // 双引号 '"', 这么写是因为编辑器高亮功能有 bug
+            return self.lex_string_literal();
+        } else if ch == b'r' && next == 34 {
+            self.cur_index += 1;
+            DiagnosticEngine::get().emit_unimplemented(
+                self.span_by_index(begin, self.cur_index),
+                "raw string literal");
+        } else if ch == b'r' && next == b'#' {
+            self.cur_index += 1;
+            DiagnosticEngine::get().emit_unimplemented(
+                self.span_by_index(begin, self.cur_index),
+                "raw string literal");
+        } else if ch == b'c' && next == 34 {
+            self.cur_index += 1;
+            DiagnosticEngine::get().emit_unimplemented(
+                self.span_by_index(begin, self.cur_index),
+                "C string literal");
+        } else if ch == b'f' && next == 34 {
+            // string interpolation
+            self.cur_index += 1;
+            let mut token = self.lex_string_literal();
+            token.token_kind = TokenKind::Literal(LiteralKind::LIT_STR_INTERPOLATION);
+            return token;
+        } else if ch == b'_' || (ch >= b'a' && ch <= b'z') || (ch >= b'A' && ch <= b'Z') {
+            return self.lex_ident();
+        } else {
+            // 其他符号，可能是运算符或者分隔符
+            return self.lex_punctuation(mode);
+        }
+        return Token::invalid(self.span_by_index(begin, self.cur_index));
+    }
+
+    fn peek_byte(&mut self, n: UInt) -> UInt8 {
+        if self.cur_index + n < self.content.len() {
+            return self.content.index(self.cur_index + n);
+        } else {
+            return 0;
+        }
+    }
+
+    fn skip_comments(&mut self) {
+        // 跳过注释的逻辑
+        let mut retry = true;
+        while self.cur_index < self.content.len() && retry {
+            retry = false;
+            let mut ch = self.peek_byte(0);
+
+            while is_whitespace(ch) && ch != 0 {
+                self.cur_index += 1;
+                ch = self.peek_byte(0);
+                retry = true;
+            }
+            
+            let mut next = self.peek_byte(1);
+            if ch == b'/' && next == b'/' {
+                // 单行注释，跳过到行尾
+                while ch != b'\n' && ch != 0 {
+                    self.cur_index += 1;
+                    ch = self.peek_byte(0);
+                    next = self.peek_byte(1);
+                }
+                retry = true;
+            } else if ch == b'/' && next == b'*' {
+                // 多行注释，跳过到 */ 结束
+                self.cur_index += 1; // 跳过 /*
+                do {
+                    self.cur_index += 1;
+                    ch = self.peek_byte(0);
+                    next = self.peek_byte(1);
+                } while (!(ch == b'*' && next == b'/') && ch != 0 && next != 0);
+                self.cur_index += 2;
+                retry = true;
+            }
+        }
+    }
+
+    fn try_lex_char_literal(&mut self) -> Option<Token> {
+        let begin = self.cur_index;
+        let mut ch: UInt8 = self.peek_byte(1);
+        let mut must_be_char_lit = false;
+        if ch > 0x7F {
+            if (ch.bit_and(0b11100000_u8) == 0b11000000_u8) { // 2 字节
+                self.cur_index += 3;
+            } else if (ch.bit_and(0b11110000_u8) == 0b11100000_u8) { // 3 字节
+                self.cur_index += 4;
+            } else if (ch.bit_and(0b11111000_u8) == 0b11110000_u8) { // 4 字节
+                self.cur_index += 5;
+            } 
+        }
+        else if ch == b'\\' {
+            // 转义字符，跳过转义符和后面的字符
+            must_be_char_lit = true;
+            let next = self.peek_byte(2);
+            if (next == b't' || next == b'r' || next == b'n' || next == b'0' || next == b'\\' || next == b'\'') {
+                self.cur_index += 3;
+            } else {
+                let span = self.span_by_index(begin, (self.cur_index + 2));
+                DiagnosticEngine::get().emit_invalid_char_or_lifetime(span);
+                return Some(Token::invalid(span));
+            }
+        } else {
+            self.cur_index += 2;
+            if !(ch == b'_' || (ch >= b'a' && ch <= b'z') || (ch >= b'A' && ch <= b'Z')) {
+                must_be_char_lit = true;
+            }
+        }
+
+        if must_be_char_lit {
+            ch = self.peek_byte(0);
+            if ch == b'\'' {
+                self.cur_index += 1;
+                let span = self.span_by_index(begin, self.cur_index);
+                let token = {
+                    .token_kind = TokenKind::Literal(LiteralKind::LIT_CHAR),
+                    .source_span = span,
+                }: Token;
+                return Some(token);
+            } else {
+                let span = self.span_by_index(begin, self.cur_index);
+                DiagnosticEngine::get().emit_invalid_char_or_lifetime(span);
+                return Some(Token::invalid(span));
+            }
+        }
+
+        if self.peek_byte(0) == b'\'' {
+            self.cur_index += 1;
+            let span = self.span_by_index(begin, self.cur_index);
+            let token = {
+                .token_kind = TokenKind::Literal(LiteralKind::LIT_CHAR),
+                .source_span = span,
+            }: Token;
+            return Some(token);
+        }
+
+        self.cur_index = begin; // 回退
+        return None;
+    }
+
+    fn try_lex_lifetime(&mut self) -> Option<Token> {
+        let begin = self.cur_index;
+        let mut ident_str = String::new();
+
+        let mut ch = self.peek_byte(1);
+        if (ch == b'_' || (ch >= b'a' && ch <= b'z') || (ch >= b'A' && ch <= b'Z')) {
+            self.cur_index += 2;
+
+            ident_str.push(ch);
+            ch = self.peek_byte(0);
+            while ch == b'_' || (ch >= b'a' && ch <= b'z') || (ch >= b'A' && ch <= b'Z') || (ch >= b'0' && ch <= b'9') {
+                self.cur_index += 1;
+                ident_str.push(ch);
+                ch = self.peek_byte(0);
+            }
+
+            let span = self.span_by_index(begin, self.cur_index);
+            let token = {
+                .token_kind = TokenKind::Lifetime,
+                .source_span = span,
+            }: Token;
+
+            let ident: Str = ident_str.as_str().deref();
+            let keyword_kind = KeywordKind::from_str(ident);
+            if keyword_kind is Some(k) && !(k is KeywordKind::KW_STATIC) {
+                DiagnosticEngine::get().emit_keyword_as_lifetime(span, ident);
+            }
+
+            return Some(token);
+        }
+        return None;
+    }
+
+    fn lex_number(&mut self) -> Token {
+        let begin = self.cur_index;
+        let mut ch = self.peek_byte(0);
+        
+        if ch == b'-' {
+            self.cur_index += 1;
+            ch = self.peek_byte(0);
+        }
+
+        // 处理 0b 0o 0x 前缀
+        if ch == b'0' {
+            let next = self.peek_byte(1);
+            if next == b'b' || next == b'B' {
+                self.cur_index += 2;
+                ch = self.peek_byte(0);
+                while ch == b'0' || ch == b'1' || ch == b'_' {
+                    self.cur_index += 1;
+                    ch = self.peek_byte(0);
+                }
+            } else if next == b'o' || next == b'O' {
+                self.cur_index += 2;
+                ch = self.peek_byte(0);
+                while (ch >= b'0' && ch <= b'7') || ch == b'_' {
+                    self.cur_index += 1;
+                    ch = self.peek_byte(0);
+                }
+            } else if next == b'x' || next == b'X' {
+                self.cur_index += 2;
+                ch = self.peek_byte(0);
+                while (ch >= b'0' && ch <= b'9') ||
+                      (ch >= b'a' && ch <= b'f') ||
+                      (ch >= b'A' && ch <= b'F') ||
+                      ch == b'_' {
+                    self.cur_index += 1;
+                    ch = self.peek_byte(0);
+                }
+            }
+        }
+
+        while (ch >= b'0' && ch <= b'9') || ch == b'_' {
+            self.cur_index += 1;
+            ch = self.peek_byte(0);
+        }
+        ch = self.peek_byte(0);
+        if ch == b'i' || ch == b'u' {
+            self.cur_index += 1;
+            let mut suffix: UInt64 = 0;
+            ch = self.peek_byte(0);
+            while (ch >= b'0' && ch <= b'9') {
+                suffix = suffix * 10 + (ch as UInt64 - b'0' as UInt64);
+                self.cur_index += 1;
+                ch = self.peek_byte(0);
+            }
+            let span = self.span_by_index(begin, self.cur_index);
+            if suffix != 0 && suffix != 8 && suffix != 16 && suffix != 32 && suffix != 64 {
+                DiagnosticEngine::get().emit_illegal_int_suffix(span, suffix);
+            }
+            let token = {
+                .token_kind = TokenKind::Literal(LiteralKind::LIT_INT),
+                .source_span = span,
+            }: Token;
+            return token;
+        } else if ch == b'.' {
+            ch = self.peek_byte(1);
+            // 看后面是不是小数
+            if ch < b'0' || ch > b'9' {
+                // 后面不是小数
+                let span = self.span_by_index(begin, self.cur_index);
+                let token = {
+                        .token_kind = TokenKind::Literal(LiteralKind::LIT_INT),
+                        .source_span = span,
+                    }: Token;
+                return token;
+            }
+
+            self.cur_index += 1;
+            while (ch >= b'0' && ch <= b'9') || ch == b'_' {
+                self.cur_index += 1;
+                ch = self.peek_byte(0);
+            }
+            ch = self.peek_byte(0);
+            if ch == b'f' {
+                self.cur_index += 1;
+                let mut suffix: UInt64 = 0;
+                ch = self.peek_byte(0);
+                while (ch >= b'0' && ch <= b'9') {
+                    suffix = suffix * 10 + (ch as UInt64 - b'0' as UInt64);
+                    self.cur_index += 1;
+                    ch = self.peek_byte(0);
+                }
+                if suffix != 0 && suffix != 32 && suffix != 64 {
+                    let span = self.span_by_index(begin, self.cur_index);
+                    DiagnosticEngine::get().emit_invalid_float_suffix(span, suffix);
+                }
+            }
+            let span = self.span_by_index(begin, self.cur_index);
+            let token = {
+                .token_kind = TokenKind::Literal(LiteralKind::LIT_FLOAT),
+                .source_span = span,
+            }: Token;
+            return token;
+        }
+        let span = self.span_by_index(begin, self.cur_index);
+        let token = {
+                .token_kind = TokenKind::Literal(LiteralKind::LIT_INT),
+                .source_span = span,
+            }: Token;
+        return token;
+    }
+
+    fn lex_raw_ident(&mut self) -> Token {
+        let begin = self.cur_index;
+        self.cur_index += 1; // 跳过开头的反引号 `
+        let mut ch = self.peek_byte(0);
+        while ch != b'`' && ch != 0 {
+            self.cur_index += 1;
+            ch = self.peek_byte(0);
+        }
+        self.cur_index += 1; // 跳过结尾的反引号 `
+        let span = self.span_by_index(begin, self.cur_index);
+        let token = {
+            .token_kind = TokenKind::Identifier,
+            .source_span = span,
+        }: Token;
+        return token;
+    }
+
+    fn lex_string_literal(&mut self) -> Token {
+        let begin = self.cur_index;
+        self.cur_index += 1; // 跳过开头的双引号 "
+        let mut ch = self.peek_byte(0);
+        while ch != 34 && ch != 0 { // 34 是双引号 "
+            if ch == b'\\' {
+                self.cur_index += 1; // 跳过转义符
+                ch = self.peek_byte(0);
+                if ch != b't' && ch != b'r' && ch != b'n' && ch != b'0' && ch != b'\\' && ch != 34 {
+                    let span = self.span_by_index((self.cur_index-1), (self.cur_index+1));
+                    DiagnosticEngine::get().emit_invalid_escape(span);
+                }
+                self.cur_index += 1; // 跳过转义后的字符
+                ch = self.peek_byte(0);
+            } else {
+                self.cur_index += 1;
+                ch = self.peek_byte(0);
+            }
+        }
+        if ch == 34 {
+            self.cur_index += 1; // 跳过结尾的双引号 "
+            let span = self.span_by_index(begin, self.cur_index);
+            let token = {
+                .token_kind = TokenKind::Literal(LiteralKind::LIT_STR),
+                .source_span = span,
+            }: Token;
+            return token;
+        }
+        return Token::invalid(self.span_by_index(begin, self.cur_index));
+    }
+
+    fn lex_ident(&mut self) -> Token {
+        let begin = self.cur_index;
+        let mut ch = self.peek_byte(0);
+        let mut ident_str = String::new();
+        while ch == b'_' || (ch >= b'a' && ch <= b'z') || (ch >= b'A' && ch <= b'Z') || (ch >= b'0' && ch <= b'9') {
+            ident_str.push(ch);
+            self.cur_index += 1;
+            ch = self.peek_byte(0);
+        }
+        let span = self.span_by_index(begin, self.cur_index);
+        let ident: Str = ident_str.as_str().deref();
+        let keyword_kind = KeywordKind::from_str(ident);
+        // 这里需要判断一下是否是关键字
+        if keyword_kind is Some(k) {
+            let token = {
+                .token_kind = TokenKind::Keyword(k),
+                .source_span = span,
+            }: Token;
+            return token;
+        } else {
+            let token = {
+                .token_kind = TokenKind::Identifier,
+                .source_span = span,
+            }: Token;
+            return token;
+        }
+    }
+
+    fn lex_punctuation(&mut self, mode: LexerMode) -> Token {
+        let begin = self.cur_index;
+        let ch = self.peek_byte(0);
+        let next = self.peek_byte(1);
+        let next2 = self.peek_byte(2);
+
+        let mut token_kind: TokenKind = TokenKind::Invalid;
+        if ch == b';' {
+            token_kind = TokenKind::Punctuation(PunctuationKind::Semi);
+            self.cur_index += 1;
+        }
+        else if ch == b',' {
+            token_kind = TokenKind::Punctuation(PunctuationKind::Comma);
+            self.cur_index += 1;
+        }
+        else if ch == b'(' {
+            token_kind = TokenKind::Punctuation(PunctuationKind::LParen);
+            self.cur_index += 1;
+        }
+        else if ch == b')' {
+            token_kind = TokenKind::Punctuation(PunctuationKind::RParen);
+            self.cur_index += 1;
+        }
+        else if ch == b'{' {
+            token_kind = TokenKind::Punctuation(PunctuationKind::LBrace);
+            self.cur_index += 1;
+        }
+        else if ch == b'}' {
+            token_kind = TokenKind::Punctuation(PunctuationKind::RBrace);
+            self.cur_index += 1;
+        }
+        else if ch == b'[' {
+            token_kind = TokenKind::Punctuation(PunctuationKind::LBracket);
+            self.cur_index += 1;
+        }
+        else if ch == b']' {
+            token_kind = TokenKind::Punctuation(PunctuationKind::RBracket);
+            self.cur_index += 1;
+        }
+        else if ch == b'.' {
+            if next == b'.' && next2 == b'<' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::RangeOpen);
+                self.cur_index += 3;
+            }
+            else if next == b'.' && next2 == b'=' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::RangeClose);
+                self.cur_index += 3;
+            }
+            else if next == b'.' && next2 == b'.' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::Ellipsis);
+                self.cur_index += 3;
+            }
+            else {
+                token_kind = TokenKind::Punctuation(PunctuationKind::Dot);
+                self.cur_index += 1;
+            }
+        }
+        else if ch == b'@' {
+            token_kind = TokenKind::Punctuation(PunctuationKind::At);
+            self.cur_index += 1;
+        }
+        else if ch == b'#' {
+            token_kind = TokenKind::Punctuation(PunctuationKind::Pound);
+            self.cur_index += 1;
+        }
+        else if ch == b'~' {
+            token_kind = TokenKind::Punctuation(PunctuationKind::Tilde);
+            self.cur_index += 1;
+        }
+        else if ch == b'?' {
+            token_kind = TokenKind::Punctuation(PunctuationKind::Question);
+            self.cur_index += 1;
+        }
+        else if ch == b':' {
+            if next == b':' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::ColonColon);
+                self.cur_index += 2;
+            } else {
+                token_kind = TokenKind::Punctuation(PunctuationKind::Colon);
+                self.cur_index += 1;
+            }
+        }
+        else if ch == b'=' {
+            if next == b'=' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::EqEq);
+                self.cur_index += 2;
+            } else if next == b'>' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::FatArrow);
+                self.cur_index += 2;
+            } else {
+                token_kind = TokenKind::Punctuation(PunctuationKind::Assign);
+                self.cur_index += 1;
+            }
+        }
+        else if ch == b'!' {
+            if next == b'=' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::NotEq);
+                self.cur_index += 2;
+            } else {
+                token_kind = TokenKind::Punctuation(PunctuationKind::Bang);
+                self.cur_index += 1;
+            }
+        }
+        else if ch == b'<' {
+            if next == b'=' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::LtEq);
+                self.cur_index += 2;
+            } else {
+                token_kind = TokenKind::Punctuation(PunctuationKind::Lt);
+                self.cur_index += 1;
+            }
+        }
+        else if ch == b'>' {
+            if next == b'=' && mode == LexerMode::Greedy {
+                token_kind = TokenKind::Punctuation(PunctuationKind::GtEq);
+                self.cur_index += 2;
+            } else {
+                token_kind = TokenKind::Punctuation(PunctuationKind::Gt);
+                self.cur_index += 1;
+            }
+        }
+        else if ch == b'-' {
+            if next == b'=' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::SubAssign);
+                self.cur_index += 2;
+            } else if next == b'>' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::ThinArrow);
+                self.cur_index += 2;
+            } else {
+                token_kind = TokenKind::Punctuation(PunctuationKind::Minus);
+                self.cur_index += 1;
+            }
+        }
+        else if ch == b'&' {
+            // 注意这种情况需要用户手动加空格：let x = &&y; 这里的 && 在词法阶段被解析为逻辑与运算符
+            // 需要把代码改造为 let x = & &y; 这里的 & 是借用运算符
+            if next == b'&' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::AndAnd);
+                self.cur_index += 2;
+            } else {
+                token_kind = TokenKind::Punctuation(PunctuationKind::Borrow);
+                self.cur_index += 1;
+            }
+        }
+        else if ch == b'|' {
+            if next == b'|' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::OrOr);
+                self.cur_index += 2;
+            } else {
+                token_kind = TokenKind::Invalid;
+                self.cur_index += 1;
+            }
+        }
+        else if ch == b'+' {
+            if next == b'=' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::AddAssign);
+                self.cur_index += 2;
+            } else {
+                token_kind = TokenKind::Punctuation(PunctuationKind::Plus);
+                self.cur_index += 1;
+            }
+        }
+        else if ch == b'*' {
+            if next == b'=' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::MulAssign);
+                self.cur_index += 2;
+            } else {
+                token_kind = TokenKind::Punctuation(PunctuationKind::Star);
+                self.cur_index += 1;
+            }
+        }
+        else if ch == b'/' {
+            if next == b'=' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::DivAssign);
+                self.cur_index += 2;
+            } else {
+                token_kind = TokenKind::Punctuation(PunctuationKind::Div);
+                self.cur_index += 1;
+            }
+        }
+        else if ch == b'%' {
+            if next == b'=' {
+                token_kind = TokenKind::Punctuation(PunctuationKind::PercentAssign);
+                self.cur_index += 2;
+            } else {
+                token_kind = TokenKind::Punctuation(PunctuationKind::Percent);
+                self.cur_index += 1;
+            }
+        }
+        else {
+            token_kind = TokenKind::Invalid;
+            self.cur_index += 1;
+        }
+
+        let span = self.span_by_index(begin, self.cur_index);
+        let token = {
+            .token_kind = token_kind,
+            .source_span = span,
+        }: Token;
+        return token;
+    }
+
+    fn span_by_index(&self, start: UInt, end: UInt) -> SourceSpan {
+        let start_loc: SourceLoc = {
+            .file_id = self.file_id,
+            .offset = start,
+        };
+        let end_loc: SourceLoc = {
+            .file_id = self.file_id,
+            .offset = end,
+        };
+        return {
+            .start = start_loc,
+            .end = end_loc,
+        }: SourceSpan;
+    }
+
+    fn cur_loc(&self) -> SourceLoc {
+        return {
+            .file_id = self.file_id,
+            .offset = self.cur_index,
+        }: SourceLoc;
+    }
+}
+
+fn is_whitespace(ch: UInt8) -> Bool {
+    // todo 需要支持更多的 Unicode 空白字符 '\x0B' '\x0C' '\x85'
+    return ch == b' ' || ch == b'\t' || ch == b'\n' || ch == b'\r';
+}

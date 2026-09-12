@@ -1,0 +1,637 @@
+use super::super::source_code::{SourceSpan, SourceManager};
+use std::cmp::{Eq, PartialEq};
+use std::primitives::string::ToString;
+
+pub enum KeywordKind {
+    KW_AS,
+    KW_ASM, // asm, 新增
+    KW_ASYNC,
+    KW_AWAIT,
+    KW_BREAK,
+    KW_BOX,
+    KW_CONST,
+    KW_CONTINUE,
+    KW_DO,  // do-while loop
+    KW_ELSE,
+    KW_ENUM,
+    KW_EXPORT, // 新增 export
+    KW_EXTERN,
+    KW_FINAL,
+    KW_FALSE,
+    KW_FN_LOWER, // fn
+    KW_FN_UPPER, // Fn, 没有 FnOnce
+    KW_FN_UPPER_MUT, // FnMut
+    KW_FOR,
+    KW_GOTO, // goto, 新增
+    KW_IF,
+    KW_IMPL,
+    KW_IMPORT, // import, 新增, 替代 extern crate
+    KW_IN,
+    KW_INLINE, // inline, 新增
+    KW_IS, // is, 新增
+    KW_LET,
+    KW_MACRO,
+    KW_MATCH,
+    KW_MOD,
+    KW_MOVE,
+    KW_MUT,
+    KW_OUT, // out, 新增, 预留
+    KW_OVERRIDE, // override, 新增
+    KW_PANIC, // panic, 新增
+    KW_PUB,
+    KW_RAW, // raw, 新增
+    KW_REF,
+    KW_RETURN,
+    KW_REUSE, // reuse, 新增
+    KW_SEALED, // sealed, 新增
+    KW_SELF_LOWER,
+    KW_SELF_UPPER,
+    KW_STATIC,
+    KW_STRUCT,
+    KW_SUPER,
+    KW_THEN, // then, 新增 if-then-else 表达式
+    KW_TRAIT,
+    KW_TRUE,
+    KW_TYPE,
+    KW_UNION,
+    KW_UNSAFE,
+    KW_USE,
+    KW_VIRTUAL,
+    KW_WEAK, // weak, 新增
+    KW_WHERE,
+    KW_WHILE,
+    KW_YIELD,
+}
+
+impl PartialEq for KeywordKind {
+    fn eq(&self, other: &Self) -> Bool {
+        return *self as UInt == *other as UInt;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl Eq for KeywordKind {}
+
+pub enum LiteralKind {
+    LIT_CHAR,
+    LIT_STR,
+    LIT_STR_INTERPOLATION,
+    LIT_BYTE,
+    LIT_INT,
+    LIT_FLOAT,
+}
+
+impl PartialEq for LiteralKind {
+    fn eq(&self, other: &Self) -> Bool {
+        return *self as UInt == *other as UInt;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl Eq for LiteralKind {}
+
+pub enum PunctuationKind {
+    Semi, /// `;`
+    Comma, /// `,`
+    Dot, /// `.`
+    LParen, /// `(`
+    RParen, /// `)`
+    LBrace, /// `{`
+    RBrace, /// `}`
+    LBracket, /// `[`
+    RBracket, /// `]`
+    At, /// `@`
+    Pound, /// `#`
+    Tilde, /// `~`
+    Question, /// `?`
+    Colon, /// `:`
+    Dollar, /// `$`
+    Assign, /// `=`
+    Bang, /// `!`
+    Lt, /// `<`
+    Gt, /// `>`
+    Minus, /// `-`
+    Plus, /// `+`
+    Star, /// `*`
+    Div, /// `/`
+    Percent, /// `%`
+    Borrow, /// `&`, `&mut`, `&raw`
+
+    NotEq, /// `!=`
+    EqEq, /// `==`
+    LtEq, /// `<=`
+    GtEq, /// `>=`
+    AndAnd, /// `&&`
+    OrOr, /// `||`
+    AddAssign, /// `+=`
+    SubAssign, /// `-=`
+    MulAssign, /// `*=`
+    DivAssign, /// `/=`
+    PercentAssign, /// `%=`
+    ThinArrow, /// `->`
+    FatArrow, /// `=>`
+    ColonColon, /// `::`
+    RangeOpen, /// `..<`
+    RangeClose, /// `..=`
+    Ellipsis, /// `...`
+}
+
+impl PartialEq for PunctuationKind {
+    fn eq(&self, other: &Self) -> Bool {
+        return *self as UInt == *other as UInt;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl Eq for PunctuationKind {}
+
+pub enum TokenKind {
+    Invalid,
+    EndOfFile,
+    Comment,
+    Identifier,
+    Lifetime,
+    Keyword(KeywordKind),
+    Literal(LiteralKind),
+    Punctuation(PunctuationKind),
+}
+
+impl PartialEq for TokenKind {
+    fn eq(&self, other: &Self) -> Bool {
+        // todo: tuple 模式有 bug, 按道理应该这样写 match(self, other) { ... }
+        if self is TokenKind::Keyword(k1) && other is TokenKind::Keyword(k2) {
+            return k1.eq(&k2);
+        }
+        if self is TokenKind::Literal(l1) && other is TokenKind::Literal(l2) {
+            return l1.eq(&l2);
+        }
+        if self is TokenKind::Punctuation(p1) && other is TokenKind::Punctuation(p2) {
+            return p1.eq(&p2);
+        }
+        return *self as UInt == *other as UInt;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl Eq for TokenKind {}
+
+pub struct Token {
+    pub source_span: SourceSpan,
+    pub token_kind: TokenKind,
+}
+
+impl Token {
+    pub fn raw_str(&self) -> String {
+        if self.token_kind is TokenKind::Invalid {
+            return f"<invalid>";
+        }
+        else if self.token_kind is TokenKind::EndOfFile {
+            return f"<eof>";
+        }
+        else if self.token_kind is TokenKind::Comment {
+            return f"<comment>";
+        }
+        else if self.token_kind is TokenKind::Keyword(k) {
+            return k.to_string();
+        }
+        else if self.token_kind is TokenKind::Literal(_) {
+            return SourceManager::get().source_piece_of(self.source_span);
+        }
+        else if self.token_kind is TokenKind::Punctuation(p) {
+            return p.to_string();
+        }
+        else {
+            return SourceManager::get().source_piece_of(self.source_span);
+        }
+    }
+
+    pub fn span(&self) -> SourceSpan {
+        return self.source_span;
+    }
+
+    pub fn eof() -> Token {
+        return {
+            .source_span = SourceSpan::empty(),
+            .token_kind = TokenKind::EndOfFile,
+        }: Token;
+    }
+
+    pub fn invalid(span: SourceSpan) -> Token {
+        return {
+            .source_span = span,
+            .token_kind = TokenKind::Invalid,
+        }: Token;
+    }
+
+    pub fn is_invalid(&self) -> Bool {
+        return self.token_kind is TokenKind::Invalid;
+    }
+
+    pub fn is_lifetime(&self) -> Bool {
+        return self.token_kind is TokenKind::Lifetime;
+    }
+}
+
+impl PartialEq for Token {
+    fn eq(&self, other: &Self) -> Bool {
+        return self.source_span.eq(&other.source_span) && self.token_kind.eq(&other.token_kind);
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl Eq for Token {}
+
+impl ToString for KeywordKind {
+    fn to_string_inplace(&self, buf: &mut String) {
+        match self {
+            KeywordKind::KW_AS => buf.push_str("as");
+            KeywordKind::KW_ASM => buf.push_str("asm");
+            KeywordKind::KW_ASYNC => buf.push_str("async");
+            KeywordKind::KW_AWAIT => buf.push_str("await");
+            KeywordKind::KW_BREAK => buf.push_str("break");
+            KeywordKind::KW_BOX => buf.push_str("box");
+            KeywordKind::KW_CONST => buf.push_str("const");
+            KeywordKind::KW_CONTINUE => buf.push_str("continue");
+            KeywordKind::KW_DO => buf.push_str("do");
+            KeywordKind::KW_ELSE => buf.push_str("else");
+            KeywordKind::KW_ENUM => buf.push_str("enum");
+            KeywordKind::KW_EXPORT => buf.push_str("export");
+            KeywordKind::KW_EXTERN => buf.push_str("extern");
+            KeywordKind::KW_FINAL => buf.push_str("final");
+            KeywordKind::KW_FALSE => buf.push_str("false");
+            KeywordKind::KW_FN_LOWER => buf.push_str("fn");
+            KeywordKind::KW_FN_UPPER => buf.push_str("Fn");
+            KeywordKind::KW_FN_UPPER_MUT => buf.push_str("FnMut");
+            KeywordKind::KW_FOR => buf.push_str("for");
+            KeywordKind::KW_GOTO => buf.push_str("goto");
+            KeywordKind::KW_IF => buf.push_str("if");
+            KeywordKind::KW_IMPL => buf.push_str("impl");
+            KeywordKind::KW_IMPORT => buf.push_str("import");
+            KeywordKind::KW_IN => buf.push_str("in");
+            KeywordKind::KW_INLINE => buf.push_str("inline");
+            KeywordKind::KW_IS => buf.push_str("is");
+            KeywordKind::KW_LET => buf.push_str("let");
+            KeywordKind::KW_MACRO => buf.push_str("macro");
+            KeywordKind::KW_MATCH => buf.push_str("match");
+            KeywordKind::KW_MOD => buf.push_str("mod");
+            KeywordKind::KW_MOVE => buf.push_str("move");
+            KeywordKind::KW_MUT => buf.push_str("mut");
+            KeywordKind::KW_OUT => buf.push_str("out");
+            KeywordKind::KW_OVERRIDE => buf.push_str("override");
+            KeywordKind::KW_PANIC => buf.push_str("panic");
+            KeywordKind::KW_PUB => buf.push_str("pub");
+            KeywordKind::KW_RAW => buf.push_str("raw");
+            KeywordKind::KW_REF => buf.push_str("ref");
+            KeywordKind::KW_RETURN => buf.push_str("return");
+            KeywordKind::KW_REUSE => buf.push_str("reuse");
+            KeywordKind::KW_SEALED => buf.push_str("sealed");
+            KeywordKind::KW_SELF_LOWER => buf.push_str("self");
+            KeywordKind::KW_SELF_UPPER => buf.push_str("Self");
+            KeywordKind::KW_STATIC => buf.push_str("static");
+            KeywordKind::KW_STRUCT => buf.push_str("struct");
+            KeywordKind::KW_SUPER => buf.push_str("super");
+            KeywordKind::KW_THEN => buf.push_str("then");
+            KeywordKind::KW_TRAIT => buf.push_str("trait");
+            KeywordKind::KW_TRUE => buf.push_str("true");
+            KeywordKind::KW_TYPE => buf.push_str("type");
+            KeywordKind::KW_UNION => buf.push_str("union");
+            KeywordKind::KW_UNSAFE => buf.push_str("unsafe");
+            KeywordKind::KW_USE => buf.push_str("use");
+            KeywordKind::KW_VIRTUAL => buf.push_str("virtual");
+            KeywordKind::KW_WEAK => buf.push_str("weak");
+            KeywordKind::KW_WHERE => buf.push_str("where");
+            KeywordKind::KW_WHILE => buf.push_str("while");
+            KeywordKind::KW_YIELD => buf.push_str("yield");
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl ToString for LiteralKind {
+    fn to_string_inplace(&self, buf: &mut String) {
+        match self {
+            LiteralKind::LIT_CHAR => buf.push_str("char literal");
+            LiteralKind::LIT_STR => buf.push_str("string literal");
+            LiteralKind::LIT_STR_INTERPOLATION => buf.push_str("string interpolation literal");
+            LiteralKind::LIT_BYTE => buf.push_str("byte literal");
+            LiteralKind::LIT_INT => buf.push_str("integer literal");
+            LiteralKind::LIT_FLOAT => buf.push_str("float literal");
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl ToString for PunctuationKind {
+    fn to_string_inplace(&self, buf: &mut String) {
+        match self {
+            PunctuationKind::Semi => buf.push_str(";");
+            PunctuationKind::Comma => buf.push_str(",");
+            PunctuationKind::Dot => buf.push_str(".");
+            PunctuationKind::LParen => buf.push_str("(");
+            PunctuationKind::RParen => buf.push_str(")");
+            PunctuationKind::LBrace => buf.push_str("{");
+            PunctuationKind::RBrace => buf.push_str("}");
+            PunctuationKind::LBracket => buf.push_str("[");
+            PunctuationKind::RBracket => buf.push_str("]");
+            PunctuationKind::At => buf.push_str("@");
+            PunctuationKind::Pound => buf.push_str("#");
+            PunctuationKind::Tilde => buf.push_str("~");
+            PunctuationKind::Question => buf.push_str("?");
+            PunctuationKind::Colon => buf.push_str(":");
+            PunctuationKind::Dollar => buf.push_str("$");
+            PunctuationKind::Assign => buf.push_str("=");
+            PunctuationKind::Bang => buf.push_str("!");
+            PunctuationKind::Lt => buf.push_str("<");
+            PunctuationKind::Gt => buf.push_str(">");
+            PunctuationKind::Minus => buf.push_str("-");
+            PunctuationKind::Plus => buf.push_str("+");
+            PunctuationKind::Star => buf.push_str("*");
+            PunctuationKind::Div => buf.push_str("/");
+            PunctuationKind::Percent => buf.push_str("%");
+            PunctuationKind::Borrow => buf.push_str("&");
+
+            PunctuationKind::NotEq => buf.push_str("!=");
+            PunctuationKind::EqEq => buf.push_str("==");
+            PunctuationKind::LtEq => buf.push_str("<=");
+            PunctuationKind::GtEq => buf.push_str(">=");
+            PunctuationKind::AndAnd => buf.push_str("&&");
+            PunctuationKind::OrOr => buf.push_str("||");
+            PunctuationKind::AddAssign => buf.push_str("+=");
+            PunctuationKind::SubAssign => buf.push_str("-=");
+            PunctuationKind::MulAssign => buf.push_str("*=");
+            PunctuationKind::DivAssign => buf.push_str("/=");
+            PunctuationKind::PercentAssign => buf.push_str("%=");
+            PunctuationKind::ThinArrow => buf.push_str("->");
+            PunctuationKind::FatArrow => buf.push_str("=>");
+            PunctuationKind::ColonColon => buf.push_str("::");
+            PunctuationKind::RangeOpen => buf.push_str("..<");
+            PunctuationKind::RangeClose => buf.push_str("..=");
+            PunctuationKind::Ellipsis => buf.push_str("...");
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl ToString for TokenKind {
+    fn to_string_inplace(&self, buf: &mut String) {
+        match self {
+            TokenKind::Invalid => buf.push_str("TK_Invalid");
+            TokenKind::EndOfFile => buf.push_str("TK_EOF");
+            TokenKind::Comment => buf.push_str("TK_Comment");
+            TokenKind::Identifier => buf.push_str("TK_Ident");
+            TokenKind::Lifetime => buf.push_str("TK_Lifetime");
+            TokenKind::Keyword(k) => {
+                buf.push_str("TK_Keyword(");
+                k.to_string_inplace(buf);
+                buf.push_str(")");
+            }
+            TokenKind::Literal(l) => {
+                buf.push_str("TK_Literal(");
+                l.to_string_inplace(buf);
+                buf.push_str(")");
+            }
+            TokenKind::Punctuation(p) =>{
+                buf.push_str("TK_Punct(");
+                p.to_string_inplace(buf);
+                buf.push_str(")");
+            }
+            _ => buf.push_str("TK_Unknown");
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl ToString for Token {
+    fn to_string_inplace(&self, buf: &mut String) {
+        self.token_kind.to_string_inplace(buf);
+
+        if self.token_kind is TokenKind::Identifier || self.token_kind is TokenKind::Lifetime {
+            buf.push_str("(");
+            self.raw_str().to_string_inplace(buf);
+            buf.push_str(")");
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl KeywordKind {
+    pub fn from_str(s: Str) -> Option<KeywordKind> {
+        if s.eq(&"as") {
+            return Some(KeywordKind::KW_AS);
+        }
+        else if s.eq(&"asm") {
+            return Some(KeywordKind::KW_ASM);
+        }
+        else if s.eq(&"async") {
+            return Some(KeywordKind::KW_ASYNC);
+        }
+        else if s.eq(&"await") {
+            return Some(KeywordKind::KW_AWAIT);
+        }
+        else if s.eq(&"break") {
+            return Some(KeywordKind::KW_BREAK);
+        }
+        else if s.eq(&"box") {
+            return Some(KeywordKind::KW_BOX);
+        }
+        else if s.eq(&"const") {
+            return Some(KeywordKind::KW_CONST);
+        }
+        else if s.eq(&"continue") {
+            return Some(KeywordKind::KW_CONTINUE);
+        }
+        else if s.eq(&"do") {
+            return Some(KeywordKind::KW_DO);
+        }
+        else if s.eq(&"else") {
+            return Some(KeywordKind::KW_ELSE);
+        }
+        else if s.eq(&"enum") {
+            return Some(KeywordKind::KW_ENUM);
+        }
+        else if s.eq(&"export") {
+            return Some(KeywordKind::KW_EXPORT);
+        }
+        else if s.eq(&"extern") {
+            return Some(KeywordKind::KW_EXTERN);
+        }
+        else if s.eq(&"final") {
+            return Some(KeywordKind::KW_FINAL);
+        }
+        else if s.eq(&"false") {
+            return Some(KeywordKind::KW_FALSE);
+        }
+        else if s.eq(&"fn") {
+            return Some(KeywordKind::KW_FN_LOWER);
+        }
+        else if s.eq(&"Fn") {
+            return Some(KeywordKind::KW_FN_UPPER);
+        }
+        else if s.eq(&"FnMut") {
+            return Some(KeywordKind::KW_FN_UPPER_MUT);
+        }
+        else if s.eq(&"for") {
+            return Some(KeywordKind::KW_FOR);
+        }
+        else if s.eq(&"goto") {
+            return Some(KeywordKind::KW_GOTO);
+        }
+        else if s.eq(&"if") {
+            return Some(KeywordKind::KW_IF);
+        }
+        else if s.eq(&"impl") {
+            return Some(KeywordKind::KW_IMPL);
+        }
+        else if s.eq(&"import") {
+            return Some(KeywordKind::KW_IMPORT);
+        }
+        else if s.eq(&"in") {
+            return Some(KeywordKind::KW_IN);
+        }
+        else if s.eq(&"inline") {
+            return Some(KeywordKind::KW_INLINE);
+        }
+        else if s.eq(&"is") {
+            return Some(KeywordKind::KW_IS);
+        }
+        else if s.eq(&"let") {
+            return Some(KeywordKind::KW_LET);
+        }
+        else if s.eq(&"macro") {
+            return Some(KeywordKind::KW_MACRO);
+        }
+        else if s.eq(&"match") {
+            return Some(KeywordKind::KW_MATCH);
+        }
+        else if s.eq(&"mod") {
+            return Some(KeywordKind::KW_MOD);
+        }
+        else if s.eq(&"move") {
+            return Some(KeywordKind::KW_MOVE);
+        }
+        else if s.eq(&"mut") {
+            return Some(KeywordKind::KW_MUT);
+        }
+        else if s.eq(&"out") {
+            return Some(KeywordKind::KW_OUT);
+        }
+        else if s.eq(&"override") {
+            return Some(KeywordKind::KW_OVERRIDE);
+        }
+        else if s.eq(&"panic") {
+            return Some(KeywordKind::KW_PANIC);
+        }
+        else if s.eq(&"pub") {
+            return Some(KeywordKind::KW_PUB);
+        }
+        else if s.eq(&"raw") {
+            return Some(KeywordKind::KW_RAW);
+        }
+        else if s.eq(&"ref") {
+            return Some(KeywordKind::KW_REF);
+        }
+        else if s.eq(&"return") {
+            return Some(KeywordKind::KW_RETURN);
+        }
+        else if s.eq(&"reuse") {
+            return Some(KeywordKind::KW_REUSE);
+        }
+        else if s.eq(&"sealed") {
+            return Some(KeywordKind::KW_SEALED);
+        }
+        else if s.eq(&"self") {
+            return Some(KeywordKind::KW_SELF_LOWER);
+        }
+        else if s.eq(&"Self") {
+            return Some(KeywordKind::KW_SELF_UPPER);
+        }
+        else if s.eq(&"static") {
+            return Some(KeywordKind::KW_STATIC);
+        }
+        else if s.eq(&"struct") {
+            return Some(KeywordKind::KW_STRUCT);
+        }
+        else if s.eq(&"super") {
+            return Some(KeywordKind::KW_SUPER);
+        }
+        else if s.eq(&"then") {
+            return Some(KeywordKind::KW_THEN);
+        }
+        else if s.eq(&"trait") {
+            return Some(KeywordKind::KW_TRAIT);
+        }
+        else if s.eq(&"true") {
+            return Some(KeywordKind::KW_TRUE);
+        }
+        else if s.eq(&"type") {
+            return Some(KeywordKind::KW_TYPE);
+        }
+        else if s.eq(&"union") {
+            return Some(KeywordKind::KW_UNION);
+        }
+        else if s.eq(&"unsafe") {
+            return Some(KeywordKind::KW_UNSAFE);
+        }
+        else if s.eq(&"use") {
+            return Some(KeywordKind::KW_USE);
+        }
+        else if s.eq(&"virtual") {
+            return Some(KeywordKind::KW_VIRTUAL);
+        }
+        else if s.eq(&"weak") {
+            return Some(KeywordKind::KW_WEAK);
+        }
+        else if s.eq(&"where") {
+            return Some(KeywordKind::KW_WHERE);
+        }
+        else if s.eq(&"while") {
+            return Some(KeywordKind::KW_WHILE);
+        }
+        else if s.eq(&"yield") {
+            return Some(KeywordKind::KW_YIELD);
+        }
+        else {
+            return None;
+        }
+    }
+}

@@ -1,0 +1,438 @@
+use super::super::ast::{SyntaxNode, DummySyntaxNode, LibOrExe, SyntaxTree, Qualifier, QualifierList, DeclNode, StatementNode, PatternNode, TypeNode, ExpressionNode};
+use super::super::ast::stmt::*;
+use super::super::ast::expr::TernaryExpr;
+use super::super::super::source_code::{SourceLoc, SourceSpan, SourceManager};
+use super::super::super::diagnostic::DiagnosticEngine;
+use super::super::lexer::{Lexer, LexerMode};
+use super::super::token::{Token, TokenKind, KeywordKind, PunctuationKind};
+
+use super::FileParser;
+
+impl FileParser {
+    pub fn parse_stmt(&mut self, parent: *SyntaxNode) -> *StatementNode {
+        let t = self.lexer.peek(0);
+
+        if t.token_kind is TokenKind::Invalid || t.token_kind is TokenKind::EndOfFile {
+            self.lexer.next();
+            return box { .source_span = t.source_span }: DummySyntaxNode;
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::Semi) {
+            let semi = self.lexer.next();
+            return box {
+                .parent_node = parent as *weak SyntaxNode,
+                .semicolon = semi,
+            }: EmptyStmt;
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_LET) {
+            let stmt = self.parse_let_stmt();
+            stmt.parent_node = parent as *weak SyntaxNode;
+            return stmt;
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_IF) {
+            let stmt = self.parse_if_stmt();
+            return stmt;
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_WHILE) {
+            let stmt = self.parse_while_stmt();
+            stmt.parent_node = parent as *weak SyntaxNode;
+            return stmt;
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_DO) {
+            let stmt = self.parse_dowhile_stmt();
+            stmt.parent_node = parent as *weak SyntaxNode;
+            return stmt;
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_MATCH) {
+            let stmt = self.parse_match_stmt();
+            stmt.parent_node = parent as *weak SyntaxNode;
+            return stmt;
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_FOR) {
+            let stmt = self.parse_for_stmt();
+            stmt.parent_node = parent as *weak SyntaxNode;
+            return stmt;
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_BREAK) {
+            let stmt = self.parse_break_stmt();
+            stmt.parent_node = parent as *weak SyntaxNode;
+            return stmt;
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_CONTINUE) {
+            let stmt = self.parse_continue_stmt();
+            stmt.parent_node = parent as *weak SyntaxNode;
+            return stmt;
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_RETURN) {
+            let stmt = self.parse_return_stmt();
+            stmt.parent_node = parent as *weak SyntaxNode;
+            return stmt;
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_PANIC) {
+            let stmt = self.parse_panic_stmt();
+            stmt.parent_node = parent as *weak SyntaxNode;
+            return stmt;
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_GOTO) {
+            let stmt = self.parse_goto_stmt();
+            stmt.parent_node = parent as *weak SyntaxNode;
+            return stmt;
+        }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::LBrace) {
+            let stmt = self.parse_block();
+            stmt.parent_node = parent as *weak SyntaxNode;
+            return stmt;
+        }
+        else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_UNSAFE) &&
+            self.lexer.peek(1).token_kind is TokenKind::Punctuation(PunctuationKind::LBrace) {
+            let stmt = self.parse_unsafe_block();
+            stmt.parent_node = parent as *weak SyntaxNode;
+            return stmt;
+        }
+        else if t.token_kind is TokenKind::Lifetime {
+            let lifetime = self.lexer.next();
+            let colon = self.expect_token(TokenKind::Punctuation(PunctuationKind::Colon));
+            let label = box {
+                .parent_node = parent as *weak SyntaxNode,
+                .label = lifetime,
+                .colon = colon,
+            } : LabelStmt;
+            return label;
+        }
+        else {
+            let stmt = self.parse_expr_stmt();
+            stmt.parent_node = parent as *weak SyntaxNode;
+            return stmt;
+        }
+    }
+
+    fn parse_let_stmt(&mut self) -> *LetStmt {
+        let kw_let = self.lexer.next();
+        let pat = self.parse_pattern();
+        let assign = self.expect_token(TokenKind::Punctuation(PunctuationKind::Assign));
+        let expr = self.parse_expression();
+        let semi = self.expect_token(TokenKind::Punctuation(PunctuationKind::Semi));
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_let = kw_let,
+            .pattern = move pat,
+            .assign = assign,
+            .init_expr = move expr,
+            .semicolon = semi,
+        }: LetStmt;
+    }
+
+    // if 开头的情况可能是 IfStmt 也可能是 TernaryExpr
+    fn parse_if_stmt(&mut self) -> *StatementNode {
+        let kw_if = self.lexer.next();
+        let cond = self.parse_expression();
+
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Keyword(KeywordKind::KW_THEN) {
+            let kw_then = self.expect_token(TokenKind::Keyword(KeywordKind::KW_THEN));
+            let then_branch = self.parse_expression();
+            let kw_else = self.expect_token(TokenKind::Keyword(KeywordKind::KW_ELSE));
+            let else_branch = self.parse_expression();
+            let semi = self.expect_token(TokenKind::Punctuation(PunctuationKind::Semi));
+
+            let expr = box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .kw_if = kw_if,
+                .condition = move cond,
+                .kw_then = kw_then,
+                .then_branch = move then_branch,
+                .kw_else = kw_else,
+                .else_branch = move else_branch,
+            }: TernaryExpr;
+
+            let stmt = box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .expr = move expr,
+                .semicolon = semi,
+            }: ExprStmt;
+
+            return stmt;
+        } else {
+            let then_branch = self.parse_block();
+
+            let stmt = box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .kw_if = kw_if,
+                .condition = move cond,
+                .then_branch = move then_branch,
+                .else_branch = (type Option<*StatementNode>)::None,
+            }: IfStmt;
+
+            let t = self.lexer.peek(0);
+            if t.token_kind is TokenKind::Keyword(KeywordKind::KW_ELSE) {
+                let kw_else = self.lexer.next();
+
+                if self.lexer.peek(0).token_kind is TokenKind::Keyword(KeywordKind::KW_IF) {
+                    let else_if_stmt = self.parse_if_stmt();
+                    if !(else_if_stmt is type *IfStmt) {
+                        DiagnosticEngine::get().emit_invalid_nested_if_stmt(kw_else.span());
+                    }
+                    stmt.else_branch = Some(else_if_stmt as *StatementNode);
+                    return stmt;
+                } else {
+                    let else_block = self.parse_block();
+                    stmt.else_branch = Some(else_block as *StatementNode);
+                    return stmt;
+                }
+            }
+            return stmt;
+        }
+    }
+
+    fn parse_while_stmt(&mut self) -> *WhileStmt {
+        let kw_while = self.lexer.next();
+        let cond = self.parse_expression();
+        let body = self.parse_block();
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_while = kw_while,
+            .condition = move cond,
+            .body = move body,
+        }: WhileStmt;
+    }
+
+    fn parse_dowhile_stmt(&mut self) -> *DoWhileStmt {
+        let kw_do = self.lexer.next();
+        let body = self.parse_block();
+        let kw_while = self.expect_token(TokenKind::Keyword(KeywordKind::KW_WHILE));
+        let cond = self.parse_expression();
+        let semi = self.expect_token(TokenKind::Punctuation(PunctuationKind::Semi));
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_do = kw_do,
+            .body = move body,
+            .kw_while = kw_while,
+            .condition = move cond,
+            .semicolon = semi,
+        }: DoWhileStmt;
+    }
+
+    fn parse_match_stmt(&mut self) -> *MatchStmt {
+        let kw_match = self.lexer.next();
+        let expr = self.parse_expression();
+        let lbrace = self.expect_token(TokenKind::Punctuation(PunctuationKind::LBrace));
+
+        let stmt = box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_match = kw_match,
+            .match_expr = move expr,
+            .lbrace = lbrace,
+            .arms = (type Vec<*MatchArm>)::new(),
+            .rbrace = Token::invalid(lbrace.source_span),
+        }: MatchStmt;
+
+        while true {
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::RBrace) {
+                break;
+            }
+            let arm = self.parse_match_arm(stmt);
+            stmt.arms.push(arm);
+        }
+        stmt.rbrace = self.expect_token(TokenKind::Punctuation(PunctuationKind::RBrace));
+        return stmt;
+    }
+
+    fn parse_match_arm(&mut self, match_stmt: *MatchStmt) -> *MatchArm {
+        let pat = self.parse_pattern();
+        let arrow = self.expect_token(TokenKind::Punctuation(PunctuationKind::FatArrow));
+        let action = self.parse_stmt(match_stmt);
+        return box {
+            .parent_node = match_stmt as *weak MatchStmt,
+            .pattern = move pat,
+            .fat_arrow = arrow,
+            .action = move action,
+        }: MatchArm;
+    }
+
+    fn parse_for_stmt(&mut self) -> *ForStmt {
+        let kw_for = self.lexer.next();
+        let pat = self.parse_pattern();
+        let kw_in = self.expect_token(TokenKind::Keyword(KeywordKind::KW_IN));
+        let iterable = self.parse_expression();
+        let body = self.parse_block();
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_for = kw_for,
+            .pattern = move pat,
+            .kw_in = kw_in,
+            .iterable = move iterable,
+            .body = move body,
+        }: ForStmt;
+    }
+
+    fn parse_break_stmt(&mut self) -> *BreakStmt {
+        let kw_break = self.lexer.next();
+
+        let mut lifetime = Token::invalid(kw_break.source_span);
+        if self.lexer.peek(0).token_kind is TokenKind::Lifetime {
+            lifetime = self.lexer.next();
+        }
+        let semi = self.expect_token(TokenKind::Punctuation(PunctuationKind::Semi));
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_break = kw_break,
+            .label = lifetime,
+            .semicolon = semi,
+        }: BreakStmt;
+    }
+
+    fn parse_continue_stmt(&mut self) -> *ContinueStmt {
+        let kw_continue = self.lexer.next();
+        let semi = self.expect_token(TokenKind::Punctuation(PunctuationKind::Semi));
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_continue = kw_continue,
+            .semicolon = semi,
+        }: ContinueStmt;
+    }
+
+    fn parse_return_stmt(&mut self) -> *ReturnStmt {
+        let kw_return = self.lexer.next();
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Punctuation(PunctuationKind::Semi) {
+            let semi = self.lexer.next();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .kw_return = kw_return,
+                .return_expr = None,
+                .semicolon = semi,
+            }: ReturnStmt;
+        } else {
+            let return_expr = self.parse_expression();
+            let semi = self.expect_token(TokenKind::Punctuation(PunctuationKind::Semi));
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .kw_return = kw_return,
+                .return_expr = Some(return_expr),
+                .semicolon = semi,
+            }: ReturnStmt;
+        }
+    }
+
+    fn parse_panic_stmt(&mut self) -> *PanicStmt {
+        let kw_panic = self.lexer.next();
+        let t = self.lexer.peek(0);
+        if t.token_kind is TokenKind::Punctuation(PunctuationKind::Semi) {
+            let semi = self.lexer.next();
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .kw_panic = kw_panic,
+                .panic_expr = None,
+                .semicolon = semi,
+            }: PanicStmt;
+        } else {
+            let panic_expr = self.parse_expression();
+            let semi = self.expect_token(TokenKind::Punctuation(PunctuationKind::Semi));
+            return box {
+                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                .kw_panic = kw_panic,
+                .panic_expr = Some(panic_expr),
+                .semicolon = semi,
+            }: PanicStmt;
+        }
+    }
+
+    fn parse_goto_stmt(&mut self) -> *GotoStmt {
+        let kw_goto = self.lexer.next();
+        let lifetime = self.expect_token(TokenKind::Lifetime);
+        let semi = self.expect_token(TokenKind::Punctuation(PunctuationKind::Semi));
+        DiagnosticEngine::get().emit_unimplemented(kw_goto.span(), "goto statement");
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_goto = kw_goto,
+            .label = lifetime,
+            .semicolon = semi,
+        }: GotoStmt;
+    }
+
+    fn parse_block(&mut self) -> *BlockStmt {
+        let lbrace = self.lexer.next();
+
+        let block = box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .kw_unsafe = Token::invalid(lbrace.source_span),
+            .lbrace = lbrace,
+            .stmts = (type Vec<*StatementNode>)::new(),
+            .decls = (type Vec<*DeclNode>)::new(),
+            .rbrace = Token::invalid(lbrace.source_span),
+        }: BlockStmt;
+
+        self.parse_block_items(block);
+        block.rbrace = self.expect_token(TokenKind::Punctuation(PunctuationKind::RBrace));
+
+        return block;
+    }
+
+    fn parse_block_items(&mut self, block: *BlockStmt) {
+        while true {
+            
+            let t0 = self.lexer.peek(0);
+            if t0.token_kind is TokenKind::Punctuation(PunctuationKind::RBrace) ||
+                t0.token_kind is TokenKind::Invalid ||
+                t0.token_kind is TokenKind::EndOfFile {
+                break;
+            }
+            let t1 = self.lexer.peek(1);
+
+            if self.is_possible_decl(t0, t1) {
+                let decl = self.parse_top_level_item(self.dummy() as *DeclNode);
+                // 不允许 decl 是 mod, 不允许 decl 有 pub 修饰
+                block.decls.push(decl);
+                continue;
+            }
+            if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::RBrace) {
+                break;
+            }
+            let stmt = self.parse_stmt(block);
+            block.stmts.push(stmt);
+        }
+    }
+
+    fn is_possible_decl(&self, t0: Token, t1: Token) -> Bool {
+        let tk0 = t0.token_kind;
+        let tk1 = t1.token_kind;
+
+        if tk0 is TokenKind::Keyword(KeywordKind::KW_UNSAFE) {
+            // tk1 是 fn/impl/async/const
+            return tk1 is TokenKind::Keyword(KeywordKind::KW_FN_LOWER) ||
+                tk1 is TokenKind::Keyword(KeywordKind::KW_IMPL) ||
+                tk1 is TokenKind::Keyword(KeywordKind::KW_ASYNC) ||
+                tk1 is TokenKind::Keyword(KeywordKind::KW_CONST);
+        }
+        return tk0 is TokenKind::Keyword(KeywordKind::KW_FN_LOWER) ||
+            tk0 is TokenKind::Keyword(KeywordKind::KW_IMPL) ||
+            tk0 is TokenKind::Keyword(KeywordKind::KW_PUB) ||
+            tk0 is TokenKind::Keyword(KeywordKind::KW_ASYNC) ||
+            tk0 is TokenKind::Keyword(KeywordKind::KW_EXTERN) ||
+            tk0 is TokenKind::Keyword(KeywordKind::KW_USE) ||
+            tk0 is TokenKind::Keyword(KeywordKind::KW_STATIC) ||
+            tk0 is TokenKind::Keyword(KeywordKind::KW_CONST) ||
+            tk0 is TokenKind::Keyword(KeywordKind::KW_TYPE) ||
+            tk0 is TokenKind::Keyword(KeywordKind::KW_STRUCT) ||
+            tk0 is TokenKind::Keyword(KeywordKind::KW_ENUM) ||
+            tk0 is TokenKind::Keyword(KeywordKind::KW_UNION) ||
+            tk0 is TokenKind::Keyword(KeywordKind::KW_TRAIT) ||
+            tk0 is TokenKind::Punctuation(PunctuationKind::Pound); // macro
+    }
+
+    fn parse_unsafe_block(&mut self) -> *BlockStmt {
+        let kw_unsafe = self.lexer.next();
+        let block = self.parse_block();
+        block.kw_unsafe = kw_unsafe;
+        return block;
+    }
+
+    fn parse_expr_stmt(&mut self) -> *ExprStmt {
+        let expr = self.parse_expression();
+        let semi = self.expect_token(TokenKind::Punctuation(PunctuationKind::Semi));
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .expr = move expr,
+            .semicolon = semi,
+        }: ExprStmt;
+    }
+}

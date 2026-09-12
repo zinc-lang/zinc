@@ -1,0 +1,57 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use ::self::frontend::diagnostic::*;
+
+use super::*;
+
+impl ConstPattern {
+    fn new(n: *PatternNode, s: *Symbol) -> *Self {
+        return box {
+            .node = move n,
+            .constant = move s,
+            .matches_with = None,
+        }: ConstPattern;
+    }
+}
+
+impl Pattern for ConstPattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+        self.matches_with = Some(expr);
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        return (type Vec<*VarSymbol>)::new();
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        let mw = self.matches_with.get_or_panic("BUG: pattern does not know what expression it matches with");
+        if self.constant is vsym: *VarSymbol {
+            if !vsym.is_const() {
+                DiagnosticEngine::get().emit_not_const(self.node.span());
+                return;
+            }
+            ctx.check_value(mw, vsym.stype);
+        }
+        else if self.constant is evsym: *EnumVariantSymbol {
+            let expr_ty = ctx.infer(mw); // 按道理如果这里推导失败应该转为检查模式
+            if ensure_type_valid(expr_ty, mw.expr_node().span()) {
+                let sty = strip_pointer_except_weak(expr_ty);
+
+                let esym = evsym.parent_enum.get_or_panic();
+                let enum_formal_ty = esym.to_sty();
+                let mut mappings = TypeMapping::new();
+                let r = mappings.unify(enum_formal_ty, sty);
+                if !r {
+                    DiagnosticEngine::get().emit_type_mismatch(enum_formal_ty.to_string(), sty.to_string(), self.node.span());
+                }
+            }
+        }
+        else {
+            panic "BUG: ConstPattern::type_check meet unreachable case";
+        }
+    }
+}

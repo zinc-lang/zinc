@@ -1,0 +1,142 @@
+use super::source_code::SourceManager;
+use super::source_code::SourceSpan;
+
+pub enum Severity {
+    ICE,
+    Error,
+    Warning,
+    Note,
+}
+
+pub struct DiagItem {
+    span: SourceSpan,
+    severity: Severity,
+    msg_zn: String,
+    msg_en: String,
+}
+
+// 后续改进: 完整的 i18n 支持
+pub struct DiagnosticEngine {
+    all_diags: Vec<DiagItem>,
+}
+
+// todo 后续应该在标准库支持 Lazy 类型，然后将下面的单例模式换成 safe 代码
+// 支持 Lazy 需要编译器先支持完整的 lambda 和函数类型
+unsafe static mut DiagnosticEngineSingleton: Option<DiagnosticEngine> = None;
+
+impl DiagnosticEngine {
+    pub fn get() -> &'static mut DiagnosticEngine {
+        unsafe {
+            match DiagnosticEngineSingleton {
+                Some(ref mut i) => {
+                    return i as &'static mut DiagnosticEngine;
+                }
+                None => {
+                    DiagnosticEngineSingleton = Some({
+                        .all_diags = (type Vec<DiagItem>)::new()
+                    }: DiagnosticEngine);
+                    if DiagnosticEngineSingleton is Some(ref mut i) {
+                        return i as &'static mut DiagnosticEngine;
+                    } else {
+                        panic("Failed to initialize DiagnosticEngineSingleton");
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn emit(&mut self, diag: DiagItem) {
+        self.all_diags.push(move diag);
+    }
+
+    // todo 增加 json/ASCII ART 等其它输出格式
+    pub fn report(&self, speak_en: Bool) {
+        for ref diag in self.all_diags {
+            let flc = SourceManager::get().file_line_column_of(diag.span.start);
+            if speak_en {
+                match diag.severity {
+                    Severity::ICE => print("[ICE]: ");
+                    Severity::Error => print("[Error]: ");
+                    Severity::Warning => print("[Warning]: ");
+                    Severity::Note => print("[Note]: ");
+                }
+                println(diag.msg_en);
+                print("At: ");
+                println(flc);
+            }
+            else {
+                match diag.severity {
+                    Severity::ICE => print("[ICE]: ");
+                    Severity::Error => print("[错误]: ");
+                    Severity::Warning => print("[警告]: ");
+                    Severity::Note => print("[提示]: ");
+                }
+                println(diag.msg_zn);
+                print("位置: ");
+                println(flc);
+            }
+            // 打印源码
+            let mut line_mark = String::new();
+            let display_line = flc.line + 1; // 行号从 1 开始
+            display_line.to_string_inplace(&mut line_mark);
+            line_mark.push_str(" | ");
+            print(line_mark);
+            let source_line = SourceManager::get().source_line_of(diag.span.start);
+            println(source_line);
+            
+            // 打印箭头
+            let space_count = line_mark.len() + flc.column as UInt;
+            {
+                let mut i: UInt = 0;
+                while i < space_count {
+                    print(" ");
+                    i += 1;
+                }
+            }
+            let mut len = diag.span.end.offset - diag.span.start.offset;
+            {
+                if (len == 0) { len = 1; }
+                if (len + space_count > 100 && space_count < 100) { len = 100 - space_count; }
+                let mut i: UInt = 0;
+                while i < len {
+                    print("^");
+                    i += 1;
+                }
+            }
+            println("");
+        }
+    }
+
+    pub fn clear(&mut self) -> UInt {
+        let len = self.all_diags.len();
+        self.all_diags.clear();
+        return len;
+    }
+
+    pub fn emit_unimplemented(&mut self, span: SourceSpan, feature: Str) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"未实现特性: $(feature)",
+            .msg_en = f"unimplemented feature: $(feature)",
+        }: DiagItem);
+    }
+
+    pub fn emit_unsupported(&mut self, span: SourceSpan, feature: Str) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不支持的特性: $(feature)",
+            .msg_en = f"unsupported feature: $(feature)",
+        }: DiagItem);
+    }
+
+    pub fn emit_incomplete(&mut self, span: SourceSpan, feature: Str) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Note,
+            .msg_zn = f"特性未能完整实现: $(feature)",
+            .msg_en = f"incomplete implementation feature: $(feature)",
+        }: DiagItem);
+    }
+}

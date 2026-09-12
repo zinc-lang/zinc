@@ -1,0 +1,98 @@
+
+use ::self::primitives::string::ToString;
+use ::self::cmp::{Eq, PartialEq, PartialOrd, Ord, Ordering};
+use ::self::hash::{Hash, Hasher};
+use ::self::primitives::clone::Clone;
+use ::self::primitives::default::Default;
+use ::self::collections::vec::Shared;
+
+extern fn zinc_core_float_to_string(num: F64, buf: *raw mut Byte, size: UInt) -> Int32;
+
+impl F64 {
+    pub fn is_nan(&self) -> Bool {
+        let f: F64 = *self;
+        return f != f;
+    }
+}
+
+impl ToString for F64 {
+    fn to_string_inplace(&self, buf: &mut String) {
+        buf.reserve(32_u);
+        let end = (buf.data.ptr as *raw Shared<UInt8> as *raw mut Byte) + buf.data.size;
+        unsafe(zinc_core_float_to_string(*self as F64, end, 32_u));
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl PartialEq for F64 {
+    fn eq(&self, other: &Self) -> Bool {
+        return *self == *other;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return *self != *other;
+    }
+}
+
+impl PartialOrd for F64 {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if (*self != *self) {
+            return None;
+        }
+        if (*other != *other) {
+            return None;
+        }
+        if *self < *other {
+            return Some(Ordering::Less);
+        }
+        else if *self == *other {
+            return Some(Ordering::Equal);
+        }
+        else {
+            return Some(Ordering::Greater);
+        }
+    }
+    fn lt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Less);
+    }
+    fn le(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Greater));
+    }
+    fn gt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Greater);
+    }
+    fn ge(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Less));
+    }
+}
+
+impl Hash for F64 {
+    fn hash(&self, state: &mut Hasher) {
+        let p = self as &F64 as *raw F64 as *raw UInt64;
+
+        let mut bits: UInt64 = unsafe(*p);
+        if (bits == 0xfff8_0000_0000_0000_u64) {
+            bits = 0x7ff8_0000_0000_0000_u64;
+        }
+        // 使用位运算增强分布
+        let h = bits * 11400714819323198485_u64;
+        state.combine(h);
+    }
+}
+
+impl Clone for F64 {
+    fn clone(&self) -> F64 {
+        return *self;
+    }
+}
+
+impl Default for F64 {
+    fn default() -> F64 {
+        return 0.0;
+    }
+}

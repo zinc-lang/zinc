@@ -1,0 +1,29 @@
+
+pub trait Iterator {
+    type Item;
+
+    // non-virtual
+    fn next<'a>(&'a mut self) -> Option<&'a Self::Item>;
+}
+
+pub trait Iterable {
+    type Iter<'i>; // 需要约束 Iter<'i> : Iterator
+
+    // non-virtual
+    fn iter<'a>(&'a self) -> Self::Iter<'a>;
+
+}
+
+// pub trait IterableMut : Iterable {
+//     type IterMut<'i>; // 需要约束 IterMut<'i> : IteratorMut
+
+//     // non-virtual
+//     fn iter_mut<'a>(&'a mut self) -> Self::IterMut<'a>;
+// }
+
+// pub trait IteratorMut {
+//     type Item;
+
+//     // non-virtual
+//     fn next_mut<'a>(&'a mut self) -> Option<&'a mut Self::Item>;
+// }

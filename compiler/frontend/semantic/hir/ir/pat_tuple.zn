@@ -1,0 +1,90 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::diagnostic::*;
+use super::*;
+
+impl TuplePattern {
+    fn new(n: *TuplePatternNode) -> *Self {
+        return box {
+            .node = move n,
+            .tuple_sty = None,
+            .elements = (type Vec<*Pattern>)::new(),
+            .matches_with = None,
+        }: TuplePattern;
+    }
+}
+
+impl Pattern for TuplePattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+        self.matches_with = Some(expr);
+
+        let mut i: UInt = 0;
+        for e in self.elements {
+            let elem_access = TupleAccessRValue::create(expr, i);
+            e.destructure(move elem_access, is_refutable);
+            i += 1;
+        }
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        let mut v = (type Vec<*VarSymbol>)::new();
+        for e in self.elements {
+            let b = e.collect_all_bindings();
+            for i in b {
+                v.push(move i);
+            }
+        }
+        return v;
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        let mw = self.matches_with.get_or_panic("BUG: pattern does not know what expression it matches with");
+
+        let mut tuple_sty = SType::sty_unit();
+        if self.tuple_sty is Some(sty) {
+            tuple_sty = move sty;
+        } else {
+            tuple_sty = ctx.infer(mw);
+        }
+
+        if !ensure_type_valid(tuple_sty, self.node.span()) {
+            return;
+        }
+        let stripped_tuple_sty = tuple_sty.strip_pointer();
+        self.tuple_sty = Some(stripped_tuple_sty);
+
+        if stripped_tuple_sty.type_symbol is tuple_sym: *TupleSymbol {
+
+            let expect_len = stripped_tuple_sty.args.ty_args.len();
+            let actual_len = self.elements.len();
+            if expect_len < actual_len {
+                // tuple模式里面包含的元素个数大于类型参数的个数
+                DiagnosticEngine::get().emit_tuple_len_not_match(expect_len, actual_len, self.node.span());
+                return;
+            }
+            else if expect_len > actual_len {
+                let mut last_is_rest = false;
+                if actual_len >= 1 {
+                    let last: *Pattern = *self.elements.index(actual_len - 1).deref();
+                    last_is_rest = last is type *RestPattern;
+                }
+                if !last_is_rest {
+                    DiagnosticEngine::get().emit_tuple_len_not_match(expect_len, actual_len, self.node.span());
+                    return;
+                }
+            }
+
+            for e in self.elements {
+                e.type_check(ctx);
+            }
+        }
+        else {
+            DiagnosticEngine::get().emit_type_mismatch(f"tuple", tuple_sty.to_string(), self.node.span());
+        }
+    }
+}

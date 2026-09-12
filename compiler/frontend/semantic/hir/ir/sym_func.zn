@@ -1,0 +1,254 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::source_code::*;
+
+impl FuncSymbol {
+    pub fn new(node: *FuncDecl) -> *Self {
+        let sym = box {
+            .func_node = move node,
+            .parent_sym = None,
+            .generics = GenericParams::new(),
+            .params = (type Vec<*VarSymbol>)::new(),
+            .symbol_table = SymbolTable::new(),
+            .return_sty = None,
+            .body = None,
+            .next_overload = None,
+            .cache = (type HashMap<GenericArgs, *SType>)::new(),
+        }: FuncSymbol;
+        return sym;
+    }
+
+    pub fn qualifiers(&self) -> QualifierList {
+        return self.func_node.qualifiers();
+    }
+
+    pub fn params_tys(&self) -> Vec<*SType> {
+        let mut tys = (type Vec<*SType>)::new();
+        for p in self.params {
+            tys.push(p.stype);
+        }
+        return tys;
+    }
+
+    // todo: 考虑带有参数默认值的情况
+    pub fn accept_params(&self, c: UInt) -> Bool {
+        return self.params.len() == c;
+    }
+
+    pub fn find_overload(*self, c: UInt) -> Option<*FuncSymbol> {
+        let mut fs: *FuncSymbol = self;
+
+        while true {
+            if fs.accept_params(c) {
+                return Some(fs);
+            } else {
+                if fs.next_overload is Some(n) {
+                    fs = n;
+                    continue;
+                }
+                else {
+                    break;
+                }
+            }
+        }
+        return None;
+    }
+
+    // todo 这里没有处理好 Associated type 带有自己的泛型参数的 high kinded type
+    pub fn type_params_in_ctx(&self) -> Vec<*TypeParamSymbol> {
+        let mut all = self.generics.ty_params;
+        if self.parent_sym is Some(ss) {
+            if ss is isym: *ImplSymbol {
+                for p in isym.generics.ty_params {
+                    all.push(move p);
+                }
+                let origin = isym.target_sty.type_symbol.to_sty();
+                for a in origin.args.ty_args {
+                    if a.type_symbol is p: *TypeParamSymbol {
+                        all.push(move p);
+                    }
+                }
+            }
+            if ss is tsym: *TraitSymbol {
+                for p in tsym.generics.ty_params {
+                    all.push(move p);
+                }
+            }
+        }
+        return all;
+    }
+
+    pub fn type_params_except(&self, excepts: &Vec<*TypeParamSymbol>) -> Vec<*TypeParamSymbol> {
+        let all = self.type_params_in_ctx();
+        if excepts.is_empty() {
+            return all;
+        }
+
+        let mut res = (type Vec<*TypeParamSymbol>)::new();
+        for t in all {
+            let mut found = false;
+            for e in excepts {
+                if t as *raw TypeParamSymbol as UInt == e as *raw TypeParamSymbol as UInt {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                res.push(t);
+            }
+        }
+        return res;
+    }
+
+    pub fn has_receiver(&self) -> Bool {
+        if self.params.len() > 0 {
+            let p = *self.params.index(0).deref();
+            return p.short_name().as_str().deref().eq(&"self");
+        }
+        return false;
+    }
+
+    pub fn is_member_method(&self) -> Bool {
+        if self.parent_sym is Some(p) {
+            if p is type *TraitSymbol || p is type *ImplSymbol {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn receiver_sty(&self) -> Option<*SType> {
+        if self.has_receiver() {
+            let p = *self.params.index(0).deref();
+            return Some(p.stype);
+        } else {
+            return None;
+        }
+    }
+
+}
+
+impl Symbol for FuncSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        return self.func_node as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return self.func_node.short_name();
+    }
+
+    fn mangle_name(&self) -> String {
+        if self.qualifiers().has(QualifierKind::Extern) {
+            return self.short_name();
+        }
+
+        if self.parent_sym is Some(ps) {
+            let mut res = ps.export_key();
+            res.push_str("::");
+            res.push_str(self.short_name().as_str().deref());
+            res.push_str("/");
+            let params = self.params.len().to_string();
+            res.push_str(params.as_str().deref());
+            return res;
+        } else {
+            return self.short_name();
+        }
+    }
+
+    fn export_key(&self) -> String {
+        return self.mangle_name();
+    }
+
+    fn export_value(&self) -> String {
+        let mut res = String::new();
+        self.func_node.qualifiers().to_string_inplace(&mut res);
+
+        res.push_str(" fn ");
+        res.push_str(self.short_name().as_str().deref());
+        res.push_str(self.generics.export_value().as_str().deref());
+        res.push_str("(");
+
+        let mut first = true;
+        for p in self.params {
+            if first {
+                first = false;
+            } else {
+                res.push_str(", ");
+            }
+            res.push_str(p.short_name().as_str().deref());
+            res.push_str(": ");
+            res.push_str(p.stype.to_string().as_str().deref());
+        }
+        res.push_str(")");
+        if self.return_sty is Some(rt) {
+            res.push_str(" -> ");
+            res.push_str(rt.export_value().as_str().deref());
+        }
+        
+        let where_conds = self.generics.export_constraints();
+        res.push_str(where_conds.as_str().deref());
+
+        res.push_str(";");
+        
+        return res;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_sym;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_sym = Some(ss);
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return self.func_node.qualifiers().get(QualifierKind::Pub);
+    }
+
+    fn should_export(&self) -> Bool {
+        if self.parent_sym is Some(trait_sym: *TraitSymbol) {
+            return trait_sym.visibility() is Some(_);
+        }
+        if self.parent_sym is Some(isym: *ImplSymbol) {
+            if isym.trait_sty is Some(trait_sty) {
+                return trait_sty.type_symbol.visibility() is Some(_);
+            }
+        }
+        return self.visibility() is Some(_);
+    }
+}
+
+impl TypeSymbol for FuncSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        let mut res = String::new();
+        res.push_str(self.mangle_name().as_str().deref());
+        res.push_str(args.to_string().as_str().deref());
+        return res;
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(t) {
+            return t;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    fn to_sty(*self) -> *SType {
+        let args = self.generics.to_generic_args();
+        return self.to_sty(move args);
+    }
+}
+
+impl ScopeSymbol for FuncSymbol {
+    fn sym_table(&mut self) -> &mut SymbolTable {
+        return &mut self.symbol_table;
+    }
+}

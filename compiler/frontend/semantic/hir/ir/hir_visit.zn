@@ -1,0 +1,128 @@
+
+use super::*;
+
+fn traverse_hir(sym: *Symbol, visitor: &mut SymbolVisitor) {
+
+    match sym {
+        mod_sym: *ModSymbol => {
+            visitor.visit_mod_sym(mod_sym);
+            for child in mod_sym.symbol_table {
+                traverse_hir(child, visitor);
+            }
+        }
+        impl_sym: *ImplSymbol => {
+            visitor.visit_impl_sym(impl_sym);
+            for child in impl_sym.symbol_table {
+                traverse_hir(child, visitor);
+            }
+        }
+        fn_sym: *FuncSymbol => {
+            visitor.visit_fn_sym(fn_sym);
+        }
+        struct_sym: *StructSymbol => {
+            visitor.visit_struct_sym(struct_sym);
+        }
+        enum_sym: *EnumSymbol => {
+            visitor.visit_enum_sym(enum_sym);
+            for child in enum_sym.symbol_table {
+                traverse_hir(child, visitor);
+            }
+        }
+        ev_sym: *EnumVariantSymbol => {
+            visitor.visit_enum_variant_sym(ev_sym);
+        }
+        ta_sym: *TypeAliasSymbol => {
+            visitor.visit_typealias_sym(ta_sym);
+        }
+        var_sym: *VarSymbol => {
+            visitor.visit_var_sym(var_sym);
+        }
+        union_sym: *UnionSymbol => {
+            visitor.visit_union_sym(union_sym);
+            for child in union_sym.symbol_table {
+                traverse_hir(child, visitor);
+            }
+        }
+        trait_sym: *TraitSymbol => {
+            visitor.visit_trait_sym(trait_sym);
+            for child in trait_sym.symbol_table {
+                traverse_hir(child, visitor);
+            }
+        }
+        assoc_sym: *AssociatedTypeSymbol => {
+            visitor.visit_assoctype_sym(assoc_sym);
+        }
+        ext_sym: *ExternTypeSymbol => {
+            visitor.visit_externtype_sym(ext_sym);
+        }
+        _ => {
+            panic "unknown symbol type matched.";
+        }
+    }
+}
+
+trait SymbolVisitor {
+    virtual fn visit_mod_sym(&mut self, sym: *ModSymbol) {}
+    virtual fn visit_impl_sym(&mut self, sym: *ImplSymbol) {}
+    virtual fn visit_fn_sym(&mut self, sym: *FuncSymbol) {}
+    virtual fn visit_struct_sym(&mut self, sym: *StructSymbol) {}
+    virtual fn visit_enum_sym(&mut self, sym: *EnumSymbol) {}
+    virtual fn visit_enum_variant_sym(&mut self, sym: *EnumVariantSymbol) {}
+    virtual fn visit_typealias_sym(&mut self, sym: *TypeAliasSymbol) {}
+    virtual fn visit_var_sym(&mut self, sym: *VarSymbol) {}
+    virtual fn visit_union_sym(&mut self, sym: *UnionSymbol) {}
+    virtual fn visit_trait_sym(&mut self, sym: *TraitSymbol) {}
+    virtual fn visit_assoctype_sym(&mut self, sym: *AssociatedTypeSymbol) {}
+    virtual fn visit_externtype_sym(&mut self, sym: *ExternTypeSymbol) {}
+}
+
+struct SymbolDump {
+
+}
+
+impl SymbolDump {
+    fn dump(&mut self, sym: *Symbol) {
+        let p: &mut SymbolDump = self;
+        traverse_hir(sym, p as &mut SymbolVisitor);
+        println("dump done.");
+    }
+}
+
+impl SymbolVisitor for SymbolDump {
+    fn visit_mod_sym(&mut self, sym: *ModSymbol) {
+        print("mod: "); println(sym.short_name());
+    }
+    fn visit_impl_sym(&mut self, sym: *ImplSymbol) {
+        print("impl: "); println(sym.short_name());
+    }
+    fn visit_fn_sym(&mut self, sym: *FuncSymbol) {
+        print("fn: "); println(sym.short_name());
+    }
+    fn visit_struct_sym(&mut self, sym: *StructSymbol) {
+        print("struct: "); println(sym.short_name());
+    }
+    fn visit_enum_sym(&mut self, sym: *EnumSymbol) {
+        print("enum: "); println(sym.short_name());
+    }
+    fn visit_enum_variant_sym(&mut self, sym: *EnumVariantSymbol) {
+        print("enum variant: "); println(sym.short_name());
+    }
+    fn visit_typealias_sym(&mut self, sym: *TypeAliasSymbol) {
+        print("type alias: "); println(sym.short_name());
+    }
+    fn visit_var_sym(&mut self, sym: *VarSymbol) {
+        print("var: "); println(sym.short_name());
+    }
+    fn visit_union_sym(&mut self, sym: *UnionSymbol) {
+        print("union: "); println(sym.short_name());
+    }
+    fn visit_trait_sym(&mut self, sym: *TraitSymbol) {
+        print("trait: "); println(sym.short_name());
+    }
+    fn visit_assoctype_sym(&mut self, sym: *AssociatedTypeSymbol) {
+        print("associated type: "); println(sym.short_name());
+    }
+    fn visit_externtype_sym(&mut self, sym: *ExternTypeSymbol) {
+        print("extern type: "); println(sym.short_name());
+    }
+}

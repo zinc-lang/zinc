@@ -1,0 +1,24 @@
+
+// zinc 默认选择了 mimalloc 作为内存分配器。
+use ::self::mem::size_of;
+
+// 负载数据初始化为 0，已经初始化引用计数。返回的地址是数据的首地址。
+// size 代表负载数据的大小，count 代表负载数据的个数。参数不用管引用计数占用的空间。
+extern fn zinc_core_alloc_boxed(size: UInt) -> *raw mut ();
+
+// 不判断引用计数值，直接 free。
+extern fn zinc_core_free(ptr: *raw mut ());
+
+// 主要是给标准库里面的数据结构使用
+unsafe pub fn raw_alloc_n(size: UInt, count: UInt) -> *raw mut () {
+    return zinc_core_alloc_boxed(size * count);
+}
+
+pub fn try_box<V>(v: V) -> Option<*V> {
+    let p = unsafe(zinc_core_alloc_boxed(size_of(<V>)));
+    if unsafe(p as UInt == 0) {
+        return None;
+    } else {
+        return Some(unsafe(p as *raw V as *V));
+    }
+}

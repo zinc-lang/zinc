@@ -1,0 +1,88 @@
+use super::*;
+use ::self::frontend::semantic::hir::ir::*;
+
+impl Terminator for BrForward {
+    fn successors(&self) -> Vec<*BasicBlock> {
+        let mut succs = (type Vec<*BasicBlock>)::new();
+        succs.push(self.target);
+        return succs;
+    }
+
+    fn dump(&self) {
+        print("bb");
+        print(self.target.index);
+    }
+}
+
+impl Terminator for BrBackward {
+    fn successors(&self) -> Vec<*BasicBlock> {
+        let mut succs = (type Vec<*BasicBlock>)::new();
+        succs.push(self.target);
+        return succs;
+    }
+
+    fn dump(&self) {
+        print("bb");
+        print(self.target.index);
+    }
+}
+
+impl Terminator for BrBool {
+    fn successors(&self) -> Vec<*BasicBlock> {
+        let mut succs = (type Vec<*BasicBlock>)::new();
+        succs.push(self.target_true);
+        succs.push(self.target_false);
+        return succs;
+    }
+
+    fn dump(&self) {
+        print("true: bb");
+        print(self.target_true.index);
+        print("  false: bb");
+        print(self.target_false.index);
+    }
+}
+
+impl Terminator for BrInt {
+    fn successors(&self) -> Vec<*BasicBlock> {
+        let mut succs = (type Vec<*BasicBlock>)::new();
+        for kv in self.targets {
+            succs.push(kv.1);
+        }
+        return succs;
+    }
+
+    fn dump(&self) {
+        for kv in self.targets {
+            print(kv.0);
+            print(":bb");
+            print(kv.1.index);
+        }
+    }
+}
+
+impl Terminator for BrRet {
+    fn successors(&self) -> Vec<*BasicBlock> {
+        let mut succs = (type Vec<*BasicBlock>)::new();
+        return succs;
+    }
+
+    fn dump(&self) {
+        if self.ret_val is Some(r) {
+            r.dump();
+        }
+    }
+}
+
+impl Terminator for BrPanic {
+    fn successors(&self) -> Vec<*BasicBlock> {
+        let mut succs = (type Vec<*BasicBlock>)::new();
+        return succs;
+    }
+
+    fn dump(&self) {
+        if self.panic_var is Some(r) {
+            r.dump();
+        }
+    }
+}

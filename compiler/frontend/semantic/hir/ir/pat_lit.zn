@@ -1,0 +1,86 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::diagnostic::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+
+use super::super::constant::*;
+
+use super::*;
+
+impl LiteralPattern {
+    fn new(n: *LiteralPatternNode) -> *Self {
+        let span = n.span();
+        return box {
+            .node = move n,
+            .matches_with = None,
+            .stype = SType::sty_invalid(span),
+        }: LiteralPattern;
+    }
+
+    fn const_val(&self) -> Option<*ConstValue> {
+        return const_value_from_lit_token(self.node.literal);
+    }
+}
+
+impl Pattern for LiteralPattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+        self.matches_with = Some(move expr);
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        return (type Vec<*VarSymbol>)::new();
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        let mw = self.matches_with.get_or_panic("BUG: pattern does not know what expression it matches with");
+        let expr_ty = ctx.infer(mw);
+        if !(ensure_type_valid(expr_ty, mw.expr_node().span())) {
+            return;
+        }
+        let sty = strip_pointer_except_weak(expr_ty);
+        self.stype = sty;
+
+        if self.const_val() is Some(c) {
+            match c {
+                const_int: *IntegerCValue => {
+                    if !(sty.type_symbol is type *IntegerSymbol) {
+                        DiagnosticEngine::get().emit_type_mismatch(
+                            f"integer", sty.to_string(), self.node.span()
+                        );
+                    }
+                }
+                const_char: *CharCValue => {
+                    if !(sty.type_symbol is type *CharSymbol) {
+                        DiagnosticEngine::get().emit_type_mismatch(
+                            f"Char", sty.to_string(), self.node.span()
+                        );
+                    }
+                }
+                const_byte: *ByteCValue => {
+                    if sty.type_symbol is intsym: *IntegerSymbol &&
+                        intsym.kind is IntegerKind::U8 {
+                        
+                    } else {
+                        DiagnosticEngine::get().emit_type_mismatch(
+                            f"Byte", sty.to_string(), self.node.span()
+                        );
+                    }
+                }
+                const_float: *FloatCValue => {
+                    if !(sty.type_symbol is type *FloatSymbol) {
+                        DiagnosticEngine::get().emit_type_mismatch(
+                            f"float", sty.to_string(), self.node.span()
+                        );
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            DiagnosticEngine::get().emit_unimplemented(self.node.span(), "invalid literal pattern");
+        }
+    }
+}

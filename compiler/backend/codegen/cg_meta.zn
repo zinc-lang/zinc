@@ -1,0 +1,1359 @@
+use super::*;
+use super::data_structures::*;
+
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+
+use std::meta::Type;
+
+extern fn codegen_builtin_typemeta(ds: Ptr, name: Ptr, len: UInt, byte_size: UInt) -> Ptr;
+extern fn codegen_tuple_generictypemeta(ds: Ptr) -> Ptr;
+extern fn codegen_array_generictypemeta(ds: Ptr) -> Ptr;
+
+extern fn empty_copy_fn(ds: Ptr) -> Ptr;
+extern fn empty_dtor_fn(ds: Ptr) -> Ptr;
+extern fn codegen_tuple_array_sizefn(ds: Ptr) -> Ptr;
+extern fn codegen_tuple_array_alignfn(ds: Ptr) -> Ptr;
+
+struct CgTypeMetaData {
+    kind: UInt8,
+    ty_param_count: UInt8,
+    ty_argc: UInt8,
+    align: UInt8,
+    size_byte: UInt64,
+}
+
+impl CodeGenerator {
+
+    // 返回的是 ZnTypeMeta*
+    fn cg_typemeta(&mut self, sym: *TypeSymbol) -> CgGlobal {
+        let res = self.do_cg_typemeta(move sym);
+        if res.has_initializer() {
+            let tm_int = res.value as UInt;
+            self.all_typemeta.insert(tm_int);
+        }
+        return res;
+    }
+
+    fn do_cg_typemeta(&mut self, sym: *TypeSymbol) -> CgGlobal {
+
+        match sym {
+            type *BoolSymbol => return self.cg_builtin_typemeta("Bool", 1);
+            type *CharSymbol => return self.cg_builtin_typemeta("Char", 4);
+            int_sym: *IntegerSymbol => {
+                match int_sym.kind {
+                    IntegerKind::I8 => return self.cg_builtin_typemeta("Int8", 1);
+                    IntegerKind::I16 => return self.cg_builtin_typemeta("Int16", 2);
+                    IntegerKind::I32 => return self.cg_builtin_typemeta("Int32", 4);
+                    IntegerKind::I64 => return self.cg_builtin_typemeta("Int64", 8);
+                    IntegerKind::Isize => return self.cg_builtin_typemeta("Int", 8);
+                    IntegerKind::Ishort => return self.cg_builtin_typemeta("Short", 4);
+                    IntegerKind::U8 => return self.cg_builtin_typemeta("UInt8", 1);
+                    IntegerKind::U16 => return self.cg_builtin_typemeta("UInt16", 2);
+                    IntegerKind::U32 => return self.cg_builtin_typemeta("UInt32", 4);
+                    IntegerKind::U64 => return self.cg_builtin_typemeta("UInt64", 8);
+                    IntegerKind::Usize => return self.cg_builtin_typemeta("UInt", 8);
+                    IntegerKind::Ushort => return self.cg_builtin_typemeta("UShort", 4);
+                }
+            }
+            float_sym: *FloatSymbol => {
+                match float_sym.kind {
+                    FloatKind::F32 => return self.cg_builtin_typemeta("F32", 4);
+                    FloatKind::F64 => return self.cg_builtin_typemeta("F64", 8);
+                }
+            }
+            struct_sym: *StructSymbol => {
+                if struct_sym.generics.ty_params.is_empty() {
+                    return self.cg_struct_typemeta(move struct_sym);
+                }
+            }
+            enum_sym: *EnumSymbol => {
+                if enum_sym.generics.ty_params.is_empty() {
+                    return self.cg_enum_typemeta(move enum_sym);
+                }
+            }
+            union_sym: *UnionSymbol => {
+                return self.cg_union_typemeta(move union_sym);
+            }
+            trait_sym: *TraitSymbol => {
+                return self.cg_trait_typemeta(move trait_sym);
+            }
+            _ => {
+                let meta = Type::of(&*sym as &TypeSymbol as &Any);
+                let name = meta.short_name();
+                let msg = f"BUG: unhandled case in CodeGenerator::cg_typemeta: $(name)";
+                panic msg.as_str().deref();
+            }
+        }
+        panic;
+    }
+
+    fn get_typemeta_global(&mut self, sym: *TypeSymbol) -> CgGlobal {
+        let gv_name = self.typemeta_name_of(move sym);
+        return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTypeMeta());
+    }
+
+    // 返回的是 ZnGenericTypeMeta*
+    fn cg_generic_typemeta(&mut self, sym: *TypeSymbol) -> CgGlobal {
+        let res = self.do_cg_generic_typemeta(move sym);
+        if res.has_initializer() {
+            let tm_int = res.value as UInt;
+            self.all_generic_typemeta.insert(tm_int);
+        }
+        return res;
+    }
+
+    fn do_cg_generic_typemeta(&mut self, sym: *TypeSymbol) -> CgGlobal {
+        match sym {
+            struct_sym: *StructSymbol => {
+                return self.cg_struct_generic_typemeta(move struct_sym);
+            }
+            enum_sym: *EnumSymbol => {
+                return self.cg_enum_generic_typemeta(move enum_sym);
+            }
+            trait_sym: *TraitSymbol => {
+                // unimplemented
+                panic "BUG: trait with type generics is unimplemented";
+            }
+            tup_sym: *TupleSymbol => {
+                return self.cg_tuple_generic_typemeta(move tup_sym);
+            }
+            array_sym: *ArraySymbol => {
+                return self.cg_array_generic_typemeta(move array_sym);
+            }
+            ptr_sym: *PointerLikeSymbol => {
+                return self.cg_pointer_generic_typemeta(move ptr_sym);
+            }
+            _ => {
+                let meta = Type::of(&*sym as &TypeSymbol as &Any);
+                let name = meta.short_name();
+                let msg = f"BUG: unhandled case in CodeGenerator::cg_typemeta: $(name)";
+                panic msg.as_str().deref();
+            }
+        }
+        panic;
+    }
+
+    fn typemeta_name_of(&mut self, sym: *TypeSymbol) -> String {
+        let mut name = f"zn.meta.";
+        if is_builtin_type_symbol(sym) {
+            name.push_str(sym.short_name().as_str().deref());
+        }
+        else if sym is alias: *TypeAliasSymbol {
+            return self.typemeta_name_of(alias.target_sty.type_symbol);
+        }
+        else {
+            name.push_str(sym.export_key().as_str().deref());
+        }
+        return name;
+    }
+
+    fn codegen_primitives_in_std(&mut self) {
+        self.cg_builtin_typemeta("Bool", 1);
+        self.cg_builtin_typemeta("Char", 4);
+        self.cg_builtin_typemeta("Int8", 1);
+        self.cg_builtin_typemeta("Int16", 2);
+        self.cg_builtin_typemeta("Int32", 4);
+        self.cg_builtin_typemeta("Int64", 8);
+        self.cg_builtin_typemeta("Int", 8);
+        self.cg_builtin_typemeta("Short", 4);
+        self.cg_builtin_typemeta("UInt8", 1);
+        self.cg_builtin_typemeta("UInt16", 2);
+        self.cg_builtin_typemeta("UInt32", 4);
+        self.cg_builtin_typemeta("UInt64", 8);
+        self.cg_builtin_typemeta("UInt", 8);
+        self.cg_builtin_typemeta("UShort", 4);
+        self.cg_builtin_typemeta("F32", 4);
+        self.cg_builtin_typemeta("F64", 8);
+
+        self.cg_pointer_generic_typemeta(ArcPointerSymbol::new() as *PointerLikeSymbol);
+        self.cg_pointer_generic_typemeta(WeakPointerSymbol::new() as *PointerLikeSymbol);
+        self.cg_pointer_generic_typemeta(BorrowImmutSymbol::new() as *PointerLikeSymbol);
+        self.cg_pointer_generic_typemeta(BorrowMutSymbol::new() as *PointerLikeSymbol);
+        self.cg_pointer_generic_typemeta(RawPointerImmutSymbol::new() as *PointerLikeSymbol);
+        self.cg_pointer_generic_typemeta(RawPointerMutSymbol::new() as *PointerLikeSymbol);
+        unsafe {
+            codegen_tuple_generictypemeta(self.llds.ds);
+            codegen_array_generictypemeta(self.llds.ds);
+        }
+    }
+
+    fn cg_builtin_typemeta(&mut self, name: Str, byte_size: UInt) -> CgGlobal {
+        if !self.comp_name.as_str().deref().eq(&"std") {
+            let mut gv_name = f"zn.meta.";
+            gv_name.push_str(name);
+
+            if name.eq(&"Tuple") || name.eq(&"Array") {
+                return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnGenericTypeMeta());
+            } else {
+                return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTypeMeta());
+            }
+        }
+
+        unsafe {
+            let g = codegen_builtin_typemeta(self.llds.ds, name.raw_ptr(), name.len(), byte_size);
+            return {
+                .value = g
+            }: CgGlobal;
+        }
+    }
+
+    fn cg_struct_typemeta(&mut self, struct_sym: *StructSymbol) -> CgGlobal {
+        // 先看缓存
+        let gv_name = self.typemeta_name_of(struct_sym);
+        if self.is_imported(struct_sym) {
+            return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTypeMeta());
+        }
+        
+        let gv = self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTypeMeta());
+        if gv.has_initializer() {
+            return gv; // 已经生成了
+        }
+
+        let cg_struct_ty = self.cgtype_of(struct_sym.to_sty()).get_or_panic();
+
+        let name = self.llds.get_const_string(struct_sym.export_key().as_str().deref());
+        let kind = self.llds.get_const_int8(25_u8); // ZnTypeMetaKind::TM_Struct
+        let ty_param_count = self.llds.get_const_int8(0_u8);
+        let ty_argc = self.llds.get_const_int8(0_u8);
+        let align = self.llds.get_const_int8(self.llds.alignment_of(cg_struct_ty) as UInt8);
+        let size = self.llds.get_const_int64(self.llds.storage_size_of(cg_struct_ty) as UInt64);
+        let copyfn = self.cg_struct_copyfn(struct_sym);
+        let dtorfn = self.cg_struct_dtorfn(struct_sym);
+        let ty_argv = self.llds.get_const_null();
+        let instantiated_from = self.llds.get_const_null();
+        let hashmap = self.llds.get_null_value_of(self.llds.type_byte_array(56_u)); // sizeof(HashMap)
+
+        let agg = self.llds.get_const_struct(
+            self.llds.type_ZnTypeMeta(),
+            &[
+                name, kind, ty_param_count, ty_argc, align, size, copyfn.as_const(), dtorfn.as_const(), ty_argv, instantiated_from, hashmap
+            ] as Slice<CgConst>
+        );
+        gv.set_initializer(agg);
+        return gv;
+    }
+
+    fn cg_enum_typemeta(&mut self, enum_sym: *EnumSymbol) -> CgGlobal {
+        // 先看缓存
+        let gv_name = self.typemeta_name_of(enum_sym);
+        if self.is_imported(enum_sym) {
+            return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTypeMeta());
+        }
+        
+        let gv = self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTypeMeta());
+        if gv.has_initializer() {
+            return gv; // 已经生成了
+        }
+
+        let cg_struct_ty = self.cgtype_of(enum_sym.to_sty()).get_or_panic();
+
+        let name = self.llds.get_const_string(enum_sym.export_key().as_str().deref());
+        let kind = self.llds.get_const_int8(26_u8); // ZnTypeMetaKind::TM_Enum
+        let ty_param_count = self.llds.get_const_int8(0_u8);
+        let ty_argc = self.llds.get_const_int8(0_u8);
+        let align = self.llds.get_const_int8(self.llds.alignment_of(cg_struct_ty) as UInt8);
+        let size = self.llds.get_const_int64(self.llds.storage_size_of(cg_struct_ty) as UInt64);
+        let copyfn = self.cg_enum_copyfn(enum_sym);
+        let dtorfn = self.cg_enum_dtorfn(enum_sym);
+        let ty_argv = self.llds.get_const_null();
+        let instantiated_from = self.llds.get_const_null();
+        let hashmap = self.llds.get_null_value_of(self.llds.type_byte_array(56_u)); // sizeof(HashMap)
+
+        let agg = self.llds.get_const_struct(
+            self.llds.type_ZnTypeMeta(),
+            &[
+                name, kind, ty_param_count, ty_argc, align, size, copyfn.as_const(), dtorfn.as_const(), ty_argv, instantiated_from, hashmap
+            ] as Slice<CgConst>
+        );
+        gv.set_initializer(agg);
+        return gv;
+    }
+
+    fn cg_struct_generic_typemeta(&mut self, struct_sym: *StructSymbol) -> CgGlobal {
+        // 先看缓存
+        let gv_name = self.typemeta_name_of(struct_sym);
+        if self.is_imported(struct_sym) {
+            return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnGenericTypeMeta());
+        }
+
+        let gv = self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnGenericTypeMeta());
+        if gv.has_initializer() {
+            return gv; // 已经生成了
+        }
+
+        let name = self.llds.get_const_string(struct_sym.export_key().as_str().deref());
+        let kind = self.llds.get_const_int8(25_u8); // ZnTypeMetaKind::TM_Struct
+        let ty_param_count = self.llds.get_const_int8(struct_sym.generics.ty_params.len() as UInt8);
+        let size_fn = self.cg_struct_sizefn(struct_sym).as_const();
+        let align_fn = self.cg_typemeta_alignfn(struct_sym as *TypeSymbol).as_const();
+        let copy_fn = self.cg_struct_copyfn(struct_sym).as_const();
+        let dtor_fn = self.cg_struct_dtorfn(struct_sym).as_const();
+        let where_cond_fn = self.llds.get_const_null(); // FIXME
+        let related_impl_cap = self.llds.get_const_int64(0);
+        let related_impls = self.llds.get_const_null();
+        let hashmap = self.llds.get_null_value_of(self.llds.type_byte_array(56_u)); // sizeof(HashMap)
+
+        
+        let agg = self.llds.get_const_struct(
+            self.llds.type_ZnGenericTypeMeta(),
+            &[
+                name, kind, ty_param_count, size_fn, align_fn, copy_fn, dtor_fn, where_cond_fn, related_impl_cap, related_impls, hashmap
+            ] as Slice<CgConst>
+        );
+        gv.set_initializer(agg);
+        return gv;
+    }
+
+    fn cg_enum_generic_typemeta(&mut self, enum_sym: *EnumSymbol) -> CgGlobal {
+        // 先看缓存
+        let gv_name = self.typemeta_name_of(enum_sym);
+        if self.is_imported(enum_sym) {
+            return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnGenericTypeMeta());
+        }
+
+        let gv = self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnGenericTypeMeta());
+        if gv.has_initializer() {
+            return gv; // 已经生成了
+        }
+
+        let name = self.llds.get_const_string(enum_sym.export_key().as_str().deref());
+        let kind = self.llds.get_const_int8(26_u8); // ZnTypeMetaKind::TM_Enum
+        let ty_param_count = self.llds.get_const_int8(enum_sym.generics.ty_params.len() as UInt8);
+        let size_fn = self.cg_enum_sizefn(enum_sym).as_const();
+        let align_fn = self.cg_typemeta_alignfn(enum_sym as *TypeSymbol).as_const();
+        let copy_fn = self.cg_enum_copyfn(enum_sym).as_const();
+        let dtor_fn = self.cg_enum_dtorfn(enum_sym).as_const();
+        let where_cond_fn = self.llds.get_const_null(); // FIXME
+        let related_impl_cap = self.llds.get_const_int64(0);
+        let related_impls = self.llds.get_const_null();
+        let hashmap = self.llds.get_null_value_of(self.llds.type_byte_array(56_u)); // sizeof(HashMap)
+
+        
+        let agg = self.llds.get_const_struct(
+            self.llds.type_ZnGenericTypeMeta(),
+            &[
+                name, kind, ty_param_count, size_fn, align_fn, copy_fn, dtor_fn, where_cond_fn, related_impl_cap, related_impls, hashmap
+            ] as Slice<CgConst>
+        );
+        gv.set_initializer(agg);
+        return gv;
+    }
+
+    fn cg_tuple_generic_typemeta(&mut self, tup_sym: *TupleSymbol) -> CgGlobal {
+        // 先看缓存
+        let gv_name = self.typemeta_name_of(tup_sym);
+        if self.is_imported(tup_sym) {
+            return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnGenericTypeMeta());
+        }
+
+        let gv = self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnGenericTypeMeta());
+        if gv.has_initializer() {
+            return gv; // 已经生成了
+        }
+
+        let name = self.llds.get_const_string(tup_sym.export_key().as_str().deref());
+        let kind = self.llds.get_const_int8(23_u8); // ZnTypeMetaKind::TM_Tuple
+        let ty_param_count = self.llds.get_const_int8(0_u8);
+        let size_fn = self.cg_typemeta_sizefn(tup_sym).as_const();
+        let align_fn = self.cg_typemeta_alignfn(tup_sym as *TypeSymbol).as_const();
+        let copy_fn = self.cg_typemeta_copyfn(tup_sym).as_const();
+        let dtor_fn = self.cg_typemeta_dtorfn(tup_sym).as_const();
+        let where_cond_fn = self.llds.get_const_null(); // FIXME
+        let related_impl_cap = self.llds.get_const_int64(0);
+        let related_impls = self.llds.get_const_null();
+        let hashmap = self.llds.get_null_value_of(self.llds.type_byte_array(56_u)); // sizeof(HashMap)
+
+        let agg = self.llds.get_const_struct(
+            self.llds.type_ZnGenericTypeMeta(),
+            &[
+                name, kind, ty_param_count, size_fn, align_fn, copy_fn, dtor_fn, where_cond_fn, related_impl_cap, related_impls, hashmap
+            ] as Slice<CgConst>
+        );
+        gv.set_initializer(agg);
+        return gv;
+    }
+
+    fn cg_array_generic_typemeta(&mut self, arr_sym: *ArraySymbol) -> CgGlobal {
+        // 先看缓存
+        let gv_name = self.typemeta_name_of(arr_sym);
+        if self.is_imported(arr_sym) {
+            return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnGenericTypeMeta());
+        }
+
+        let gv = self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnGenericTypeMeta());
+        if gv.has_initializer() {
+            return gv; // 已经生成了
+        }
+
+        let name = self.llds.get_const_string(arr_sym.export_key().as_str().deref());
+        let kind = self.llds.get_const_int8(24_u8); // ZnTypeMetaKind::TM_Array
+        let ty_param_count = self.llds.get_const_int8(0_u8);
+        let size_fn = self.cg_typemeta_sizefn(arr_sym).as_const();
+        let align_fn = self.cg_typemeta_alignfn(arr_sym as *TypeSymbol).as_const();
+        let copy_fn = self.cg_typemeta_copyfn(arr_sym).as_const();
+        let dtor_fn = self.cg_typemeta_dtorfn(arr_sym).as_const();
+        let where_cond_fn = self.llds.get_const_null(); // FIXME
+        let related_impl_cap = self.llds.get_const_int64(0);
+        let related_impls = self.llds.get_const_null();
+        let hashmap = self.llds.get_null_value_of(self.llds.type_byte_array(56_u)); // sizeof(HashMap)
+
+        let agg = self.llds.get_const_struct(
+            self.llds.type_ZnGenericTypeMeta(),
+            &[
+                name, kind, ty_param_count, size_fn, align_fn, copy_fn, dtor_fn, where_cond_fn, related_impl_cap, related_impls, hashmap
+            ] as Slice<CgConst>
+        );
+        gv.set_initializer(agg);
+        return gv;
+    }
+
+    fn cg_pointer_generic_typemeta(&mut self, ptr_sym: *PointerLikeSymbol) -> CgGlobal {
+        // 先看缓存
+        let gv_name = self.typemeta_name_of(ptr_sym);
+        if self.is_imported(ptr_sym as *TypeSymbol as *Symbol) {
+            return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnGenericTypeMeta());
+        }
+
+        let gv = self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnGenericTypeMeta());
+        if gv.has_initializer() {
+            return gv; // 已经生成了
+        }
+
+        let mut type_kind: UInt8 = 0;
+        match ptr_sym {
+            type *ArcPointerSymbol => type_kind = 17;
+            type *WeakPointerSymbol => type_kind = 18;
+            type *BorrowImmutSymbol => type_kind = 19;
+            type *BorrowMutSymbol => type_kind = 20;
+            type *RawPointerImmutSymbol => type_kind = 21;
+            type *RawPointerMutSymbol => type_kind = 22;
+        }
+
+        let sym = ptr_sym as *Symbol;
+        let name = self.llds.get_const_string(sym.export_key().as_str().deref());
+        let kind = self.llds.get_const_int8(type_kind); //
+        let ty_param_count = self.llds.get_const_int8(1_u8);
+        let size_fn = self.cg_typemeta_sizefn(ptr_sym as *TypeSymbol).as_const();
+        let align_fn = self.cg_typemeta_alignfn(ptr_sym as *TypeSymbol).as_const();
+        let copy_fn = self.cg_typemeta_copyfn(ptr_sym as *TypeSymbol).as_const();
+        let dtor_fn = self.cg_typemeta_dtorfn(ptr_sym as *TypeSymbol).as_const();
+        let where_cond_fn = self.llds.get_const_null(); // FIXME
+        let related_impl_cap = self.llds.get_const_int64(0);
+        let related_impls = self.llds.get_const_null();
+        let hashmap = self.llds.get_null_value_of(self.llds.type_byte_array(56_u)); // sizeof(HashMap)
+
+        let agg = self.llds.get_const_struct(
+            self.llds.type_ZnGenericTypeMeta(),
+            &[
+                name, kind, ty_param_count, size_fn, align_fn, copy_fn, dtor_fn, where_cond_fn, related_impl_cap, related_impls, hashmap
+            ] as Slice<CgConst>
+        );
+        gv.set_initializer(agg);
+        return gv;
+    }
+
+    fn cg_union_typemeta(&mut self, union_sym: *UnionSymbol) -> CgGlobal {
+        // 先看缓存
+        let gv_name = self.typemeta_name_of(union_sym);
+        if self.is_imported(union_sym) {
+            return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTypeMeta());
+        }
+        
+        let gv = self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTypeMeta());
+        if gv.has_initializer() {
+            return gv; // 已经生成了
+        }
+
+        let cg_struct_ty = self.cgtype_of(union_sym.to_sty()).get_or_panic();
+
+        let name = self.llds.get_const_string(union_sym.export_key().as_str().deref());
+        let kind = self.llds.get_const_int8(27_u8); // ZnTypeMetaKind::TM_Union
+        let ty_param_count = self.llds.get_const_int8(0_u8);
+        let ty_argc = self.llds.get_const_int8(0_u8);
+        let align = self.llds.get_const_int8(self.llds.alignment_of(cg_struct_ty) as UInt8);
+        let size = self.llds.get_const_int64(self.llds.storage_size_of(cg_struct_ty) as UInt64);
+        let copyfn = self.cg_empty_copyfn();
+        let dtorfn = self.cg_empty_dtorfn();
+        let ty_argv = self.llds.get_const_null();
+        let instantiated_from = self.llds.get_const_null();
+        let hashmap = self.llds.get_null_value_of(self.llds.type_byte_array(56_u)); // sizeof(HashMap)
+
+        let agg = self.llds.get_const_struct(
+            self.llds.type_ZnTypeMeta(),
+            &[
+                name, kind, ty_param_count, ty_argc, align, size, copyfn.as_const(), dtorfn.as_const(), ty_argv, instantiated_from, hashmap
+            ] as Slice<CgConst>
+        );
+        gv.set_initializer(agg);
+        return gv;
+    }
+
+    fn cg_trait_typemeta(&mut self, trait_sym: *TraitSymbol) -> CgGlobal {
+        // 先看缓存
+        let gv_name = self.typemeta_name_of(trait_sym);
+        if self.is_imported(trait_sym) {
+            return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTypeMeta());
+        }
+        
+        let gv = self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTypeMeta());
+        if gv.has_initializer() {
+            return gv; // 已经生成了
+        }
+
+        let name = self.llds.get_const_string(trait_sym.export_key().as_str().deref());
+        let kind = self.llds.get_const_int8(28_u8); // ZnTypeMetaKind::TM_Trait
+        let ty_param_count = self.llds.get_const_int8(0_u8);
+        let ty_argc = self.llds.get_const_int8(0_u8);
+        let align = self.llds.get_const_int8(1_u8);
+        let size = self.llds.get_const_int64(0_u64);
+        let copyfn = self.cg_empty_copyfn();
+        let dtorfn = self.cg_empty_dtorfn();
+        let ty_argv = self.llds.get_const_null();
+        let instantiated_from = self.llds.get_const_null();
+        let hashmap = self.llds.get_null_value_of(self.llds.type_byte_array(56_u)); // sizeof(HashMap)
+
+        let agg = self.llds.get_const_struct(
+            self.llds.type_ZnTypeMeta(),
+            &[
+                name, kind, ty_param_count, ty_argc, align, size, copyfn.as_const(), dtorfn.as_const(), ty_argv, instantiated_from, hashmap
+            ] as Slice<CgConst>
+        );
+        gv.set_initializer(agg);
+        return gv;
+    }
+
+    fn cg_impl_typemeta(&mut self, isym: *ImplSymbol) -> CgGlobal {
+        let res = self.do_cg_impl_typemeta(move isym);
+        if res.has_initializer() {
+            let tm_int = res.value as UInt;
+            self.all_impl_typemeta.insert(tm_int);
+        }
+        return res;
+    }
+
+    fn do_cg_impl_typemeta(&mut self, isym: *ImplSymbol) -> CgGlobal {
+        if isym.trait_sty is None {
+            return { .value = unsafe(0_u as Ptr) }: CgGlobal;
+        }
+
+        let mut gv_name = f"zn.impl.";
+        gv_name.push_str(isym.export_key().as_str().deref());
+
+        if self.is_imported(isym) {
+            return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTraitImpl());
+        }
+
+        let gv = self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTraitImpl());
+        if gv.has_initializer() {
+            return gv; // 已经生成了
+        }
+
+        let mut ll_fields: Vec<CgConst> = Vec::new();
+        let type_param_count = self.llds.get_const_int8(isym.generics.ty_params.len() as UInt8);
+        ll_fields.push(type_param_count);
+        let assoc_type_count = self.llds.get_const_int8(isym.associated_types.len() as UInt8);
+        ll_fields.push(assoc_type_count);
+
+        if isym.target_sty.args.ty_args.is_empty() {
+            let target_def = self.get_typemeta_global(isym.target_sty.type_symbol);
+            ll_fields.push(target_def.as_const());
+        } else {
+            let target_def = self.cg_generic_typemeta(isym.target_sty.type_symbol);
+            ll_fields.push(target_def.as_const());
+        }
+
+        if isym.trait_sty is Some(trait_sty) {
+            if trait_sty.args.ty_args.is_empty() {
+                let trait_def = self.get_typemeta_global(trait_sty.type_symbol);
+                ll_fields.push(trait_def.as_const());
+            } else {
+                let trait_def = self.cg_generic_typemeta(trait_sty.type_symbol);
+                ll_fields.push(trait_def.as_const());
+            }
+        } else {
+            panic;
+        }
+
+        let trait_fn = self.llds.get_const_null(); // todo 暂时还没支持泛型 trait
+        ll_fields.push(trait_fn);
+        let assoc_types_fn = self.llds.get_const_null(); // todo 暂时还没支持泛型 GAT
+        ll_fields.push(assoc_types_fn);
+
+        let mut vtable_elems: Vec<CgConst> = Vec::new();
+        for f in isym.collect_methods_table() {
+            let f_cg = self.cg_func_decl(f);
+            vtable_elems.push(f_cg.as_const());
+        }
+        let gv_fn_array = self.llds.cg_const_array_gv(self.llds.type_thin_ptr(), vtable_elems.as_slice().deref());
+        ll_fields.push(gv_fn_array);
+
+        let where_cond = self.llds.get_const_null(); // todo 暂时还没支持泛型 where 条件
+        ll_fields.push(where_cond);
+
+        let agg = self.llds.get_const_struct(
+            self.llds.type_ZnTraitImpl(),
+            ll_fields.as_slice().deref()
+        );
+        gv.set_initializer(agg);
+        return gv;
+    }
+
+    fn cg_empty_copyfn(&mut self) -> CgFunc {
+        unsafe {
+            let f = empty_copy_fn(self.llds.ds);
+            return {
+                .llfn = f
+            }: CgFunc;
+        }
+    }
+
+    fn cg_empty_dtorfn(&mut self) -> CgFunc {
+        unsafe {
+            let f = empty_dtor_fn(self.llds.ds);
+            return {
+                .llfn = f
+            }: CgFunc;
+        }
+    }
+
+    fn cg_tuple_array_sizefn(&mut self) -> CgFunc {
+        unsafe {
+            let f = codegen_tuple_array_sizefn(self.llds.ds);
+            return {
+                .llfn = f
+            }: CgFunc;
+        }
+    }
+
+    fn cg_tuple_array_alignfn(&mut self) -> CgFunc {
+        unsafe {
+            let f = codegen_tuple_array_alignfn(self.llds.ds);
+            return {
+                .llfn = f
+            }: CgFunc;
+        }
+    }
+
+    fn access_typemeta_argv_of(&mut self, typemeta: CgValue, idx: UInt) -> CgValue {
+        let type_params = self.llds.create_struct_gep(self.llds.type_ZnTypeMeta(), typemeta, 8_u);
+        let ty_argv = self.llds.create_load(self.llds.type_thin_ptr(), type_params);
+        let idx_v = self.llds.get_const_int32(idx as UInt32).as_value();
+        let elem_ptr = self.llds.create_gep(self.llds.type_thin_ptr(), ty_argv, idx_v);
+        return self.llds.create_load(self.llds.type_thin_ptr(), elem_ptr);
+    }
+
+    fn access_typemeta_copyfn(&mut self, typemeta: CgValue) -> CgValue {
+        let field_copyfn = self.llds.create_struct_gep(self.llds.type_ZnTypeMeta(), typemeta, 6_u);
+        return self.llds.create_load(self.llds.type_thin_ptr(), field_copyfn);
+    }
+
+    fn access_typemeta_dtorfn(&mut self, typemeta: CgValue) -> CgValue {
+        let field_dtorfn = self.llds.create_struct_gep(self.llds.type_ZnTypeMeta(), typemeta, 7_u);
+        return self.llds.create_load(self.llds.type_thin_ptr(), field_dtorfn);
+    }
+
+    fn access_typemeta_size(&mut self, typemeta: CgValue) -> CgValue {
+        let field_size = self.llds.create_struct_gep(self.llds.type_ZnTypeMeta(), typemeta, 5_u);
+        return self.llds.create_load(self.llds.type_int64(), field_size);
+    }
+
+    fn get_typemeta_from_typearg(&mut self, field_sty: *SType, ty_params: &GenericParams, struct_typemeta: CgValue) -> CgValue {
+        if field_sty.type_symbol is tps: *TypeParamSymbol {
+            let idx = index_of(tps, ty_params);
+            return self.access_typemeta_argv_of(struct_typemeta, idx);
+        }
+        // field_sty 没有泛型参数, 直接获取全局变量
+        if field_sty.args.ty_args.is_empty() &&
+            !(field_sty.type_symbol is type *TupleSymbol) &&
+            !(field_sty.type_symbol is type *ArraySymbol) {
+
+            return self.get_typemeta_global(field_sty.type_symbol).as_value();
+        }
+
+        // 带泛型参数, 调用 runtime 函数生成
+        let generic_typemeta = self.cg_generic_typemeta(field_sty.type_symbol).as_value();
+        let len = field_sty.args.ty_args.len();
+        let argc = self.llds.get_const_int8(len as UInt8).as_value();
+        let argv = self.llds.create_alloca_sized(self.llds.type_ptr_array(len));
+
+        let mut i: UInt32 = 0;
+        for arg in field_sty.args.ty_args {
+            let a = self.get_typemeta_from_typearg(arg, ty_params, struct_typemeta);
+            let elem_ptr = self.llds.create_gep(
+                self.llds.type_thin_ptr(),
+                argv,
+                self.llds.get_const_int32(i).as_value()
+            );
+            self.llds.create_store(a, elem_ptr);
+            i += 1;
+        }
+
+        let callee = self.llds.get_ext_fn_in_core("zinc_core_instantiated");
+        let result = self.llds.create_call(callee, &[generic_typemeta, argc, argv] as Slice<CgValue>);
+        return result;
+    }
+
+    fn cg_struct_copyfn(&mut self, struct_sym: *StructSymbol) -> CgFunc {
+        // 先判断缓存
+        let sym_addr = struct_sym as *raw StructSymbol as UInt;
+        if self.cached_copyfn.at(&sym_addr) is Some(f) {
+            return f;
+        }
+        if is_trivial_type(struct_sym.to_sty()) {
+            let copyfn = self.cg_empty_copyfn();
+            self.cached_copyfn.insert(sym_addr, copyfn);
+            return copyfn;
+        }
+
+        // 再生成函数体
+        let mut name = struct_sym.export_key();
+        name.push_str(".copyfn");
+        let copyfn_ty = self.llds.type_function_copyfn();
+        let func = self.llds.create_fn(copyfn_ty, name.as_str().deref());
+
+        // 如果是 import 的类型, 则生成函数声明
+        if self.is_imported(struct_sym as *Symbol) {
+            self.cached_copyfn.insert(sym_addr, func);
+            return func;
+        }
+
+        self.add_debuginfo(func, struct_sym.struct_node.span().start, name);
+
+        let llbb = self.llds.create_bb("entry", func);
+        let saved_insert_point = self.llds.save_ip();
+        self.llds.set_insert_point(llbb);
+
+        let mut field_head = self.llds.get_arg(func, 0_u);
+        let struct_typemeta = self.llds.get_arg(func, 1_u);
+        let di_loc = self.debug_loc(func, struct_sym.struct_node.span().start);
+
+        if self.cgtype_of(struct_sym.to_sty()) is Some(struct_cgty) {
+            let mut field_idx: UInt = 0;
+            for field in struct_sym.fields {
+                let field_addr = self.llds.create_struct_gep(struct_cgty, field_head, field_idx);
+                let ty_meta = self.get_typemeta_from_typearg(field.stype, &struct_sym.generics, struct_typemeta);
+                let copyfn = self.cg_typemeta_copyfn(field.stype.type_symbol);
+
+                self.llds.set_di_loc(di_loc);
+                self.llds.create_call(copyfn, &[field_addr, ty_meta] as Slice<CgValue>);
+                self.llds.reset_di_loc();
+                field_idx += 1;
+            }
+        } else {
+            for field in struct_sym.fields {
+                let ty_meta = self.get_typemeta_from_typearg(field.stype, &struct_sym.generics, struct_typemeta);
+                let field_copyfn = self.access_typemeta_copyfn(ty_meta);
+
+                field_head = self.llds.align_pointer_to_typemeta(field_head, ty_meta);
+                self.llds.create_call(
+                    copyfn_ty, field_copyfn, &[field_head, ty_meta] as Slice<CgValue>
+                );
+
+                if self.cgtype_of(field.stype) is Some(ty) {
+                    let size = self.llds.storage_size_of(ty);
+                    field_head = self.llds.create_gep(
+                        self.llds.type_int8(), field_head, self.llds.get_const_int64(size as UInt64).as_value()
+                    );
+                } else {
+                    let size = self.access_typemeta_size(ty_meta);
+                    field_head = self.llds.create_gep(
+                        self.llds.type_int8(), field_head, size
+                    );
+                }
+            }
+        }
+        self.llds.create_retvoid();
+        self.llds.verify_function(func);
+        self.cached_copyfn.insert(sym_addr, func);
+        self.llds.restore_ip(saved_insert_point);
+        return func;
+    }
+
+    fn cg_enum_copyfn(&mut self, enum_sym: *EnumSymbol) -> CgFunc {
+        // Option 类型特殊处理
+        if enum_sym.export_key().as_str().deref().eq(&"::std::primitives::option::Option") {
+            return self.llds.get_ext_fn_in_core("zinc_core_option_copyfn");
+        }
+        // 先判断缓存
+        let sym_addr = enum_sym as *raw EnumSymbol as UInt;
+        if self.cached_copyfn.at(&sym_addr) is Some(f) {
+            return f;
+        }
+        if is_trivial_type(enum_sym.to_sty()) {
+            let copyfn = self.cg_empty_copyfn();
+            self.cached_copyfn.insert(sym_addr, copyfn);
+            return copyfn;
+        }
+        // 再生成函数体
+        let mut name = enum_sym.export_key();
+        name.push_str(".copyfn");
+        let copyfn_ty = self.llds.type_function_copyfn();
+        let func = self.llds.create_fn(copyfn_ty, name.as_str().deref());
+
+        // 如果是 import 的类型, 则生成函数声明
+        if self.is_imported(enum_sym as *Symbol) {
+            self.cached_copyfn.insert(sym_addr, func);
+            return func;
+        }
+
+        self.add_debuginfo(func, enum_sym.enum_node.span().start, name);
+
+        let mut llbbs = (type Vec<CgBasicBlock>)::new();
+        let mut j: UInt = 0;
+        while j < enum_sym.variants.len() * 2 + 2 {
+            let bb = self.llds.create_bb("", func);
+            llbbs.push(move bb);
+            j += 1;
+        }
+
+        let bb0: CgBasicBlock = *llbbs.index(0).deref();
+        let bb_end: CgBasicBlock = *llbbs.index(llbbs.len()-1).deref();
+        let saved_insert_point = self.llds.save_ip();
+        self.llds.set_insert_point(bb0);
+
+        let tag = self.llds.create_load(self.llds.type_int64(), self.llds.get_arg(func, 0_u));
+        let mut payload_head = self.llds.create_gep(self.llds.type_int64(), self.llds.get_arg(func, 0_u), self.llds.get_const_int32(1_u32).as_value());
+
+        let mut i: UInt = 0;
+        for ev in enum_sym.variants {
+            if i == 0 {
+                let bb1: CgBasicBlock = *llbbs.index(1).deref();
+                self.llds.create_br(bb1);
+                self.llds.set_insert_point(bb1);
+            }
+            let discriminant = self.llds.get_const_int64(i as UInt64).as_value();
+            let equals = self.llds.create_icmp_eq(tag, discriminant);
+            let true_br = *llbbs.index(2*i+2).deref();
+            let false_br = *llbbs.index(2*i+3).deref();
+            self.llds.create_cond_br(equals, true_br, false_br);
+
+            self.llds.set_insert_point(true_br);
+            let payload_sty = ev.payload_tuple_type();
+            let tup_typemeta = self.get_typemeta_from_typearg(move payload_sty, &enum_sym.generics, self.llds.get_arg(func, 1_u));
+            let tup_copyfn = self.access_typemeta_copyfn(tup_typemeta);
+            self.llds.create_call(
+                copyfn_ty, tup_copyfn, &[payload_head, tup_typemeta] as Slice<CgValue>
+            );
+            self.llds.create_br(bb_end);
+            self.llds.set_insert_point(false_br);
+
+            i += 1;
+        }
+
+        self.llds.set_insert_point(bb_end);
+        self.llds.create_retvoid();
+
+        self.llds.verify_function(func);
+        self.cached_copyfn.insert(sym_addr, func);
+        self.llds.restore_ip(saved_insert_point);
+        return func;
+    }
+
+    fn cg_typemeta_copyfn(&mut self, ts: *TypeSymbol) -> CgFunc {
+        match ts {
+            // 这些类型不应该出现在这里
+            type *InvalidSymbol => panic;
+            type *LifetimeSymbol => panic;
+            type *ExternTypeSymbol => panic;
+            type *FuncSymbol => panic;
+            type *TypeParamSymbol => panic;
+
+            alias: *TypeAliasSymbol => return self.cg_typemeta_copyfn(alias.target_sty.type_symbol);
+            assoc: *AssociatedTypeSymbol => return self.cg_typemeta_copyfn(assoc.target_sty.type_symbol);
+
+            type *BoolSymbol => return self.cg_empty_copyfn();
+            type *CharSymbol => return self.cg_empty_copyfn();
+            type *IntegerSymbol => return self.cg_empty_copyfn();
+            type *FloatSymbol => return self.cg_empty_copyfn();
+
+            // 带泛型的类型
+            type *TupleSymbol => {
+                return self.llds.get_ext_fn_in_core("zinc_core_tuple_copyfn");
+            }
+            type *ArraySymbol => {
+                return self.llds.get_ext_fn_in_core("zinc_core_array_copyfn");
+            }
+            type *ArcPointerSymbol => {
+                return self.llds.get_ext_fn_in_core("zinc_core_arc_copyfn");
+            }
+            type *WeakPointerSymbol => {
+                return self.llds.get_ext_fn_in_core("zinc_core_weak_copyfn");
+            }
+            type *BorrowImmutSymbol => return self.cg_empty_copyfn();
+            type *BorrowMutSymbol => return self.cg_empty_copyfn();
+            type *RawPointerImmutSymbol => return self.cg_empty_copyfn();
+            type *RawPointerMutSymbol => return self.cg_empty_copyfn();
+
+            struct_sym: *StructSymbol => {
+                return self.cg_struct_copyfn(struct_sym);
+            }
+            enum_sym: *EnumSymbol => {
+                return self.cg_enum_copyfn(enum_sym);
+            }
+            union_sym: *UnionSymbol => return self.cg_empty_copyfn();
+            trait_sym: *TraitSymbol => return self.cg_empty_copyfn();
+            _ => return self.cg_empty_copyfn();
+        }
+    }
+
+    fn cg_struct_dtorfn(&mut self, struct_sym: *StructSymbol) -> CgFunc {
+        // 先判断缓存
+        let sym_addr = struct_sym as *raw StructSymbol as UInt;
+        if self.cached_dtorfn.at(&sym_addr) is Some(f) {
+            return f;
+        }
+        // 如果成员都没有析构函数, 直接返回空函数
+        if is_trivial_type(struct_sym.to_sty()) {
+            let dtorfn = self.cg_empty_dtorfn();
+            self.cached_dtorfn.insert(sym_addr, dtorfn);
+            return dtorfn;
+        }
+        // 再生成函数体
+        let mut name = struct_sym.export_key();
+        name.push_str(".dtorfn");
+        let dtorfn_ty = self.llds.type_function_dtorfn();
+        let func = self.llds.create_fn(dtorfn_ty, name.as_str().deref());
+
+        // 如果是 import 的类型, 则生成函数声明
+        if self.is_imported(struct_sym as *Symbol) {
+            self.cached_dtorfn.insert(sym_addr, func);
+            return func;
+        }
+
+        self.add_debuginfo(func, struct_sym.struct_node.span().start, name);
+
+        let llbb = self.llds.create_bb("entry", func);
+        let saved_insert_point = self.llds.save_ip();
+        self.llds.set_insert_point(llbb);
+        let di_loc = self.debug_loc(func, struct_sym.struct_node.span().start);
+
+        // 先执行本类型的 drop 函数，然后调用每个成员的析构函数
+        if drop_fn_of(struct_sym as *TypeSymbol) is Some(drop_fn) {
+            let ll_drop_fn = self.cg_func_decl(drop_fn);
+
+            self.llds.set_di_loc(di_loc);
+            self.llds.create_call(ll_drop_fn, &[self.llds.get_arg(func, 0_u), self.llds.get_arg(func, 1_u)] as Slice<CgValue>);
+            self.llds.reset_di_loc();
+        }
+
+        // 累加 size , 对每个成员调用对应类型的 dtor_fn
+        let mut field_head = self.llds.get_arg(func, 0_u);
+        let struct_typemeta = self.llds.get_arg(func, 1_u);
+
+        if self.cgtype_of(struct_sym.to_sty()) is Some(struct_cgty) {
+            let mut field_idx: UInt = 0;
+            for field in struct_sym.fields {
+                let field_addr = self.llds.create_struct_gep(struct_cgty, field_head, field_idx);
+                let ty_meta = self.get_typemeta_from_typearg(field.stype, &struct_sym.generics, struct_typemeta);
+                let dtorfn = self.cg_typemeta_dtorfn(field.stype.type_symbol);
+
+                self.llds.set_di_loc(di_loc);
+                self.llds.create_call(dtorfn, &[field_addr, ty_meta] as Slice<CgValue>);
+                self.llds.reset_di_loc();
+                field_idx += 1;
+            }
+        } else {
+            for field in struct_sym.fields {
+                let ty_meta = self.get_typemeta_from_typearg(field.stype, &struct_sym.generics, struct_typemeta);
+                let field_dtorfn = self.access_typemeta_dtorfn(ty_meta);
+
+                field_head = self.llds.align_pointer_to_typemeta(field_head, ty_meta);
+                self.llds.create_call(
+                    dtorfn_ty, field_dtorfn, &[field_head, ty_meta] as Slice<CgValue>
+                );
+
+                if self.cgtype_of(field.stype) is Some(ty) {
+                    let size = self.llds.storage_size_of(ty);
+                    field_head = self.llds.create_gep(
+                        self.llds.type_int8(), field_head, self.llds.get_const_int64(size as UInt64).as_value()
+                    );
+                } else {
+                    let size = self.access_typemeta_size(ty_meta);
+                    field_head = self.llds.create_gep(
+                        self.llds.type_int8(), field_head, size
+                    );
+                }
+            }
+        }
+        self.llds.create_retvoid();
+
+        self.llds.verify_function(func);
+        self.cached_dtorfn.insert(sym_addr, func);
+        self.llds.restore_ip(saved_insert_point);
+        return func;
+    }
+
+    fn cg_enum_dtorfn(&mut self, enum_sym: *EnumSymbol) -> CgFunc {
+        // Option 类型特殊处理
+        if enum_sym.export_key().as_str().deref().eq(&"::std::primitives::option::Option") {
+            return self.llds.get_ext_fn_in_core("zinc_core_option_dtorfn");
+        }
+        // 先判断缓存
+        let sym_addr = enum_sym as *raw EnumSymbol as UInt;
+        if self.cached_dtorfn.at(&sym_addr) is Some(f) {
+            return f;
+        }
+        // 如果成员都没有析构函数, 直接返回空函数
+        if is_trivial_type(enum_sym.to_sty()) {
+            let dtorfn = self.cg_empty_dtorfn();
+            self.cached_dtorfn.insert(sym_addr, dtorfn);
+            return dtorfn;
+        }
+        // 再生成函数体
+        let mut name = enum_sym.export_key();
+        name.push_str(".dtorfn");
+        let dtorfn_ty = self.llds.type_function_dtorfn();
+        let func = self.llds.create_fn(dtorfn_ty, name.as_str().deref());
+        // 如果是 import 的类型, 则生成函数声明
+        if self.is_imported(enum_sym as *Symbol) {
+            self.cached_dtorfn.insert(sym_addr, func);
+            return func;
+        }
+
+        self.add_debuginfo(func, enum_sym.enum_node.span().start, name);
+
+        let mut llbbs = (type Vec<CgBasicBlock>)::new();
+        let mut j: UInt = 0;
+        while j < enum_sym.variants.len() * 2 + 2 {
+            let bb = self.llds.create_bb("", func);
+            llbbs.push(move bb);
+            j += 1;
+        }
+
+        let bb0: CgBasicBlock = *llbbs.index(0).deref();
+        let bb_end: CgBasicBlock = *llbbs.index(llbbs.len()-1).deref();
+        let saved_insert_point = self.llds.save_ip();
+        self.llds.set_insert_point(bb0);
+
+        // 先执行本类型的 drop 函数，然后调用 variant 的析构函数
+        if drop_fn_of(enum_sym as *TypeSymbol) is Some(drop_fn) {
+            let di_loc = self.debug_loc(func, enum_sym.enum_node.span().start);
+            self.llds.set_di_loc(di_loc);
+
+            let ll_drop_fn = self.cg_func_decl(drop_fn);
+            self.llds.create_call(ll_drop_fn, &[self.llds.get_arg(func, 0_u), self.llds.get_arg(func, 1_u)] as Slice<CgValue>);
+            self.llds.reset_di_loc();
+        }
+
+        let tag = self.llds.create_load(self.llds.type_int64(), self.llds.get_arg(func, 0_u));
+        let mut payload_head = self.llds.create_gep(self.llds.type_int64(), self.llds.get_arg(func, 0_u), self.llds.get_const_int32(1_u32).as_value());
+
+        let mut i: UInt = 0;
+        for ev in enum_sym.variants {
+            if i == 0 {
+                let bb1: CgBasicBlock = *llbbs.index(1).deref();
+                self.llds.create_br(bb1);
+                self.llds.set_insert_point(bb1);
+            }
+            let discriminant = self.llds.get_const_int64(i as UInt64).as_value();
+            let equals = self.llds.create_icmp_eq(tag, discriminant);
+            let true_br = *llbbs.index(2*i+2).deref();
+            let false_br = *llbbs.index(2*i+3).deref();
+            self.llds.create_cond_br(equals, true_br, false_br);
+
+            self.llds.set_insert_point(true_br);
+            let payload_sty = ev.payload_tuple_type();
+            let tup_typemeta = self.get_typemeta_from_typearg(move payload_sty, &enum_sym.generics, self.llds.get_arg(func, 1_u));
+            let tup_dtorfn = self.access_typemeta_dtorfn(tup_typemeta);
+            self.llds.create_call(
+                dtorfn_ty, tup_dtorfn, &[payload_head, tup_typemeta] as Slice<CgValue>
+            );
+            self.llds.create_br(bb_end);
+            self.llds.set_insert_point(false_br);
+
+            i += 1;
+        }
+
+        self.llds.set_insert_point(bb_end);
+        self.llds.create_retvoid();
+
+        self.llds.verify_function(func);
+        self.cached_dtorfn.insert(sym_addr, func);
+        self.llds.restore_ip(saved_insert_point);
+        return func;
+    }
+
+    fn cg_typemeta_dtorfn(&mut self, ts: *TypeSymbol) -> CgFunc {
+        match ts {
+            // 这些类型不应该出现在这里
+            type *InvalidSymbol => panic;
+            type *LifetimeSymbol => panic;
+            type *ExternTypeSymbol => panic;
+            type *FuncSymbol => panic;
+            type *TypeParamSymbol => panic;
+
+            alias: *TypeAliasSymbol => return self.cg_typemeta_dtorfn(alias.target_sty.type_symbol);
+            assoc: *AssociatedTypeSymbol => return self.cg_typemeta_dtorfn(assoc.target_sty.type_symbol);
+
+            type *BoolSymbol => return self.cg_empty_dtorfn();
+            type *CharSymbol => return self.cg_empty_dtorfn();
+            type *IntegerSymbol => return self.cg_empty_dtorfn();
+            type *FloatSymbol => return self.cg_empty_dtorfn();
+
+            // 带泛型的类型
+            type *TupleSymbol => {
+                return self.llds.get_ext_fn_in_core("zinc_core_tuple_dtorfn");
+            }
+            type *ArraySymbol => {
+                return self.llds.get_ext_fn_in_core("zinc_core_array_dtorfn");
+            }
+
+            type *ArcPointerSymbol => {
+                return self.llds.get_ext_fn_in_core("zinc_core_arc_dtorfn");
+            }
+            type *WeakPointerSymbol => {
+                return self.llds.get_ext_fn_in_core("zinc_core_weak_dtorfn");
+            }
+            type *BorrowImmutSymbol => return self.cg_empty_dtorfn();
+            type *BorrowMutSymbol => return self.cg_empty_dtorfn();
+            type *RawPointerImmutSymbol => return self.cg_empty_dtorfn();
+            type *RawPointerMutSymbol => return self.cg_empty_dtorfn();
+
+            struct_sym: *StructSymbol => {
+                return self.cg_struct_dtorfn(struct_sym);
+            }
+            enum_sym: *EnumSymbol => {
+                return self.cg_enum_dtorfn(enum_sym);
+            }
+            union_sym: *UnionSymbol => return self.cg_empty_dtorfn();
+            trait_sym: *TraitSymbol => return self.cg_empty_dtorfn();
+            _ => return self.cg_empty_dtorfn();
+        }
+    }
+
+    fn cg_struct_sizefn(&mut self, struct_sym: *StructSymbol) -> CgFunc {
+        // 先判断缓存
+        let sym_addr = struct_sym as *raw StructSymbol as UInt;
+        if self.cached_sizefn.at(&sym_addr) is Some(f) {
+            return f;
+        }
+        // 再生成函数体
+        let mut name = struct_sym.export_key();
+        name.push_str(".sizefn");
+        let sizefn_ty = self.llds.type_function_sizefn();
+        let func = self.llds.create_fn(sizefn_ty, name.as_str().deref());
+
+        // 如果是 import 的类型, 则生成函数声明
+        if self.is_imported(struct_sym as *Symbol) {
+            self.cached_sizefn.insert(sym_addr, func);
+            return func;
+        }
+
+        self.add_debuginfo(func, struct_sym.struct_node.span().start, name);
+
+        let llbb = self.llds.create_bb("entry", func);
+        let saved_insert_point = self.llds.save_ip();
+        self.llds.set_insert_point(llbb);
+        // 搜集所有成员的 typemeta, 调用 zinc_core_agg_size
+        let len = struct_sym.fields.len();
+        let argc = self.llds.get_const_int64(len as UInt64).as_value();
+        let argv = self.llds.create_alloca_sized(self.llds.type_ptr_array(len));
+        
+        let mut i: UInt32 = 0;
+        for field in struct_sym.fields {
+            let field_tm = self.get_typemeta_from_typearg(field.stype, &struct_sym.generics, self.llds.get_arg(func, 0_u));
+            let idx_v = self.llds.get_const_int32(i as UInt32).as_value();
+            let elem_ptr = self.llds.create_gep(self.llds.type_thin_ptr(), argv, idx_v);
+            self.llds.create_store(field_tm, elem_ptr);
+            i += 1;
+        }
+
+        let callee = self.llds.get_ext_fn_in_core("zinc_core_agg_size");
+        let ret = self.llds.create_call(callee, &[argc, argv] as Slice<CgValue>);
+        self.llds.create_ret(ret);
+
+        self.llds.verify_function(func);
+        self.cached_sizefn.insert(sym_addr, func);
+        self.llds.restore_ip(saved_insert_point);
+        return func;
+    }
+
+    fn cg_enum_sizefn(&mut self, enum_sym: *EnumSymbol) -> CgFunc {
+        // 先判断缓存
+        let sym_addr = enum_sym as *raw EnumSymbol as UInt;
+        if self.cached_sizefn.at(&sym_addr) is Some(f) {
+            return f;
+        }
+        // Option 类型特殊处理
+        if enum_sym.export_key().as_str().deref().eq(&"::std::primitives::option::Option") {
+            return self.llds.get_ext_fn_in_core("zinc_core_option_sizefn");
+        }
+        // 再生成函数体
+        let mut name = enum_sym.export_key();
+        name.push_str(".sizefn");
+        let sizefn_ty = self.llds.type_function_sizefn();
+        let func = self.llds.create_fn(sizefn_ty, name.as_str().deref());
+
+        // 如果是 import 的类型, 则生成函数声明
+        if self.is_imported(enum_sym as *Symbol) {
+            self.cached_sizefn.insert(sym_addr, func);
+            return func;
+        }
+
+        self.add_debuginfo(func, enum_sym.enum_node.span().start, name);
+
+        let llbb = self.llds.create_bb("entry", func);
+        let saved_insert_point = self.llds.save_ip();
+        self.llds.set_insert_point(llbb);
+        if !enum_sym.has_payload() {
+            self.llds.create_ret(self.llds.get_const_int64(8_u64).as_value());
+            self.cached_sizefn.insert(sym_addr, func);
+            return func;
+        }
+
+        let max_size = self.llds.create_alloca_sized(self.llds.type_int64());
+        self.llds.create_store(self.llds.get_const_int64(0).as_value(), max_size);
+        let max_align = self.llds.create_alloca_sized(self.llds.type_int64());
+        self.llds.create_store(self.llds.get_const_int64(8).as_value(), max_align); // 因为 tag 固定是 int64, 后续优化
+
+        for ev in enum_sym.variants {
+            if ev.fields.is_empty() {
+                continue;
+            }
+            let tup_sty = ev.payload_tuple_type();
+            let sfn = self.cg_typemeta_sizefn(tup_sty.type_symbol);
+            let afn = self.cg_typemeta_alignfn(tup_sty.type_symbol);
+            let tm = self.get_typemeta_from_typearg(tup_sty, &enum_sym.generics, self.llds.get_arg(func, 0_u));
+            let tup_size = self.llds.create_call(sfn, &[tm] as Slice<CgValue>);
+            let tup_align = self.llds.create_call(afn, &[tm] as Slice<CgValue>);
+
+            let cur_max_size = self.llds.create_load(self.llds.type_int64(), max_size);
+            let cmp_size_flag = self.llds.create_icmp_ugt(tup_size, cur_max_size);
+            let cmpd_size = self.llds.create_select(cmp_size_flag, tup_size, cur_max_size);
+            self.llds.create_store(cmpd_size, max_size);
+        
+            let cur_max_align = self.llds.create_load(self.llds.type_int64(), max_align);
+            let cmp_align_flag = self.llds.create_icmp_ugt(tup_align, cur_max_align);
+            let cmpd_align = self.llds.create_select(cmp_align_flag, tup_align, cur_max_align);
+            self.llds.create_store(cmpd_align, max_align);
+        }
+
+        let mut payload_size = self.llds.align_pointer_to(
+            self.llds.create_load(self.llds.type_int64(), max_size),
+            self.llds.create_load(self.llds.type_int64(), max_align)
+        );
+        payload_size = self.llds.create_ptr_to_int(payload_size);
+        let tag_size = self.llds.get_const_int64(8).as_value();
+        let total = self.llds.create_add(payload_size, tag_size);
+        self.llds.create_ret(total);
+
+        self.llds.verify_function(func);
+        self.cached_sizefn.insert(sym_addr, func);
+        self.llds.restore_ip(saved_insert_point);
+        return func;
+    }
+
+    fn cg_typemeta_sizefn(&mut self, ts: *TypeSymbol) -> CgFunc {
+        if ts is type *PointerLikeSymbol {
+            return self.llds.get_ext_fn_in_core("zinc_core_ptr_sizefn");
+        }
+        if ts is type *TupleSymbol {
+            return self.llds.get_ext_fn_in_core("zinc_core_tuple_sizefn");
+        }
+        if ts is type *ArraySymbol {
+            return self.llds.get_ext_fn_in_core("zinc_core_array_sizefn");
+        }
+        if ts is struct_sym: *StructSymbol {
+            return self.cg_struct_sizefn(move struct_sym);
+        }
+        if ts is enum_sym: *EnumSymbol {
+            return self.cg_enum_sizefn(move enum_sym);
+        }
+        
+        panic "BUG: unhandled case in CodeGenerator::cg_typemeta_sizefn";
+    }
+
+    fn cg_typemeta_alignfn(&mut self, ts: *TypeSymbol) -> CgFunc {
+        if ts is type *PointerLikeSymbol {
+            return self.llds.get_ext_fn_in_core("zinc_core_ptr_alignfn");
+        }
+        if ts is type *TupleSymbol {
+            return self.llds.get_ext_fn_in_core("zinc_core_tuple_alignfn");
+        }
+        if ts is type *ArraySymbol {
+            return self.llds.get_ext_fn_in_core("zinc_core_array_alignfn");
+        }
+        if ts is struct_sym: *StructSymbol {
+            // 先判断缓存
+            let sym_addr = struct_sym as *raw StructSymbol as UInt;
+            if self.cached_alignfn.at(&sym_addr) is Some(f) {
+                return f;
+            }
+            // 再生成函数体
+            let mut name = struct_sym.export_key();
+            name.push_str(".alignfn");
+            let alignfn_ty = self.llds.type_function_alignfn();
+            let func = self.llds.create_fn(alignfn_ty, name.as_str().deref());
+
+            // 如果是 import 的类型, 则生成函数声明
+            if self.is_imported(struct_sym as *Symbol) {
+                self.cached_alignfn.insert(sym_addr, func);
+                return func;
+            }
+
+            self.add_debuginfo(func, struct_sym.struct_node.span().start, name);
+
+            let llbb = self.llds.create_bb("entry", func);
+            let saved_insert_point = self.llds.save_ip();
+            self.llds.set_insert_point(llbb);
+
+            // 搜集所有成员的 typemeta, 调用 zinc_core_agg_align
+            let len = struct_sym.fields.len();
+            let argc = self.llds.get_const_int64(len as UInt64).as_value();
+            let argv = self.llds.create_alloca_sized(self.llds.type_ptr_array(len));
+            
+            let mut i: UInt32 = 0;
+            for field in struct_sym.fields {
+                let field_tm = self.get_typemeta_from_typearg(field.stype, &struct_sym.generics, self.llds.get_arg(func, 0_u));
+                let idx_v = self.llds.get_const_int32(i as UInt32).as_value();
+                let elem_ptr = self.llds.create_gep(self.llds.type_thin_ptr(), argv, idx_v);
+                self.llds.create_store(field_tm, elem_ptr);
+                i += 1;
+            }
+
+            let callee = self.llds.get_ext_fn_in_core("zinc_core_agg_align");
+            let ret = self.llds.create_call(callee, &[argc, argv] as Slice<CgValue>);
+            self.llds.create_ret(ret);
+
+            self.llds.verify_function(func);
+            self.cached_alignfn.insert(sym_addr, func);
+            self.llds.restore_ip(saved_insert_point);
+            return func;
+        }
+        if ts is enum_sym: *EnumSymbol {
+            // 简单一点 所有的 enum 的 alignment 都是 8, 后面再优化吧
+            return self.llds.get_ext_fn_in_core("zinc_core_ptr_alignfn");
+        }
+        panic "BUG: unhandled case in CodeGenerator::cg_typemeta_alignfn";
+    }
+}
+
+fn index_of(tps: *TypeParamSymbol, gp: &GenericParams) -> UInt {
+    let addr: UInt = tps as *raw TypeParamSymbol as UInt;
+    let mut idx: UInt = 0;
+    for p in gp.ty_params {
+        let pa = p as *raw TypeParamSymbol as UInt;
+        if addr == pa {
+            return idx;
+        }
+        idx += 1;
+    }
+    panic "BUG: type param is not found in copyfn";
+}
+
+fn drop_fn_of(ts: *TypeSymbol) -> Option<*FuncSymbol> {
+    for i in ts.related_impls() {
+        if i.trait_sty is Some(trait_sty) {
+            let key = trait_sty.type_symbol.export_key();
+            if key.as_str().deref().eq(&"::std::ops::drop::Drop") {
+                let method = *i.methods.index(0).deref();
+                if method.short_name().as_str().deref().ne(&"drop") {
+                    panic "BUG: method in impl for Drop is not 'drop'";
+                }
+                return Some(move method);
+            }
+        }
+    }
+    return None;
+}

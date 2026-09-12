@@ -1,0 +1,85 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::source_code::*;
+
+impl TypeParamSymbol {
+    pub fn new() -> *Self {
+        let dummy = box {
+            .source_span = SourceSpan::empty()
+        }: DummySyntaxNode;
+
+        return box {
+            .type_param_node = dummy as *DeclNode,
+            .parent_sym = None,
+            .cache = None,
+        }: TypeParamSymbol;
+    }
+
+    pub fn new(node: *GenericTypeParamDecl) -> *Self {
+        return box {
+            .type_param_node = node as *DeclNode,
+            .parent_sym = None,
+            .cache = None,
+        }: TypeParamSymbol;
+    }
+
+}
+
+impl Symbol for TypeParamSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        return self.type_param_node as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return self.type_param_node.short_name();
+    }
+
+    fn mangle_name(&self) -> String {
+        return self.export_key();
+    }
+
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+
+    fn export_value(&self) -> String {
+        return String::new();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_sym;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_sym = Some(ss);
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl TypeSymbol for TypeParamSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        return self.short_name();
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        return self.to_sty();
+    }
+    fn to_sty(*self) -> *SType {
+        if self.cache is Some(cached) {
+            return cached;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeParamSymbol as *TypeSymbol,
+                .args = GenericArgs::new(),
+            }: SType;
+            self.cache = Some(sty);
+            return sty;
+        }
+    }
+}

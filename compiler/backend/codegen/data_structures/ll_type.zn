@@ -1,0 +1,199 @@
+use super::*;
+
+extern fn llds_get_ZnTypeMeta(ds: Ptr) -> Ptr;
+extern fn llds_get_ZnGenericTypeMeta(ds: Ptr) -> Ptr;
+extern fn llds_get_ZnTraitImpl(ds: Ptr) -> Ptr;
+extern fn llds_get_ZnComponent(ds: Ptr) -> Ptr;
+extern fn llds_get_fat_ptr_type(ds: Ptr) -> Ptr;
+extern fn llds_get_pointer_type(ds: Ptr) -> Ptr;
+extern fn llds_get_void_type(ds: Ptr) -> Ptr;
+extern fn llds_get_int1_type(ds: Ptr) -> Ptr;
+extern fn llds_get_int8_type(ds: Ptr) -> Ptr;
+extern fn llds_get_int16_type(ds: Ptr) -> Ptr;
+extern fn llds_get_int32_type(ds: Ptr) -> Ptr;
+extern fn llds_get_int64_type(ds: Ptr) -> Ptr;
+extern fn llds_get_f32_type(ds: Ptr) -> Ptr;
+extern fn llds_get_f64_type(ds: Ptr) -> Ptr;
+extern fn llds_get_struct_type(ds: Ptr, tys: *raw CgType, len: UInt) -> Ptr;
+extern fn llds_get_array_type_of(ds: Ptr, ty: Ptr, size: UInt) -> Ptr;
+extern fn llds_get_byte_array_type(ds: Ptr, size: UInt) -> Ptr;
+extern fn llds_get_ptr_array_type(ds: Ptr, count: UInt) -> Ptr;
+extern fn llds_storage_size_of(ds: Ptr, ty: Ptr) -> UInt;
+extern fn llds_alignment_of(ds: Ptr, ty: Ptr) -> UInt;
+extern fn llds_create_function_type(ds:Ptr, ret: Ptr, params: *raw CgType, param_count: UInt) -> Ptr;
+
+impl LLDataStructures {
+    fn storage_size_of(&self, ty: CgType) -> UInt {
+        unsafe {
+            return llds_storage_size_of(self.ds, ty.llty);
+        }
+    }
+
+    fn alignment_of(&self, ty: CgType) -> UInt {
+        unsafe {
+            return llds_alignment_of(self.ds, ty.llty);
+        }
+    }
+
+    fn type_ZnTypeMeta(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_ZnTypeMeta(self.ds));
+        return {
+            .llty = ll_ty,
+        }: CgType;
+    }
+
+    fn type_ZnGenericTypeMeta(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_ZnGenericTypeMeta(self.ds));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_ZnTraitImpl(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_ZnTraitImpl(self.ds));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_ZnComponent(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_ZnComponent(self.ds));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_fat_ptr(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_fat_ptr_type(self.ds));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_thin_ptr(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_pointer_type(self.ds));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_void(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_void_type(self.ds));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_int1(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_int1_type(self.ds));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_int8(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_int8_type(self.ds));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_int16(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_int16_type(self.ds));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_int32(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_int32_type(self.ds));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_int64(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_int64_type(self.ds));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_f32(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_f32_type(self.ds));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_f64(&self) -> CgType {
+        let ll_ty = unsafe(llds_get_f64_type(self.ds));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_struct(&self, fields: &Vec<CgType>) -> CgType {
+        let ll_ty = unsafe(llds_get_struct_type(self.ds, fields.raw_ptr(), fields.len()));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_byte_array(&self, size: UInt) -> CgType {
+        let ll_ty = unsafe(llds_get_byte_array_type(self.ds, size));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_ptr_array(&self, count: UInt) -> CgType {
+        let ll_ty = unsafe(llds_get_ptr_array_type(self.ds, count));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_array_of(&self, ty: CgType, size: UInt) -> CgType {
+        let ll_ty = unsafe(llds_get_array_type_of(self.ds, ty.llty, size));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_empty_struct(&self) -> CgType {
+        let null = unsafe(0_u as *raw CgType);
+        let ll_ty = unsafe(llds_get_struct_type(self.ds, null, 0));
+        return {
+            .llty = ll_ty
+        }: CgType;
+    }
+
+    fn type_function(&self, ret: CgType, params: Slice<CgType>) -> CgFuncType {
+        let fn_ty = unsafe(llds_create_function_type(self.ds, ret.llty, params.raw_ptr(), params.len()));
+        return {
+            .llfnty = fn_ty
+        }: CgFuncType;
+    }
+
+    fn type_function_copyfn(&self) -> CgFuncType {
+        let ret = self.type_void();
+        return self.type_function(ret, &[self.type_thin_ptr(), self.type_thin_ptr()] as Slice<CgType>);
+    }
+
+    fn type_function_dtorfn(&self) -> CgFuncType {
+        let ret = self.type_void();
+        return self.type_function(ret, &[self.type_thin_ptr(), self.type_thin_ptr()] as Slice<CgType>);
+    }
+
+    fn type_function_sizefn(&self) -> CgFuncType {
+        let ret = self.type_int64();
+        return self.type_function(ret, &[self.type_thin_ptr()] as Slice<CgType>);
+    
+    }
+
+    fn type_function_alignfn(&self) -> CgFuncType {
+        let ret = self.type_int64();
+        return self.type_function(ret, &[self.type_thin_ptr()] as Slice<CgType>);
+    }
+}

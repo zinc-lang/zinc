@@ -1,0 +1,97 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::diagnostic::*;
+use super::*;
+
+use std::collections::hashset::HashSet;
+
+impl StructPattern {
+    fn new(n: *StructPatternNode) -> *Self {
+        let mut rest: Option<*RestPattern> = None;
+        if n.rest is Some(r) {
+            let rest_pat = RestPattern::new(r);
+            rest = Some(move rest_pat);
+        }
+
+        return box {
+            .node = move n,
+            .struct_sty = None,
+            .fields = (type Vec<*FieldPattern>)::new(),
+            .rest = move rest,
+            .matches_with = None,
+        }: StructPattern;
+    }
+}
+
+impl Pattern for StructPattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+        self.matches_with = Some(expr);
+
+        for f in self.fields {
+            let field_access = FieldRValue::create(self.pattern_node().span(), f.field_name(), expr);
+            f.destructure(move field_access, is_refutable);
+        }
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        let mut v = (type Vec<*VarSymbol>)::new();
+        for f in self.fields {
+            let b = f.collect_all_bindings();
+            for i in b {
+                v.push(move i);
+            }
+        }
+        return v;
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        let mw = self.matches_with.get_or_panic("BUG: pattern does not know what expression it matches with");
+
+        if self.struct_sty is Some(struct_sty) {
+            let mw_sty = ctx.infer(mw);
+            if mw_sty.is_invalid() {
+                ctx.check_value(mw, struct_sty);
+            } else {
+                expect_type_eq(mw_sty.strip_pointer(), struct_sty, mw.expr_node().span());
+            }
+        } else {
+            let sty = ctx.infer(mw);
+            if !ensure_type_valid(sty, self.node.span()) {
+                return;
+            }
+            self.struct_sty = Some(move sty);
+        }
+
+        for f in self.fields {
+            f.type_check(ctx);
+        }
+
+        // 检查 成员变量 覆盖完整性
+        if self.struct_sty is Some(struct_sty) {
+            let stripped_struct_sty = struct_sty.strip_pointer();
+            if stripped_struct_sty.type_symbol is struct_sym: *StructSymbol {
+                if self.rest is Some(_) {
+                    return;
+                }
+
+                let mut all_field_pat: HashSet<String> = (type HashSet<String>)::new();
+                for f in self.fields {
+                    all_field_pat.insert(f.node.name.raw_str());
+                }
+                for f in struct_sym.fields {
+                    let name = f.short_name();
+                    if !all_field_pat.contains(&name) {
+                        DiagnosticEngine::get().emit_missing_struct_field(name, self.node.rbrace.source_span);
+                    }
+                }
+            }
+
+        }
+
+    }
+}

@@ -1,0 +1,28 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::stmt::*;
+use ::self::frontend::source_code::*;
+
+impl BranchReturn {
+    pub fn new(stmt: *ReturnStmt, value: Option<*RValue>) -> *Self {
+        return box {
+            .stmt = move stmt,
+            .parent_stmt = None,
+            .value = move value,
+        }: BranchReturn;
+    }
+}
+
+impl Sentence for BranchReturn {
+    fn stmt_node(&self) -> *StatementNode {
+        return self.stmt as *StatementNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_stmt;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_stmt = Some(ss);
+    }
+}

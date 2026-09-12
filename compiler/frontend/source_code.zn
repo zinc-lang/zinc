@@ -1,0 +1,383 @@
+use std::cmp::{Eq, PartialEq};
+use std::primitives::string::ToString;
+use std::fs::Path;
+use std::fs::File;
+use std::env::set_current_dir;
+
+// todo: UInt 是 64 位, 数字有点太大了, 32 位无符号整数够用了
+pub struct SourceLoc {
+    pub file_id: UInt,
+    pub offset: UInt,
+}
+
+impl PartialEq for SourceLoc {
+    fn eq(&self, other: &Self) -> Bool {
+        return self.file_id == other.file_id && self.offset == other.offset;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return self.file_id != other.file_id || self.offset != other.offset;
+    }
+}
+impl Eq for SourceLoc {
+
+}
+
+impl SourceLoc {
+    pub fn empty() -> SourceLoc {
+        return {
+            .file_id = (-1_i) as UInt,
+            .offset = 0,
+        }: SourceLoc;
+    }
+
+    pub fn is_empty(&self) -> Bool {
+        let max = (-1_i) as UInt;
+        return self.file_id == max;
+    }
+
+    pub fn add(&self, i: UInt) -> SourceLoc {
+        return {
+            .file_id = self.file_id,
+            .offset = self.offset + i,
+        }: SourceLoc;
+    }
+
+    pub fn or_else(&self, another: SourceLoc) -> SourceLoc {
+        if self.is_empty() {
+            return another;
+        } else {
+            return *self;
+        }
+    }
+}
+
+// todo 这个结构体中存在重复的两个 file_id，可以优化成只存储一个 file_id
+pub struct SourceSpan {
+    pub start: SourceLoc,
+    pub end: SourceLoc,
+}
+
+impl PartialEq for SourceSpan {
+    fn eq(&self, other: &Self) -> Bool {
+        return self.start.eq(&other.start) && self.end.eq(&other.end);
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return self.start.ne(&other.start) || self.end.ne(&other.end);
+    }
+}
+
+impl Eq for SourceSpan {}
+
+impl SourceSpan {
+    pub fn empty() -> SourceSpan {
+        return {
+            .start = SourceLoc::empty(),
+            .end = SourceLoc::empty(),
+        }: SourceSpan;
+    }
+
+    pub fn len(&self) -> UInt {
+        if self.start.file_id != self.end.file_id {
+            return 1;
+        }
+        if self.start.offset < self.end.offset {
+            return self.end.offset - self.start.offset;
+        }
+        return 1;
+    }
+
+    pub fn is_empty(&self) -> Bool {
+        return self.start.is_empty() || self.end.is_empty();
+    }
+}
+
+pub struct FileLineColumn {
+    pub file: String,
+    pub line: UInt,
+    pub column: UInt,
+}
+
+impl ToString for FileLineColumn {
+    fn to_string_inplace(&self, buf: &mut String) {
+        let str: Str = self.file.as_str().deref();// todo 用相对路径
+        buf.push_str(str);
+        buf.push(b'(');
+
+        let line = self.line + 1; // 行号从 1 开始
+        line.to_string_inplace(buf);
+        buf.push(b':');
+
+        let column = self.column + 1; // 列号从 1 开始
+        column.to_string_inplace(buf);
+        buf.push(b')');
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl FileLineColumn {
+    pub fn empty() -> FileLineColumn {
+        return {
+            .file = String::new(),
+            .line = 0,
+            .column = 0,
+        }: FileLineColumn;
+    }
+}
+
+pub struct FileItem {
+    file_name: String,
+    content: String,
+    lines: Vec<UInt>,
+    is_imported: Bool,
+}
+
+impl FileItem {
+    pub fn new(file_name: String, content: String) -> FileItem {
+        let mut lines: Vec<UInt> = (type Vec<UInt>)::new();
+        {
+            let mut offset: UInt = 0;
+            while offset < content.len() {
+                if content.index(offset as UInt) == b'\n' {
+                    lines.push(offset);
+                }
+                offset += 1;
+            }
+        }
+
+        return {
+            .file_name = move file_name,
+            .content = move content,
+            .lines = move lines,
+            .is_imported = false,
+        }: FileItem;
+    }
+}
+
+pub struct SourceManager {
+    root_dir: String,
+
+    files: Vec<FileItem>,
+}
+
+unsafe impl Send for SourceManager{}
+
+// todo 后续应该在标准库支持 Lazy 类型，需要考虑线程安全问题
+unsafe static mut SourceManagerSingleton: Option<SourceManager> = None;
+
+impl SourceManager {
+
+    // 单例模式
+    pub fn get() -> &'static mut SourceManager {
+        unsafe {
+            if SourceManagerSingleton is Some(ref mut instance) {
+                // 此处转换是强制生命周期转换，需要 unsafe 上下文
+                return instance as &'static mut SourceManager;
+            }
+            else {
+                let instance = {
+                    .root_dir = String::new(),
+                    .files = (type Vec<FileItem>)::new(),
+                }: SourceManager;
+
+                SourceManagerSingleton = Some(instance);
+                if SourceManagerSingleton is Some(ref mut i) {
+                    return i as &'static mut SourceManager;
+                } else {
+                    panic "Failed to initialize SourceManagerSingleton";
+                }
+            }
+        }
+    }
+
+    pub fn set_entry_file(&mut self, file_name: Str) {
+        let path = Path::new(file_name);
+        let parent = path.parent();
+        self.root_dir = parent.as_str().to_string();
+    }
+
+    // 返回 id
+    pub fn add_file(&mut self, file_name: String) -> UInt {
+        if file_name.is_empty() {
+            panic "insert file with empty name";
+        }
+
+        let fid = self.files.len();
+        let file_name_str = file_name.as_str().deref();
+
+        if File::open(file_name_str) is Ok(f) {
+            if f.read_to_string() is Ok(content) {
+                let file_item = FileItem::new(move file_name, move content);
+                self.files.push(move file_item);
+                return fid;
+            } else {
+                let msg = f"read file content failed, file_name: $(file_name_str)";
+                panic msg.as_str().deref();
+            }
+        } else {
+            let msg = f"open file failed, file_name: $(file_name_str)";
+            panic msg.as_str().deref();
+        }
+    }
+
+    pub fn add_imported_file(&mut self, key: String, content: String) -> UInt {
+        if key.is_empty() {
+            panic "insert imported file with empty name";
+        }
+        let fid = self.files.len();
+        let mut file_item = FileItem::new(move key, move content);
+        file_item.is_imported = true;
+        self.files.push(move file_item);
+        return fid;
+    }
+
+    pub fn is_imported(&self, loc: SourceLoc) -> Bool {
+        let fid = loc.file_id;
+        if fid >= self.files.len() {
+            return true;
+        }
+        let file_item: &FileItem = self.files.index(fid as UInt).deref();
+        return file_item.is_imported;
+    }
+
+    pub fn file_id_of(&self, file_name: String) -> UInt {
+        if file_name.is_empty() {
+            return (-1_i) as UInt;
+        }
+
+        let mut i: UInt = 0;
+        while i < self.files.len() {
+            let file_item: &FileItem = self.files.index(i).deref();
+            if file_item.file_name.eq(&file_name) {
+                return i;
+            }
+            i += 1;
+        }
+
+        return (-1_i) as UInt;
+    }
+
+    pub fn file_path_of(&self, fid: UInt) -> String {
+        if fid < self.files.len() {
+            let f = self.files.index(fid as UInt).deref();
+            return f.file_name;
+        } else {
+            let msg = f"BUG: fid $(fid) is not found in SourceManager";
+            panic msg.as_str().deref();
+        }
+    }
+
+    pub fn location_of(&self, fcl: FileLineColumn) -> SourceLoc {
+        let mut i : UInt = 0;
+        while i < self.files.len() {
+            let file_item: &FileItem = self.files.index(i).deref();
+            if file_item.file_name.eq(&fcl.file) {
+                if fcl.line >= file_item.lines.len() {
+                    return SourceLoc::empty();
+                }
+                let line_offset = *file_item.lines.index((fcl.line) as UInt).deref();
+                return {
+                    .file_id = i as UInt,
+                    .offset = line_offset + fcl.column,
+                }: SourceLoc;
+            }
+            i += 1;
+        }
+        return SourceLoc::empty();
+    }
+
+    pub fn location_of(&self, file_name: String, offset: UInt) -> SourceLoc {
+        let fid = self.file_id_of(file_name);
+        if fid > self.files.len() {
+            return SourceLoc::empty();
+        }
+        return {
+            .file_id = fid,
+            .offset = offset,
+        }: SourceLoc;
+    }
+
+    pub fn file_line_column_of(&self, loc: SourceLoc) -> FileLineColumn {
+        let fid = loc.file_id;
+        if fid >= self.files.len() {
+            return FileLineColumn::empty();
+        }
+        let file_item: &FileItem = self.files.index(fid as UInt).deref();
+        let mut line_num: UInt = 0;
+        {
+            let mut i: UInt = 0;
+            while i < file_item.lines.len() {
+                if *file_item.lines.index(i).deref() > loc.offset {
+                    break;
+                }
+                line_num += 1;
+                i += 1;
+            }
+        }
+        let line_start_offset: UInt = if line_num == 0 
+                                    then 0_u
+                                    else *file_item.lines.index((line_num - 1) as UInt).deref() + 1;
+        return {
+            .file = file_item.file_name,
+            .line = line_num,
+            .column = if loc.offset >= line_start_offset then loc.offset - line_start_offset else 0_u,
+        }: FileLineColumn;
+    }
+
+    pub fn source_line_of(&self, loc: SourceLoc) -> String {
+        let fid = loc.file_id;
+        if fid >= self.files.len() {
+            return String::new();
+        }
+        let file_item: &FileItem = self.files.index(fid as UInt).deref();
+        let mut line_num: UInt = 0;
+        {
+            let mut i: UInt = 0;
+            while i < file_item.lines.len() {
+                if *file_item.lines.index(i).deref() > loc.offset {
+                    break;
+                }
+                line_num += 1;
+                i += 1;
+            }
+        }
+
+        let line_end_offset: UInt = *file_item.lines.index(line_num as UInt).deref();
+        let line_start_offset: UInt = if line_num == 0 
+                                    then 0 
+                                    else *file_item.lines.index((line_num - 1) as UInt).deref() + 1;
+        return file_item.content.as_str().deref().sub_str(line_start_offset, line_end_offset-line_start_offset).to_string();
+    }
+
+    pub fn source_code_of(&self, fid: UInt) -> String {
+        if fid >= self.files.len() {
+            return String::new();
+        }
+        let file_item: &FileItem = self.files.index(fid).deref();
+        return file_item.content;
+    }
+
+    pub fn source_piece_of(&self, span: SourceSpan) -> String {
+        let start_loc = span.start;
+        let end_loc = span.end;
+        if start_loc.file_id != end_loc.file_id {
+            return String::new();
+        }
+        let fid = start_loc.file_id;
+        if fid >= self.files.len() {
+            return String::new();
+        }
+        let file_item: &FileItem = self.files.index(fid as UInt).deref();
+        if (start_loc.offset > file_item.content.len() as UInt) || (end_loc.offset > file_item.content.len() as UInt) {
+            return String::new();
+        }
+        return file_item.content.as_str().deref().sub_str(start_loc.offset as UInt, (end_loc.offset - start_loc.offset) as UInt).to_string();
+    }
+
+}

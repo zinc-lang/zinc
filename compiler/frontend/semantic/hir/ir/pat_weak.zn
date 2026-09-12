@@ -1,0 +1,49 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::diagnostic::*;
+use super::*;
+
+impl WeakPattern {
+    fn new(n: *WeakPatternNode, p: *Pattern) -> *Self {
+        return box {
+            .node = move n,
+            .inner = move p,
+            .matches_with = None,
+        }: WeakPattern;
+    }
+}
+
+impl Pattern for WeakPattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+        self.matches_with = Some(expr);
+
+        let to_weak = UnaryExprValue::create(self.pattern_node().span(), UnaryValueKind::ToWeak, expr);
+        self.inner.destructure(move to_weak, is_refutable);
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        return self.inner.collect_all_bindings();
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        let mw = self.matches_with.get_or_panic("BUG: pattern does not know what expression it matches with");
+        let expr_ty = ctx.infer(mw);
+        if !ensure_type_valid(expr_ty, mw.expr_node().span()) {
+            return;
+        }
+
+        if !(expr_ty.type_symbol is type *ArcPointerSymbol) &&
+            !(expr_ty.type_symbol is type *WeakPointerSymbol) {
+
+            DiagnosticEngine::get().emit_type_mismatch(f"Arc or Weak", expr_ty.to_string(), self.node.span());
+            return;
+        }
+
+        self.inner.type_check(ctx);
+    }
+}

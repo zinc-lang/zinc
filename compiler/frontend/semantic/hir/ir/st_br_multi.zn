@@ -1,0 +1,29 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::stmt::*;
+use ::self::frontend::source_code::*;
+
+impl BranchMultiple {
+    pub fn new(stmt: *MatchStmt, value: *RValue) -> *Self {
+        return box {
+            .stmt = move stmt,
+            .parent_stmt = None,
+            .value = move value,
+            .branches = (type Vec<*BranchArm>)::new(),
+        }: BranchMultiple;
+    }
+}
+
+impl Sentence for BranchMultiple {
+    fn stmt_node(&self) -> *StatementNode {
+        return self.stmt as *StatementNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_stmt;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_stmt = Some(ss);
+    }
+}

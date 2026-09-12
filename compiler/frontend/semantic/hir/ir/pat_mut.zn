@@ -1,0 +1,37 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use super::*;
+
+impl MutPattern {
+    fn new(n: *MutPatternNode, p: *Pattern) -> *Self {
+        return box {
+            .node = move n,
+            .inner = move p,
+            .matches_with = None,
+        }: MutPattern;
+    }
+}
+
+impl Pattern for MutPattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+        self.matches_with = Some(expr);
+
+        self.inner.destructure(expr, is_refutable);
+
+        if self.inner is vp: *VarBindingPattern {
+            vp.var_sym.is_mut_binding = true;
+        }
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        return self.inner.collect_all_bindings();
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        self.inner.type_check(ctx);
+    }
+}

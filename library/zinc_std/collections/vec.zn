@@ -1,0 +1,594 @@
+
+use ::self::alloc::raw_alloc_n;
+use ::self::mem::size_of;
+use ::self::primitives::slice::ItemRef;
+use ::self::primitives::slice::ItemRefMut;
+use ::self::iter::Iterable;
+use ::self::iter::Iterator;
+use ::self::cmp::PartialEq;
+use ::self::cmp::Eq;
+
+extern fn zinc_core_set_strong_count(p: *raw (), val: UShort) -> UShort;
+extern fn zinc_core_println_int(x: UInt);
+
+pub struct Vec<T> {
+    // ptr 必须是 ARC 指针，保证 Vec 类型在拷贝的时候有引用计数增减
+    //
+    // 为了保证这个指针在增减引用计数的时候一定是原子操作，不能直接使用 T 类型，而需要它指向的类型是满足 Send & Sync 的。
+    // 不需要这个 ptr 直接支持元素访问操作。访问元素总是通过类型强转之后，再访问。
+    //
+    // 需要通过 copy-on-write 机制实现值语义。
+    //
+    // 注意所有的对 self.ptr 减少引用计数的场景，不会自动引发 ptr 指向的数组的元素 T 的析构。只会可能引发内存释放。
+    // 元素析构总是手动调用 destruct_in_place 函数完成。
+    ptr: *Shared<T>,
+    // 代表数组的容量
+    cap: UInt,
+    // 代表实际使用了的元素个数
+    size: UInt,
+}
+
+// 不论 T 实例化成什么类型，指针 ptr 在操作引用计数的时候都应该是原子指令
+struct Shared<T> {}
+unsafe impl<T> Send for Shared<T> where T: Send {}
+unsafe impl<T> Sync for Shared<T> {}
+
+unsafe impl<T> Send for Vec<T> where T: Send {}
+impl<T> !Sync for Vec<T> {}
+
+impl<T> Vec<T> {
+    pub fn new() -> Self {
+        return {
+            // 希望后续能让这个函数是 const fn, 这样可以用这个函数作为成员函数的默认初始化值, 方便使用
+            // 这样的话需要修改初始化方式, 此时应该不分配内存
+            .ptr = Self::alloc_n(4),
+            .cap = 4,
+            .size = 0,
+        }: Vec<T>;
+    }
+
+    fn alloc_n(n: UInt) -> *Shared<T> {
+        let s = size_of(<T>);
+        return unsafe(raw_alloc_n(s, n) as *raw Shared<T> as *Shared<T>);
+    }
+
+    pub fn with_capacity(cap: UInt) -> Self {
+        let mut ptr = Self::alloc_n(cap);
+        return {
+            .ptr = ptr,
+            .cap = cap,
+            .size = 0,
+        }: Vec<T>;
+    }
+
+    pub fn raw_ptr(&self) -> *raw T {
+        return self.ptr as *raw Shared<T> as *raw T;
+    }
+
+    pub fn from(slice: Slice<T>) -> Self {
+        let mut v: Vec<T> = (type Vec<T>)::with_capacity(slice.length);
+        v.extend_from_slice(slice);
+        return v;
+    }
+
+    pub fn len(&self) -> UInt {
+        return self.size;
+    }
+
+    pub fn is_empty(&self) -> Bool {
+        return self.size == 0;
+    }
+
+    pub fn capacity(&self) -> UInt {
+        return self.cap;
+    }
+
+    pub fn ref_count(&self) -> UShort {
+        return ::self::ptr::strong_count(&self.ptr);
+    }
+
+    pub fn reserve(&mut self, additional: UInt) {
+        let min_cap = self.size + additional;
+        if (self.cap >= min_cap) {
+            return;
+        }
+        let mut data = Self::alloc_n(min_cap);
+        unsafe {
+            if (::self::ptr::is_unique(&self.ptr)) {
+                ::self::mem::mem_copy(self.ptr as *raw Shared<T> as *raw T, data as *raw Shared<T> as *raw mut T, self.size);
+            } else {
+                ::self::mem::mem_copy(self.ptr as *raw Shared<T> as *raw T, data as *raw Shared<T> as *raw mut T, self.size);
+            }
+        }
+        self.ptr = data as *Shared<T>;
+        self.cap = min_cap;
+    }
+
+    // 这是简化版，还需要支持 Range 作为 idx
+    // Index 重载是类似的效果
+    pub fn get<'a>(&'a mut self, idx: UInt) -> Option<ItemRef<'a, T>> {
+        if (idx >= self.size) {
+            return None;
+        }
+        return Some({
+            .ptr = self.ptr as *(),
+            .size = self.size,
+            .item = unsafe(((self.ptr as *raw Shared<T> as *raw T) + idx) as &T), // 这里可以保证 item 肯定是合法的，因为 ptr 的存在，item指向的空间肯定没有释放
+        } : ItemRef<'a, T>);
+    }
+
+    // 这是简化版，还需要支持 Range 作为 idx
+    // Index 重载是类似的效果
+    pub fn get_mut<'a>(&'a mut self, idx: UInt) -> Option<ItemRefMut<'a, T>> {
+        if (idx >= self.size) {
+            return None;
+        }
+        self.to_unique();
+        let ptr = self.ptr as *();
+        let raw_ptr = self.ptr as *raw Shared<T> as *raw T;
+        unsafe {
+            zinc_core_set_strong_count(self.ptr as *raw Shared<T> as *raw (), ::self::ptr::UShortMax);
+        }
+
+        return Some({
+            .ptr = move ptr,
+            .size = self.size,
+            .item = unsafe((raw_ptr + idx) as &mut T), // 这里可以保证 item 肯定是合法的，因为 ptr 的存在，item指向的空间肯定没有释放
+        } : ItemRefMut<'a, T>);
+    }
+
+    // 这个函数要挪到 Index trait 那边去, 后续支持 [] 运算符重载
+    // 跟 get 的区别是 越界的时候发生 panic
+    pub fn index<'a>(&'a self, idx: UInt) -> ItemRef<'a, T> {
+        if (idx >= self.size) {
+            let len = self.size;
+            let msg = f"index out of bounds in Vec::index method, index: $(idx), len: $(len).";
+            panic msg.as_str().deref();
+        }
+        return {
+            .ptr = self.ptr as *(),
+            .size = self.size,
+            .item = unsafe(((self.ptr as *raw Shared<T> as *raw T) + idx) as &T),
+        }: ItemRef<'a, T>;
+    }
+
+    // 这个函数要挪到 Index trait 那边去, 后续支持 [] 运算符重载
+    // 跟 get_mut 的区别是 越界的时候发生 panic
+    pub fn index_mut<'a>(&'a mut self, idx: UInt) -> ItemRefMut<'a, T> {
+        if (idx >= self.size) {
+            let len = self.size;
+            let msg = f"index out of bounds in Vec::index_mut method, index: $(idx), len: $(len).";
+            panic msg.as_str().deref();
+        }
+        self.to_unique();
+
+        // 在把 Vec 变成 unique 之后, 还要把 ref count 修改为 MAX 然后返回 ItemRefMut, 最后靠 ItemRefMut 的析构函数把 ref count 改回来。
+        // 
+        // 这么做的目的是为了防止用户获得了指向 item 的 mut 借用之后, 再拷贝 Vec 到新线程, 造成线程不安全。
+        // 以 Vec<Int> 为例, 假如用户写出这样的代码:
+        // let p: &mut Int = &vec[0];  // 调用 index_mut 方法可以确保 vec 已经 to_unique 了
+        // sender.send(vec);           // 但后面给 vec 又创建了一个新的 alias
+        // *p += 1;                    // 因为 Int 不是 Sync 类型, 这个修改会产生 data race
+        // 
+        // 所以在返回 ItemRefMut 之前先把 ref count 修改为 MAX, 在后续拷贝 vec 的时候会触发 ref count overflow 导致 panic。这就杜绝了上述 data race 的可能性。
+        //
+        // 至于额外的引用计数加减操作导致的性能问题, 我寄望于性能优化模块解决。一般情况下调用 index_mut 方法的场景是即用即抛, 不会把借用保存下来: vec[0] = 2;
+        // 像这样的代码, 只要我们把 index_mut 方法内联, 编译器就知道在引用计数加减操作之间没有别的有风险的操作, 就可以直接把这一对操作抵消掉。
+
+        let ptr = self.ptr as *();
+        let raw_ptr = self.ptr as *raw Shared<T> as *raw T;
+        unsafe {
+            zinc_core_set_strong_count(self.ptr as *raw Shared<T> as *raw (), ::self::ptr::UShortMax);
+        }
+        return {
+            .ptr = move ptr,
+            .size = self.size,
+            .item = unsafe((raw_ptr + idx) as &mut T),
+        }: ItemRefMut<'a, T> ;
+    }
+
+    // 这个函数，为了最大限度不影响性能。不仅不检查越界，也不保证引用计数的正确性。
+    pub unsafe fn get_unchecked<'a>(&'a self, idx: UInt) -> &'a T {
+        return ((self.ptr as *raw Shared<T> as *raw T) + idx) as &T;
+    }
+
+    // 这个函数，为了最大限度不影响性能。不仅不检查越界，也不保证引用计数的正确性。
+    pub unsafe fn get_unchecked_mut<'a>(&'a self, idx: UInt) -> &'a mut T {
+        return ((self.ptr as *raw Shared<T> as *raw mut T) + idx) as &mut T;
+    }
+
+    // 提供一个返回 item 的拷贝的版本
+    pub fn at(&self, idx: UInt) -> Option<T> {
+        if (idx >= self.size) {
+            return None;
+        }
+        return Some(*unsafe(self.get_unchecked(idx)));
+    }
+
+    pub fn clear(&mut self) {
+        if (!::self::ptr::is_unique(&self.ptr)) {
+            self.ptr = Self::alloc_n(4); // 这里不可能产生强引用数量降为0的场景，因为这块内存就没有弱引用指向它
+            self.size = 0;
+            self.cap = 4;
+        } else {
+            // 不释放内存，为了复用已申请内存
+            unsafe {
+                let mut i: UInt = 0;
+                while (i < self.size) {
+                    let item = (self.ptr as *raw Shared<T> as *raw mut T) + i;
+                    ::self::intrinsic::destruct_in_place(item); // 析构，包括间接内存释放
+                    i += 1;
+                }
+                self.size = 0;
+            }
+        }
+    }
+
+    fn expanded_cap(&self) -> UInt {
+        if self.cap == 0 {
+            return 4;
+        }
+        if self.size >= self.cap {
+            return self.cap * 2;
+        }
+        return self.cap;
+    }
+
+    // copy on write
+    pub fn push(&mut self, item: T) {
+        if (!::self::ptr::is_unique(&self.ptr)) {
+            let old = self.ptr;
+            let new_cap = self.expanded_cap();
+            self.ptr = Self::alloc_n(new_cap);
+            self.cap = new_cap;
+            unsafe { ::self::mem::mem_copy(old as *raw Shared<T> as *raw T, self.ptr as *raw Shared<T> as *raw mut T, self.size); }
+        } else {
+            let old = self.ptr;
+            if (self.size == self.cap) {
+                let new_cap = self.expanded_cap();
+                self.ptr = Self::alloc_n(new_cap);
+                self.cap = new_cap;
+                unsafe { ::self::mem::mem_copy(old as *raw Shared<T> as *raw T, self.ptr as *raw Shared<T> as *raw mut T, self.size); }
+            }
+        }
+        ::self::ptr::write((self.ptr as *raw Shared<T> as *raw mut T) + self.size, move item); // 避免 item 发生不必要的拷贝和析构
+        self.size += 1;
+    }
+
+    pub fn extend_from_slice(&mut self, other: Slice<T>) {
+        let new_size: UInt = self.size + other.length;
+        let new_cap: UInt = if (new_size > self.cap) then (new_size) else (self.cap);
+        if (!::self::ptr::is_unique(&self.ptr)) {
+            let old = self.ptr;
+            self.ptr = Self::alloc_n(new_cap);
+            self.cap = new_cap;
+            unsafe { ::self::mem::mem_copy(old as *raw Shared<T> as *raw T, self.ptr as *raw Shared<T> as *raw mut T, self.size); }
+        } else {
+            if (new_size > self.cap) {
+                let old = self.ptr;
+                self.ptr = Self::alloc_n(new_cap);
+                self.cap = new_cap;
+                unsafe { ::self::mem::mem_copy(old as *raw Shared<T> as *raw T, self.ptr as *raw Shared<T> as *raw mut T, self.size); }
+            }
+        }
+        unsafe { ::self::mem::mem_copy(other.pointer as *raw T, (self.ptr as *raw Shared<T> as *raw mut T) + self.size, other.length); }
+        self.size = new_size;
+    }
+
+    // 注意：跟 rust 不同，这里不是 FnMut(&T) -> bool
+    // pub fn retain<F>(&mut self, f: &mut F)
+    //     where
+    //         F: FnMut(&mut T) -> Bool
+    // {
+
+    // }
+
+    // 返回的并不是真正的 Slice，而是一个看起来像 Slice 的一个类型，它能 deref 到 Slice 而已
+    // 相比于 primitive Slice 类型，它多了额外的 ARC 指针及数量，用于保证被指向的数据块一定没有释放
+    pub fn as_slice<'s>(&'s self) -> VecSlice<'s, T> {
+        return {
+            .origin = self.ptr,
+            .total_size = self.size,
+            .start = unsafe(self.ptr as *raw Shared<T> as *raw T as &T),
+            .size = self.size,
+        }: VecSlice<'s, T>;
+    }
+
+    // 与 index_mut 类似, 不仅需要 to_unique 还需要把引用计数设置为 UShortMax
+    // pub fn as_slice_mut () 
+
+    pub fn pop(&mut self) -> Option<T> {
+        if (self.size == 0) {
+            return None;
+        }
+        
+        if (!::self::ptr::is_unique(&self.ptr)) { // 复制一份, 最后一个元素不复制
+            let old = self.ptr;
+            let new_size = self.size - 1; // 肯定没有溢出
+            self.ptr = Self::alloc_n(self.cap);
+            self.size = new_size;
+            unsafe { ::self::mem::mem_copy(old as *raw Shared<T> as *raw T, self.ptr as *raw Shared<T> as *raw mut T, new_size); }
+
+            let last_addr = (old as *raw Shared<T> as *raw mut T) + self.size;
+            let last_borrow = unsafe(last_addr as &T);
+            let item: T = *last_borrow; // 这里要调用一下 T 的拷贝函数
+            return Some(item);
+        }
+        else {
+            self.size -= 1;
+            let last_item = (self.ptr as *raw Shared<T> as *raw mut T) + self.size;
+            unsafe {
+                let item = *last_item;
+                ::self::intrinsic::write_bytes(last_item as *raw mut(), 0, size_of(<T>));
+                return Some(move item);
+            }
+        }
+    }
+
+    pub fn pop_front(&mut self) -> Option<T> {
+        if (self.size == 0) {
+            return None;
+        }
+
+        if (!::self::ptr::is_unique(&self.ptr)) { // 复制一份, 最前一个元素不复制
+            let old = self.ptr;
+            let new_size = self.size - 1; // 肯定没有溢出
+            self.ptr = Self::alloc_n(self.cap);
+            unsafe {
+                ::self::mem::mem_copy(old as *raw Shared<T> as *raw T + 1, self.ptr as *raw Shared<T> as *raw mut T, new_size);
+            }
+            self.size = new_size;
+            let first_addr = old as *raw Shared<T> as *raw mut T;
+            let first_borrow = unsafe(first_addr as &T);
+            let item: T = *first_borrow; // 这里要调用一下 T 的拷贝函数
+            return Some(move item);
+        }
+        else {
+            self.size -= 1;
+            let old = self.ptr as *raw Shared<T> as *raw mut T;
+            unsafe {
+                let item = *old;
+                // 把 n-1 个元素往前挪一位, 可以调用 mem_move
+                let mut i: UInt = 1;
+                while (i <= self.size) {
+                    let src: *raw mut T = old + i;
+                    let dst: *raw mut T = old + i - 1;
+                    *dst = *src;
+                    i += 1;
+                }
+                // 最后一个位置清零
+                let last = (old as *raw mut T) + self.size;
+                ::self::intrinsic::write_bytes(last as *raw mut (), 0, size_of(<T>));
+                return Some(move item);
+            }
+        }
+    }
+
+    pub fn insert(&mut self, idx: UInt, item: T) {
+        if (idx > self.size) {
+            panic "the index is too big in Vec::insert method.";
+        }
+        if (!::self::ptr::is_unique(&self.ptr)) {
+            let old = self.ptr;
+            let new_cap = self.expanded_cap();
+
+            self.ptr = Self::alloc_n(new_cap);
+            self.cap = new_cap;
+            // [0, idx) 拷贝到 [0, idx), [idx, size) 拷贝到 [idx+1, size+1)
+            unsafe {
+                ::self::mem::mem_move(old as *raw Shared<T> as *raw T, self.ptr as *raw Shared<T> as *raw mut T, idx);
+                ::self::mem::mem_move(old as *raw Shared<T> as *raw T + idx, self.ptr as *raw Shared<T> as *raw mut T + idx + 1, self.size - idx);
+            }
+        } else {
+            let old = self.ptr;
+            if (self.size == self.cap) {
+                let new_cap = self.cap * 2;
+                self.ptr = Self::alloc_n(new_cap);
+                self.cap = new_cap;
+                // [0, idx) 拷贝到 [0, idx), [idx, size) 拷贝到 [idx+1, size+1)
+                unsafe {
+                    ::self::mem::mem_move(old as *raw Shared<T> as *raw T, self.ptr as *raw Shared<T> as *raw mut T, idx);
+                    ::self::mem::mem_move(old as *raw Shared<T> as *raw T + idx, self.ptr as *raw Shared<T> as *raw mut T + idx + 1, self.size - idx);
+                }
+            } else {
+                let mut i = self.size;
+                while i > idx {
+                    let src = self.ptr as *raw Shared<T> as *raw mut T + i - 1;
+                    let dst = self.ptr as *raw Shared<T> as *raw mut T + i;
+                    unsafe { *dst = *src; }
+                    i -= 1;
+                }
+            }
+        }
+        ::self::ptr::write((self.ptr as *raw Shared<T> as *raw mut T) + idx, move item); // 避免 item 发生不必要的拷贝和析构
+        self.size += 1;
+    }
+
+    pub fn to_unique(&mut self) {
+        if (!::self::ptr::is_unique(&self.ptr)) {
+            let mut data = Self::alloc_n(self.size);
+            unsafe { ::self::mem::mem_copy(self.ptr as *raw Shared<T> as *raw T, data as *raw Shared<T> as *raw mut T, self.size); }
+            self.ptr = unsafe(data as *Shared<T>);
+            self.cap = self.size;
+        }
+    }
+
+    pub fn reverse(&mut self) {
+        if (self.size == 0) {
+            return;
+        }
+
+        if (!::self::ptr::is_unique(&self.ptr)) { // 复制一份, 反过来复制
+            let size = self.size;
+            let mut data = Self::alloc_n(size);
+            let mut x: UInt = 0;
+            while x < size {
+                let cur: *raw T = (self.ptr as *raw Shared<T> as *raw T) + x;
+                let new_data: *raw mut T = (data as *raw Shared<T> as *raw mut T) + size - 1 - x;
+                unsafe { *new_data = *cur; }
+                x += 1;
+            }
+            self.ptr = unsafe(data as *Shared<T>);
+            self.cap = size;
+        } else {
+            let mut start: UInt = 0;
+            let mut end: UInt = self.size - 1;
+            let ptr = self.ptr as *raw Shared<T> as *raw mut T;
+
+            while start < end {
+                let head: *raw mut T = ptr + start;
+                let tail: *raw mut T = ptr + end;
+                // todo: 使用 ManuallyDrop 类型
+                unsafe {
+                    let mut tmp: T = *head;
+                    *head = *tail;
+                    *tail = tmp;
+                    ::self::intrinsic::forget(move tmp);
+                }
+                start += 1;
+                end -= 1;
+            }
+        }
+    }
+}
+
+impl<T> Drop for Vec<T> {
+    fn drop(&mut self) {
+        if (::self::ptr::is_unique(&self.ptr)) {
+            unsafe {
+                let buf = self.ptr as *raw Shared<T> as *raw mut T;
+                let mut i: UInt = 0; // 暂时不支持 range
+                while (i < self.size) {
+                    let item: *raw mut T = buf + i;
+                    ::self::intrinsic::destruct_in_place(item); // 析构
+                    i += 1;
+                }
+                self.size = 0;
+            }
+        }
+    }
+}
+
+impl<T> PartialEq for Vec<T> where T: PartialEq {
+    fn eq(&self, other: &Self) -> Bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        let mut i: UInt = 0; // 暂时不支持 range
+        while (i < self.size) {
+            let item1 = unsafe(self.get_unchecked(i));
+            let item2 = unsafe(other.get_unchecked(i));
+            if (!item1.eq(item2)) {
+                return false;
+            }
+            i += 1;
+        }
+        return true;
+    }
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl<T> Eq for Vec<T> where T: Eq {}
+
+
+impl<T> Clone for Vec<T> {
+    fn clone(&self) -> Self {
+        // let data = Self::alloc_n(self.size); // 类型推导有问题, 需要修复
+        let s = size_of(<T>);
+        let data = unsafe(raw_alloc_n(s, self.size) as *raw Shared<T> as *Shared<T>);
+
+        unsafe { ::self::mem::mem_copy(self.ptr as *raw Shared<T> as *raw T, data as *raw Shared<T> as *raw mut T, self.size); }
+        return {
+            .ptr = move data,
+            .cap = self.size,
+            .size = 0,
+        }: Vec<T>;
+    }
+}
+
+pub struct VecIter<'a, T> {
+    ptr: *Shared<T>,
+    size: UInt,
+    cur: UInt,
+}
+
+impl<'a, T> Drop for VecIter<'a, T> {
+    fn drop(&mut self) {
+        if (::self::ptr::is_unique(&self.ptr)) {
+            unsafe {
+                let mut i: UInt = 0;
+                while (i < self.size) {
+                    let item = (self.ptr as *raw Shared<T> as *raw mut T) + i;
+                    ::self::intrinsic::destruct_in_place(item); // 析构
+                    i += 1;
+                }
+                self.size = 0;
+            }
+        }
+    }
+}
+
+impl<'a, T> Iterator for VecIter<'a, T> {
+    type Item = T;
+
+    fn next<'n>(&'n mut self) -> Option<&'n T> { // 返回的 ItemRefMut 活得比 Iterator 短
+        if (self.cur >= self.size) {
+            return None;
+        } else {
+            let r = unsafe((self.ptr as *raw Shared<T> as *raw mut T + self.cur) as &T);
+            self.cur += 1;
+            return Some(r);
+        }
+    }
+}
+
+impl<T> Iterable for Vec<T> {
+    type Iter<'i> = VecIter<'i, T>;
+    fn iter<'a>(&'a self) -> VecIter<'a, T> {
+        return {
+            .ptr = self.ptr as *Shared<T>,
+            .size = self.size,
+            .cur = 0,
+        }: VecIter<'a, T>;
+    }
+}
+
+impl<T> Deref for Vec<T> {
+    type Target<'t> = VecSlice<'t, T>;
+
+    fn deref<'s>(&'s self) -> VecSlice<'s, T> {
+        return self.as_slice();
+    }
+}
+
+// impl<T> DerefMut for Vec<T> {
+//     type TargetMut<'t> = SliceMut<'t, T>;
+
+//     fn deref_mut<'s>(&'s mut self) -> SliceMut<'s, T> {
+//         return { // todo 需要判断引用计数
+//             .pointer = self.ptr as &'s mut T,
+//             .length = self.size,
+//         };
+//     }
+// }
+
+// 它是引用语义, non-Send non-Sync 的
+pub struct VecSlice<'s, T> {
+    origin: *Shared<T>,
+    total_size: UInt,
+    start: &'s T,
+    size: UInt,
+}
+
+impl<'a, T> Deref for VecSlice<'a, T> {
+    type Target<'t> = Slice<'t, T>;
+
+    fn deref<'s>(&'s self) -> Slice<'s, T> {
+        return {
+            .pointer = self.start,
+            .length = self.size,
+        }: Slice<'s, T>;
+    }
+}

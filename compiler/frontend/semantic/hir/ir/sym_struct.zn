@@ -1,0 +1,133 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::source_code::*;
+
+impl StructSymbol {
+
+    pub fn new(node: *StructDecl) -> *Self {
+        let sym = box {
+            .struct_node = move node,
+            .parent_sym = None,
+            .generics = GenericParams::new(),
+            .symbol_table = SymbolTable::new(),
+            .fields = (type Vec<*VarSymbol>)::new(),
+            .all_impls = (type Vec<*ImplSymbol>)::new(),
+            .cache = (type HashMap<GenericArgs, *SType>)::new(),
+        }: StructSymbol;
+        return sym;
+    }
+
+    pub fn find_field(&self, name: &String) -> Option<*VarSymbol> {
+        for f in self.fields {
+            if f.short_name().eq(name) {
+                return Some(move f);
+            }
+        }
+        return None;
+    }
+
+    pub fn index_of_field(&self, name: &String) -> Option<UInt> {
+        let mut i: UInt = 0;
+        for f in self.fields {
+            if f.short_name().eq(name) {
+                return Some(i);
+            }
+            i += 1;
+        }
+        return None;
+    }
+
+}
+
+impl Symbol for StructSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        return self.struct_node as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return self.struct_node.short_name();
+    }
+
+    fn mangle_name(&self) -> String {
+        if self.parent_sym is Some(ps) {
+            let mut res = ps.export_key();
+            res.push_str("::");
+            res.push_str(self.short_name().as_str().deref());
+            return res;
+        } else {
+            return self.short_name();
+        }
+    }
+
+    fn export_key(&self) -> String {
+        return self.mangle_name();
+    }
+
+    fn export_value(&self) -> String {
+        let mut res = String::new();
+        self.struct_node.qualifiers().to_string_inplace(&mut res);
+
+        res.push_str("struct ");
+        res.push_str(self.short_name().as_str().deref());
+        res.push_str(self.generics.export_value().as_str().deref());
+        
+        let where_conds = self.generics.export_constraints();
+        res.push_str(where_conds.as_str().deref());
+        
+        res.push_str(" {");
+        for f in self.fields {
+            res.push_str("\n");
+            res.push_str(f.export_value().as_str().deref());
+            res.push_str(",");
+        }
+        res.push_str("\n} \n");
+        return res;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_sym;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_sym = Some(ss);
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return self.struct_node.qualifiers().get(QualifierKind::Pub);
+    }
+}
+
+impl TypeSymbol for StructSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        let mut res = String::new();
+        res.push_str(self.mangle_name().as_str().deref());
+        res.push_str(args.to_string().as_str().deref());
+        return res;
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return self.all_impls;
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(t) {
+            return t;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    fn to_sty(*self) -> *SType {
+        let args = self.generics.to_generic_args();
+        return self.to_sty(move args);
+    }
+}
+
+impl ScopeSymbol for StructSymbol {
+    fn sym_table(&mut self) -> &mut SymbolTable {
+        return &mut self.symbol_table;
+    }
+}

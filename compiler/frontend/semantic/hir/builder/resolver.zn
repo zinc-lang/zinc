@@ -1,0 +1,1500 @@
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::zno::*;
+use ::self::frontend::semantic::*;
+use ::self::frontend::semantic::hir::constant::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::syntax::ast::ty::*;
+use ::self::frontend::syntax::ast::visit::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::syntax::parser::{FileParser};
+use ::self::frontend::diagnostic::{Severity, DiagItem, DiagnosticEngine};
+use ::self::frontend::source_code::{SourceSpan, SourceLoc, SourceManager};
+
+use super::round1::TopLevelAstVisitor1;
+use super::round2::TopLevelAstVisitor2;
+
+use std::meta::Type;
+use std::collections::hashset::HashSet;
+
+struct Resolver {
+    top_mod: *ModSymbol,
+}
+
+struct ResolveContext {
+    entry_scope: *ScopeSymbol,
+    path_scope: *ScopeSymbol,
+    self_sty: Option<*SType>,
+}
+
+// todo: 把这个全局变量定义挪到 imported_components() 函数里面, 以避免访问权限的不必要暴露
+// 其它地方都应该直接调用 Resolver::imported_components() 函数来访问这个全局变量, 而不是直接访问 G_IMPORTED_COMPONENTS
+unsafe static mut G_IMPORTED_COMPONENTS: Option<HashMap<String, *ModSymbol>> = None;
+unsafe static mut G_IMPORTED_AST_SYM_MAP: Option<HashMap<UInt, *Symbol>> = None;
+
+unsafe static mut G_RESOLVED_IMPLS: Option<HashSet<String>> = None;
+
+impl Resolver {
+    fn new(m: *ModSymbol) -> Self {
+        return {
+            .top_mod = move m,
+        }: Resolver;
+    }
+
+    fn imported_components() -> &'static mut HashMap<String, *ModSymbol> {
+        // 这是个静态函数, 不能访问 self, 只能访问静态变量 G_IMPORTED_COMPONENTS
+        unsafe {
+            if G_IMPORTED_COMPONENTS is Some(ref mut m) {
+                return m as &'static mut HashMap<String, *ModSymbol>;
+            } else {
+                let m = (type HashMap<String, *ModSymbol>)::new();
+                G_IMPORTED_COMPONENTS = Some(m);
+                if G_IMPORTED_COMPONENTS is Some(ref mut m) {
+                    return m as &'static mut HashMap<String, *ModSymbol>;
+                } else {
+                    panic "unreachable";
+                }
+            }
+        }
+    }
+
+    fn imported_ast_sym_map() -> &'static mut HashMap<UInt, *Symbol> {
+        // 这是个静态函数, 不能访问 self, 只能访问静态变量 G_IMPORTED_AST_SYM_MAP
+        unsafe {
+            if G_IMPORTED_AST_SYM_MAP is Some(ref mut m) {
+                return m as &'static mut HashMap<UInt, *Symbol>;
+            } else {
+                let m = (type HashMap<UInt, *Symbol>)::new();
+                G_IMPORTED_AST_SYM_MAP = Some(m);
+                if G_IMPORTED_AST_SYM_MAP is Some(ref mut m) {
+                    return m as &'static mut HashMap<UInt, *Symbol>;
+                } else {
+                    panic "unreachable";
+                }
+            }
+        }
+    }
+
+    // todo: 用 importer 处理好星号 `use std::cmp::*;` 这种场景
+    fn resolve_use_path(&self, scope: *ScopeSymbol, path: &UseDeclPath) -> Option<*Symbol> {
+        if path.token_list.is_empty() {
+            return None;
+        }
+
+        if path.starts_empty() {// 绝对路径场景
+            if path.token_list.len() <= 1 {
+                // 报错
+                let t = path.token_list.at(0).get_or_panic();
+                DiagnosticEngine::get().emit_invalid_use_decl(t.source_span, "empty use path");
+                return None;
+            }
+            let tok = path.token_list.index(1).deref();
+            if tok.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_LOWER) {
+                // ::self
+                let rest = path.slice(2);
+                return self.resolve_use_path(self.top_mod as *ScopeSymbol, &rest);
+            }
+            if tok.token_kind is TokenKind::Keyword(KeywordKind::KW_SUPER) ||
+                tok.token_kind is TokenKind::Punctuation(PunctuationKind::Star) {
+                // 报错
+                DiagnosticEngine::get().emit_invalid_use_decl(
+                    tok.source_span,
+                    "invalid absolute use path"
+                );
+                return None;
+            }
+            if tok.token_kind is TokenKind::Identifier {
+                if tok.raw_str().eq(&Importer::get().component_name) {
+                    let rest = path.slice(2);
+                    return self.resolve_use_path(self.top_mod as *ScopeSymbol, &rest);
+                } else {
+                    if path.last() is Some(t) && 
+                        t.token_kind is TokenKind::Punctuation(PunctuationKind::Star){
+                        DiagnosticEngine::get().emit_unimplemented(
+                            t.source_span, "use star for imported components");
+                    }
+
+                    let mut segs = (type Vec<String>)::new();
+                    let rest = path.slice(1);
+                    for t in rest.token_list {
+                        segs.push(t.raw_str());
+                    }
+                    let key = {
+                        .segmented_parts = move segs,
+                    }: ExportKey;
+                    return Self::imported_symbol_of(&key);
+                }
+            }
+            // 报错
+            let t = path.token_list.at(0).get_or_panic();
+            DiagnosticEngine::get().emit_invalid_use_decl(t.source_span, "invalid absolute use path");
+            return None;
+        }
+
+        // 相对路径场景
+        let mut cur: *Symbol = scope as *Symbol;
+        for ref token in path.token_list {
+            if token.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_LOWER) {
+                // 相对路径场景的 self 对 cur 的值没有影响
+            } else if token.token_kind is TokenKind::Keyword(KeywordKind::KW_SUPER) {
+                let p = cur.parent_scope();
+                if p is Some(parent) {
+                    cur = parent;
+                } else {
+                    // 报错
+                    DiagnosticEngine::get().emit_path_do_not_exist("self".to_string(), token.source_span);
+                    return None;
+                }
+            } else if token.token_kind is TokenKind::Identifier {
+                if cur is cur_ss: *ScopeSymbol {
+                    let ctx = {
+                        .entry_scope = scope,
+                        .path_scope = cur_ss,
+                        .self_sty = None,
+                    }: ResolveContext;
+                    let found = self.lookup(ctx, &token.raw_str());
+                    if found is Some(s) {
+                        cur = s;
+                        if s is mod_sym: *ModSymbol && mod_sym.is_imported {
+
+                            if path.last() is Some(t) && 
+                                t.token_kind is TokenKind::Punctuation(PunctuationKind::Star){
+                                DiagnosticEngine::get().emit_unimplemented(
+                                    t.source_span, "use star for imported components");
+                            }
+
+                            let key = ExportKey::from_use_path(path);
+                            return Self::imported_symbol_of(&key);
+                        }
+                    } else {
+                        return None;
+                    }
+                }
+            } else if token.token_kind is TokenKind::Punctuation(PunctuationKind::Star) {
+                // 如果不是最后一项，在 desugar_to_paths_helper 函数里面已经报错了
+            } else {
+                // 报错
+                DiagnosticEngine::get().emit_path_do_not_exist(token.raw_str(), token.source_span);
+                return None;
+            }
+        }
+        return Some(cur);
+    }
+
+    fn lookup(&self, ctx: ResolveContext, name: &String) -> Option<*Symbol> {
+        if name.is_empty() {
+            return None;
+        }
+
+        let mut cur: *Symbol = ctx.path_scope;
+
+        while cur is ss: *ScopeSymbol {
+            let res = ss.sym_table().lookup(name);
+            if res is Some(found) {
+                return Some(move found);
+            }
+
+            if ss is alias: *TypeAliasSymbol {
+                if alias.target_sty.type_symbol is ss: *ScopeSymbol {
+                    let mut new_ctx = ctx;
+                    new_ctx.path_scope = ss;
+                    let res = self.lookup(move new_ctx, name);
+                    if res is Some(found) {
+                        return Some(move found);
+                    }
+                }
+            }
+
+            if ss is assoc: *AssociatedTypeSymbol {
+                if assoc.target_sty.type_symbol is ss: *ScopeSymbol {
+                    let mut new_ctx = ctx;
+                    new_ctx.path_scope = ss;
+                    let res = self.lookup(move new_ctx, name);
+                    if res is Some(found) {
+                        return Some(move found);
+                    }
+                }
+            }
+
+            // 如果是 trait 还需要查找 parent trait
+            if ss is trait_sym: *TraitSymbol {
+                for parent in trait_sym.inherit_traits {
+                    if parent.type_symbol is pts: *TraitSymbol {
+                        let res = pts.symbol_table.lookup(name);
+                        if res is Some(found) {
+                            return Some(move found);
+                        }
+                    }
+                }
+            }
+
+            if ss is ts: *TypeSymbol {
+                let impls = ts.related_impls();
+
+                for impl_sym in impls {
+                    let r = impl_sym.symbol_table.lookup(name);
+                    if r is Some(_) {
+                        return r;
+                    }
+                }
+            }
+
+            let parent = ss.parent_scope();
+            if parent is Some(p) {
+                cur = p as *Symbol;
+            } else {
+                break;
+            }
+        }
+
+        if self.lookup_prelude(name) is Some(sym) {
+            return Some(sym);
+        }
+        return None;
+    }
+
+    fn lookup_builtins(&self, name1: &String) -> Option<*Symbol> {
+        let name: Str = name1.as_str().deref();
+        if name.eq(&"Bool") {
+            return Some(BoolSymbol::new() as *Symbol);
+        }
+        else if name.eq(&"Char") {
+            return Some(CharSymbol::new() as *Symbol);
+        }
+        else if name.starts_with("Int") {
+            if name.eq(&"Int") {
+                return Some(IntegerSymbol::new(IntegerKind::Isize) as *Symbol);
+            }
+            else if name.eq(&"Int8") {
+                return Some(IntegerSymbol::new(IntegerKind::I8) as *Symbol);
+            }
+            else if name.eq(&"Int16") {
+                return Some(IntegerSymbol::new(IntegerKind::I16) as *Symbol);
+            }
+            else if name.eq(&"Int32") {
+                return Some(IntegerSymbol::new(IntegerKind::I32) as *Symbol);
+            }
+            else if name.eq(&"Int64") {
+                return Some(IntegerSymbol::new(IntegerKind::I64) as *Symbol);
+            }
+            else {
+                return None;
+            }
+        }
+        else if name.starts_with("UInt") {
+            if name.eq(&"UInt") {
+                return Some(IntegerSymbol::new(IntegerKind::Usize) as *Symbol);
+            }
+            else if name.eq(&"UInt8") {
+                return Some(IntegerSymbol::new(IntegerKind::U8) as *Symbol);
+            }
+            else if name.eq(&"UInt16") {
+                return Some(IntegerSymbol::new(IntegerKind::U16) as *Symbol);
+            }
+            else if name.eq(&"UInt32") {
+                return Some(IntegerSymbol::new(IntegerKind::U32) as *Symbol);
+            }
+            else if name.eq(&"UInt64") {
+                return Some(IntegerSymbol::new(IntegerKind::U64) as *Symbol);
+            } else {
+                return None;
+            }
+        }
+        else if name.eq(&"Short") {
+            return Some(IntegerSymbol::new(IntegerKind::Ishort) as *Symbol);
+        }
+        else if name.eq(&"UShort") {
+            return Some(IntegerSymbol::new(IntegerKind::Ushort) as *Symbol);
+        }
+        else if name.eq(&"F32") {
+            return Some(FloatSymbol::new(FloatKind::F32) as *Symbol);
+        }
+        else if name.eq(&"F64") {
+            return Some(FloatSymbol::new(FloatKind::F64) as *Symbol);
+        }
+        return None;
+    }
+
+    fn import_builtin_impls(sym: *Symbol) {
+        if sym is tsym: *TypeSymbol {
+            if is_builtin_type_symbol(tsym) {
+                // 确保 std lib 的 top mod 存在
+                if !Importer::get().component_name.as_str().deref().eq(&"std") {
+                    let full_name = ["std"];
+                    let key_std = ExportKey::from_slice(&full_name as Slice<Str>);
+                    Self::imported_symbol_of(&key_std);
+
+                    let key_str = tsym.export_key();
+                    let key = ExportKey::from_str(key_str.as_str().deref());
+                    let kind_and_source = Importer::get().source_code_of_builtin_impls(&key);
+                    Self::resolve_imported_impls(&key, kind_and_source.file_id, kind_and_source.source);
+                }
+            }
+        }
+    }
+
+    fn lookup_prelude(&self, name1: &String) -> Option<*Symbol> {
+        if self.lookup_builtins(name1) is Some(sym) {
+            Self::import_builtin_impls(sym);
+            return Some(move sym);
+        }
+
+        let name: Str = name1.as_str().deref();
+        if name.eq(&"std") {
+            if Importer::get().component_name.as_str().deref().eq(&"std") {
+                return Some(self.top_mod as *Symbol);
+            } else {
+                let full_name = ["std"];
+                let key = ExportKey::from_slice(&full_name as Slice<Str>);
+                return Self::imported_symbol_of(&key);
+            }
+        }
+
+        let mut key = ExportKey::new();
+        if name.eq(&"Byte") {
+            let full_name = ["std", "primitives", "Byte"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Option") {
+            let full_name = ["std", "primitives", "option", "Option"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Some") {
+            let full_name = ["std", "primitives", "option", "Option", "Some"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"None") {
+            let full_name = ["std", "primitives", "option", "Option", "None"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Result") {
+            let full_name = ["std", "primitives", "result", "Result"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Ok") {
+            let full_name = ["std", "primitives", "result", "Result", "Ok"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Err") {
+            let full_name = ["std", "primitives", "result", "Result", "Err"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Clone") {
+            let full_name = ["std", "primitives", "clone", "Clone"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Default") {
+            let full_name = ["std", "primitives", "default", "Default"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Any") {
+            let full_name = ["std", "primitives", "Any"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Never") {
+            let full_name = ["std", "primitives", "Never"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Send") {
+            let full_name = ["std", "marker", "Send"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Sync") {
+            let full_name = ["std", "marker", "Sync"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"UnSized") {
+            let full_name = ["std", "marker", "UnSized"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Str") {
+            let full_name = ["std", "primitives", "str", "Str"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"String") {
+            let full_name = ["std", "primitives", "string", "String"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Slice") {
+            let full_name = ["std", "primitives", "slice", "Slice"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"SliceMut") {
+            let full_name = ["std", "primitives", "slice", "SliceMut"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Drop") {
+            let full_name = ["std", "ops", "drop", "Drop"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Iterator") {
+            let full_name = ["std", "iter", "Iterator"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Iterable") {
+            let full_name = ["std", "iter", "Iterable"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Index") {
+            let full_name = ["std", "ops", "index", "Index"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"IndexMut") {
+            let full_name = ["std", "ops", "index", "IndexMut"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Deref") {
+            let full_name = ["std", "ops", "deref", "Deref"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"DerefMut") {
+            let full_name = ["std", "ops", "deref", "DerefMut"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"Vec") {
+            let full_name = ["std", "collections", "vec", "Vec"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"HashMap") {
+            let full_name = ["std", "collections", "hashmap", "HashMap"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"print") {
+            let full_name = ["std", "io", "print"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"println") {
+            let full_name = ["std", "io", "println"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"eprint") {
+            let full_name = ["std", "io", "eprint"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"eprintln") {
+            let full_name = ["std", "io", "eprintln"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else {
+            return None;
+        }
+
+        // 如果本组件就是 std 则不要用 Importer 查找
+        if Importer::get().component_name.as_str().deref().eq(&"std") {
+            let mut i: UInt = 1;
+            let mut cur: *Symbol = self.top_mod as *Symbol;
+
+            while i < key.segmented_parts.len() {
+                let part = key.segmented_parts.index(i).deref();
+                if cur is ss: *ScopeSymbol {
+                    let res = ss.sym_table().lookup(part);
+                    if res is Some(found) {
+                        cur = found;
+                    } else {
+                        break;
+                    }
+                }
+                i += 1;
+            }
+            return Some(move cur);
+        }
+
+        return Self::imported_symbol_of(&key);
+    }
+
+    // todo 返回 Result 类型，方便更好的报错信息
+    fn resolve_type_node(&self, ctx: ResolveContext, ty: *TypeNode) -> Option<*SType> {
+        if ty is arc_ty: *ArcType {
+            let arg = self.resolve_type_node(ctx, arc_ty.ty_arg);
+            if arg is Some(a) {
+                return Some(ArcPointerSymbol::new().to_sty(GenericArgs::from1(a)));
+            } else {
+                return None;
+            }
+        }
+        else if ty is weak_ty: *WeakType {
+            let arg = self.resolve_type_node(ctx, weak_ty.ty_arg);
+            if arg is Some(a) {
+                return Some(WeakPointerSymbol::new().to_sty(GenericArgs::from1(a)));
+            } else {
+                return None;
+            }
+        }
+        else if ty is borrow_ty: *BorrowType {
+            let arg = self.resolve_type_node(ctx, borrow_ty.ty_arg);
+            if arg is Some(a) {
+                let mut ga = GenericArgs::from1(a);
+                if !borrow_ty.lifetime.is_invalid() {
+                    let res_lt = self.resolve_lifetime(ctx, borrow_ty.lifetime);
+                    if res_lt is Some(lt_sym) {
+                        let lt = Lifetime::new(borrow_ty.lifetime, move lt_sym);
+                        ga.lt_args.push(move lt);
+                    } else {
+                        ga.lt_args.push(Lifetime::from_token(borrow_ty.lifetime));
+                    }
+                }
+                if borrow_ty.kw_mut.is_invalid() {
+                    return Some(BorrowImmutSymbol::new().to_sty(ga));
+                } else {
+                    return Some(BorrowMutSymbol::new().to_sty(ga));
+                }
+            } else {
+                return None;
+            }
+        }
+        else if ty is lt_ty: *LifetimeType {
+            let res = self.resolve_lifetime(ctx, lt_ty.lifetime);
+            if res is Some(s) {
+                return Some(s.to_sty());
+            } else {
+                let sym = InvalidSymbol::new(lt_ty.lifetime.source_span);
+                sym.is_lifetime = true;
+                return Some(sym.to_sty());
+            }
+        }
+        else if ty is raw_ptr_ty: *RawPointerType {
+            let arg = self.resolve_type_node(ctx, raw_ptr_ty.ty_arg);
+            if arg is Some(a) {
+                let ga = GenericArgs::from1(a);
+                if raw_ptr_ty.kw_mut.is_invalid() {
+                    return Some(RawPointerImmutSymbol::new().to_sty(ga));
+                } else {
+                    return Some(RawPointerMutSymbol::new().to_sty(ga));
+                }
+            } else {
+                return None;
+            }
+        }
+        else if ty is array_ty: *ArrayType {
+            let arg = self.resolve_type_node(ctx, array_ty.ty_arg);
+            if arg is Some(a) {
+                if array_ty.size_expr is lit: *LiteralExpr &&
+                    lit.token.token_kind is TokenKind::Literal(k) &&
+                    k is LiteralKind::LIT_INT  {
+
+                    let cint = IntegerCValue::new(lit.token);
+                    let mut args = GenericArgs::new();
+                    let mut i: UInt = 0;
+                    while i < cint.value as UInt {
+                        args.ty_args.push(a);
+                        i += 1;
+                    }
+                    return Some(ArraySymbol::new().to_sty(args));
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
+        else if ty is tuple_ty: *TupleType {
+            let mut ty_args = (type Vec<*SType>)::new();
+            for tn in tuple_ty.ty_args {
+                let arg = self.resolve_type_node(ctx, tn);
+                if arg is Some(a) {
+                    ty_args.push(a);
+                } else {
+                    let sty = InvalidSymbol::new(tn.span()).to_sty(GenericArgs::new());
+                    return Some(sty);
+                }
+            }
+            let mut ga = GenericArgs::new();
+            ga.ty_args = move ty_args;
+            return Some(TupleSymbol::new().to_sty(ga));
+        }
+        else if ty is fn_ty: *FnType {
+            // unimplemented
+            panic "FnType is not implemented yet";
+        }
+        else if ty is named_ty: *NamedType {
+            if named_ty.name.is_wildcard() {
+                return None;
+            }
+            let res = self.resolve_named_type(ctx, named_ty.name);
+            return res;
+        }
+
+        let meta = Type::of(&*ty as &Any);
+        let ty_name = meta.name();
+        let msg = f"unimplemented case in resolve_type_node $(ty_name)";
+
+        panic msg.as_str().deref();
+    }
+
+    fn resolve_named_type(&self, ctx: ResolveContext, name: *SegmentedName) -> Option<*SType> {
+        let res = self.resolve_segmented_name(ctx, name);
+        // 后处理
+        if res is Some(st) {
+            match st {
+                SymOrType::Sym(s) => {
+                    if s is tps: *TypeParamSymbol {
+                        return Some(tps.to_sty());
+                    }
+                    if s is ts: *TypeSymbol {
+                        if name.ends_with_generic() is Some(types) {
+                            let mut args = GenericArgs::new();
+                            for a in types {
+                                if a is lt_a: *LifetimeType {
+                                    let res = self.resolve_lifetime(ctx, lt_a.lifetime);
+                                    if res is Some(s) {
+                                        let lt = Lifetime::new(lt_a.lifetime, s);
+                                        args.lt_args.push(move lt);
+                                    } else {
+                                        let lt = {
+                                            .token = lt_a.lifetime,
+                                            .resolved = None,
+                                        }: Lifetime;
+                                        args.lt_args.push(move lt);
+                                    }
+                                } else {
+                                    let sty = self.resolve_type_node(ctx, move a);
+                                    if sty is Some(sty_a) {
+                                        args.ty_args.push(move sty_a);
+                                    } else {
+                                        return None;
+                                    }
+                                }
+                            }
+                            let res_ty = ts.to_sty(move args);
+                            return Some(move res_ty);
+
+                        } else {
+                            let origin = ts.to_sty();
+                            let ty_param_count = origin.args.ty_args.len();
+                            if ty_param_count > 0 {
+                                DiagnosticEngine::get().emit_generic_args_count_mismatch(ts.short_name(), ty_param_count, 0, name.span());
+                            }
+                            let mut empty_args = GenericArgs::new(); // lifetime args remains empty
+                            let sty = ts.to_sty(move empty_args);
+                            return Some(move sty);
+                        }
+                    } else {
+                        DiagnosticEngine::get().emit_symbol_is_not_type(name.span());
+                        return None;
+                    }
+                }
+                SymOrType::Type(sty) => {
+                    return Some(sty);
+                }
+            }
+        }
+        return None;
+    }
+
+    fn resolve_segmented_name(&self, ctx: ResolveContext, name: *SegmentedName) -> Option<SymOrType> {
+        if name.names.is_empty() {
+            return None;
+        }
+        let first: *SegmentedPart = *name.names.index(0).deref();
+        match first {
+            SegmentedPart::Err => return None;
+            SegmentedPart::Empty => { // 以 :: 开头, 属于绝对路径场景
+                if name.names.len() <= 1 {
+                    DiagnosticEngine::get().emit_path_do_not_exist(name.to_string(), name.span());
+                    return None;
+                }
+
+                let mut names = name.names;
+                names.pop_front();
+
+                let second: *SegmentedPart = *names.index(0).deref();
+                let mut new_ctx: ResolveContext = ctx;
+                let comp_name: String = second.to_string();
+                if comp_name.as_str().deref().eq(&"self") { // ::self
+                    new_ctx.path_scope = self.top_mod as *ScopeSymbol;
+                    names.pop_front();
+                    return self.resolve_segmented_name_rest(move new_ctx, move names);
+                } else if comp_name.eq(&Importer::get().component_name) {  // 绝对路径访问当前 component
+                    new_ctx.path_scope = self.top_mod as *ScopeSymbol;
+                    names.pop_front();
+                    return self.resolve_segmented_name_rest(move new_ctx, move names);
+                } else {
+                    let seg_name_str = name.to_string().as_str().deref();
+                    let key = ExportKey::from_str(seg_name_str);
+
+                    let sym = Self::imported_symbol_of(&key);
+                    if sym is Some(s) {
+                        return Some(SymOrType::Sym(s));
+                    } else {
+                        return None;
+                    }
+                }
+                return None;
+            }
+            _ => {
+                let first_str = first.to_string();
+                if first_str.as_str().deref().eq(&"Self") {
+                    if name.names.len() == 1 { // Self type
+                        if ctx.self_sty is Some(s) {
+                            return Some(SymOrType::Type(s));
+                        } else {
+                            DiagnosticEngine::get().emit_invalid_self_type(first.span());
+                            return None;
+                        }
+                    }
+
+                    if ctx.self_sty is Some(self_sty) &&
+                        self_sty.type_symbol is ss: *ScopeSymbol {
+                        let mut new_ctx = ctx;
+                        new_ctx.path_scope = ss;
+                        let mut names = name.names;
+                        names.pop_front();
+                        return self.resolve_segmented_name_rest(move new_ctx, move names);
+                    } else {
+                        DiagnosticEngine::get().emit_invalid_self_type(first.span());
+                        return None;
+                    }
+                }
+
+                if first_str.as_str().deref().eq(&"self") && name.names.len() == 1 {
+                    // 单个的 self 不是代表 mod 而是代表变量
+                    let res = self.lookup(ctx, &first_str);
+                    if res is Some(sym) {
+                        return Some(SymOrType::Sym(move sym));
+                    } else {
+                        return None;
+                    }
+                }
+
+                let res_first = self.resolve_segmented_part(ctx, first);
+                if res_first is Some(sym_or_ty) {
+                    if name.names.len() == 1 {
+                        return res_first;
+                    }
+
+                    if sym_or_ty is SymOrType::Sym(sym) {
+                        if sym is mod_sym: *ModSymbol && mod_sym.is_imported {
+                            let seg_name_str = name.to_string().as_str().deref();
+                            let key = ExportKey::from_str(seg_name_str);
+                            let sym = Self::imported_symbol_of(&key);
+                            if sym is Some(s) {
+                                return Some(SymOrType::Sym(s));
+                            } else {
+                                return None;
+                            }
+                        }
+                    }
+
+                    let res = self.resolve_segmented_name_rest(move ctx, name.names);
+                    return res;
+                } else {
+                    // 如果第一个单词在上下文中没找到
+                    return None;
+                }
+
+            }
+        }
+        return None;
+    }
+
+    fn resolve_segmented_name_rest(&self, ctx: ResolveContext, parts: Vec<*SegmentedPart>) -> Option<SymOrType> {
+        if parts.is_empty() {
+            return None;
+        }
+
+        let first: *SegmentedPart = *parts.index(0).deref();
+        match first {
+            SegmentedPart::Ident(_) => {
+                let part_res = self.resolve_segmented_part(ctx, move first);
+                if parts.len() == 1 {
+                    return part_res;
+                }
+                if part_res is Some(st) {
+                    match st {
+                        SymOrType::Sym(sym) => {
+                            if sym is ss: *ScopeSymbol {
+                                let mut names = move parts;
+                                names.pop_front();
+
+                                let mut new_ctx: ResolveContext = ctx;
+                                new_ctx.path_scope = ss;
+                                return self.resolve_segmented_name_rest(new_ctx, move names);
+                            } else {
+                                return None;
+                            }
+                        }
+                        SymOrType::Type(sty) => {
+                            if sty.type_symbol is ss: *ScopeSymbol {
+                                let mut names = move parts;
+                                names.pop_front();
+                                let mut new_ctx: ResolveContext = ctx;
+                                new_ctx.path_scope = ss;
+                                return self.resolve_segmented_name_rest(new_ctx, move names);
+                            } else {
+                                return None;
+                            }
+                        }
+                    }
+                }
+                return None;
+            }
+            SegmentedPart::WithGeneric(_, _) => {
+                // todo 这里还需要继续查, 如果后面还有别的 SegmentedPart, 比如 type Vec<Int>::Iter
+                return self.resolve_segmented_part(move ctx, move first);
+            }
+            _ => return None;
+        }
+        return None;
+    }
+
+    fn resolve_segmented_part(&self, ctx: ResolveContext, part: *SegmentedPart) -> Option<SymOrType> {
+        match part {
+            SegmentedPart::Err => return None;
+            SegmentedPart::Empty => return None;
+            SegmentedPart::Ident(t1) => {
+                if t1.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_LOWER) {
+                    return Some(SymOrType::Sym(ctx.path_scope as *Symbol));
+                }
+                else if t1.token_kind is TokenKind::Keyword(KeywordKind::KW_SUPER) {
+                    if ctx.path_scope.parent_scope() is Some(ss) {
+                        return Some(SymOrType::Sym(ss as *Symbol));
+                    } else {
+                        return None;
+                    }
+                }
+                else if t1.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_UPPER) {
+                    // 应该用 diagnostic 报错
+                    panic "should be handled in resolve_segmented_name";
+                }
+                else {
+                    let name = t1.raw_str();
+                    let res = self.lookup(ctx, &name);
+                    if res is Some(sym) {
+                        return Some(SymOrType::Sym(move sym));
+                    } else {
+                        return None;
+                    }
+                }
+            }
+            SegmentedPart::WithGeneric(t2, ty_args) => {
+                let name = t2.raw_str();
+                let res = self.lookup(ctx, &name);
+
+                if res is Some(sym) {
+                    if sym is tysym: *TypeSymbol {
+                        let mut ga = GenericArgs::new();
+                        for a in ty_args {
+                            let mut new_ctx = ctx;
+                            new_ctx.path_scope = ctx.entry_scope;
+                            if a is lt_ty: *LifetimeType {
+                                let res = self.resolve_lifetime(new_ctx, lt_ty.lifetime);
+                                if res is Some(s) {
+                                    let lt = Lifetime::new(lt_ty.lifetime, s);
+                                    ga.lt_args.push(move lt);
+                                } else {
+                                    let lt = {
+                                        .token = lt_ty.lifetime,
+                                        .resolved = None,
+                                    }: Lifetime;
+                                    ga.lt_args.push(move lt);
+                                }
+                            } else {
+                                let sty = self.resolve_type_node(new_ctx, a);
+                                if sty is Some(sty_a) {
+                                    ga.ty_args.push(move sty_a);
+                                } else {
+                                    DiagnosticEngine::get().emit_invalid_type_node(a.to_string(), a.span());
+                                    ga.ty_args.push(InvalidSymbol::new(a.span()).to_sty());
+                                }
+                            }
+                        }
+
+                        let res_sty = tysym.to_sty(move ga);
+                        return Some(SymOrType::Type(move res_sty));
+                    }
+
+                    return None;
+                } else {
+                    return None;
+                }
+            }
+        }
+    }
+
+    fn resolve_lifetime(&self, ctx: ResolveContext, lt: Token) -> Option<*LifetimeSymbol> {
+        if !(lt.token_kind is TokenKind::Lifetime) {
+            return None;
+        }
+        let name = lt.raw_str();
+        if name.is_empty() {
+            return None;
+        }
+        let name_str = name.as_str().deref();
+        if name_str.eq(&"'_") {
+            return None;
+        }
+        if name_str.eq(&"'static") {
+            let sym = LifetimeSymbol::static_lifetime();
+            return Some(move sym);
+        }
+        let found = self.lookup(move ctx, &name);
+        if found is Some(lt_sym: *LifetimeSymbol) {
+            return Some(move lt_sym);
+        }
+        return None;
+    }
+
+    fn resolve_qualified_path(&self, ctx: ResolveContext, path: *QualifiedPathExpr) -> Option<SymOrType> {
+        let sty_opt = self.resolve_type_node(ctx, path.ty);
+        if sty_opt is Some(sty) && sty.type_symbol is ss: *ScopeSymbol {
+            if path.trait_ty is Some(trait_ty) {
+                let trait_sty_opt = self.resolve_type_node(ctx, trait_ty);
+                if trait_sty_opt is Some(trait_sty) {
+                    for isym in sty.type_symbol.related_impls() {
+                        if isym.trait_sty is Some(ts_i) && 
+                            ts_i.type_symbol as *raw TypeSymbol as UInt == trait_sty.type_symbol as *raw TypeSymbol as UInt {
+                            
+                            let mut new_ctx = ctx;
+                            new_ctx.path_scope = isym as *ScopeSymbol;
+                            return self.resolve_segmented_name(new_ctx, path.rest_parts);
+                        }
+                    }
+                } else {
+                    DiagnosticEngine::get().emit_invalid_type(trait_ty.span());
+                    return None;
+                }
+            } else {
+                let mut new_ctx = ctx;
+                new_ctx.path_scope = ss;
+                return self.resolve_segmented_name(new_ctx, path.rest_parts);
+            }
+        }
+        return None;
+    }
+
+    fn imported_symbol_of(item: &ExportKey) -> Option<*Symbol> {
+
+        let len = item.segmented_parts.len();
+        if len == 0 {
+            return None;
+        }
+
+        // 从已有的 imported_components 中查找
+        let r = Self::lookup_in_imported_sema_models(item);
+
+        let mut i: UInt = 0;
+        let mut cur: Option<*Symbol> = None;
+        if r is Some(pres) {
+            if pres.resolved_part == len {
+                return Some(pres.sym);
+            } else {
+                // 有剩下的部分没有被解析过, 需要继续解析剩下的部分
+                i = pres.resolved_part;
+                cur = Some(pres.sym);
+            }
+        } else {
+            // 整个依赖项还没有被解析过, 需要从头开始解析
+        }
+
+        // 对剩下的部分, 读取源代码并解析成符号
+        while i < len {
+            if cur is Some(tsym: *TypeSymbol) {
+                let member = item.segmented_parts.index(i).deref();
+                let impls = tsym.related_impls();
+                for impl_sym in impls {
+                    let r = impl_sym.symbol_table.lookup(member);
+                    if r is Some(_) {
+                        return r;
+                    }
+                }
+                return None;
+            }
+
+            let key = item.prefix_n(i+1);
+            let kind_and_source = Importer::get().source_code_of(&key);
+
+            if kind_and_source.kind is SymbolKind::None {
+                return None;
+            }
+
+            let res = Self::resolve_imported_item_round1(&key, kind_and_source.file_id, kind_and_source.source, kind_and_source.kind);
+            if kind_and_source.kind is SymbolKind::Func {
+                // 这种情况是可以重载的, res 里面可能包含一个或者多个结果
+                if res.len() == 0 {
+                    return None;
+                }
+
+                let mut prev: Option<*FuncSymbol> = None;
+                for s in res {
+                    if cur is Some(ss: *ScopeSymbol) {
+                        ss.sym_table().add_child(s);
+                        s.set_parent_scope(ss);
+                    }
+                    if s is f: *FuncSymbol {
+
+                        // 对签名做解析
+                        let comp_name = item.first();
+                        let top_mod: *ModSymbol  = imported_components().at(&comp_name).get_or_panic();
+                        Self::resolve_imported_item_round2(s, move comp_name, move top_mod);
+
+                        if prev is Some(p) {
+                            f.next_overload = Some(p);
+                        }
+                        prev = Some(f);
+                    }
+                }
+
+                if prev is Some(f) {
+                    return Some(f as *Symbol);
+                } else {
+                    return None;
+                }
+            } else {
+                if res.len() == 0 {
+                    return None;
+                }
+                if res.len() > 1 {
+                    let msg = f"BUG: resolved multiple results for key $(key)";
+                    panic msg.as_str().deref();
+                }
+                let s: *Symbol = *res.index(0).deref();
+                if cur is Some(ss: *ModSymbol) {
+                    ss.sym_table().add_child(s);
+                    s.set_parent_scope(ss as *ScopeSymbol);
+                    cur = Some(s);
+                } else {
+                    if i == 0 {
+                        // 说明这是第一部分, 直接放到 imported_components 下面
+                        if s is m: *ModSymbol {
+                            imported_components().insert(item.first(), move m);
+                        } else {
+                            let comp_name = s.short_name();
+                            let msg = f"BUG: top mod of component $(comp_name) is not a mod";
+                            panic msg.as_str().deref();
+                        }
+                        cur = Some(s);
+                        i += 1;
+                        continue;
+                    } else {
+                        // 说明不是第一部分
+                        return None;
+                    }
+                }
+                i += 1;
+                if s is tsym: *TypeSymbol {
+                    // 对成员 和 impls 做解析
+                    // 【todo】 这里可以继续优化：目前是直接把所有的相关 impl 直接导入进来
+                    // 优化后可以改成 需要解析成员方法、实现的trait的场景才导入相关的 impl
+                    // 这样做更精细的按需导入优化编译速度
+                    let comp_name = item.first();
+                    let top_mod: *ModSymbol  = imported_components().at(&comp_name).get_or_panic();
+
+                    Self::resolve_imported_item_round2(s, comp_name, top_mod);
+
+                    let kind_and_source = Importer::get().source_code_of_impls(&key);
+                    Self::resolve_imported_impls(&key, kind_and_source.file_id, kind_and_source.source);
+                    continue;
+                }
+            }
+        }
+        return cur;
+    }
+
+
+    fn lookup_in_imported_sema_models(item: &ExportKey) -> Option<LookupPartialResult> {
+
+        let comp = item.first();
+        let opt_sm = imported_components().at(&comp);
+        if opt_sm is Some(mod_sym) {
+            let mut resolved_parts: UInt = 1;
+            let mut resolved_sym: *Symbol = mod_sym as *Symbol;
+
+            while resolved_parts < item.segmented_parts.len() {
+                let part = item.segmented_parts.index(resolved_parts).deref();
+                if resolved_sym is ss: *ScopeSymbol {
+                    let res = ss.sym_table().lookup(part);
+                    if res is Some(found) {
+                        resolved_sym = found;
+                        resolved_parts += 1;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            return Some({
+                .sym = move resolved_sym,
+                .resolved_part = resolved_parts,
+            }: LookupPartialResult);
+        } else {
+            return None;
+        }
+    }
+
+    fn resolve_imported_item_round1(item: &ExportKey, file_id: UInt, source: String, kind: SymbolKind) -> Vec<*Symbol> {
+
+        let mut results = (type Vec<*Symbol>)::new();
+        let mut sub_parser = FileParser::new(file_id, source);
+
+        sub_parser.ignore_sub_mod = true;
+        let sub_mod = sub_parser.parse_mod_file();
+        // 如果是 mod 那么简单创建一个 ModSymbol 即可, 否则需要使用语义分析
+        for c in sub_mod.children() {
+            if c is m: *ModDecl {
+                let sym = ModSymbol::new(m);
+                sym.is_imported = true;
+                results.push(sym as *Symbol);
+                return results;
+            }
+        }
+
+        if kind is SymbolKind::Mod {
+            panic "unreachable: mod should have been handled before";
+        }
+
+        // 只需要做顶层 item 的解析, 不管成员的解析, 因为成员的解析会在后续进行
+        let mut visitor = TopLevelAstVisitor1::new();
+        traverse_ast(sub_mod as *SyntaxNode, &mut visitor as &mut SyntaxVisitor);
+        imported_ast_sym_map().merge(&visitor.syntax_to_symbol);
+
+        for c in sub_mod.children() {
+            let addr = c as *raw SyntaxNode as UInt;
+            let sym = visitor.syntax_to_symbol.at(&addr);
+            if sym is Some(s) {
+                results.push(move s);
+            }
+        }
+        return results;
+    }
+
+    fn resolve_imported_item_round2(sym: *Symbol, comp_name: String, top_mod: *ModSymbol) {
+
+        let mut visitor = TopLevelAstVisitor2::new(
+            move top_mod, move comp_name, *imported_ast_sym_map()
+        );
+        traverse_ast(sym.syntax_node(), &mut visitor as &mut SyntaxVisitor);
+    }
+
+    fn resolve_imported_impls(item: &ExportKey, file_id: UInt, source: String) {
+        if source.is_empty() {
+            return;
+        }
+
+        let mut fname = item.to_string();
+        fname.push_str(".impl");
+
+        // 确保同一个 item 的 impls 不会被添加多次
+        unsafe {
+            if G_RESOLVED_IMPLS is None {
+                G_RESOLVED_IMPLS = Some((type HashSet<String>)::new());
+            }
+            if G_RESOLVED_IMPLS is Some(ref mut p) {
+                if p.contains(&fname) {
+                    return;
+                } else {
+                    p.insert(fname);
+                }
+            }
+        }
+        let mut sub_parser = FileParser::new(file_id, source);
+        sub_parser.ignore_sub_mod = true;
+        let sub_mod = sub_parser.parse_mod_file();
+        for child in sub_mod.items {
+            recursive_setup_parents(child, sub_mod as *SyntaxNode as *weak SyntaxNode);
+        }
+
+        // SyntaxTree::dump(sub_mod as *DeclNode, false);
+
+        let mut visitor1 = TopLevelAstVisitor1::new();
+        traverse_ast(sub_mod as *SyntaxNode, &mut visitor1 as &mut SyntaxVisitor);
+        imported_ast_sym_map().merge(&visitor1.syntax_to_symbol);
+
+        let mut comp: String =  f"std";
+        if item.segmented_parts.len() > 1 {
+            comp = item.first();
+        }
+        let top_mod: *ModSymbol  = imported_components().at(&comp).get_or_panic();
+
+        let mut visitor2 = TopLevelAstVisitor2::new(
+            top_mod, item.first(), visitor1.syntax_to_symbol
+        );
+        // 解析出来的 impls 已经加入到 all_impls 里面去了
+        traverse_ast(sub_mod as *SyntaxNode, &mut visitor2 as &mut SyntaxVisitor);
+    }
+
+    fn resolve_pattern(&self, ctx: ResolveContext, p: *PatternNode) -> *Pattern {
+        match p {
+            dummy: *DummySyntaxNode => {
+                let pat = InvalidPattern::new(dummy as *PatternNode);
+                return pat as *Pattern;
+            }
+            lit_pat: *LiteralPatternNode => {
+
+                let pat = LiteralPattern::new(move lit_pat);
+                return pat as *Pattern;
+            }
+            ident_pat: *IdentPatternNode => {
+                if ident_pat.name.names.is_empty() {
+                    DiagnosticEngine::get().emit_invalid_pattern(ident_pat.span());
+                    let pat = InvalidPattern::new(ident_pat as *PatternNode);
+                    return pat as *Pattern;
+                }
+                // 查询 name 是不是一个常量名
+                let res = self.resolve_segmented_name(ctx, ident_pat.name);
+
+                if res is Some(sym_or_ty) {
+                    match sym_or_ty {
+                        SymOrType::Sym(sym) => {
+                            if sym is var_sym: *VarSymbol  && var_sym.is_const() {
+                                let pat = ConstPattern::new(ident_pat as *PatternNode, var_sym as *Symbol);
+                                return pat as *Pattern;
+                            }
+                            if sym is ev_sym: *EnumVariantSymbol && ev_sym.fields.len() == 0 {
+                                let pat = ConstPattern::new(ident_pat as *PatternNode, ev_sym as *Symbol);
+                                return pat as *Pattern;
+                            }
+                        }
+                        SymOrType::Type(ty) => {
+                            DiagnosticEngine::get().emit_type_pattern_missing_keyword(ident_pat.name.span());
+                            let pat = InvalidPattern::new(ident_pat as *PatternNode);
+                            return pat as *Pattern;
+                        }
+                    }
+                }
+
+                if ident_pat.name.names.len() == 1 {
+                    let mut sty: Option<*SType> = None;
+                    if ident_pat.ty is Some(t) {
+                        sty = self.resolve_type_node(ctx, t);
+                    }
+
+                    let pat = VarBindingPattern::new(move ident_pat, move sty);
+                    return pat as *Pattern;
+                } else {
+                    DiagnosticEngine::get().emit_invalid_pattern(ident_pat.span());
+                    let pat = InvalidPattern::new(ident_pat as *PatternNode);
+                    return pat as *Pattern;
+                }
+            }
+            ty_name: *TypeNamePatternNode => {
+                let sty = self.resolve_type_node(ctx, ty_name.ty);
+                if sty is Some(pat_sty) {
+                    let pat = TypeNamePattern::new(ty_name, move pat_sty);
+                    return pat as *Pattern;
+                } else {
+                    DiagnosticEngine::get().emit_invalid_type_node(ty_name.ty.to_string(), ty_name.ty.span());
+                    let pat = InvalidPattern::new(ty_name as *PatternNode);
+                    return pat as *Pattern;
+                }
+            }
+            wildcard: *WildcardPatternNode => {
+                let pat = WildcardPattern::new(move wildcard);
+                return pat as *Pattern;
+            }
+            rest: *RestPatternNode => {
+                let pat = RestPattern::new(move rest);
+                return pat as *Pattern;
+            }
+            weak_pat: *WeakPatternNode => {
+                let inner = self.resolve_pattern(ctx, weak_pat.pattern);
+                let pat = WeakPattern::new(move weak_pat, move inner);
+                return pat as *Pattern;
+            }
+            deref_pat: *DerefPatternNode => {
+                let inner = self.resolve_pattern(ctx, deref_pat.pattern);
+                let pat = DerefPattern::new(move deref_pat, move inner);
+                return pat as *Pattern;
+            }
+            mut_pat: *MutPatternNode => {
+                let inner = self.resolve_pattern(ctx, mut_pat.pattern);
+                let pat = MutPattern::new(move mut_pat, move inner);
+                return pat as *Pattern;
+            }
+            ref_pat: *RefPatternNode => {
+                let inner = self.resolve_pattern(ctx, ref_pat.pattern);
+                let pat = RefPattern::new(move ref_pat, move inner);
+                return pat as *Pattern;
+            }
+            field_pat: *FieldPatternNode => {
+                panic "unreachable";
+            }
+            struct_pat: *StructPatternNode => {
+                let s_pat = StructPattern::new(struct_pat);
+                if struct_pat.ty is Some(ty) {
+                    let sty = self.resolve_type_node(ctx, ty);
+                    if sty is Some(s_ty) && !(s_ty.type_symbol is type *StructSymbol) {
+                        DiagnosticEngine::get().emit_type_is_not_struct(ty.span());
+                    }
+                    s_pat.struct_sty = move sty;
+                }
+
+                // 检查成员变量有没有重复
+                let mut all_fields: HashSet<String> = (type HashSet<String>)::new();
+                for field_pat in struct_pat.fields {
+                    let inner = self.resolve_pattern(ctx, field_pat.pattern);
+                    let f_pat = FieldPattern::new(field_pat, inner, s_pat);
+                    s_pat.fields.push(f_pat);
+
+                    let name = field_pat.name.raw_str();
+                    if all_fields.contains(&name) {
+                        DiagnosticEngine::get().emit_duplicate_struct_field(field_pat.span());
+                    } else {
+                        all_fields.insert(move name);
+                    }
+                }
+                return s_pat as *Pattern;
+            }
+            tup_pat: *TuplePatternNode => {
+                let pat = TuplePattern::new(tup_pat);
+                for e in tup_pat.elements {
+                    let e_pat = self.resolve_pattern(ctx, e);
+                    pat.elements.push(e_pat);
+                }
+                return pat as *Pattern;
+            }
+            ev_pat: *EnumVariantPatternNode => {
+                let base = self.resolve_segmented_name(ctx, ev_pat.base);
+                if base is Some(sym_or_ty) &&
+                    sym_or_ty is SymOrType::Sym(s) &&
+                    s is ev_sym: *EnumVariantSymbol {
+
+                    let mut resolved_sym = ev_sym;
+                    let overload = ev_sym.find_overload(ev_pat.elements.len());
+                    if overload is Some(o) {
+                        resolved_sym = move o;
+                    }
+                    let pat = EnumVariantPattern::new(ev_pat, move resolved_sym);
+                    for e in ev_pat.elements {
+                        let ep = self.resolve_pattern(ctx, e);
+                        pat.elements.push(move ep);
+                    }
+                    return pat as *Pattern;
+
+                } else {
+                    // 报错
+                    DiagnosticEngine::get().emit_path_do_not_exist(ev_pat.base.to_string(), ev_pat.base.span());
+                }
+                let pat = InvalidPattern::new(ev_pat as *PatternNode);
+                return pat as *Pattern;
+            }
+            _ => {
+                let ty = std::meta::type_of(&*p as &Any);
+                let ty_name = ty.name();
+                let msg = f"BUG: pattern node $(ty_name) is not handled in fn resolve_pattern";
+                panic msg.as_str().deref();
+            }
+        }
+    }
+
+    fn sty_str(&self) -> *SType {
+        if Importer::get().component_name.as_str().deref().eq(&"std") {
+            let s = String::from_str("Str");
+            let sym = self.lookup_prelude(&s).get_or_panic();
+            if sym is ss: *StructSymbol {
+                return ss.to_sty();
+            }
+        } else {
+            let name = "::std::primitives::str::Str";
+            let key = ExportKey::from_str(name);
+
+            let sym_opt = Resolver::imported_symbol_of(&key);
+            if sym_opt is Some(s) {
+                if s is struct_sym: *StructSymbol {
+                    return struct_sym.to_sty();
+                }
+            }
+        }
+        panic "get `::std::primitives::str::Str` failed in Resolver::sty_str";
+    }
+
+    fn sty_string(&self) -> *SType {
+        if Importer::get().component_name.as_str().deref().eq(&"std") {
+            let s = String::from_str("String");
+            let sym = self.lookup_prelude(&s).get_or_panic();
+            if sym is ss: *StructSymbol {
+                return ss.to_sty();
+            }
+        } else {
+            let name = "::std::primitives::string::String";
+            let key = ExportKey::from_str(name);
+
+            let sym_opt = Resolver::imported_symbol_of(&key);
+            if sym_opt is Some(s) {
+                if s is struct_sym: *StructSymbol {
+                    return struct_sym.to_sty();
+                }
+            }
+        }
+        panic "get `::std::primitives::string::String` failed in Resolver::sty_string";
+    }
+
+    fn sty_option(&self, arg: *SType) -> *SType {
+        if Importer::get().component_name.as_str().deref().eq(&"std") {
+            let s = String::from_str("Option");
+            let sym = self.lookup_prelude(&s).get_or_panic();
+            if sym is enum_sym: *EnumSymbol {
+                let mut ga = GenericArgs::new();
+                ga.ty_args.push(move arg);
+                return enum_sym.to_sty(move ga);
+            }
+        } else {
+            let name = "::std::primitives::option::Option";
+            let key = ExportKey::from_str(name);
+
+            let sym_opt = Resolver::imported_symbol_of(&key);
+            if sym_opt is Some(s) {
+                if s is enum_sym: *EnumSymbol {
+                    let mut ga = GenericArgs::new();
+                    ga.ty_args.push(move arg);
+                    return enum_sym.to_sty(move ga);
+                }
+            }
+        }
+        panic "get `::std::primitives::str::String` failed in Resolver::sty_string";
+    }
+
+    // String::new 函数
+    fn method_string_new(&self) -> *FuncSymbol {
+        for isym in self.sty_string().type_symbol.related_impls() {
+            if isym.trait_sty is None {
+                for m in isym.methods {
+                    if m.params.is_empty() &&
+                        m.short_name().as_str().deref().eq(&"new") {
+                        return m;
+                    }
+                }
+            }
+        }
+        panic "BUG: get `String::new` method failed";
+    }
+
+    // ToString::to_string_inplace 函数
+    fn method_to_string_inplace(&self, stype: *SType, ctx: *Symbol) -> *FuncSymbol {
+        let name = "::std::primitives::string::ToString";
+
+        let sty = strip_pointer_except_weak(stype);
+        let ty_name = sty.to_string();
+        for isym in sty.type_symbol.related_impls() {
+            if isym.trait_sty is Some(trait_sym) {
+                if trait_sym.type_symbol.export_key().as_str().deref().eq(&name) {
+                    for m in isym.methods {
+                        if m.short_name().as_str().deref().eq(&"to_string_inplace") {
+                            return m;
+                        }
+                    }
+                    panic "BUG: type $(ty_name) implemented `ToString` trait without override `to_string_inplace`";
+                }
+            }
+        }
+
+        let ctx_str = ctx.mangle_name();
+        let msg = f"BUG: get `ToString::to_string_inplace` method for type $(ty_name) failed in $(ctx_str)";
+        panic msg.as_str().deref();
+    }
+}
+
+enum SymOrType {
+    Sym(*Symbol),
+    Type(*SType),
+}
+
+struct LookupPartialResult {
+    sym: *Symbol,
+    resolved_part: UInt,
+}

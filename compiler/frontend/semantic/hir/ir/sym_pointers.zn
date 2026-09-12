@@ -1,0 +1,566 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::source_code::*;
+
+// ARC pointer
+
+unsafe static mut G_ARC_SYMBOL: Option<*ArcPointerSymbol> = None;
+
+impl ArcPointerSymbol {
+    pub fn new() -> *Self {
+        unsafe {
+            if G_ARC_SYMBOL is Some(s) {
+                return s;
+            } else {
+                let mut generics = GenericParams::new();
+                generics.ty_params.push(TypeParamSymbol::new());
+
+                let sym = box {
+                    .generics = move generics,
+                    .cache = (type HashMap<GenericArgs, *SType>)::new(),
+                }: ArcPointerSymbol;
+                G_ARC_SYMBOL = Some(sym);
+                return sym;
+            }
+        }
+    }
+
+}
+
+impl Symbol for ArcPointerSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = SourceSpan::empty()
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return f"Arc";
+    }
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+    fn export_value(&self) -> String {
+        return self.short_name();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl TypeSymbol for ArcPointerSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        if args.ty_args.len() != 1 {
+            return f"Arc<?>";
+        } else {
+            let arg = *args.ty_args.index(0).deref();
+            let arg_str = arg.to_string();
+            return f"*$(arg_str)";
+        }
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(t) {
+            return t;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    fn to_sty(*self) -> *SType {
+        let args = self.generics.to_generic_args();
+        return self.to_sty(move args);
+    }
+}
+
+impl PointerLikeSymbol for ArcPointerSymbol { }
+
+// WEAK pointer
+
+unsafe static mut G_WEAK_SYMBOL: Option<*WeakPointerSymbol> = None;
+
+impl WeakPointerSymbol {
+    pub fn new() -> *Self {
+        unsafe {
+            if G_WEAK_SYMBOL is Some(s) {
+                return s;
+            } else {
+                let mut generics = GenericParams::new();
+                generics.ty_params.push(TypeParamSymbol::new());
+
+                let sym = box {
+                    .generics = move generics,
+                    .cache = (type HashMap<GenericArgs, *SType>)::new(),
+                }: WeakPointerSymbol;
+                G_WEAK_SYMBOL = Some(sym);
+                return sym;
+            }
+        }
+    }
+}
+
+impl Symbol for WeakPointerSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = SourceSpan::empty(),
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return f"Weak";
+    }
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+    fn export_value(&self) -> String {
+        return self.short_name();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl TypeSymbol for WeakPointerSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        if args.ty_args.len() != 1 {
+            return f"Weak<?>";
+        } else {
+            let arg = *args.ty_args.index(0).deref();
+            let arg_str = arg.to_string();
+            return f"*weak $(arg_str)";
+        }
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(t) {
+            return t;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    fn to_sty(*self) -> *SType {
+        let args = self.generics.to_generic_args();
+        return self.to_sty(move args);
+    }
+}
+
+impl PointerLikeSymbol for WeakPointerSymbol { }
+
+// IMMUT BORROW pointer
+
+unsafe static mut G_IMMUT_BORROW_SYMBOL: Option<*BorrowImmutSymbol> = None;
+
+impl BorrowImmutSymbol {
+    pub fn new() -> *Self {
+        unsafe {
+            if G_IMMUT_BORROW_SYMBOL is Some(s) {
+                return s;
+            } else {
+                let mut generics = GenericParams::new();
+                generics.ty_params.push(TypeParamSymbol::new());
+
+                let sym = box {
+                    .generics = move generics,
+                    .cache = (type HashMap<GenericArgs, *SType>)::new(),
+                }: BorrowImmutSymbol;
+                G_IMMUT_BORROW_SYMBOL = Some(sym);
+                return sym;
+            }
+        }
+    }
+}
+
+impl Symbol for BorrowImmutSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = SourceSpan::empty(),
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return f"Borrow";
+    }
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+    fn export_value(&self) -> String {
+        return self.short_name();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl TypeSymbol for BorrowImmutSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        if args.ty_args.len() != 1 {
+            return f"Borrow<?>";
+        } else {
+            let mut res: String = f"&";
+            if args.lt_args.at(0) is Some(lt) && lt.resolved is Some(r) {
+                res.push_str(r.short_name().as_str().deref());
+                res.push_str(" ");
+            }
+
+            let arg = *args.ty_args.index(0).deref();
+            let arg_str = arg.to_string();
+            res.push_str(arg_str.as_str().deref());
+            return res;
+        }
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(t) {
+            return t;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    fn to_sty(*self) -> *SType {
+        let args = self.generics.to_generic_args();
+        return self.to_sty(move args);
+    }
+}
+
+impl PointerLikeSymbol for BorrowImmutSymbol { }
+
+// MUT BORROW pointer
+
+unsafe static mut G_MUT_BORROW_SYMBOL: Option<*BorrowMutSymbol> = None;
+
+impl BorrowMutSymbol {
+    pub fn new() -> *Self {
+        unsafe {
+            if G_MUT_BORROW_SYMBOL is Some(s) {
+                return s;
+            } else {
+                let mut generics = GenericParams::new();
+                generics.ty_params.push(TypeParamSymbol::new());
+
+                let sym = box {
+                    .generics = move generics,
+                    .cache = (type HashMap<GenericArgs, *SType>)::new(),
+                }: BorrowMutSymbol;
+                G_MUT_BORROW_SYMBOL = Some(sym);
+                return sym;
+            }
+        }
+    }
+}
+
+impl Symbol for BorrowMutSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = SourceSpan::empty(),
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return f"BorrowMut";
+    }
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+    fn export_value(&self) -> String {
+        return self.short_name();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl TypeSymbol for BorrowMutSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        if args.ty_args.len() != 1 {
+            return f"BorrowMut<?>";
+        } else {
+            let mut res: String = f"&";
+            if args.lt_args.at(0) is Some(lt) && lt.resolved is Some(r) {
+                res.push_str(r.short_name().as_str().deref());
+                res.push_str(" ");
+            }
+            res.push_str("mut ");
+
+            let arg = *args.ty_args.index(0).deref();
+            let arg_str = arg.to_string();
+            res.push_str(arg_str.as_str().deref());
+            return res;
+        }
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(t) {
+            return t;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    fn to_sty(*self) -> *SType {
+        let args = self.generics.to_generic_args();
+        return self.to_sty(move args);
+    }
+}
+
+impl PointerLikeSymbol for BorrowMutSymbol { }
+
+// IMMUT RAW pointer
+
+unsafe static mut G_IMMUT_RAW_SYMBOL: Option<*RawPointerImmutSymbol> = None;
+
+impl RawPointerImmutSymbol {
+    pub fn new() -> *Self {
+        unsafe {
+            if G_IMMUT_RAW_SYMBOL is Some(s) {
+                return s;
+            } else {
+                let mut generics = GenericParams::new();
+                generics.ty_params.push(TypeParamSymbol::new());
+
+                let sym = box {
+                    .generics = move generics,
+                    .cache = (type HashMap<GenericArgs, *SType>)::new(),
+                }: RawPointerImmutSymbol;
+                G_IMMUT_RAW_SYMBOL = Some(sym);
+                return sym;
+            }
+        }
+    }
+}
+
+impl Symbol for RawPointerImmutSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = SourceSpan::empty(),
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return f"RawImmutPointer";
+    }
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+    fn export_value(&self) -> String {
+        return self.short_name();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl TypeSymbol for RawPointerImmutSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        if args.ty_args.len() != 1 {
+            return f"*raw <?>";
+        } else {
+            let arg = *args.ty_args.index(0).deref();
+            let arg_str = arg.to_string();
+            return f"*raw $(arg_str)";
+        }
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(t) {
+            return t;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    fn to_sty(*self) -> *SType {
+        let args = self.generics.to_generic_args();
+        return self.to_sty(move args);
+    }
+}
+
+impl PointerLikeSymbol for RawPointerImmutSymbol { }
+
+// MUT RAW pointer
+
+unsafe static mut G_MUT_RAW_SYMBOL: Option<*RawPointerMutSymbol> = None;
+
+impl RawPointerMutSymbol {
+    pub fn new() -> *Self {
+        unsafe {
+            if G_MUT_RAW_SYMBOL is Some(s) {
+                return s;
+            } else {
+                let mut generics = GenericParams::new();
+                generics.ty_params.push(TypeParamSymbol::new());
+
+                let sym = box {
+                    .generics = move generics,
+                    .cache = (type HashMap<GenericArgs, *SType>)::new(),
+                }: RawPointerMutSymbol;
+                G_MUT_RAW_SYMBOL = Some(sym);
+                return sym;
+            }
+        }
+    }
+}
+
+impl Symbol for RawPointerMutSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = SourceSpan::empty(),
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return f"RawMutPointer";
+    }
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+    fn export_value(&self) -> String {
+        return self.short_name();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl TypeSymbol for RawPointerMutSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        if args.ty_args.len() != 1 {
+            return f"*raw mut <?>";
+        } else {
+            let arg = *args.ty_args.index(0).deref();
+            let arg_str = arg.to_string();
+            return f"*raw mut $(arg_str)";
+        }
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(t) {
+            return t;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    fn to_sty(*self) -> *SType {
+        let args = self.generics.to_generic_args();
+        return self.to_sty(move args);
+    }
+}
+
+impl PointerLikeSymbol for RawPointerMutSymbol { }

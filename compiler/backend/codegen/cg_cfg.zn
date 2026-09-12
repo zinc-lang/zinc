@@ -1,0 +1,576 @@
+use super::*;
+use super::data_structures::*;
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::mir::ir::*;
+
+use ::self::frontend::source_code::*;
+
+// 一个函数生成的 LLVM IR 的签名
+struct CgSignature {
+    sym: *Symbol,
+    params: Vec<CgParam>,
+    ret: CgType,
+}
+
+enum CgParam {
+    Receiver(*VarSymbol),
+    SRet,
+    TypeMeta,
+    GenericArg(*TypeParamSymbol, UInt), // UInt 代表CgFunc的 index
+    FnArgVal(UInt, UInt, CgType), // 第一个 UInt 代表函数签名中的 index, UInt 代表CgFunc的 index
+    FnArgRef(UInt, UInt, CgType), // 第一个 UInt 代表函数签名中的 index, UInt 代表CgFunc的 index
+}
+
+impl CodeGenerator {
+
+    fn cg_func_decl(&mut self, fsym: *FuncSymbol) -> CgFunc {
+        // 如果 fsym 不需要生成 decl 直接返回
+        if fsym.parent_sym is Some(type *TraitSymbol) && fsym.body is None {
+            return CgFunc::null();
+        }
+
+        let mangle_name = fsym.mangle_name().as_str().deref();
+
+        // 如果已经生成了, 直接返回
+        if self.llds.get_function(mangle_name) is Some(cgf) {
+            return cgf;
+        }
+
+        let sig = self.signature_of_fsym(fsym);
+        let functy = self.functype_of_sig(sig);
+        let f = self.llds.create_fn(functy, mangle_name);
+        return f;
+    }
+
+    fn cg_ev_decl(&mut self, evsym: *EnumVariantSymbol) -> CgFunc {
+        if evsym.fields.is_empty() { // 没有参数的 enum variant 不需要生成函数
+            return CgFunc::null();
+        }
+
+        let mangle_name = evsym.mangle_name().as_str().deref();
+
+        // 如果已经生成了, 直接返回
+        if self.llds.get_function(mangle_name) is Some(cgf) {
+            return cgf;
+        }
+
+        let sig = self.signature_of_evsym(evsym);
+        let functy = self.functype_of_sig(sig);
+        let f = self.llds.create_fn(functy, mangle_name);
+        return f;
+    }
+
+    // 参数类型：
+    // 1. self 参数(receiver)如果有的话一定是第一个
+    // 2. 返回值类型是大结构体时, 改成通过指针返回, 将其放到 self 之后参数位置
+    // 3. 如果是成员函数, 那么一律增加一个额外的 ZnTypeMeta* 参数
+    // 4. 如果函数本身带泛型参数，那么给每个泛型参数增加一个参数
+    // 5. 如果参数类型是 0 大小类型，则省略该参数
+    fn signature_of_fsym(&mut self, fsym: *FuncSymbol) -> *CgSignature {
+        let fsym_int = fsym as *raw FuncSymbol as UInt;
+        if self.cached_signatures.at(&fsym_int) is Some(sig) {
+            return sig;
+        }
+
+        let mut params = (type Vec<CgParam>)::new();
+        let mut ret_cgtype = self.llds.type_void();
+        if fsym.has_receiver() {
+            let r = *fsym.params.index(0).deref();
+            params.push(CgParam::Receiver(move r));
+        }
+        if fsym.return_sty is Some(rsty) {
+            if self.cgtype_of(rsty) is Some(ty) {
+                let size = self.llds.storage_size_of(ty);
+                if size == 0 {
+                    // 保持返回 void
+                } else if size > 16 {
+                    params.push(CgParam::SRet);
+                } else {
+                    ret_cgtype = ty;
+                }
+            } else {
+                // 编译时未知大小的类型
+                params.push(CgParam::SRet);
+            }
+        }
+        if fsym.is_member_method() {
+            params.push(CgParam::TypeMeta);
+        }
+
+        let mut i: UInt = 0;
+        let additional1 = params.len();
+        for tp in fsym.generics.ty_params {
+            params.push(CgParam::GenericArg(tp, i+additional1));
+            i += 1;
+        }
+
+        let mut j: UInt = 0;
+        let mut additional2 = params.len();
+        for p in fsym.params {
+            if p.short_name().as_str().deref().eq(&"self") {
+                // do nothing
+                additional2 -= 1;
+            } else {
+                let param_sty = p.stype.canonical();
+                if self.cgtype_of(param_sty) is Some(ty) {
+                    let size = self.llds.storage_size_of(ty);
+                    if size == 0 {
+                        // 直接省略这个参数
+                    }
+                    if size <= 16 {
+                        params.push(CgParam::FnArgVal(j, j+additional2, ty)); // 两个指针大小以内直接传
+                    } else {
+                        params.push(CgParam::FnArgRef(j, j+additional2, self.llds.type_thin_ptr())); // 否则用指针间接传递
+                    }
+                } else {
+                    params.push(CgParam::FnArgRef(j, j+additional2, self.llds.type_thin_ptr())); 
+                }
+            }
+            j += 1;
+        }
+
+        let sig = box {
+            .sym = move fsym as *Symbol,
+            .params = move params,
+            .ret = ret_cgtype,
+        }: CgSignature;
+        self.cached_signatures.insert(fsym_int, sig);
+        return sig;
+    }
+
+    // 一律通过 sret 的方式调用
+    // 1. 第一个参数 sret
+    // 2. 第二个参数是 ZnTypeMeta, 指向外部 enum 的类型，代表 self 的类型
+    // 3. 其它参数如果是编译时未知大小的，则传递指针
+    fn signature_of_evsym(&mut self, evsym: *EnumVariantSymbol) -> *CgSignature {
+        let evsym_int = evsym as *raw EnumVariantSymbol as UInt;
+        if self.cached_signatures.at(&evsym_int) is Some(sig) {
+            return sig;
+        }
+        let mut params = (type Vec<CgParam>)::new();
+        let mut ret_cgtype = self.llds.type_void();
+        params.push(CgParam::SRet);
+        params.push(CgParam::TypeMeta);
+
+        let mut i: UInt = 0;
+        let additional = params.len();
+        for param in evsym.fields {
+            let param_sty = param.canonical();
+            if self.cgtype_of(param_sty) is Some(ty) {
+                let size = self.llds.storage_size_of(ty);
+                if size == 0 {
+                    // 直接省略这个参数
+                }
+                if size <= 16 {
+                    params.push(CgParam::FnArgVal(i, i+additional, ty)); // 两个指针大小以内直接传
+                } else {
+                    params.push(CgParam::FnArgRef(i, i+additional, self.llds.type_thin_ptr())); // 否则用指针间接传递
+                }
+            } else {
+                params.push(CgParam::FnArgRef(i, i+additional, self.llds.type_thin_ptr())); 
+            }
+            i += 1;
+        }
+        let sig = box {
+            .sym = move evsym as *Symbol,
+            .params = move params,
+            .ret = ret_cgtype,
+        }: CgSignature;
+        self.cached_signatures.insert(evsym_int, sig);
+        return sig;
+    }
+
+    fn functype_of_sig(&mut self, sig: *CgSignature) -> CgFuncType {
+        let mut params_ty = (type Vec<CgType>)::new();
+        for param in sig.params {
+            match param {
+                CgParam::Receiver(r) => {
+                    if r.stype.type_symbol is type *PointerLikeSymbol {
+                        params_ty.push(self.llds.type_thin_ptr());
+                    } else {
+                        params_ty.push(self.cgtype_of(r.stype).get_or_panic());
+                    }
+                }
+                CgParam::SRet => params_ty.push(self.llds.type_thin_ptr());
+                CgParam::TypeMeta => params_ty.push(self.llds.type_thin_ptr());
+                CgParam::GenericArg(_, _) => params_ty.push(self.llds.type_thin_ptr());
+                CgParam::FnArgVal(_, _, t1) => params_ty.push(t1);
+                CgParam::FnArgRef(_, _, t2) => params_ty.push(t2);
+            }
+        }
+
+        return self.llds.type_function(sig.ret, params_ty.as_slice().deref());
+    }
+
+    fn add_debuginfo(&mut self, func: CgFunc, loc: SourceLoc, short_name: String) {
+        let mut name = move short_name;
+        name.push(0_u8);
+        let flc = SourceManager::get().file_line_column_of(loc);
+        let di_file = self.llds.create_di_file(flc.file.as_str().deref());
+        self.llds.create_di_subprogram(func, name.as_str().deref(), di_file, flc.line as UInt32 + 1);
+    }
+
+    fn debug_loc(&mut self, func: CgFunc, loc: SourceLoc) -> Ptr {
+        let flc = SourceManager::get().file_line_column_of(loc);
+        let display_line: UInt32 = flc.line as UInt32 + 1;
+        let di_loc = self.llds.create_di_location(func, display_line, flc.column as UInt32);
+        return di_loc;
+    }
+
+    fn cg_func_body(&mut self, fsym: *FuncSymbol) -> CgFunc {
+        // 如果 fsym 不需要生成 decl 直接返回
+        if fsym.parent_sym is Some(type *TraitSymbol) && fsym.body is None {
+            return CgFunc::null();
+        }
+
+        let mangle_name = fsym.mangle_name().as_str().deref();
+        if mangle_name.starts_with("::std::intrinsic::") { // intrinsic 函数不生成函数体, 直接在调用方替换
+            return { .llfn = unsafe(0_u as Ptr) }: CgFunc;
+        }
+        if fsym.body is None { // 没有 body 不需要生成
+            return { .llfn = unsafe(0_u as Ptr) }: CgFunc;
+        }
+
+        let func = self.llds.get_function(mangle_name).get_or_panic();
+        if !func.is_empty() {
+            return func; // 函数体已经生成了, 不要重复生成
+        }
+
+        let fsym_int = fsym as *raw FuncSymbol as UInt;
+        if self.semantic_model.all_cfg.at(&fsym_int) is Some(cfg) {
+            let signature = self.cached_signatures.at(&fsym_int).get_or_panic();
+            let ctx = CgContext::new_with_fn(fsym, signature, func);
+
+            self.add_debuginfo(func, fsym.func_node.span().start, fsym.short_name());
+
+            let entry_bb = self.llds.create_bb("entry", func);
+            let saved_insert_point = self.llds.save_ip();
+            self.llds.set_insert_point(entry_bb);
+            self.llds.create_do_nothing();
+
+            let mut param_idx: UInt = 0;
+            for param in signature.params {
+                match param {
+                    CgParam::Receiver(r) => {
+                        let arg = self.llds.get_arg(func, 0_u); // 肯定是第一个
+                        self.llds.set_arg_name(func, 0_u, "self");
+                        ctx.arg_map.insert(r as *raw VarSymbol as UInt, arg);
+                        self.alloc_drop_flag(r, ctx);
+                    }
+                    CgParam::SRet => {
+                        self.llds.set_arg_name(func, param_idx, "$ret");
+                    }
+                    CgParam::TypeMeta => {
+                        self.llds.set_arg_name(func, param_idx, "$typemeta");
+                    }
+                    CgParam::GenericArg(tp, _) => {
+                        let tp_name = tp.short_name().as_str().deref();
+                        self.llds.set_arg_name(func, param_idx, tp_name);
+                    }
+                    CgParam::FnArgVal(i1, j1, ty1) => {
+                        let param_sym = *fsym.params.index(i1).deref();
+                        let p_name = param_sym.short_name().as_str().deref();
+                        self.llds.set_arg_name(func, param_idx, p_name);
+
+                        let arg = self.llds.get_arg(func, j1);
+                        if self.cgtype_of(param_sym.stype) is Some(cgtype) {
+                            let size = self.size_of_stype(param_sym.stype, ctx);
+                            let alloca = self.llds.create_alloca_sized(cgtype);
+                            self.llds.create_store(arg, alloca);
+                            ctx.arg_map.insert(param_sym as *raw VarSymbol as UInt, alloca);
+                        } else {
+                            // 直接传递的参数不大可能是 编译时不知道大小的类型
+                            panic "BUG: byval argument should have corresponding CgType";
+                        }
+                        self.alloc_drop_flag(param_sym, ctx);
+                    }
+                    CgParam::FnArgRef(i2, j2, ty2) => {
+                        let param_sym = *fsym.params.index(i2).deref();
+                        let p_name = param_sym.short_name().as_str().deref();
+                        self.llds.set_arg_name(func, param_idx, p_name);
+
+                        let arg = self.llds.get_arg(func, j2);
+                        if self.cgtype_of(param_sym.stype) is Some(cgtype) {
+                            let size = self.size_of_stype(param_sym.stype, ctx);
+                            let alloca = self.llds.create_alloca_sized(cgtype);
+                            self.llds.create_memcpy(alloca, arg, size);
+                            ctx.arg_map.insert(param_sym as *raw VarSymbol as UInt, alloca);
+                        } else {
+                            // 运行时查询, 先获取 ZnTypeMeta 再读取 size 然后 alloca
+                            let size = self.size_of_stype(param_sym.stype, ctx);
+                            let alloca = self.llds.create_alloca_unsized(size);
+                            self.llds.create_memcpy(alloca, arg, size);
+                            ctx.arg_map.insert(param_sym as *raw VarSymbol as UInt, alloca);
+                        }
+                        self.alloc_drop_flag(move param_sym, ctx);
+                    }
+                }
+                param_idx += 1;
+            }
+
+            // 分配局部变量
+            let mut all_locals: Vec<*VarSymbol> = (type Vec<*VarSymbol>)::new();
+            fsym.body.get_or_panic().collect_all_locals(&mut all_locals);
+
+            for v in all_locals {
+                if self.cgtype_of(v.stype) is Some(cgty) {
+                    let alloca = self.llds.create_alloca_sized(cgty);
+                    ctx.local_map.insert(v as *raw VarSymbol as UInt, alloca);
+                } else {
+                    let size = self.size_of_stype(v.stype, ctx);
+                    let alloca = self.llds.create_alloca_unsized(size);
+                    ctx.local_map.insert(v as *raw VarSymbol as UInt, alloca);
+                }
+                self.alloc_drop_flag(move v, ctx);
+            }
+            // 遍历 cfg, 先创建所有 BasicBlock
+            for bb in cfg.basic_blocks {
+                let cgbb = self.llds.create_bb("", func);
+                ctx.bb_map.insert(bb as *raw BasicBlock as UInt, cgbb);
+            }
+            // 生成 basic block 的指令
+            let mut is_first = true;
+            for bb in cfg.basic_blocks {
+                let bb_int = bb as *raw BasicBlock as UInt;
+                let llbb = ctx.bb_map.at(&bb_int).get_or_panic();
+                if is_first {
+                    self.llds.set_insert_point(entry_bb);
+                    self.llds.create_br(llbb);
+                    is_first = false;
+                }
+                self.llds.set_insert_point(llbb);
+                for step in bb.steps {
+                    self.cg_xvalue(step.value, ctx);
+                }
+                if bb.terminator is Some(term) {
+                    self.cg_terminator(term, ctx);
+                }
+            }
+
+            self.llds.restore_ip(saved_insert_point);
+            self.llds.verify_function(func);
+            if !self.options.dump_ll.is_empty() {
+                let dump_name = self.options.dump_ll.as_str().deref();
+                let short_name = fsym.short_name().as_str().deref();
+                if short_name.eq(&dump_name) {
+                    func.dump();
+                }
+            }
+            return func;
+
+        } else {
+            let msg = f"BUG: function ($(mangle_name))'s CFG is not found in semantic model ";
+            panic msg.as_str().deref();
+        }
+        return func;
+    }
+
+    fn cg_ev_body(&mut self, evsym: *EnumVariantSymbol) -> CgFunc {
+        if evsym.fields.is_empty() { // 没有参数的 enum variant 不需要生成函数
+            return CgFunc::null();
+        }
+        let mangle_name = evsym.mangle_name().as_str().deref();
+        if self.is_imported(evsym) {
+            return self.cg_ev_decl(evsym);
+        }
+        let func = self.llds.get_function(mangle_name).get_or_panic();
+        if !func.is_empty() {
+            return func; // 函数体已经生成了, 不要重复生成
+        }
+        let evsym_int = evsym as *raw EnumVariantSymbol as UInt;
+        let signature = self.cached_signatures.at(&evsym_int).get_or_panic();
+        let ctx = CgContext::new_with_ev(evsym, signature, func);
+
+        let entry_bb = self.llds.create_bb("entry", func);
+        let saved_insert_point = self.llds.save_ip();
+        self.llds.set_insert_point(entry_bb);
+
+        let sret = self.llds.get_arg(func, 0);
+        let type_meta = self.llds.get_arg(func, 1);
+
+        let tag_value = self.llds.get_const_int64(evsym.tag_num()).as_value();
+        self.llds.create_store(tag_value, sret);
+        let mut target_pos = self.llds.create_gep(self.llds.type_int64(), sret, self.llds.get_const_int64(1).as_value());
+
+        for param in signature.params {
+            match param {
+                CgParam::FnArgVal(si1, ci1, ty1) => {
+                    let param_sty = *evsym.fields.index(si1).deref();
+
+                    if si1 == 0 {
+                        // target_pos 不需要做 alignment
+                    } else {
+                        let param_tm = self.rt_typemeta_of(param_sty, ctx);
+                        target_pos = self.llds.align_pointer_to_typemeta(target_pos, param_tm);
+                    }
+                    let arg = self.llds.get_arg(func, ci1);
+                    self.llds.create_store(arg, target_pos);
+                    target_pos = self.llds.create_gep(ty1, target_pos, self.llds.get_const_int64(1).as_value());
+                }
+                CgParam::FnArgRef(si2, ci2, ty2) => {
+                    let param_sty = *evsym.fields.index(si2).deref();
+                    if si2 == 0 {
+                        // target_pos 不需要做 alignment
+                    } else {
+                        let param_tm = self.rt_typemeta_of(param_sty, ctx);
+                        target_pos = self.llds.align_pointer_to_typemeta(target_pos, param_tm);
+                    }
+
+                    let arg = self.llds.get_arg(func, ci2);
+                    let size = self.size_of_stype(param_sty, ctx);
+                    self.llds.create_memcpy(target_pos, arg, size);
+                    target_pos = self.llds.create_gep(self.llds.type_int8(), target_pos, size);
+                }
+                _ => {}
+            }
+        }
+
+        self.llds.create_retvoid();
+
+        self.llds.restore_ip(saved_insert_point);
+
+        self.llds.verify_function(func);
+        if !self.options.dump_ll.is_empty() {
+            let dump_name = self.options.dump_ll.as_str().deref();
+            let short_name = evsym.short_name().as_str().deref();
+            if short_name.eq(&dump_name) {
+                func.dump();
+            }
+        }
+        return func;
+    }
+
+    fn debuginfo_subprogram(&self, fsym: *FuncSymbol) {
+        // todo
+    }
+
+    fn alloc_drop_flag(&mut self, v: *VarSymbol, ctx: *CgContext) {
+        if v.drop_flag is Some(f) {
+            let flag = self.llds.create_alloca_sized(self.llds.type_int1());
+            self.llds.create_store(self.llds.get_const_int1(false).as_value(), flag);
+            ctx.local_map.insert(f as *raw VarSymbol as UInt, flag);
+        }
+    }
+
+    fn cg_terminator(&mut self, term: *Terminator, ctx: *CgContext) {
+        match term {
+            br_fwd: *BrForward => {
+                let target_int = br_fwd.target as *raw BasicBlock as UInt;
+                let target_bb = ctx.bb_map.at(&target_int).get_or_panic();
+                self.llds.create_br(target_bb);
+            }
+            br_bwd: *BrBackward => {
+                let target_int = br_bwd.target as *raw BasicBlock as UInt;
+                let target_bb = ctx.bb_map.at(&target_int).get_or_panic();
+                self.llds.create_br(target_bb);
+            }
+            br_bool: *BrBool => {
+                let cond1 = self.cg_xvalue(br_bool.cond, ctx);
+                let cond2 = self.adjust_to_direct(br_bool.cond.get_stype(), cond1);
+
+                let true_br = br_bool.target_true as *raw BasicBlock as UInt;
+                let true_bb = ctx.bb_map.at(&true_br).get_or_panic();
+                let false_br = br_bool.target_false as *raw BasicBlock as UInt;
+                let false_bb = ctx.bb_map.at(&false_br).get_or_panic();
+
+                self.llds.create_cond_br(cond2, true_bb, false_bb);
+            }
+            br_int: *BrInt => {
+                panic "unimplemented";
+            }
+            br_ret: *BrRet => {
+                if br_ret.ret_val is Some(v) {
+                    if v.get_stype().is_unit() {
+                        self.llds.create_retvoid();
+                    } else {
+                        let mut ret_val = self.cg_xvalue(v, ctx);
+                        // 判断是不是 通过参数返回
+                        if ctx.signature.index_of_sret() is Some(sret_idx) {
+                            let arg_sret = self.llds.get_arg(ctx.ll_func, sret_idx);
+                            if ret_val.indirect {
+                                let size = self.size_of_stype(v.get_stype(), ctx);
+                                self.llds.create_memcpy(arg_sret, ret_val,size);
+                            } else {
+                                self.llds.create_store(ret_val, arg_sret);
+                            }
+                            self.llds.create_retvoid();
+                        } else {
+                            ret_val = self.adjust_to_direct(v.get_stype(), ret_val);
+                            self.llds.create_ret(ret_val);
+                        }
+                    }
+                } else {
+                    self.llds.create_retvoid();
+                }
+            }
+            br_panic: *BrPanic => {
+                let flc = SourceManager::get().file_line_column_of(br_panic.span.end);
+                let file_cv = self.llds.get_const_string(flc.file.as_str().deref()).as_value();
+                let line_cv = self.llds.get_const_int64(flc.line as UInt64 + 1).as_value();
+                let panic_fn = self.llds.get_ext_fn_in_core("zinc_core_panic");
+
+                let mut str_ptr = self.llds.get_const_null().as_value();
+                let mut str_len = self.llds.get_const_int64(0).as_value();
+
+                if br_panic.panic_var is Some(panic_var) {
+                    let mut pv = self.cg_xvalue(panic_var, ctx);
+                    pv = self.adjust_to_direct(panic_var.get_stype(), pv);
+
+                    str_ptr = self.llds.extract_value(pv, 0);
+                    str_len = self.llds.extract_value(pv, 1);
+                }
+
+                self.llds.create_call(panic_fn, &[file_cv, line_cv, str_ptr, str_len] as Slice<CgValue>);
+                self.llds.create_unreachable();
+            }
+        }
+    }
+}
+
+impl CgSignature {
+    fn default(sym: *Symbol) -> *CgSignature {
+        let null = {
+            .llty = unsafe(0_u as Ptr),
+        }: CgType;
+        return box {
+            .sym = sym,
+            .params = (type Vec<CgParam>)::new(),
+            .ret = null,
+        }: CgSignature;
+    }
+
+    fn index_of_typemeta(&self) -> UInt {
+        let mut i: UInt = 0;
+        for ref p in self.params {
+            if p is CgParam::TypeMeta {
+                return i;
+            }
+            i += 1;
+        }
+        panic "BUG: there is no CgParam::TypeMeta in the signature";
+    }
+
+    fn index_of_type_param(&self, tp: *TypeParamSymbol) -> Option<UInt> {
+        let tpi = tp as *raw TypeParamSymbol as UInt;
+
+        for ref p in self.params {
+            if p is CgParam::GenericArg(a, i) {
+                if a as *raw TypeParamSymbol as UInt == tpi {
+                    return Some(i);
+                }
+            }
+        }
+        return None;
+    }
+
+    fn index_of_sret(&self) -> Option<UInt> {
+        let mut i: UInt = 0;
+        for ref p in self.params {
+            if p is CgParam::SRet {
+                return Some(i);
+            }
+            i += 1;
+        }
+        return None;
+    }
+}

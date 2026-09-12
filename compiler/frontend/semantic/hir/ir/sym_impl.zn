@@ -1,0 +1,158 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+
+impl ImplSymbol {
+    pub fn new(node: *ImplDecl) -> *Self {
+        let self_ty = AssociatedTypeSymbol::self_ty_in_impl(node);
+        let span = node.span();
+        let sym = box {
+            .impl_node = move node,
+            .parent_sym = None,
+            .generics = GenericParams::new(),
+            .symbol_table = SymbolTable::new(),
+            .self_ty = self_ty,
+            .target_sty = InvalidSymbol::new(span).to_sty(),
+            .trait_sty = None,
+            .associated_types = (type HashMap<String, *TypeAliasSymbol>)::new(),
+            .reuse_sym = None,
+            .methods = (type Vec<*FuncSymbol>)::new(),
+        }: ImplSymbol;
+        self_ty.parent_sym = Some(sym as *ScopeSymbol);
+        return sym;
+    }
+
+    pub fn find_method(&self, method: String, arg_count: UInt) -> Option<*FuncSymbol> {
+        for m in self.methods {
+            if m.short_name().eq(&method) &&
+                m.accept_params(arg_count) {
+                return Some(move m);
+            }
+        }
+        if self.trait_sty is Some(trait_sty) {
+            if trait_sty.type_symbol is trait_sym: *TraitSymbol {
+                for m in trait_sym.methods {
+                    if m.short_name().eq(&method) &&
+                        m.accept_params(arg_count) {
+                        return Some(move m);
+                    }
+                }
+            }
+        }
+
+        return None;
+    }
+
+    pub fn collect_methods_table(&self) -> Vec<*FuncSymbol> {
+
+        let mut res: Vec<*FuncSymbol> = (type Vec<*FuncSymbol>)::new();
+        if self.trait_sty is Some(trait_sty) {
+            if trait_sty.type_symbol is trait_sym: *TraitSymbol {
+                let trait_methods = trait_sym.methods_of_total();
+                for f in trait_methods {
+                    let o = self.override_method_of(f, );
+                    res.push(move o);
+                }
+            }
+        }
+        return res;
+    }
+
+    fn override_method_of(&self, f: *FuncSymbol) -> *FuncSymbol {
+        if f.parent_sym is Some(trsym: *TraitSymbol) {
+            for isym in self.target_sty.type_symbol.related_impls() {
+                if isym.trait_sty is Some(tr) && tr.type_symbol is trsym2: *TraitSymbol {
+                    if trsym as *raw TraitSymbol as UInt == trsym2 as *raw TraitSymbol as UInt {
+                        let found = isym.find_method(f.short_name(), f.params.len());
+                        if found is Some(o) {
+                            return o;
+                        } else if f.body is Some(_) {
+                            return f;
+                        } else {
+                            panic;
+                        }
+                    }
+                }
+            }
+        }
+        panic;
+    }
+}
+
+impl Symbol for ImplSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        return self.impl_node as *SyntaxNode;
+    }
+
+    // 指定一个当前进程唯一的值即可，因为这个值不会导出到 zno 里面去
+    fn short_name(&self) -> String {
+        let addr = self as &ImplSymbol as *raw ImplSymbol as UInt;
+        return addr.to_string();
+    }
+
+    fn mangle_name(&self) -> String {
+        return self.export_key();
+    }
+
+    fn export_key(&self) -> String {
+        let mut res = self.target_sty.type_symbol.export_key();
+        if self.trait_sty is Some(ty) {
+            res.push_str("#");
+            res.push_str(ty.type_symbol.export_key().as_str().deref());
+        }
+        return res;
+    }
+
+    fn export_value(&self) -> String {
+        let mut res = String::new();
+        self.impl_node.qualifiers().to_string_inplace(&mut res);
+
+        res.push_str(" impl ");
+        res.push_str(self.generics.export_value().as_str().deref());
+        res.push_str(" ");
+        if self.trait_sty is Some(trait_sty) {
+            if !self.impl_node.bang.is_invalid() {
+                res.push_str("!");
+            }
+            res.push_str(trait_sty.to_string().as_str().deref());
+            res.push_str(" for ");
+        }
+        res.push_str(self.target_sty.to_string().as_str().deref());
+
+        let where_conds = self.generics.export_constraints();
+        res.push_str(where_conds.as_str().deref());
+
+        res.push_str(" {\n");
+        for kv in self.associated_types {
+            let s = kv.1.export_value();
+            res.push_str(s.as_str().deref());
+            res.push_str("\n");
+        }
+        for f in self.methods {
+            if f.should_export() {
+                res.push_str(f.export_value().as_str().deref());
+                res.push_str("\n");
+            }
+        }
+        res.push_str("}\n");
+        return res;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_sym;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_sym = Some(ss);
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl ScopeSymbol for ImplSymbol {
+    fn sym_table(&mut self) -> &mut SymbolTable {
+        return &mut self.symbol_table;
+    }
+}

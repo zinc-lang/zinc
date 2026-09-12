@@ -1,0 +1,294 @@
+
+use ::self::iter::Iterable;
+use ::self::iter::Iterator;
+use ::self::collections::vec::Shared;
+use ::self::cmp::{Eq, PartialEq};
+use ::self::hash::{Hash, Hasher};
+
+pub struct String {
+    data: Vec<UInt8>
+}
+
+unsafe impl Send for String {}
+impl !Sync for String {}
+
+pub trait ToString {
+
+    virtual fn to_string_inplace(&self, buf: &mut String);
+
+    virtual fn to_string(&self) -> String;
+}
+
+pub struct FromUtf8Error {
+    bytes: Vec<UInt8>,
+    error: String,
+}
+
+impl String {
+    pub fn new() -> String {
+        return { .data = (type Vec<UInt8>)::new() }: String;
+    }
+
+    pub fn with_capacity(cap: UInt) -> String {
+        return { .data = (type Vec<UInt8>)::with_capacity(cap) }: String;
+    }
+
+    // todo 后面支持了 auto deref 之后，这个函数就没什么意义了，直接 deref 就好了
+    pub fn capacity(&self) -> UInt {
+        return self.data.capacity();
+    }
+
+    // todo 后面支持了 auto deref 之后，这个函数就没什么意义了，直接 deref 就好了
+    pub fn len(&self) -> UInt {
+        return self.data.size;
+    }
+
+    pub fn raw_ptr(&self) -> *raw UInt8 {
+        return self.data.ptr as *raw Shared<UInt8> as *raw UInt8;
+    }
+
+
+    pub fn is_empty(&self) -> Bool {
+        return self.data.size == 0;
+    }
+
+    pub fn from_str(s: Str) -> String {
+        let mut vec: Vec<UInt8> = (type Vec<UInt8>)::with_capacity(s.length); // todo: 修复类型推导 bug
+        vec.extend_from_slice(s.as_bytes());
+        return {
+            .data = move vec,
+        }: String;
+    }
+
+    fn valid_utf8(s: Str) -> Result<Bool, FromUtf8Error> {
+        return (type Result<Bool, FromUtf8Error>)::Ok(true);
+    }
+
+    pub fn from_utf8(vec: Vec<UInt8>) -> Result<String, FromUtf8Error> {
+        let str = unsafe({ .pointer = vec.ptr as *raw Shared<UInt8> as *raw UInt8 as &UInt8, .length = vec.size }: Str);
+        match (valid_utf8(str)) {
+            Ok(_) => return (type Result<String, FromUtf8Error>)::Ok({ .data = move vec } as String);
+            Err(e) => return (type Result<String, FromUtf8Error>)::Err(e);
+        }
+    }
+
+    pub fn bytes(&self) -> Vec<UInt8> {
+        return self.data;
+    }
+
+    pub fn as_str(&self) -> StringSlice {
+        return unsafe({ .origin = self.data.ptr, .start = self.data.ptr as *raw Shared<UInt8> as *raw UInt8 as &UInt8, .length = self.data.size } as StringSlice);
+    }
+
+    pub fn slice(&self, start: UInt) -> StringSlice {
+        if start > self.data.size {
+            let len = self.len();
+            let msg = f"Index out of bounds in String::slice method. start: $(start), len: $(len)";
+            panic msg.as_str().deref();
+        }
+        let old_start = self.data.ptr as *raw Shared<UInt8> as *raw UInt8;
+        let new_start = unsafe(old_start + start);
+        return unsafe({ .origin = self.data.ptr, .start = new_start as &UInt8, .length = self.data.size - start } as StringSlice);
+    }
+
+    pub fn slice(&self, start: UInt, len: UInt) -> StringSlice {
+        let end = start + len;
+        if start > self.data.size || end > self.data.size || start > end {
+            panic("Index out of bounds in String::slice method.");
+        }
+        let old_start = self.data.ptr as *raw Shared<UInt8> as *raw UInt8;
+        let new_start = unsafe(old_start + start);
+        return unsafe({ .origin = self.data.ptr, .start = new_start as &UInt8, .length = len } as StringSlice);
+    }
+
+    pub fn push_str(&mut self, s: Str) {
+        self.data.extend_from_slice(s.as_bytes());
+    }
+
+    pub fn push(&mut self, byte: UInt8) {
+        self.data.push(byte);
+    }
+
+    pub fn index<'a>(&'a self, idx: UInt) -> UInt8 {
+        if idx >= self.len() {
+            let len = self.len();
+            let msg = f"Index out of bounds in String::index method. start: $(idx), len: $(len)";
+            panic msg.as_str().deref();
+        }
+        let c = unsafe(self.data.ptr as *raw Shared<UInt8> as *raw UInt8 + idx);
+        return unsafe(*c);
+    }
+
+    pub fn insert(&mut self, idx: UInt, ch: Char) {
+        // todo 根据 utf8 编码来实现
+        panic "unimplemented String::insert";
+    }
+
+    pub fn insert_byte(&mut self, idx: UInt, b: UInt8) {
+        self.data.insert(idx, b);
+    }
+
+    pub fn insert_str(&mut self, idx: UInt, s: Str) {
+        // todo 根据 utf8 编码来实现
+    }
+
+    pub fn reserve(&mut self, additional: UInt) {
+        self.data.reserve(additional);
+    }
+
+    pub fn reverse(&mut self) {
+        self.data.reverse(); // 这个不对，要根据 utf8 编码来实现
+    }
+
+    pub fn clear(&mut self) {
+        self.data.clear();
+    }
+
+    pub fn starts_with(&self, prefix: Str) -> Bool {
+        if prefix.length > self.data.size {
+            return false;
+        }
+        let mut i: UInt = 0_u;
+        while i < prefix.length {
+            let c1 = unsafe(self.data.get_unchecked(i));
+            let c2 = unsafe(prefix.pointer as *raw UInt8 + i);
+            if unsafe(*c1 != *c2) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    pub fn ends_with(&self, suffix: Str) -> Bool {
+        if suffix.length > self.data.size {
+            return false;
+        }
+        let start = self.data.size - suffix.length;
+        let mut i: UInt = 0_u;
+        while i < suffix.length {
+            let c1 = unsafe(self.data.get_unchecked(start + i));
+            let c2 = unsafe(suffix.pointer as *raw UInt8 + i);
+            if unsafe(*c1 != *c2) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}
+
+impl ToString for String {
+    fn to_string_inplace(&self, buf: &mut String) {
+        buf.push_str(self.as_str().deref());
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl PartialEq for String {
+    fn eq(&self, other: &Self) -> Bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        let mut i: UInt = 0;
+        while i < self.data.size {
+            let c1 = unsafe(self.data.get_unchecked(i));
+            let c2 = unsafe(other.data.get_unchecked(i));
+            if unsafe(*c1 != *c2) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl Eq for String {}
+
+impl Hash for String {
+    fn hash(&self, state: &mut Hasher) {
+        let mut hash: UInt64 = 1469598103934665603_u64; // FNV-1a 64-bit offset basis
+        let prime: UInt64 = 1099511628211_u64; // FNV-1a 64-bit prime
+        let mut i: UInt = 0;
+        while i < self.data.size {
+            let c = unsafe(self.data.get_unchecked(i));
+            let a = *c as UInt64;
+            hash = hash.bit_xor(a);
+            hash = hash * prime;
+            i = i + 1;
+        }
+        state.combine(hash);
+    }
+}
+
+pub struct StringSlice<'a> {
+    origin: *Shared<UInt8>,
+    start: &'a UInt8,
+    length: UInt,
+}
+
+impl Deref for String {
+    type Target<'t> = StringSlice<'t>;
+
+    fn deref<'a>(&'a self) -> StringSlice<'a> {
+        return self.as_str();
+    }
+}
+
+impl<'a> Deref for StringSlice<'a> {
+    type Target<'t> = Str<'t>;
+
+    fn deref(&self) -> Str<'a> {
+        return unsafe({ .pointer = self.start, .length = self.length }: Str);
+    }
+}
+
+// 支持 slice 切片
+impl<'a> StringSlice<'a> {
+    pub fn slice(&self, start: UInt) -> StringSlice {
+        if start > self.length {
+            let len = self.length;
+            let msg = f"Index out of bounds in StringSlice::slice method. start: $(start), len: $(len)";
+            panic msg.as_str().deref();
+        }
+        let old_start = self.start as *raw UInt8;
+        let new_start = unsafe(old_start + start);
+        return unsafe({ .origin = self.origin, .start = new_start as &UInt8, .length = self.length - start } as StringSlice);
+    }
+
+    pub fn slice(&self, start: UInt, len: UInt) -> StringSlice {
+        let end = start + len;
+        if start > self.length || end > self.length || start > end {
+            panic("Index out of bounds in StringSlice::slice method.");
+        }
+        let old_start = self.start as *raw UInt8;
+        let new_start = unsafe(old_start + start);
+        return unsafe({ .origin = self.origin, .start = new_start as &UInt8, .length = len } as StringSlice);
+    }
+}
+
+impl<'a> ToString for StringSlice<'a> {
+    fn to_string_inplace(&self, buf: &mut String) {
+        let str: Str = self.deref();
+        buf.push_str(str);
+    }
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+// impl Eq/PartialEq/Ord/PartialOrd/Clone
+// impl Deref
+// unsafe impl Send 
+// impl Sync

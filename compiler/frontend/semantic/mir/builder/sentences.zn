@@ -1,0 +1,636 @@
+use ::self::frontend::semantic::mir::ir::*;
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::hir::checker::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::syntax::ast::*;
+
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::semantic::hir::constant::*;
+
+use std::meta::Type;
+
+use super::{BasicBlockChunk, CfgBuilder, extract_logical_and_chain};
+
+impl CfgBuilder {
+
+    fn trans_sentence(&mut self, s: *Sentence) -> BasicBlockChunk {
+       match s {
+            _: *EmptySentence => {}
+            es: *ExprSentence => {
+                let bb = self.new_bb();
+                let (val, end_bb) = self.trans_rvalue(es.expr, bb);
+
+                self.handle_temps_after_stmt(end_bb);
+                return { .start = move bb, .end = move end_bb }: BasicBlockChunk;
+            }
+            ls: *LetSentence => {
+                let bb = self.new_bb();
+                let (init, end_bb) = self.trans_rvalue(ls.init, bb);
+                self.insert_copy_if_needed(init, end_bb);
+
+                let w = WriteValue::create(init, ls.local as *LValue);
+                end_bb.add_step(move w as *XValue);
+
+                self.handle_temps_after_stmt(end_bb);
+                return { .start = move bb, .end = move end_bb }: BasicBlockChunk;
+            }
+            bs: *BlockSentence => {
+                return self.trans_block(bs);
+            }
+            fs: *ForLoopSentence => {
+                let bb_start = self.new_bb(f"for_loop_start");
+                let bb_end = self.new_bb(f"for_loop_end");
+
+                self.loop_end.insert(fs as *raw ForLoopSentence as UInt, bb_end);
+
+                let mut check_ctx = TypeCheckContext::new(self.semantic_model);
+
+                // 后面的 next 应该调用这个转换后的 iterable
+                let span = fs.iterable.expr_node().span();
+                let (iterable, iterable_end) = self.trans_rvalue(fs.iterable, bb_start);
+                // call iter() method
+                let iterator_sym = VarSymbol::create(span, fs.iterator.get_stype());
+                iterator_sym.is_mut_binding = true;
+                self.nearest_block().add_local(iterator_sym);
+
+                let iter_call = fs.iterator.desugared_call.get_or_panic();
+                iterable_end.add_step(iter_call as *XValue);
+                fs.iterator.desugared_call = Some(iter_call);
+                let iterator_local = LocalVar::create(span, iterator_sym);
+                let init = WriteValue::create(iter_call as *RValue, move iterator_local as *LValue);
+                iterable_end.add_step(init as *XValue);
+
+                let bb_loop = self.new_bb();
+                iterable_end.terminator = Some(
+                    box {
+                        .target = bb_loop
+                    }: BrForward as *Terminator
+                );
+                self.loop_start.insert(fs as *raw ForLoopSentence as UInt, bb_loop);
+                // call next() method
+                let rd = ReadValue::new(fs.iterable.expr_node(), iterator_sym);
+                rd.sty = iterator_sym.stype;
+                let addr_iterator = AddressofValue::create(span, AddressofKind::RefMut, rd as *RValue);
+                bb_loop.add_step(addr_iterator as *XValue);
+                let next_call = fs.iter_next.desugared_call.get_or_panic();
+                next_call.receiver = addr_iterator;
+                next_call.desugared_receiver = Some(move addr_iterator as *RValue);
+                bb_loop.add_step(next_call as *XValue);
+                fs.iter_next.desugared_call = Some(next_call);
+
+                let pmv = fs.iter_item.desugared_pmv.get_or_panic();
+                pmv.operand = next_call as *RValue;
+                bb_loop.add_step(pmv as *XValue);
+                let bb_is_some = self.new_bb();
+                bb_loop.terminator = Some(
+                    box {
+                        .cond = move pmv,
+                        .target_true = bb_is_some,
+                        .target_false = bb_end,
+                    }: BrBool as *Terminator
+                );
+
+                // bind
+                let mut payload = fs.iter_item.desugared_payload.get_or_panic();
+                payload.enum_value = next_call as *RValue;
+                check_ctx.infer(payload);
+
+                let item = TupleAccessRValue::create(payload as *RValue, 0);
+                check_ctx.infer(item);
+                bb_is_some.add_step(item as *XValue);
+                let deref = DerefRValue::create(span, move item as *RValue);
+                check_ctx.infer(deref);
+                bb_is_some.add_step(deref as *XValue);
+                fs.pattern.destructure(deref, true);
+                fs.pattern.type_check(&mut check_ctx);
+
+                for var in fs.pattern.collect_all_bindings() {
+                    if var.init is Some(init) {
+                        let local = LocalVar::new(fs.iterable.expr_node(), var); // 这里的位置信息不准确
+                        self.insert_copy(init, bb_is_some);
+                        let w = WriteValue::create(move init as *RValue, move local as *LValue);
+                        bb_is_some.add_step(move w);
+                    }
+                }
+
+                let body_bbc = self.trans_block(fs.body);
+                bb_is_some.terminator = Some( box {
+                    .target = body_bbc.start
+                }: BrForward as *Terminator);
+                
+                if body_bbc.end.terminator is None {
+                    body_bbc.end.terminator = Some (
+                        box {
+                            .target = bb_loop
+                        }: BrBackward as *Terminator
+                    );
+                }
+
+                self.handle_temps_after_stmt(bb_end);
+                return { .start = move bb_start, .end = move bb_end }: BasicBlockChunk;
+            }
+            ws: *WhileLoopSentence => {
+                let bb_start = self.new_bb(f"while_loop_start");
+                let bb_end = self.new_bb(f"while_loop_end");
+
+                self.loop_start.insert(ws as *raw WhileLoopSentence as UInt, bb_start);
+                self.loop_end.insert(ws as *raw WhileLoopSentence as UInt, bb_end);
+
+                let (cond, cond_end) = self.trans_rvalue(ws.cond, bb_start);
+                let true_bb = self.new_bb();
+                // 初始化变量绑定
+                if cond is pmv: *PatternMatchValue {
+                    for var in pmv.pattern.collect_all_bindings() {
+                        if var.init is Some(init) {
+                            self.insert_copy(init, true_bb);
+                            let local = LocalVar::new(cond.expr_node(), var);
+                            let w = WriteValue::create(move init, move local as *LValue);
+                            true_bb.add_step(move w);
+                        }
+                    }
+                }
+                
+                let body = self.trans_block(ws.body);
+                if body.end.terminator is None {
+                    body.end.terminator = Some (
+                        box {
+                            .target = bb_start
+                        }: BrBackward as *Terminator
+                    );
+                }
+
+                true_bb.terminator = Some(
+                    box {
+                        .target = body.start
+                    }: BrForward as *Terminator
+                );
+                cond_end.terminator = Some(
+                    box {
+                        .cond = move cond,
+                        .target_true = true_bb,
+                        .target_false = bb_end,
+                    }: BrBool as *Terminator
+                );
+                self.handle_temps_after_stmt(bb_end);
+                // 析构变量绑定
+                let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
+                collect_all_pmv_bindings(ws.cond, &mut all_pmv_bindings);
+                for var in all_pmv_bindings {
+                    var.drop_flag = Some(VarSymbol::create(var.var_node.span(), SType::sty_bool()));
+                    self.drop_var_sym(move var, bb_end);
+                }
+                return { .start = move bb_start, .end = move bb_end }: BasicBlockChunk;
+            }
+            dws: *DoWhileLoopSentence => {
+                let bb_start = self.new_bb(f"dowhile_loop_start");
+                let bb_end = self.new_bb(f"dowhile_loop_end");
+
+                self.loop_start.insert(dws as *raw DoWhileLoopSentence as UInt, bb_start);
+                self.loop_end.insert(dws as *raw DoWhileLoopSentence as UInt, bb_end);
+
+                let body = self.trans_block(dws.body);
+                bb_start.terminator = Some(
+                    box {
+                        .target = body.start
+                    }: BrForward as *Terminator
+                );
+
+                if body.end.terminator is Some(_) {
+                    return { .start = move bb_start, .end = body.end }: BasicBlockChunk;
+                }
+
+                let (cond, cond_end) = self.trans_rvalue(dws.cond, body.end);
+                
+                let cond_true = self.new_bb();
+                cond_true.terminator = Some (
+                    box {
+                        .target = body.start
+                    }: BrBackward as *Terminator
+                );
+                cond_end.terminator = Some (
+                    box {
+                        .cond = move cond,
+                        .target_true = move cond_true,
+                        .target_false = bb_end,
+                    }: BrBool as *Terminator
+                );
+                self.handle_temps_after_stmt(bb_end);
+                return { .start = move bb_start, .end = move bb_end }: BasicBlockChunk;
+            }
+            br_break: *BranchBreak => {
+                let bb = self.new_bb();
+                let target = br_break.target as *raw LoopSentence as UInt;
+                if self.loop_end.at(&target) is Some(t) {
+                    bb.terminator = Some(
+                        box {
+                            .target = move t
+                        }: BrForward as *Terminator
+                    );
+                    self.handle_temps_after_stmt(bb);
+                    // 跳出 br_break.target 的 parent scope
+                    if br_break.target.parent_scope() is Some(scope) {
+                        let out_scope = scope as *raw ScopeSymbol as UInt;
+                        self.drop_locals_until_exit_block(out_scope, bb);
+                    }
+                } else {
+                    panic "BUG: break statement is not inside a loop";
+                }
+                return { .start = bb, .end = bb }: BasicBlockChunk;
+            }
+            br_continue: *BranchContinue => {
+                let bb = self.new_bb();
+                let target = br_continue.target as *raw LoopSentence as UInt;
+                if self.loop_start.at(&target) is Some(t) {
+                    bb.terminator = Some(
+                        box {
+                            .target = move t
+                        }: BrBackward as *Terminator
+                    );
+                    self.handle_temps_after_stmt(bb);
+                    // 跳出 br_continue.target 的 loop_body
+                    let out_scope = br_continue.target.loop_body() as *raw BlockSentence as UInt;
+                    self.drop_locals_until_exit_block(out_scope, bb);
+                } else {
+                    panic "BUG: continue statement is not inside a loop";
+                }
+                return { .start = bb, .end = bb }: BasicBlockChunk;
+            }
+            br_ret: *BranchReturn => {
+                let bb = self.new_bb();
+                if br_ret.value is Some(v) {
+                    let (rv, rv_end) = self.trans_rvalue(v, bb);
+                    rv_end.terminator = Some(
+                        box {
+                            .ret_val = Some(rv)
+                        }: BrRet as *Terminator
+                    );
+
+                    // return 出去的变量不析构
+                    if self.returned_local(v) is Some(ex_var_sym) {
+                        self.handle_temps_after_stmt(rv_end);
+                        self.drop_all_except(Some(move ex_var_sym), rv_end);
+                    } else {
+                        self.insert_copy_if_needed(rv, rv_end);
+                        self.handle_temps_after_stmt(rv_end);
+                        self.drop_all_except((type Option<*VarSymbol>)::None, rv_end);
+                    }
+                    return { .start = move bb, .end = move rv_end}: BasicBlockChunk;
+                } else {
+                    bb.terminator = Some(
+                        box {
+                            .ret_val = None
+                        }: BrRet as *Terminator
+                    );
+                    self.handle_temps_after_stmt(bb);
+                    // 所有的变量都析构
+                    self.drop_all_except((type Option<*VarSymbol>)::None, bb);
+                    return { .start = bb, .end = bb }: BasicBlockChunk;
+                }
+            }
+            br_panic: *BranchPanic => {
+                let bb = self.new_bb();
+                if br_panic.msg is Some(v) {
+                    let (pv, pv_end) = self.trans_rvalue(v, bb);
+                    pv_end.terminator = Some(
+                        box {
+                            .span = br_panic.stmt.span(),
+                            .panic_var = Some(move pv)
+                        }: BrPanic as *Terminator
+                    );
+                    return { .start = move bb, .end = move pv_end }: BasicBlockChunk;
+                } else {
+                    bb.terminator = Some(
+                        box {
+                            .span = br_panic.stmt.span(),
+                            .panic_var = None
+                        }: BrPanic as *Terminator
+                    );
+                    return { .start = bb, .end = bb }: BasicBlockChunk;
+                }
+            }
+            br_bool: *BranchBool => {
+                // 如果是 连续的逻辑与链条, 可以翻译得更精简一点
+                if extract_logical_and_chain(br_bool.cond) is Some(chain) {
+                    return self.trans_brbool_and_chain(move chain, br_bool.then_br, br_bool.else_br);
+                }
+
+                let bb_start = self.new_bb();
+                let bb_end = self.new_bb();
+
+                let (cond, cond_end) = self.trans_rvalue(br_bool.cond, bb_start);
+                let true_bb = self.new_bb();
+                // 初始化变量绑定
+                if cond is pmv: *PatternMatchValue {
+                    for var in pmv.pattern.collect_all_bindings() {
+                        if var.init is Some(init) {
+                            self.insert_copy(init, true_bb);
+                            let local = LocalVar::new(cond.expr_node(), var);
+                            let w = WriteValue::create(move init, move local as *LValue);
+                            true_bb.add_step(move w);
+                        }
+                    }
+                }
+
+                let then_sentence = self.trans_sentence(br_bool.then_br);
+                true_bb.terminator = Some(box {
+                    .target = then_sentence.start
+                }: BrForward as *Terminator);
+                if then_sentence.end.terminator is None {
+                    then_sentence.end.terminator = Some(box {
+                        .target = bb_end,
+                    }: BrForward as *Terminator);
+                }
+                if br_bool.else_br is Some(else_br) {
+                    let else_sentence = self.trans_sentence(else_br);
+                    if else_sentence.end.terminator is None {
+                        else_sentence.end.terminator = Some(box {
+                            .target = bb_end,
+                        }: BrForward as *Terminator);
+                    }
+                    cond_end.terminator = Some(
+                        box {
+                            .cond = move cond,
+                            .target_true = true_bb,
+                            .target_false = else_sentence.start,
+                        }: BrBool as *Terminator
+                    );
+                    self.handle_temps_after_stmt(bb_end);
+                    // 析构变量绑定
+                    let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
+                    collect_all_pmv_bindings(br_bool.cond, &mut all_pmv_bindings);
+                    for var in all_pmv_bindings {
+                        var.drop_flag = Some(VarSymbol::create(var.var_node.span(), SType::sty_bool()));
+                        self.drop_var_sym(move var, bb_end);
+                    }
+                    return { .start = bb_start, .end = move bb_end }: BasicBlockChunk;
+                } else {
+                    cond_end.terminator = Some(
+                        box {
+                            .cond = move cond,
+                            .target_true = true_bb,
+                            .target_false = bb_end,
+                        }: BrBool as *Terminator
+                    );
+                    self.handle_temps_after_stmt(bb_end);
+                    // 析构变量绑定
+                    let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
+                    collect_all_pmv_bindings(br_bool.cond, &mut all_pmv_bindings);
+                    for var in all_pmv_bindings {
+                        var.drop_flag = Some(VarSymbol::create(var.var_node.span(), SType::sty_bool()));
+                        self.drop_var_sym(move var, bb_end);
+                    }
+                    return { .start = bb_start, .end = move bb_end }: BasicBlockChunk;
+                }
+            }
+            br_mult: *BranchMultiple => {
+                let bb_start = self.new_bb(f"match_start");
+                let bb_end = self.new_bb(f"match_end");
+
+                let (val, val_end) = self.trans_rvalue(br_mult.value, bb_start);
+
+                // 编译器在最后隐式插入一个分支, 如果 match 语句满足 exhaustive match, 这条分支是永远执行不到的死代码
+                let last_arm = self.new_bb();
+                last_arm.terminator = Some(
+                    box {
+                        .span = br_mult.stmt.span(),
+                        .panic_var = Some(
+                            CompileTimeValue::create(
+                                box {
+                                    .token = Token::invalid(br_mult.stmt.span()),
+                                    .value = f"match statement is not exhaustive, and no branch is matched."
+                                }: StringCValue as *ConstValue,
+                                self.resolver.sty_str(),
+                                br_mult.stmt.span(),
+                            ) as *RValue
+                        )
+                    }: BrPanic as *Terminator
+                );
+
+                let mut next_arm = last_arm;
+
+                // 逆向遍历
+                let mut i: UInt = br_mult.branches.len();
+                while i > 0 {
+                    let arm = *br_mult.branches.index(i - 1).deref();
+
+                    let arm_bb = self.new_bb();
+                    let (cond, cond_end) = self.trans_rvalue(arm.pattern_match, arm_bb);
+                    let true_bb = self.new_bb();
+                    // 初始化变量绑定
+                    if cond is pmv: *PatternMatchValue {
+                        for var in pmv.pattern.collect_all_bindings() {
+                            if var.init is Some(init) {
+                                self.insert_copy(init, true_bb);
+                                let local = LocalVar::new(cond.expr_node(), var);
+                                let w = WriteValue::create(move init, move local as *LValue);
+                                true_bb.add_step(move w);
+                            }
+                        }
+                    }
+
+                    let arm_block = self.trans_block(arm.operation);
+
+                    cond_end.terminator = Some(
+                        box {
+                            .cond = move cond,
+                            .target_true = true_bb,
+                            .target_false = next_arm,
+                        }: BrBool as *Terminator
+                    );
+                    true_bb.terminator = Some(box {
+                            .target = arm_block.start
+                        }: BrForward as *Terminator);
+                    
+                    // 析构变量绑定
+                    let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
+                    collect_all_pmv_bindings(arm.pattern_match as *RValue, &mut all_pmv_bindings);
+                    for var in all_pmv_bindings {
+                        var.drop_flag = Some(VarSymbol::create(var.var_node.span(), SType::sty_bool()));
+                        self.drop_var_sym(move var, bb_end);
+                    }
+                    if arm_block.end.terminator is None {
+                        arm_block.end.terminator = Some(
+                            box {
+                                .target = bb_end,
+                            }: BrForward as *Terminator
+                        );
+                    }
+                    next_arm = arm_bb;
+                    i -= 1;
+                }
+
+                val_end.terminator = Some(
+                    box {
+                        .target = move next_arm
+                    }: BrForward as *Terminator
+                );
+                self.handle_temps_after_stmt(bb_end);
+                return { .start = bb_start, .end = move bb_end }: BasicBlockChunk;
+            }
+            _ => {
+                panic "BUG: unknown sentence in CfgBuilder::trans_sentence";
+            }
+        }
+        panic "unreachable";
+    }
+
+    fn trans_block(&mut self, blk: *BlockSentence) -> BasicBlockChunk {
+        self.block_stack.push(blk);
+        let mut bb = self.new_bb();
+        let mut end = bb;
+
+        for s in blk.sentences {
+            let res = self.trans_sentence(s);
+            if s is type *ExprSentence || s is type *LetSentence {
+                end = connect_and_merge(end, &res);
+            } else {
+                end.terminator = Some(box {
+                    .target = res.start
+                }: BrForward as *Terminator);
+                end = res.end;
+            }
+        }
+        self.handle_temps_after_stmt(end);
+        self.drop_locals_when_exit_block(move blk, end);
+        self.block_stack.pop();
+        return { .start = move bb, .end = move end }: BasicBlockChunk;
+    }
+
+    fn trans_brbool_and_chain(&mut self, chain: Vec<*RValue>, then_br: *BlockSentence, else_br: Option<*BlockSentence>) -> BasicBlockChunk {
+        let first = *chain.index(0).deref();
+        let span = first.expr_node().span();
+
+        let bb_start = self.new_bb();
+        let bb_cond_false = self.new_bb();
+        let bb_end = self.new_bb();
+
+        let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
+
+        let mut bb = bb_start;
+        for elem in chain {
+            let (item, item_bb) = self.trans_rvalue(elem, bb);
+
+            let true_lhs_bb = self.new_bb();
+            item_bb.terminator = Some(box {
+                .cond = item,
+                .target_true = true_lhs_bb,
+                .target_false = bb_cond_false,
+            }: BrBool as *Terminator);
+
+            // true 分支初始化变量绑定
+            if item is pmv: *PatternMatchValue {
+                for var in pmv.pattern.collect_all_bindings() {
+                    if var.init is Some(init) {
+                        self.insert_copy(init, true_lhs_bb);
+                        let local = LocalVar::new(item.expr_node(), var);
+                        let w = WriteValue::create(move init, move local as *LValue);
+                        true_lhs_bb.add_step(move w);
+                    }
+                    all_pmv_bindings.push(move var);
+                }
+            }
+            bb = true_lhs_bb;
+        }
+
+        let then_blk = self.trans_block(then_br);
+        bb.terminator = Some(box {
+            .target = then_blk.start
+        }: BrForward as *Terminator);
+        if then_blk.end.terminator is None {
+            then_blk.end.terminator = Some(box {
+                .target = bb_end
+            }: BrForward as *Terminator);
+        }
+
+        if else_br is Some(e_br) {
+            let else_blk = self.trans_block(e_br);
+            bb_cond_false.terminator = Some(box {
+                .target = else_blk.start
+            }: BrForward as *Terminator);
+            if else_blk.end.terminator is None {
+                else_blk.end.terminator = Some(box {
+                    .target = bb_end
+                }: BrForward as *Terminator);
+            }
+        } else {
+            bb_cond_false.terminator = Some(box {
+                .target = bb_end
+            }: BrForward as *Terminator);
+        }
+        // 条件析构所有的模式中的变量绑定
+        for v in all_pmv_bindings {
+            v.drop_flag = Some(VarSymbol::create(v.var_node.span(), SType::sty_bool()));
+            self.drop_var_sym(move v, bb_end);
+        }
+        return { .start = move bb_start, .end = move bb_end }: BasicBlockChunk;
+    }
+
+    fn returned_local(&self, rv: *RValue) -> Option<*VarSymbol> {
+        match rv {
+            read_val: *ReadValue => {
+                return Some(read_val.sym_var);
+            }
+            cast_rv: *CastValue => {
+                return self.returned_local(cast_rv.operand);
+            }
+            ctx_rv: *ContextValue => {
+                return self.returned_local(ctx_rv.inner);
+            }
+            ty_asc_rv: *TypeAscriptionValue => {
+                return self.returned_local(ty_asc_rv.inner);
+            }
+            moved_rv: *MovedValue => {
+                return self.returned_local(moved_rv.src);
+            }
+            _ => return None;
+        }
+        return None;
+    }
+}
+
+fn connect_and_merge(bb: *BasicBlock, bbp: &BasicBlockChunk)  -> *BasicBlock {
+    if bb.terminator is Some(_) {
+        return bb; // 后继 bb 可以全部扔掉
+    }
+
+    for step in bbp.start.steps {
+        bb.steps.push(move step);
+    }
+    bb.terminator = bbp.start.terminator;
+
+    if bbp.start as *raw BasicBlock as UInt != bbp.end as *raw BasicBlock as UInt {
+        return bbp.end;
+    } else {
+        return bb;
+    }
+}
+
+fn collect_all_pmv_bindings(rvalue: *RValue, res: &mut Vec<*VarSymbol>) {
+    match rvalue {
+        ctx_rv: *ContextValue => {
+            collect_all_pmv_bindings(ctx_rv.inner, res);
+        }
+        ty_asc_rv: *TypeAscriptionValue => {
+            collect_all_pmv_bindings(ty_asc_rv.inner, res);
+        }
+        binary_rv: *BinaryExprValue => {
+            collect_all_pmv_bindings(binary_rv.lhs, res);
+            collect_all_pmv_bindings(binary_rv.rhs, res);
+        }
+        unary_rv: *UnaryExprValue => {
+            collect_all_pmv_bindings(unary_rv.operand, res);
+        }
+        addr_rv: *AddressofValue => {
+            collect_all_pmv_bindings(addr_rv.operand, res);
+        }
+        pmv: *PatternMatchValue => {
+            for var in pmv.pattern.collect_all_bindings() {
+                res.push(move var);
+            }
+        }
+        cast_rv: *CastValue => {
+            collect_all_pmv_bindings(cast_rv.operand, res);
+        }
+        _ => {}
+    }
+}

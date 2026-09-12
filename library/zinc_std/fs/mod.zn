@@ -1,0 +1,268 @@
+
+use ::self::ffi::CString;
+use ::self::primitives::string::StringSlice;
+use ::self::primitives::string::ToString;
+use ::self::collections::vec::Shared;
+
+// File 无法做出值类型的效果。假设对外 API 直接拿 File 使用:
+//   当 let f2: File = f1; 的时候，f1 和 f2 只能是指向同一个文件。
+//   f1 析构不能关闭文件，必须等 f1 和 f2 都析构掉才能关闭文件。
+//   这样的话 File 类型就是引用类型的效果，当所有的引用计数降为 0 的时候，这个文件实体才会关闭。等价于 File 类型是 ARC 指针的包装类型。
+//   还不如在 create 等构造函数上直接返回指针，表达这个是引用类型，更加明确。同时禁止 File 类型本身作为值类型使用。
+//   这个 API 设计就跟 libc 的 API 几乎一样的了。注意： `FILE * fopen(const char *filename, const char *mode);` 也是返回的指针类型，而不是结构体类型。
+//   如果在 C 里面直接使用 FILE 类型而不是它的指针，可以肯定是代码写错了。
+
+// 为了让 File 类型本身不能被当成变量使用，我们可以让 File 成为 unsized 类型。类似 Trait 这种。这些类型作为变量的时候，就只能配合指针使用。
+// 预期：
+// let f1: *File = File::open("name").unwrap();
+// let f2: File = *f1; // error, File 是 unsized type，变量不能是 unsized 类型
+
+pub struct File {
+    f: *raw mut UInt8, // 对应 C 语言的 FILE* f; 此处应该引入 extern type 更好
+}
+
+// 注意：UnSized 类型不能直接作为全局变量、局部变量使用。只能通过指针指向它来使用。
+impl UnSized for File {}
+
+// 不允许在多个线程同时读写同一个文件。要么把数据搬运到同一个线程然后做文件读写；要么使用锁做线程同步，类似 stdin/stdout
+unsafe impl Send for File {}
+impl !Sync for File {}
+
+// 基于 libc 实现，后续也可以改成直接使用系统调用
+extern fn fopen(filename: *raw UInt8, mode: *raw UInt8) -> *raw mut UInt8;
+extern fn fclose(stream: *raw mut UInt8) -> Int32;
+extern fn fread(buffer: *raw mut UInt8, size: UInt, count: UInt, stream: *raw mut UInt8) -> UInt;
+extern fn fwrite(buffer: *raw UInt8, size: UInt, count: UInt, stream: *raw mut UInt8) -> UInt;
+extern fn fflush(stream: *raw mut UInt8) -> Int32;
+extern fn zinc_core_errno() -> Int32;
+extern fn zinc_core_path_exists(path: *raw UInt8, len: UInt) -> Bool;
+
+// 此处过于简略，应该设计成携带 BackTrace 和 enum IOErrorKind 的复杂结构体
+pub struct IOError {
+    errno : Int32
+}
+
+// todo 后续改进错误处理
+impl File {
+
+    // todo: 后续引入 Path 类型
+    pub fn create(p: Str) -> Result<*File, IOError> {
+        let cs = CString::from_str(p);
+        unsafe {
+            let mode = "w"; // 这里应该用 cstring literal, 但目前所有的 string literal 都是 0 结尾所以无所谓
+            let f = fopen(cs.as_ptr(), mode.pointer as *raw UInt8);
+
+            if (f as UInt == 0) {
+                // 通过 errno 记录错误
+                let err = { .errno = zinc_core_errno() }: IOError;
+                return (type Result<*File, IOError>)::Err(err);
+            } else {
+                let file: *File = box ({ .f = f }: File);
+                return (type Result<*File, IOError>)::Ok(move file);
+            }
+        }
+    }
+
+    pub fn open(p: Str) -> Result<*File, IOError> { 
+        let cs = CString::from_str(p);
+        unsafe {
+            let mode = "r+"; // 这里应该用 cstring literal, 但目前所有的 string literal 都是 0 结尾所以无所谓
+            let f = fopen(cs.as_ptr(), mode.pointer as *raw UInt8);
+            
+            if (f as UInt == 0) {
+                // 通过 errno 记录错误
+                let err = { .errno = zinc_core_errno() }: IOError;
+                return (type Result<*File, IOError>)::Err(err);
+            } else {
+                let file: *File = box ({ .f = f }: File);
+                return (type Result<*File, IOError>)::Ok(move file);
+            }
+        }
+    }
+
+    // 后续需要支持 UnSized 类型作为泛型实参
+    // pub fn create_unboxed(p: &Path) -> Result<File, IOError> { ... }
+    // pub fn open_unboxed(p: &Path) -> Result<File, IOError> { ... }
+
+    pub fn read(&mut self, buf: SliceMut<UInt8>) -> Result<UInt, IOError> {
+        unsafe {
+            let r = fread(buf.pointer as *raw mut UInt8, 1, buf.length, self.f);
+            return (type Result<UInt, IOError>)::Ok(r);
+        }
+    }
+
+    // todo 应该改成 lazy 模式，返回迭代器
+    pub fn read_lines(&mut self) -> Result<Vec<String>, IOError> {
+        let all = self.read_to_string();
+        match all {
+            Ok(content) => {
+                let c = content.as_str().deref();
+                let lines = c.split(b'\n');
+                return (type Result<Vec<String>, IOError>)::Ok(move lines);
+            }
+            Err(e) => {
+                return (type Result<Vec<String>, IOError>)::Err(move e);
+            }
+        }
+    }
+
+    pub fn read_to_string(&mut self) -> Result<String, IOError> {
+        let mut content = String::new();
+
+        while(true) {
+            content.reserve(1024_u);
+            let head = content.data.ptr as *raw Shared<UInt8> as *raw mut UInt8;
+            let tail = head + content.data.size;
+
+            unsafe {
+                let r = fread(tail, 1, 1024, self.f);
+                if r > 0 {
+                    let s: Str = { .pointer = tail as &UInt8, .length = r };
+                    content.push_str(s);
+                }
+                if r < 1024 {
+                    return (type Result<String, IOError>)::Ok(move content);
+                }
+            }
+        }
+
+        let err = { .errno = unsafe(zinc_core_errno()) }: IOError;
+        return (type Result<String, IOError>)::Err(err);
+    }
+
+    pub fn write_all(&mut self, buf: Slice<UInt8>) -> Result<UInt, IOError> {
+        let mut data: *raw UInt8 = buf.pointer as *raw UInt8;
+        let mut remain: UInt = buf.length;
+        while remain > 0 {
+            unsafe {
+                let r: UInt = fwrite(data, 1, remain, self.f);
+                remain -= r;
+                data = data + r;
+            }
+        }
+        return (type Result<UInt, IOError>)::Ok(buf.length);
+    }
+
+    pub fn flush(&mut self) -> Result<(), IOError> {
+        unsafe {
+            let r = fflush(self.f); // todo 处理错误
+            return (type Result<(), IOError>)::Ok(());
+        }
+    }
+}
+
+impl Drop for File {
+    fn drop(&mut self) {
+        unsafe { fclose(self.f); }
+    }
+}
+
+pub struct Path {
+    inner: String
+}
+
+// API 都是临时的，后续需要改进设计
+impl Path {
+    pub fn new(s: Str) -> Self {
+        if s.is_empty() {
+            panic "initialize Path with empty string";
+        }
+        let str = String::from_str(s);
+        return { .inner = move str }: Path;
+    }
+
+    pub fn as_str(&self) -> StringSlice {
+        return self.inner.as_str();
+    }
+
+    pub fn file_name(&self) -> StringSlice {
+        let mut i: UInt = self.inner.len();
+        while true {
+            i -= 1;
+            let c = self.inner.index(i);
+            if c == b'/' || c == b'\\' {
+                return self.inner.slice(i + 1);
+            }
+            if i == 0 {
+                break;
+            }
+        }
+        return self.inner.as_str();
+    }
+
+    pub fn file_prefix(&self) -> StringSlice {
+        let name: StringSlice = self.file_name();
+        let len = name.deref().len();
+        let mut i: UInt = 0;
+        while i < len {
+            let c = name.start as *raw UInt8 + i;
+            if unsafe(*c == b'.') {
+                return name.slice(0, i);
+            }
+            i += 1;
+        }
+        return name;
+    }
+
+    pub fn file_stem(&self) -> StringSlice {
+        let name: StringSlice = self.file_name();
+        let mut i: UInt = name.deref().len();
+        while i > 0 {
+            i -= 1;
+            let c = name.start as *raw UInt8 + i;
+            if unsafe(*c == b'.') {
+                return name.slice(0, i);
+            }
+        }
+        return name;
+    }
+
+    pub fn parent(&self) -> Path {
+        let mut i: UInt = self.inner.len();
+        if i == 0 {
+            panic "empty Path calls parent() method";
+        }
+        while true {
+            i -= 1;
+            let c = self.inner.index(i);
+            if c == b'/' || c == b'\\' {
+                let sub: Str = self.inner.slice(0, i).deref();
+                return { .inner = sub.to_string() } : Path;
+            }
+            if i == 0 {
+                break;
+            }
+        }
+        return { .inner = self.inner } : Path;
+    }
+
+    pub fn join(&mut self, other: Str) {
+        if other.is_empty() {
+            return;
+        }
+        let mut s = self.inner;
+        if !self.inner.ends_with("/") {
+            s.push(b'/');
+        }
+        s.push_str(other);
+        self.inner = move s;
+    }
+
+    pub fn exists(&self) -> Bool {
+        let s = self.inner;
+        return unsafe(zinc_core_path_exists(s.data.ptr as *raw Shared<UInt8> as *raw UInt8, s.data.size));
+    }
+}
+
+impl ToString for Path {
+    fn to_string_inplace(&self, buf: &mut String) {
+        let s = self.inner.as_str().deref();
+        buf.push_str(s);
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}

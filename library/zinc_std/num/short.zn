@@ -1,0 +1,135 @@
+use ::self::primitives::string::ToString;
+use ::self::cmp::{Eq, PartialEq, PartialOrd, Ord, Ordering};
+use ::self::hash::{Hash, Hasher};
+use ::self::primitives::clone::Clone;
+use ::self::primitives::default::Default;
+
+impl Short {
+    pub fn reverse_bits(self) -> Short {
+        return ::self::intrinsic::reverse_bits(<Short>, self);
+    }
+
+    pub fn rotate_left(self, n: UInt32) -> Short {
+        return ::self::intrinsic::rotate_left(<Short>, self, n);
+    }
+
+    pub fn rotate_right(self, n: UInt32) -> Short {
+        return ::self::intrinsic::rotate_right(<Short>, self, n);
+    }
+
+    pub fn bit_and(self, n: Short) -> Short {
+        return ::self::intrinsic::bit_and(<Short>, self, n);
+    }
+
+    pub fn bit_or(self, n: Short) -> Short {
+        return ::self::intrinsic::bit_or(<Short>, self, n);
+    }
+
+    pub fn bit_xor(self, n: Short) -> Short {
+        return ::self::intrinsic::bit_xor(<Short>, self, n);
+    }
+
+    pub fn bit_not(self) -> Short {
+        return ::self::intrinsic::bit_not(<Short>, self);
+    }
+
+    pub fn bit_shl(self, n: UInt32) -> Short {
+        return ::self::intrinsic::bit_shl(<Short>, self, n);
+    }
+
+    pub fn bit_shr(self, n: UInt32) -> Short {
+        return ::self::intrinsic::bit_shr(<Short>, self, n);
+    }
+
+    // todo: 加上 wrapping/saturating/checked/carry strategies
+}
+
+impl ToString for Short {
+    fn to_string_inplace(&self, buf: &mut String) {
+        let n: Short = *self;
+        if (n < 0) {
+            buf.push(b'-');
+            let uv: UInt64 = (-(n + 1)) as UInt64 + 1;
+            uv.to_string_inplace(buf);
+        } else {
+            let m = n as UInt64;
+            m.to_string_inplace(buf);
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+impl PartialEq for Short {
+    fn eq(&self, other: &Self) -> Bool {
+        return *self == *other;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return *self != *other;
+    }
+}
+
+impl Eq for Short {}
+
+impl PartialOrd for Short {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if *self < *other {
+            return Some(Ordering::Less);
+        }
+        else if *self == *other {
+            return Some(Ordering::Equal);
+        }
+        else {
+            return Some(Ordering::Greater);
+        }
+    }
+    fn lt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Less);
+    }
+    fn le(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Greater));
+    }
+    fn gt(&self, other: &Self) -> Bool {
+        return self.partial_cmp(other) is Some(Ordering::Greater);
+    }
+    fn ge(&self, other: &Self) -> Bool {
+        return !(self.partial_cmp(other) is Some(Ordering::Less));
+    }
+}
+
+impl Ord for Short {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if *self < *other {
+            return Ordering::Less;
+        }
+        else if *self == *other {
+            return Ordering::Equal;
+        }
+        else {
+            return Ordering::Greater;
+        }
+    }
+}
+
+impl Hash for Short {
+    fn hash(&self, state: &mut Hasher) {
+        state.combine(*self as UInt64);
+    }
+}
+
+impl Clone for Short {
+    fn clone(&self) -> Short {
+        return *self;
+    }
+}
+
+impl Default for Short {
+    fn default() -> Short {
+        return 0;
+    }
+}

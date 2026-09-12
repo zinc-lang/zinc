@@ -1,0 +1,5 @@
+
+// 没有 fn drop<T>(_: T){} 函数。该函数功能可以由 move 关键字取代。
+pub trait Drop {
+    fn drop(&mut self);
+}

@@ -1,0 +1,19 @@
+
+// 临时实现，后续需改进
+use ::self::collections::vec::Shared;
+
+struct CString {
+    s: String
+}
+
+impl CString {
+    fn from_str(s: Str) -> CString {
+        let mut buf = String::from_str(s);
+        buf.push(0_u8);
+        return { .s = move buf }: CString;
+    }
+
+    fn as_ptr(&self) -> *raw UInt8 {
+        return self.s.data.ptr as *raw Shared<UInt8> as *raw UInt8;
+    }
+}

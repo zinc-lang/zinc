@@ -1,0 +1,283 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::source_code::*;
+
+use std::cmp::{PartialEq, Eq};
+
+unsafe static mut G_I8_SYMBOL: Option<*IntegerSymbol> = None;
+unsafe static mut G_I16_SYMBOL: Option<*IntegerSymbol> = None;
+unsafe static mut G_I32_SYMBOL: Option<*IntegerSymbol> = None;
+unsafe static mut G_I64_SYMBOL: Option<*IntegerSymbol> = None;
+unsafe static mut G_ISIZE_SYMBOL: Option<*IntegerSymbol> = None;
+unsafe static mut G_ISHORT_SYMBOL: Option<*IntegerSymbol> = None;
+
+unsafe static mut G_U8_SYMBOL: Option<*IntegerSymbol> = None;
+unsafe static mut G_U16_SYMBOL: Option<*IntegerSymbol> = None;
+unsafe static mut G_U32_SYMBOL: Option<*IntegerSymbol> = None;
+unsafe static mut G_U64_SYMBOL: Option<*IntegerSymbol> = None;
+unsafe static mut G_USIZE_SYMBOL: Option<*IntegerSymbol> = None;
+unsafe static mut G_USHORT_SYMBOL: Option<*IntegerSymbol> = None;
+
+impl IntegerSymbol {
+    pub fn new(k: IntegerKind) -> *Self {
+        match k {
+            IntegerKind::I8 => unsafe {
+                if G_I8_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: IntegerSymbol;
+                    G_I8_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+            IntegerKind::I16 => unsafe {
+                if G_I16_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: IntegerSymbol;
+                    G_I16_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+            IntegerKind::I32 => unsafe {
+                if G_I32_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: IntegerSymbol;
+                    G_I32_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+            IntegerKind::I64 => unsafe {
+                if G_I64_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: IntegerSymbol;
+                    G_I64_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+            IntegerKind::Isize => unsafe {
+                if G_ISIZE_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: IntegerSymbol;
+                    G_ISIZE_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+            IntegerKind::Ishort => unsafe {
+                if G_ISHORT_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: IntegerSymbol;
+                    G_ISHORT_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+            IntegerKind::U8 => unsafe {
+                if G_U8_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: IntegerSymbol;
+                    G_U8_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+            IntegerKind::U16 => unsafe {
+                if G_U16_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: IntegerSymbol;
+                    G_U16_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+            IntegerKind::U32 => unsafe {
+                if G_U32_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: IntegerSymbol;
+                    G_U32_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+            IntegerKind::U64 => unsafe {
+                if G_U64_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: IntegerSymbol;
+                    G_U64_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+            IntegerKind::Usize => unsafe {
+                if G_USIZE_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: IntegerSymbol;
+                    G_USIZE_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+            IntegerKind::Ushort => unsafe {
+                if G_USHORT_SYMBOL is Some(s) {
+                    return s;
+                } else {
+                    let sym = box { .kind = k, .all_impls = (type Vec<*ImplSymbol>)::new() }: IntegerSymbol;
+                    G_USHORT_SYMBOL = Some(sym);
+                    return sym;
+                }
+            }
+        }
+    }
+
+    pub fn is_signed(&self) -> Bool {
+        match self.kind {
+            IntegerKind::I8 => return true;
+            IntegerKind::I16 => return true;
+            IntegerKind::I32 => return true;
+            IntegerKind::I64 => return true;
+            IntegerKind::Isize => return true;
+            IntegerKind::Ishort => return true;
+            IntegerKind::U8 => return false;
+            IntegerKind::U16 => return false;
+            IntegerKind::U32 => return false;
+            IntegerKind::U64 => return false;
+            IntegerKind::Usize => return false;
+            IntegerKind::Ushort => return false;
+        }
+        panic "unreachable";
+    }
+}
+
+impl Symbol for IntegerSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = SourceSpan::empty()
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        match self.kind {
+            IntegerKind::I8 => return "Int8".to_string();
+            IntegerKind::I16 => return "Int16".to_string();
+            IntegerKind::I32 => return "Int32".to_string();
+            IntegerKind::I64 => return "Int64".to_string();
+            IntegerKind::Isize => return "Int".to_string();
+            IntegerKind::Ishort => return "Short".to_string();
+            IntegerKind::U8 => return "UInt8".to_string();
+            IntegerKind::U16 => return "UInt16".to_string();
+            IntegerKind::U32 => return "UInt32".to_string();
+            IntegerKind::U64 => return "UInt64".to_string();
+            IntegerKind::Usize => return "UInt".to_string();
+            IntegerKind::Ushort => return "UShort".to_string();
+        }
+    }
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+    fn export_value(&self) -> String {
+        return self.short_name();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+unsafe static mut G_INT_STYPE: [Option<*SType>; 12] = [(type Option<*SType>)::None; 12];
+
+impl TypeSymbol for IntegerSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        return self.short_name();
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        return self.all_impls;
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        return self.to_sty();
+    }
+    fn to_sty(*self) -> *SType {
+        let idx = self.kind as UInt;
+        unsafe {
+            if G_INT_STYPE[idx] is Some(t) {
+                return t;
+            } else {
+                let sty = box {
+                    .type_symbol = self as *IntegerSymbol as *TypeSymbol,
+                    .args = GenericArgs::new(),
+                }: SType;
+                G_INT_STYPE[idx] = Some(sty);
+                return sty;
+            }
+        }
+    }
+}
+
+impl PartialEq for IntegerKind {
+    fn eq(&self, other: &Self) -> Bool {
+        return *self as UInt == *other as UInt;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return *self as UInt != *other as UInt;
+    }
+}
+
+impl Eq for IntegerKind {}
+
+impl IntegerKind {
+    fn is_signed(&self) -> Bool {
+        let i = *self as UInt;
+        let ishort = IntegerKind::Ishort as UInt;
+        return i <= ishort;
+    }
+
+    fn min_num(&self) -> Int64 {
+        match self {
+            IntegerKind::I8 => return 0x80_i64 as Int8 as Int64;
+            IntegerKind::I16 => return 0x8000_i64 as Int8 as Int64;
+            IntegerKind::I32 => return 0x8000_0000_i64 as Int8 as Int64;
+            IntegerKind::I64 => return 0x8000_0000_0000_0000_i64 as Int8 as Int64;
+            IntegerKind::Isize => return 0x8000_0000_0000_0000_i64 as Int8 as Int64;
+            IntegerKind::Ishort => return 0x8000_0000_i64 as Int8 as Int64;
+            IntegerKind::U8 => return 0_i64;
+            IntegerKind::U16 => return 0_i64;
+            IntegerKind::U32 => return 0_i64;
+            IntegerKind::U64 => return 0_i64;
+            IntegerKind::Usize => return 0_i64;
+            IntegerKind::Ushort => return 0_i64;
+        }
+    }
+
+    fn max_num(&self) -> UInt64 {
+        match self {
+            IntegerKind::I8 => return 0x7F_u64;
+            IntegerKind::I16 => return 0x7FFF_u64;
+            IntegerKind::I32 => return 0x7FFF_FFFF_u64;
+            IntegerKind::I64 => return 0x7FFF_FFFF_FFFF_FFFF_u64;
+            IntegerKind::Isize => return 0x7FFF_FFFF_FFFF_FFFF_u64;
+            IntegerKind::Ishort => return 0x7FFF_FFFF_u64;
+            IntegerKind::U8 => return 0xFF_u64;
+            IntegerKind::U16 => return 0xFFFF_u64;
+            IntegerKind::U32 => return 0xFFFF_FFFF_u64;
+            IntegerKind::U64 => return 0xFFFF_FFFF_FFFF_FFFF_u64;
+            IntegerKind::Usize => return 0xFFFF_FFFF_FFFF_FFFF_u64;
+            IntegerKind::Ushort => return 0xFFFF_FFFF_u64;
+        }
+    }
+}

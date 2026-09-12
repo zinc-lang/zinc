@@ -1,0 +1,87 @@
+struct Cow<T> {}
+
+pub fn size_of<T>() -> UInt {
+    return ::self::intrinsic::size_of(<T>);
+}
+
+pub fn swap<T>(lhs: &mut T, rhs: &mut T) {
+    unsafe {
+        let l: *raw mut T = lhs as *raw mut T;
+        let r: *raw mut T = rhs as *raw mut T;
+
+        let mut temp : T = unsafe( std::intrinsic::zeroed(<T>) ); // todo: 修复类型推导 bug
+        let p: *raw mut T = &raw mut temp as *raw mut T;
+
+        // 以下赋值操作只涉及内存搬运，不会触发任何析构函数
+        *p = *l;
+        *l = *r;
+        *r = move temp;
+    }
+}
+
+extern fn memcmp(p1: *raw (), p2: *raw (), size: UInt) -> Int32;
+
+pub fn mem_compare<T>(lhs: &T, rhs: &T) -> Bool {
+    unsafe {
+        let pl = lhs as *raw T as *raw ();
+        let pr = rhs as *raw T as *raw ();
+        return memcmp(pl, pr, size_of(<T>)) == 0;
+    }
+}
+
+pub unsafe fn mem_copy<T>(src: *raw T, dst: *raw mut T, count: UInt) {
+    // todo 采用 llvm intrinsic 实现
+    let mut i: UInt = 0;
+    while i < count {
+        let src_addr: *raw T = src + i;
+        let src_item: T = *src_addr;
+        let dst_addr: *raw mut T = dst + i;
+        unsafe { // 要调用一次 T 类型的 copy 函数
+            *dst_addr = src_item;
+            ::self::intrinsic::forget(move src_item);
+        }
+        i += 1;
+    }
+}
+
+pub unsafe fn mem_move<T>(src: *raw T, dst: *raw mut T, count: UInt) {
+    // todo 采用 llvm intrinsic 实现
+    let mut i: UInt = 0;
+    while i < count {
+        let src_addr: *raw T = src + i;
+        let dst_addr: *raw mut T = dst + i;
+        unsafe { // 不调用 T 类型的 copy 函数
+            *dst_addr = *src_addr;
+        }
+        i += 1;
+    }
+}
+
+pub fn replace<T>(dst: &mut T, val: T) -> T {
+    let tmp: T = *dst;
+    unsafe {
+        let addr: *raw mut T = dst as *raw mut T;
+        *addr = move val; // 避免触发原来变量的析构
+    }
+    return tmp;
+}
+
+pub fn forget<T>(val: T) {
+    unsafe {
+        ::self::intrinsic::forget(move val);
+    }
+}
+
+pub unsafe fn destruct_in_place<T>(p: &mut T) {
+    let addr = p as *raw mut T;
+    ::self::intrinsic::destruct_in_place(addr);
+}
+
+pub struct Defer {
+
+}
+
+// #[must_use]
+// pub fn defer(f: &Fn()) -> Defer {
+//     return {...};
+// }

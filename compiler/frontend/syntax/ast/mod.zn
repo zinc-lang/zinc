@@ -1,0 +1,516 @@
+use super::token::{Token, TokenKind, KeywordKind};
+use super::super::source_code::*;
+use super::super::diagnostic::*;
+use std::primitives::string::ToString;
+use self::decl::*;
+use self::stmt::*;
+use self::expr::*;
+use self::pattern::*;
+use self::ty::*;
+use self::visit::{SyntaxVisitor, VisitResult, traverse_ast};
+use self::validator::{SyntaxValidator};
+
+use std::meta::Type;
+use std::cmp::{PartialEq, Eq};
+use std::ptr::{strong_count, inc_strong_ref_atomic};
+use std::mem::forget;
+
+pub mod decl;
+pub mod expr;
+pub mod stmt;
+pub mod pattern;
+pub mod ty;
+pub mod visit;
+pub mod validator;
+
+pub enum LibOrExe {
+    Unknown,
+    Lib(*ExportDecl),
+    Exe(*FuncDecl),
+}
+
+pub struct SyntaxTree {
+    root_file_id: UInt,
+    top_mod: *ModDecl,
+    kind: LibOrExe,
+}
+
+pub trait SyntaxNode {
+    virtual fn span(&self) -> SourceSpan;
+    
+    virtual fn children(&self) -> Vec<*SyntaxNode>;
+    virtual fn set_parent(&mut self, parent: *weak SyntaxNode);
+    virtual fn parent(&self) -> Option<*weak SyntaxNode>;
+    virtual fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult;
+}
+
+
+pub enum QualifierKind {
+    Err, Pub, Unsafe, Const, Async, Virtual, Override, Sealed, Extern, Inline,
+}
+
+impl PartialEq for QualifierKind {
+    fn eq(&self, other: &QualifierKind) -> Bool {
+        return (*self as UInt) == (*other as UInt);
+    }
+    fn ne(&self, other: &QualifierKind) -> Bool {
+        return (*self as UInt) != (*other as UInt);
+    }
+}
+
+impl Eq for QualifierKind {}
+
+pub struct Qualifier {
+    token: Token,
+}
+
+impl Qualifier {
+    pub fn kind(&self) -> QualifierKind {
+        if self.token.token_kind is TokenKind::Keyword(k) {
+            match k {
+                KeywordKind::KW_PUB => return QualifierKind::Pub;
+                KeywordKind::KW_UNSAFE => return QualifierKind::Unsafe;
+                KeywordKind::KW_CONST => return QualifierKind::Const;
+                KeywordKind::KW_ASYNC => return QualifierKind::Async;
+                KeywordKind::KW_VIRTUAL => return QualifierKind::Virtual;
+                KeywordKind::KW_OVERRIDE => return QualifierKind::Override;
+                KeywordKind::KW_SEALED => return QualifierKind::Sealed;
+                KeywordKind::KW_EXTERN => return QualifierKind::Extern;
+                KeywordKind::KW_INLINE => return QualifierKind::Inline;
+                _ => return QualifierKind::Err;
+            }
+        } else {
+            return QualifierKind::Err;
+        }
+    }
+}
+
+pub struct QualifierList {
+    qualifiers: Vec<Qualifier>,
+}
+
+impl QualifierList {
+    pub fn new() -> Self {
+        return { .qualifiers = (type Vec<Qualifier>)::new() }: QualifierList;
+    }
+
+    pub fn push(&mut self, qualifier: Qualifier) {
+        self.qualifiers.push(qualifier);
+    }
+
+    pub fn get(&self, qk: QualifierKind) -> Option<Qualifier> {
+        for q in &self.qualifiers {
+            if q.kind() as UInt == qk as UInt {
+                return Some(q);
+            }
+        }
+        return None;
+    }
+
+    pub fn has(&self, qk: QualifierKind) -> Bool {
+        for q in &self.qualifiers {
+            if q.kind() as UInt == qk as UInt {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn is_empty(&self) -> Bool {
+        return self.qualifiers.is_empty();
+    }
+}
+
+impl ToString for QualifierList {
+    fn to_string_inplace(&self, buf: &mut String) {
+        for q in &self.qualifiers {
+            if q.token.token_kind is TokenKind::Keyword(k) {
+                k.to_string_inplace(buf);
+                buf.push_str(" ");
+            }
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+pub trait DeclNode : SyntaxNode {
+    virtual fn short_name(&self) -> String;
+    virtual fn qualifiers(&self) -> QualifierList;
+}
+
+pub trait StatementNode : SyntaxNode {
+}
+
+pub trait ExpressionNode : SyntaxNode {
+}
+
+pub trait PatternNode : SyntaxNode {
+}
+
+pub trait TypeNode : SyntaxNode {
+    virtual fn to_string(&self) -> String;
+}
+
+pub struct AttrMacroNode {
+    content: Vec<Token>
+}
+
+pub enum SegmentedPart {
+    Err, Empty, Ident(Token),
+    WithGeneric(Token, Vec<*TypeNode>) // name, type_args
+}
+
+impl SegmentedPart {
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            SegmentedPart::Err => return SourceSpan::empty();
+            SegmentedPart::Empty => return SourceSpan::empty();
+            SegmentedPart::Ident(t1) => return t1.span();
+            SegmentedPart::WithGeneric(t2, _) => return t2.span();
+        }
+    }
+}
+
+impl ToString for SegmentedPart {
+    fn to_string_inplace(&self, buf: &mut String) {
+        match self {
+            SegmentedPart::Err => buf.push_str("<err>");
+            SegmentedPart::Empty => ;
+            SegmentedPart::Ident(t1) => buf.push_str(t1.raw_str().as_str().deref());
+            SegmentedPart::WithGeneric(t2, _) => {
+                buf.push_str(t2.raw_str().as_str().deref());
+            }
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+pub struct SegmentedName {
+    names: Vec<*SegmentedPart>,
+}
+
+impl SegmentedName {
+    pub fn new_segmented_name() -> *SegmentedName {
+        let names = (type Vec<*SegmentedPart>)::new();
+
+        let name: *SegmentedName = box {
+            .names = move names,
+        }: SegmentedName;
+        return name;
+    }
+
+    pub fn span(&self) -> SourceSpan {
+        if self.names.len() == 0 {
+            return SourceSpan::empty();
+        } else {
+            let mut span = SourceSpan::empty();
+            for n in self.names {
+                let nspan = n.span();
+                if span.start.is_empty() && !nspan.start.is_empty() {
+                    span.start = nspan.start;
+                }
+                if !nspan.end.is_empty() {
+                    span.end = nspan.end;
+                }
+            }
+            return span;
+        }
+    }
+
+    pub fn is_wildcard(&self) -> Bool {
+        if self.names.len() != 1 {
+            return false;
+        }
+        let first_part: *SegmentedPart = self.names.at(0).get_or_panic();
+        if first_part is SegmentedPart::Ident(t) {
+            return t.raw_str().as_str().deref().eq(&"_");
+        }
+        return false;
+    }
+
+    pub fn ends_with_generic(&self) -> Option<Vec<*TypeNode>> {
+        if self.names.is_empty() {
+            return None;
+        }
+        let last_idx = self.names.len() - 1;
+        let last_part: *SegmentedPart = self.names.at(last_idx).get_or_panic();
+        if last_part is SegmentedPart::WithGeneric(t, v) {
+            return Some(move v);
+        }
+        return None;
+    }
+
+    pub fn starts_with_self_upper(&self) -> Bool {
+        if self.names.is_empty() {
+            return false;
+        }
+        let first_part: *SegmentedPart = self.names.at(0).get_or_panic();
+        if first_part is SegmentedPart::Ident(t) {
+            return t.raw_str().as_str().deref().eq(&"Self");
+        }
+        return false;
+    }
+
+    pub fn ends_with(&self, s: Str) -> Bool {
+        if self.names.is_empty() {
+            return false;
+        }
+        let last_idx = self.names.len() - 1;
+        let last_part: *SegmentedPart = self.names.at(last_idx).get_or_panic();
+        if last_part.to_string().as_str().deref().eq(&s) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+}
+
+impl ToString for SegmentedName {
+    fn to_string_inplace(&self, buf: &mut String) {
+        let mut i: UInt = 0;
+        for part in self.names {
+            part.to_string_inplace(buf);
+            if i + 1 < self.names.len() {
+                buf.push_str("::");
+            }
+            i += 1;
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+pub struct DummySyntaxNode {
+    source_span: SourceSpan,
+}
+
+impl SyntaxNode for DummySyntaxNode {
+    fn span(&self) -> SourceSpan {
+        return self.source_span;
+    }
+
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult {
+        return visitor.visit_dummy_node(self);
+    }
+
+    fn children(&self) -> Vec<*SyntaxNode> {
+        return (type Vec<*SyntaxNode>)::new();
+    }
+
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return None;
+    }
+}
+
+impl DeclNode for DummySyntaxNode {
+    fn short_name(&self) -> String {
+        return "<dummy>".to_string();
+    }
+
+    fn qualifiers(&self) -> QualifierList {
+        return QualifierList::new();
+    }
+}
+
+impl StatementNode for DummySyntaxNode {
+}
+
+impl ExpressionNode for DummySyntaxNode {
+}
+
+impl PatternNode for DummySyntaxNode {
+}
+
+impl TypeNode for DummySyntaxNode {
+    fn to_string(&self) -> String {
+        return "<Dummy>".to_string();
+    }
+}
+
+impl SyntaxTree {
+    pub fn is_std(&self) -> Bool {
+        if self.kind is LibOrExe::Lib(e) {
+            return e.short_name().as_str().deref().eq(&"std");
+        }
+        return false;
+    }
+
+    pub fn dump(m: *DeclNode, decl_only: Bool) {
+        print("========== Dump AST: "); print(m.short_name()); println(" ==========");
+        dump_node_(m as *SyntaxNode, decl_only, 0);
+        println(" ==========");
+    }
+
+    fn dump_node_(node: *SyntaxNode, decl_only: Bool, indent: UInt) {
+        let is_decl = node is type *DeclNode;
+        if decl_only && !is_decl {
+            return;
+        }
+
+        {
+            let mut i: UInt = indent;
+            while i > 0 {
+                print("  ");
+                i -= 1;
+            }
+        }
+
+        let ty = Type::of(&*node as &Any);
+        let ty_name = ty.short_name();
+        print(f"$(ty_name) ");
+
+        if node is d: *DeclNode {
+            let name = d.short_name();
+            print(f"$(name) ");
+        }
+        print(" at ");
+        let flc = SourceManager::get().file_line_column_of(node.span().start);
+        println(flc);
+
+        let children = node.children();
+        for child in children {
+            dump_node_(child, decl_only, indent + 1);
+        }
+    }
+
+    // 在 parse 阶段，某些节点的 parent_node 字段可能没有正确设置（因为父节点还未创建）。
+    pub fn reset_parent(&mut self) {
+        for child in self.top_mod.children() {
+            recursive_setup_parents(child, self.top_mod as *SyntaxNode as *weak SyntaxNode);
+        }
+    }
+
+    pub fn validate(&mut self, dump_ast: String) {
+        let mut validator = {
+            .top_mod = self.top_mod,
+            .export_found = None,
+            .main_found = None,
+            .all_imports = (type Vec<*ImportDecl>)::new(),
+            .dump_ast = move dump_ast,
+        }: SyntaxValidator;
+
+        traverse_ast(self.top_mod as *SyntaxNode, &mut validator as &mut SyntaxVisitor);
+
+        // 检查 main 函数和 export 的冲突
+        if validator.main_found is None &&
+            validator.export_found is None {
+            DiagnosticEngine::get().emit_neither_lib_nor_exe(SourceSpan::empty());
+        }
+        else if validator.main_found is Some(f) &&
+            validator.export_found is Some(_) {
+            DiagnosticEngine::get().emit_conflict_export_and_main(f.span());
+        }
+        else if validator.main_found is Some(f) {
+            self.kind = LibOrExe::Exe(f);
+        }
+        else if validator.export_found is Some(e) {
+            self.kind = LibOrExe::Lib(e);
+        }
+    }
+
+    pub fn all_imports(&self) -> Vec<String> {
+        let mut all = (type Vec<String>)::new();
+        if !self.is_std() {
+            all.push(f"std"); // 如果自己不是 std 则一定依赖 std
+        }
+
+        for c in self.top_mod.children() {
+            if c is imp: *ImportDecl {
+                all.push(imp.short_name());
+            }
+        }
+
+        return all;
+    }
+
+    pub fn is_one_of_imports(&self, name: &String) -> Bool {
+        let all = self.all_imports();
+        for ref i in all {
+            if name.eq(i) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn component_name(&self) -> String {
+        if self.kind is LibOrExe::Lib(e) {
+            return e.short_name();
+        } else {
+            return f"self";
+        }
+    }
+}
+
+fn recursive_setup_parents(node: *SyntaxNode, parent: *weak SyntaxNode) {
+    node.set_parent(move parent);
+    let children: Vec<*SyntaxNode> = node.children();
+    for child in children {
+        recursive_setup_parents(child as *SyntaxNode, node as *SyntaxNode as *weak SyntaxNode);
+    }
+}
+
+// 因为目前不支持 ?Sized 类型作为泛型实参，所以用 std::ptr::upgrade 写法编译不通过
+// if std::ptr::upgrade(parent) is Some(p) {
+//     current = p.parent();
+// } else {
+//     break;
+// }
+fn upgrade_syntaxnode(weak_node: *weak SyntaxNode) -> Option<*SyntaxNode> {
+    unsafe {
+        let thin_ptr = weak_node as *raw SyntaxNode as *raw () as *();
+
+        let has_dropped = strong_count(&thin_ptr) == 0;
+        if has_dropped {
+            forget(move thin_ptr);
+            return None;
+        } else {
+            inc_strong_ref_atomic(&thin_ptr);
+            forget(move thin_ptr);
+
+            let strong_ptr = weak_node as *raw SyntaxNode as *SyntaxNode;
+            return Some(strong_ptr);
+        }
+    }
+}
+
+fn is_inside_unsafe_context(node: *SyntaxNode) -> Bool {
+    let mut p = node.parent();
+    while p is Some(wp) {
+        if upgrade_syntaxnode(wp) is Some(parent) {
+            if parent is ctx_expr: *ContextExpr &&
+                ctx_expr.kw_context.token_kind is TokenKind::Keyword(KeywordKind::KW_UNSAFE) {
+                return true;
+            }
+            if parent is blk: *BlockStmt && 
+                blk.kw_unsafe.token_kind is TokenKind::Keyword(KeywordKind::KW_UNSAFE) {
+                return true;
+            }
+            // todo lambda 以后考虑
+            if parent is fdecl: *FuncDecl && fdecl.qualifier_list.has(QualifierKind::Unsafe) {
+                return true;
+            }
+            p = parent.parent();
+        } else {
+            return false;
+        }
+    }
+    return false;
+}

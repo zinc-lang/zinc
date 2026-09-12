@@ -1,0 +1,60 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::diagnostic::*;
+use super::*;
+
+impl DerefPattern {
+    fn new(n: *DerefPatternNode, pat: *Pattern) -> *Self {
+        return box {
+            .node = move n,
+            .inner = move pat,
+            .matches_with = None,
+        }: DerefPattern;
+    }
+
+    fn is_mut(&self) -> Bool {
+        return self.node.kw_mut.token_kind is TokenKind::Keyword(KeywordKind::KW_MUT);
+    }
+}
+
+impl Pattern for DerefPattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+        self.matches_with = Some(expr);
+
+        let expr = DerefRValue::create(self.pattern_node().span(), expr);
+        self.inner.destructure(move expr, is_refutable);
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        return self.inner.collect_all_bindings();
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        let mw = self.matches_with.get_or_panic("BUG: pattern does not know what expression it matches with");
+        let expr_ty = ctx.infer(mw);
+        if !ensure_type_valid(expr_ty, mw.expr_node().span()) {
+            return;
+        }
+
+        if self.is_mut() {
+            if !(expr_ty.type_symbol is type *BorrowMutSymbol) {
+                DiagnosticEngine::get().emit_type_mismatch(f"&mut _", expr_ty.to_string(), self.node.span());
+                return;
+            }
+        } else {
+            if !(expr_ty.type_symbol is type *BorrowMutSymbol) &&
+                !(expr_ty.type_symbol is type *BorrowImmutSymbol) {
+                DiagnosticEngine::get().emit_type_mismatch(f"&_", expr_ty.to_string(), self.node.span());
+                return;
+            }
+        }
+
+        self.inner.type_check(ctx);
+    }
+}

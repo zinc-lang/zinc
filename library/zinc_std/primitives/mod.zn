@@ -1,0 +1,39 @@
+
+// Any 是所有 trait 的父类型。任何 `*Trait` 都可以隐式转换为 `*Any`。借用指针也类似。
+// 所有类型都实现了 Any trait。任何 `*T` 都可以隐式转换为 `*Any`。借用指针也类似。
+
+//mod range;
+
+pub mod bool;
+pub mod char;
+pub mod str;
+pub mod string;
+pub mod slice;
+pub mod option;
+pub mod result;
+pub mod clone;
+pub mod default;
+
+pub trait Any {}
+
+pub trait Trivial {}
+
+
+pub type Byte = UInt8;
+
+pub struct PhantomData<T> {}
+
+// 这个 Owned 类型是否可行？
+// 实现 Deref/DerefMut trait
+// 调用 T 的 immut 型成员函数的时候，直接调用; 调用 T 的 mut 型成员函数的时候，总是把 T 拷贝一份
+// pub struct Ownd<T> 
+// {
+//     data: *T,
+// }
+
+// 有需要吗？这种情况用 ManuallyDrop 就可以
+// pub fn forget<T>(_: T) {}
+
+// mod cmp/eq
+
+// mod hint

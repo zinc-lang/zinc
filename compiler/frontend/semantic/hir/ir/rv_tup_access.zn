@@ -1,0 +1,78 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::syntax::token::*;
+use super::*;
+
+impl TupleAccessRValue {
+    fn new(ma: *MemberAccessExpr, base: *RValue) -> *Self {
+        let mut index: UInt = 0;
+        if ma.member.token_kind is TokenKind::Literal(LiteralKind::LIT_INT) {
+            let idx = ma.member.raw_str();
+            // parse int
+            let mut n: UInt = 0;
+            while n < idx.len() {
+                let c = idx.index(n);
+                if c < b'0' || c > b'9' {
+                    panic "Tuple access index must be a non-negative integer literal";
+                }
+                index = index * 10 + (c as UInt - b'0' as UInt);
+                n += 1;
+            }
+        } else {
+            panic "Tuple access must be of the form <tuple_expr>.<integer_literal>";
+        }
+        let span = base.expr_node().span();
+        return box {
+            .expr = ma as *ExpressionNode,
+            .parent_node = None,
+            .base = move base,
+            .index = index,
+            .sty = SType::sty_invalid(span),
+        }: TupleAccessRValue;
+    }
+
+    fn create(b: *RValue, i: UInt) -> *Self {
+        let span = b.expr_node().span();
+        let e = b.expr_node() as *ExpressionNode;
+        return box {
+            .expr = move e,
+            .parent_node = None,
+            .base = move b,
+            .index = i,
+            .sty = SType::sty_invalid(span),
+        }: TupleAccessRValue;
+    }
+}
+
+impl XValue for TupleAccessRValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+        self.base.dump();
+        print(".");
+        print(self.index);
+    }
+}
+
+impl RValue for TupleAccessRValue {
+
+}

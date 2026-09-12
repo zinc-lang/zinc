@@ -1,0 +1,198 @@
+
+pub mod data_structures;
+mod cg_cfg;
+mod cg_intrinsic;
+mod cg_meta;
+mod cg_type;
+mod cg_value;
+mod cg_item;
+
+use ::self::cli::options::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::semantic::*;
+use ::self::frontend::semantic::hir::ir::*;
+use self::data_structures::*;
+use self::cg_cfg::*;
+
+use std::fs::Path;
+use std::collections::hashset::HashSet;
+
+extern fn codegen_set_out_dir(ds: Ptr, f: Ptr, len: UInt);
+extern fn codegen_write_bc_file(ds: Ptr) -> Bool;
+extern fn codegen_write_obj_file(ds: Ptr, opt_level: UInt) -> Bool;
+extern fn codegen_write_exe_file(ds: Ptr, link_cpp: Bool, extra_link: Ptr, extra_link_len: UInt) -> Bool;
+
+pub struct CodeGenerator {
+    options: &'static CliOptions,
+    semantic_model: *SemanticModel,
+    llds: *LLDataStructures,
+    comp_name: String,
+
+    sty_to_cgty: HashMap<UInt, Option<CgType>>,
+    cached_copyfn: HashMap<UInt, CgFunc>,
+    cached_dtorfn: HashMap<UInt, CgFunc>,
+    cached_sizefn: HashMap<UInt, CgFunc>,
+    cached_alignfn: HashMap<UInt, CgFunc>,
+
+    cached_signatures: HashMap<UInt, *CgSignature>, // *FuncSymbol 到 CgSignature 的映射
+
+    all_typemeta: HashSet<UInt>,
+    all_generic_typemeta: HashSet<UInt>,
+    all_impl_typemeta: HashSet<UInt>,
+}
+
+pub struct CgContext {
+    sym: *Symbol, // FuncSymbol 或者 EnumVariantSymbol 二选一
+    ll_func: CgFunc,
+    signature: *CgSignature,
+
+    bb_map: HashMap<UInt, CgBasicBlock>,
+
+    value_map: HashMap<UInt, CgValue>, // *XValue 到 CgValue 的映射
+    arg_map: HashMap<UInt, CgValue>, // *VarSymbol 到 CgValue 的映射
+    local_map: HashMap<UInt, CgValue>, // *VarSymbol 到 CgValue 的映射
+
+    cached_instantiated: HashMap<UInt, CgValue>, // *SType 到 *type_meta 的映射
+}
+
+impl CodeGenerator {
+    fn new(options: &'static CliOptions, semantic_model: *SemanticModel) -> *Self {
+        let comp_name = semantic_model.syntax_tree.component_name();
+        let llds = LLDataStructures::new(comp_name.as_str().deref());
+        llds.setup_entry_source(options.entry_source_file.as_str().deref());
+        return box {
+            .options = options,
+            .semantic_model = move semantic_model,
+            .llds = llds,
+            .comp_name = comp_name,
+            .sty_to_cgty = (type HashMap<UInt, Option<CgType>>)::new(),
+            .cached_copyfn = (type HashMap<UInt, CgFunc>)::new(),
+            .cached_dtorfn = (type HashMap<UInt, CgFunc>)::new(),
+            .cached_sizefn = (type HashMap<UInt, CgFunc>)::new(),
+            .cached_alignfn = (type HashMap<UInt, CgFunc>)::new(),
+            .cached_signatures = (type HashMap<UInt, *CgSignature>)::new(),
+
+            .all_typemeta = (type HashSet<UInt>)::new(),
+            .all_generic_typemeta = (type HashSet<UInt>)::new(),
+            .all_impl_typemeta = (type HashSet<UInt>)::new(),
+        }: CodeGenerator;
+    }
+
+    fn codegen(&mut self) {
+        self.codegen_items();
+
+        if self.semantic_model.main_fn is Some(main_func) {
+            self.codegen_main_func(move main_func);
+        }
+
+        // dump
+        if self.options.dump_llir {
+            self.llds.dump_module_llir();
+        }
+
+        if !self.options.dump_ll.is_empty() {
+            let dump_name = self.options.dump_ll.as_str().deref();
+            if self.llds.get_function(dump_name) is Some(f) {
+                f.dump();
+            }
+        }
+
+        // todo 下面这些步骤后面应该都基于 LLVM API 完成而不是用独立进程完成
+        // 输出 bc 文件 / obj 文件 / exe 文件
+        self.write_files();
+    }
+
+    fn is_imported(&self, sym: *Symbol) -> Bool {
+        let is_std = self.comp_name.as_str().deref().eq(&"std");
+        if is_std {
+            if sym is tsym: *TypeSymbol {
+                if is_builtin_type_symbol(move tsym) {
+                    return false;
+                }
+            }
+        }
+
+        let span = sym.syntax_node().span();
+        if span.start.is_empty()  {
+            return !is_std;
+        }
+        return SourceManager::get().is_imported(span.start);
+    }
+
+    fn write_files(&self) {
+        let out_dir_path = self.options.out_dir.as_str().deref();
+        unsafe {
+            codegen_set_out_dir(self.llds.ds, out_dir_path.raw_ptr(), out_dir_path.len());
+            if !codegen_write_bc_file(self.llds.ds) {
+                return;
+            }
+            if !codegen_write_obj_file(self.llds.ds, self.options.opt_level) {
+                return;
+            }
+
+            if self.semantic_model.main_fn is Some(_) { // 如果有 main 函数, 就生成 exe 文件
+                let mut link_args: String = String::new();
+                for o in self.options.link_objects_found {
+                    link_args.push_str(o.as_str().deref());
+                    link_args.push_str(" ");
+                }
+                for e in self.options.extra_link {
+                    link_args.push_str(e.as_str().deref());
+                    link_args.push_str(" ");
+                }
+                codegen_write_exe_file(self.llds.ds, self.options.link_cpp, link_args.raw_ptr(), link_args.len());
+            }
+        }
+    }
+
+}
+
+impl CgContext {
+
+    fn new_with_fn(fsym: *FuncSymbol, sig: *CgSignature, f: CgFunc) -> *CgContext {
+        return box {
+            .sym = fsym as *Symbol,
+            .ll_func = f,
+            .signature = move sig,
+            .bb_map = (type HashMap<UInt, CgBasicBlock>)::new(),
+            .value_map = (type HashMap<UInt, CgValue>)::new(),
+            .arg_map = (type HashMap<UInt, CgValue>)::new(),
+            .local_map = (type HashMap<UInt, CgValue>)::new(),
+            .cached_instantiated = (type HashMap<UInt, CgValue>)::new(),
+        }: CgContext;
+    }
+
+    fn new_with_ev(evsym: *EnumVariantSymbol, sig: *CgSignature, f: CgFunc) -> *CgContext {
+        return box {
+            .sym = evsym as *Symbol,
+            .ll_func = f,
+            .signature = move sig,
+            .bb_map = (type HashMap<UInt, CgBasicBlock>)::new(),
+            .value_map = (type HashMap<UInt, CgValue>)::new(),
+            .arg_map = (type HashMap<UInt, CgValue>)::new(),
+            .local_map = (type HashMap<UInt, CgValue>)::new(),
+            .cached_instantiated = (type HashMap<UInt, CgValue>)::new(),
+        }: CgContext;
+    }
+
+    fn self_sty(&self) -> Option<*SType> {
+        if self.sym is fsym: *FuncSymbol {
+            if fsym.parent_sym is Some(p) {
+                if p is trait_sym: *TraitSymbol {
+                    return Some(trait_sym.self_ty.target_sty);
+                }
+                if p is impl_sym: *ImplSymbol {
+                    return Some(impl_sym.self_ty.target_sty);
+                }
+                return None; // 不是成员函数
+            }
+        }
+        if self.sym is evsym: *EnumVariantSymbol {
+            if evsym.parent_enum is Some(e) {
+                return Some(e.to_sty());
+            }
+            panic "BUG: EnumVariantSymbol's parent_enum is None";
+        }
+        panic "BUG: only FuncSymbol and EnumVariantSymbol need to generate func body.";
+    }
+}

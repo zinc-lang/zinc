@@ -1,0 +1,14 @@
+
+// pub fn spawn<F, T>(f: F) -> JoinHandle<T>
+// where
+//     F: Fn() -> T + Send + 'static,
+//     T: Send + 'static,
+// {
+    
+// }
+
+extern fn zinc_core_sleep_ms(ms: UInt32);
+
+pub fn sleep_ms(ms: UInt32) {
+    unsafe { zinc_core_sleep_ms(ms); }
+}

@@ -1,0 +1,53 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use super::*;
+
+impl WriteValue {
+    fn new(e: *ExpressionNode, src: *RValue, dst: *LValue) -> *Self {
+        return box {
+            .expr = move e,
+            .parent_node = None,
+            .src = move src,
+            .dst = move dst,
+        }: WriteValue;
+    }
+
+    fn create(src: *RValue, dst: *LValue) -> *Self {
+        let e = src.expr_node();
+        if src.get_stype().is_invalid() { panic; }
+        if dst.get_stype().is_invalid() { panic; }
+        return WriteValue::new(move e, move src, move dst);
+    }
+}
+
+impl XValue for WriteValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return SType::sty_unit();
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        // 确保 sty 只能是 unit type
+    }
+
+    fn dump(&self) {
+        self.dst.dump();
+        print(" = ");
+        self.src.dump();
+    }
+}
+
+impl RValue for WriteValue {
+
+}

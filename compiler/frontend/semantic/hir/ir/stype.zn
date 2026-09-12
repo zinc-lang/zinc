@@ -1,0 +1,109 @@
+use super::*;
+use ::self::frontend::semantic::zno::*;
+use ::self::frontend::semantic::hir::builder::resolver::*;
+use ::self::frontend::source_code::*;
+
+use std::primitives::string::ToString;
+use std::cmp::{Eq, PartialEq};
+use std::hash::{Hash, Hasher};
+
+impl SType {
+    pub fn export_value(&self) -> String {
+        return self.type_symbol.to_string_with_args(&self.args);
+    }
+
+    pub fn from(type_symbol: *TypeSymbol, args: GenericArgs) -> *Self {
+        return type_symbol.to_sty(move args);
+    }
+
+    // 这个是 Unit 单元类型
+    pub fn sty_unit() -> *Self {
+        return SType::from(TupleSymbol::new() as *TypeSymbol, GenericArgs::new());
+    }
+
+    pub fn is_unit(&self) -> Bool {
+        return self.type_symbol is type *TupleSymbol && self.args.ty_args.is_empty();
+    }
+
+    // 这个是 Unsigned Int 类型
+    pub fn sty_uint() -> *Self {
+        return SType::from(IntegerSymbol::new(IntegerKind::Usize) as *TypeSymbol, GenericArgs::new());
+    }
+
+    pub fn sty_bool() -> *Self {
+        return BoolSymbol::new().to_sty();
+    }
+
+    pub fn sty_char() -> *Self {
+        return CharSymbol::new().to_sty();
+    }
+
+    pub fn sty_invalid(span: SourceSpan) -> *Self {
+        return SType::from(InvalidSymbol::new(span) as *TypeSymbol, GenericArgs::new());
+    }
+
+    pub fn is_invalid(&self) -> Bool {
+        return self.type_symbol is type *InvalidSymbol;
+    }
+
+}
+
+impl ToString for SType {
+    fn to_string_inplace(&self, buf: &mut String) {
+        let str = self.export_value();
+        buf.push_str(str.as_str().deref());
+    }
+
+    fn to_string(&self) -> String {
+        return self.export_value();
+    }
+}
+
+impl PartialEq for SType {
+    fn eq(&self, other: &Self) -> Bool {
+        if self.type_symbol as *raw TypeSymbol as UInt !=
+            other.type_symbol as *raw TypeSymbol as UInt {
+            return false;
+        }
+        if self.args.lt_args.len() != other.args.lt_args.len() ||
+            self.args.ty_args.len() != other.args.ty_args.len() {
+            return false;
+        }
+        let mut i: UInt = 0;
+        let lifetime_args_len = self.args.lt_args.len();
+        while i < lifetime_args_len {
+            if self.args.lt_args.index(i).deref().ne(other.args.lt_args.index(i).deref()) {
+                return false;
+            }
+        }
+
+        i = 0;
+        let type_args_len = self.args.ty_args.len();
+        while i < type_args_len {
+            let lhs: *SType = self.args.ty_arg(i);
+            let rhs: *SType = other.args.ty_arg(i);
+            if lhs as *raw SType as UInt != rhs as *raw SType as UInt {
+                return false;
+            }
+            i += 1;
+        }
+        return true;
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl Eq for SType { }
+
+impl Hash for SType {
+    fn hash(&self, state: &mut Hasher) {
+        for lt in self.args.lt_args {
+            lt.hash(state);
+        }
+        for ty in self.args.ty_args {
+            ty.hash(state);
+        }
+    }
+}

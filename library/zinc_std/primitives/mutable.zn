@@ -1,0 +1,27 @@
+
+// 不允许 &T 在 safe context 下转换成 &mut T。只有 Mutable<T> 类型特殊，编译器允许从 &Mutable<T> 类型安全地获得 &mut T 类型。
+// 它的特殊性在于:
+// 1. invariant
+// 2. 不允许用在 const 常量中。
+
+pub struct Mutable<T> {
+    value: T,
+}
+
+impl<T> Mutable<T> {
+    //注: 它的 new() 一定不能用 const 修饰, 避免在 const 上下文使用它。全局变量、常量都不能用它作为成员。
+    pub fn new(v: T) -> Self {
+        return Mutable { .value = v };
+    }
+
+    pub fn get(&self) -> &T {
+        return &self.value;
+    }
+
+    pub fn get_mut(&self) -> &mut T {
+        return unsafe(&self.value as &mut T);
+    }
+}
+
+impl<T> !Send for Mutable<T> {}
+impl<T> !Sync for Mutable<T> {}

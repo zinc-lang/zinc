@@ -1,0 +1,67 @@
+use super::ir::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::syntax::ast::visit::*;
+
+use ::self::frontend::semantic::hir::ir::hir_visit::*;
+
+use super::super::zno::Importer;
+
+mod resolver;
+mod round1;
+mod round2;
+mod stmts;
+mod exprs;
+
+pub struct SemanticModelBuilder {
+    syntax_tree: *SyntaxTree,
+    root_mod_sym: Option<*ModSymbol>,
+    syntax_to_symbol: HashMap<UInt, *Symbol>,
+    main_fn: Option<*FuncSymbol>,
+}
+
+impl SemanticModelBuilder {
+    pub fn new(tree: *SyntaxTree) -> Self {
+        return {
+            .syntax_tree = move tree,
+            .root_mod_sym = None,
+            .syntax_to_symbol = (type HashMap<UInt, *Symbol>)::new(),
+            .main_fn = None,
+        }: SemanticModelBuilder;
+    }
+
+    fn build(&mut self) -> Option<*ModSymbol> {
+        Importer::get().component_name = self.syntax_tree.component_name();
+        Importer::get().imports = self.syntax_tree.all_imports();
+
+        let root = self.syntax_tree.top_mod;
+        return self.build(root);
+    }
+
+    fn build(&mut self, node: *ModDecl) -> Option<*ModSymbol> {
+        let mut visitor1 = round1::TopLevelAstVisitor1::new();
+        traverse_ast(node as *SyntaxNode, &mut visitor1 as &mut SyntaxVisitor);
+
+        if self.syntax_tree.kind is LibOrExe::Exe(func_decl) {
+            let func_int = func_decl as *raw FuncDecl as UInt;
+            if visitor1.syntax_to_symbol.at(&func_int) is Some(sym) {
+                if sym is main_func_sym: *FuncSymbol {
+                    self.main_fn = Some(move main_func_sym);
+                }
+            }
+        }
+
+        if visitor1.root_mod is Some(m) {
+            let mut visitor2 = round2::TopLevelAstVisitor2::new(
+                m, self.syntax_tree.component_name(), visitor1.syntax_to_symbol
+            );
+
+            traverse_ast(node as *SyntaxNode, &mut visitor2 as &mut SyntaxVisitor);
+            visitor2.build_body();
+
+            return Some(m);
+        }
+
+        return None;
+    }
+}

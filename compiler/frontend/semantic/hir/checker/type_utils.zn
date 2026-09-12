@@ -1,0 +1,1064 @@
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::*;
+use ::self::frontend::syntax::token::*;
+
+use super::type_mapping::*;
+use std::collections::hashset::HashSet;
+
+impl SType {
+
+    // 去掉 type alias
+    pub fn canonical(*self) -> *SType {
+        if self.type_symbol is alias: *TypeAliasSymbol {
+            if alias.generics.ty_params.is_empty() && alias.generics.lt_params.is_empty() {
+                return alias.target_sty;
+            } else {
+                let mut mappings = TypeMapping::new();
+
+                {
+                    let len_formal = alias.generics.ty_params.len();
+                    let len_actual = self.args.ty_args.len();
+                    let mut i: UInt = 0;
+                    while i < len_formal && i < len_actual {
+                        let formal = alias.generics.ty_param(i).to_sty();
+                        let actual = self.args.ty_arg(i);
+                        mappings.unify(formal, actual);
+                    }
+                }
+                {
+                    // let len_formal = alias.generics.lt_params.len();
+                    // let len_actual = self.args.lt_args.len();
+                    // let mut i: UInt = 0;
+                    // while i < len_formal && i < len_actual {
+                    //     let formal = alias.generics.lt_param(i);
+                    //     let actual = self.args.lt_arg(i);
+                    //     mappings.unify_lt(formal, actual);
+                    // }
+                }
+                return mappings.subst(alias.target_sty);
+            }
+        }
+        if self.type_symbol is assoc: *AssociatedTypeSymbol {
+            if assoc.is_self_ty() && assoc.target_sty.type_symbol is type *TraitSymbol {
+                return self; // 在 trait 上下文中的 Self 类型, 不要做替换
+            }
+            let mut mappings = TypeMapping::new();
+            {
+                let len_formal = assoc.generics.ty_params.len();
+                let len_actual = self.args.ty_args.len();
+                let mut i: UInt = 0;
+                while i < len_formal && i < len_actual {
+                    let formal = assoc.generics.ty_param(i).to_sty();
+                    let actual = self.args.ty_arg(i);
+                    mappings.unify(formal, actual);
+                }
+            }
+            return mappings.subst(assoc.target_sty);
+        }
+
+        let mut args = GenericArgs::new();
+        for a in self.args.ty_args {
+            args.ty_args.push(a.canonical());
+        }
+
+        return self.type_symbol.to_sty(move args);
+    }
+
+    pub fn is_unsigned_int(*self) -> Bool {
+        return self.type_symbol is isym: *IntegerSymbol &&
+            isym.kind is IntegerKind::Usize;
+    }
+
+    pub fn is_builtin_comparable(*self) -> Bool {
+        match self.type_symbol {
+            type *BoolSymbol => return true;
+            type *IntegerSymbol => return true;
+            type *CharSymbol => return true;
+            type *FloatSymbol => return true;
+            type *RawPointerImmutSymbol => return true;
+            type *RawPointerMutSymbol => return true;
+            type *FuncSymbol => return true;
+
+            type *TupleSymbol => {
+                for a in self.args.ty_args {
+                    if !a.is_builtin_comparable() {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            type *ArraySymbol => {
+                return self.args.ty_arg(0).is_builtin_comparable();
+            }
+
+            esym: *EnumSymbol => {
+                for c in esym.variants {
+                    if !c.fields.is_empty() {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            _ => return false;
+        }
+    }
+
+    pub fn is_thin_pointer(&self) -> Bool {
+        if self.type_symbol is type *PointerLikeSymbol {
+            let arg0: *SType = self.args.ty_arg(0);
+            if arg0.type_symbol is type *TraitSymbol ||
+                arg0.type_symbol is type *FnUpperTypeSymbol ||
+                arg0.type_symbol is type *FnUpperMutTypeSymbol {
+                return false;
+            } else {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn is_fat_pointer(&self) -> Bool {
+        if self.type_symbol is type *PointerLikeSymbol {
+            let arg0: *SType = self.args.ty_arg(0);
+            if arg0.type_symbol is type *TraitSymbol ||
+                arg0.type_symbol is type *FnUpperTypeSymbol ||
+                arg0.type_symbol is type *FnUpperMutTypeSymbol {
+                return true;
+            } else {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    fn strip_pointer(*self) -> *SType {
+        if self.type_symbol is type *PointerLikeSymbol {
+
+            let arg = self.args.ty_arg(0);
+            return arg.strip_pointer();
+        }
+        return self as *SType;
+    }
+}
+
+fn is_borrow_to_array(sty: *SType) -> Bool {
+    if sty.type_symbol is b: *BorrowImmutSymbol {
+        let arg0: *SType = sty.args.ty_arg(0);
+        if arg0.type_symbol is type *ArraySymbol {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn is_mutborrow_to_array(sty: *SType) -> Bool {
+    if sty.type_symbol is b: *BorrowMutSymbol {
+        let arg0: *SType = sty.args.ty_arg(0);
+        if arg0.type_symbol is type *ArraySymbol {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn is_slice(sty: *SType) -> Bool {
+    return sty.type_symbol.export_key().as_str().deref().eq(&"::std::primitives::slice::Slice");
+}
+
+fn is_slicemut(sty: *SType) -> Bool {
+    return sty.type_symbol.export_key().as_str().deref().eq(&"::std::primitives::slice::SliceMut");
+}
+
+fn is_safe_pointer(sty: *SType) -> Bool {
+    if sty.type_symbol is type *ArcPointerSymbol {
+        return true;
+    }
+    if sty.type_symbol is type *WeakPointerSymbol {
+        return true;
+    }
+    if sty.type_symbol is type *BorrowImmutSymbol {
+        return true;
+    }
+    if sty.type_symbol is type *BorrowMutSymbol {
+        return true;
+    }
+    return false;
+}
+
+fn is_unsafe_pointer(sty: *SType) -> Bool {
+    if sty.type_symbol is type *RawPointerImmutSymbol {
+        return true;
+    }
+    if sty.type_symbol is type *RawPointerMutSymbol {
+        return true;
+    }
+    return false;
+}
+
+fn stype_eq_regardless_lifetime(ty1: *SType, ty2: *SType) -> Bool {
+    let t1 = ty1.canonical();
+    let t2 = ty2.canonical();
+
+    let i1 = t1 as *raw SType as UInt;
+    let i2 = t2 as *raw SType as UInt;
+    if i1 == i2 {
+        return true;
+    }
+
+    let s1 = t1.type_symbol as *raw TypeSymbol as UInt;
+    let s2 = t2.type_symbol as *raw TypeSymbol as UInt;
+    if s1 != s2 {
+        return false;
+    }
+
+    let len = t1.args.ty_args.len();
+    let mut i: UInt = 0;
+    while i < len {
+        let arg1 = t1.args.ty_arg(i);
+        let arg2 = t2.args.ty_arg(i);
+        if !stype_eq_regardless_lifetime(move arg1, move arg2) {
+            return false;
+        }
+        i += 1;
+    }
+
+    return true;
+}
+
+fn expect_type_eq(ty1: *SType, ty2: *SType, span: SourceSpan) {
+    if !stype_eq_regardless_lifetime(ty1, ty2) {
+        DiagnosticEngine::get().emit_type_mismatch(
+            ty1.to_string(), ty2.to_string(), move span
+        );
+    }
+}
+
+fn contains_invalid(sty: *SType) -> Bool {
+    if sty.type_symbol is type *InvalidSymbol {
+        return true;
+    }
+    for a in sty.args.ty_args {
+        if contains_invalid(move a) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn ensure_type_valid(sty: *SType, span: SourceSpan) -> Bool {
+    if contains_invalid(sty) {
+        DiagnosticEngine::get().emit_type_infer_failed(span);
+        return false;
+    } else {
+        // 检查泛型实参个数是不是等于泛型形参个数
+        if !(sty.type_symbol is type *TupleSymbol) && // 这两个是变长泛型参数列表
+            !(sty.type_symbol is type *ArraySymbol) {
+
+            let formal_params = sty.type_symbol.to_sty().args.ty_args.len();
+            let actual_args = sty.args.ty_args.len();
+            if formal_params != actual_args {
+                DiagnosticEngine::get().emit_generic_args_count_mismatch(sty.type_symbol.short_name(), formal_params, actual_args, span);
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
+
+fn strip_pointer_except_weak(sty: *SType) -> *SType {
+    if sty.type_symbol is type *PointerLikeSymbol &&
+        !(sty.type_symbol is type *WeakPointerSymbol) {
+        
+        let arg = sty.args.ty_arg(0);
+        return strip_pointer_except_weak(move arg);
+    }
+    return sty;
+}
+
+fn strip_lifetime(sty: *SType) -> *SType {
+    let mut args = GenericArgs::new();
+
+    for a in sty.args.ty_args {
+        args.ty_args.push(strip_lifetime(a));
+    }
+
+    return sty.type_symbol.to_sty(move args);
+}
+
+fn is_raw_pointer(sty: *SType) -> Bool {
+    return sty.type_symbol is type *RawPointerImmutSymbol ||
+        sty.type_symbol is type *RawPointerMutSymbol;
+}
+
+fn find_field(sty: *SType, name: String) -> Option<*VarSymbol> {
+
+    let ty = strip_pointer_except_weak(sty);
+    if ty.type_symbol is alias: *TypeAliasSymbol {
+        return find_field(alias.target_sty, move name);
+    }
+    else if ty.type_symbol is assoc: *AssociatedTypeSymbol {
+        return find_field(assoc.target_sty, move name);
+    }
+    else if ty.type_symbol is struct_sym: *StructSymbol {
+        for f in struct_sym.fields {
+            if f.short_name().eq(&name) {
+                return Some(move f);
+            }
+        }
+    }
+    else if ty.type_symbol is union_sym: *UnionSymbol {
+        for f in union_sym.fields {
+            if f.short_name().eq(&name) {
+                return Some(move f);
+            }
+        }
+    }
+
+    return None;
+}
+
+fn find_method(receiver_ty: *SType, method_token: Token, arg_count: UInt, cur_fsym: Option<*FuncSymbol>) -> Option<*FuncSymbol> {
+
+    if !ensure_type_valid(receiver_ty, method_token.source_span) {
+        return None;
+    }
+
+    if receiver_ty.type_symbol is assoc: *AssociatedTypeSymbol {
+        return find_method(assoc.target_sty, move method_token, arg_count, move cur_fsym);
+    }
+
+    let method = method_token.raw_str();
+    
+    if receiver_ty.type_symbol is trait_sym: *TraitSymbol {
+        let results = trait_sym.find_method(method_token, arg_count);
+
+        if results.len() > 1 {
+            DiagnosticEngine::get().emit_multiple_candidate_methods(method_token.source_span);
+            return None;
+        }
+        else if results.len() == 1 {
+            let r = *results.index(0).deref();
+            return Some(move r);
+        }
+        else {
+            DiagnosticEngine::get().emit_overload_not_found(method_token.source_span, arg_count);
+            return None;
+        }
+    }
+
+    // 这里要考虑, 当同一个类型对不同 trait 做 impl 时, 是允许存在同签名的两个成员函数的
+    // 先到 inherent impl 里面找, 这边的优先级高
+    let mut results = (type Vec<*FuncSymbol>)::new();
+    for isym in receiver_ty.type_symbol.related_impls() {
+        if isym.trait_sty is Some(_) {
+            continue;
+        }
+        if isym.find_method(method, arg_count) is Some(m) {
+            results.push(move m);
+        }
+    }
+    if results.len() > 1 {
+        DiagnosticEngine::get().emit_multiple_candidate_methods(method_token.source_span);
+        return None;
+    }
+    if results.len() == 1 {
+        let r = *results.index(0).deref();
+        return Some(move r);
+    }
+
+    // 再到 impl with trait 里面找
+    for isym in receiver_ty.type_symbol.related_impls() {
+        if isym.trait_sty is None {
+            continue;
+        }
+        if isym.find_method(method, arg_count) is Some(m) {
+            results.push(move m);
+        }
+    }
+
+    if results.len() > 1 {
+        DiagnosticEngine::get().emit_multiple_candidate_methods(method_token.source_span);
+        return None;
+    }
+    if results.len() == 1 {
+        let r = *results.index(0).deref();
+        return Some(move r);
+    }
+
+    // 还要考虑泛型参数及其 constraints 的情况
+    if receiver_ty.type_symbol is tps: *TypeParamSymbol {
+        if cur_fsym is Some(out_fsym) {
+            let key = tps as *raw TypeParamSymbol as UInt;
+            let mut unique = (type HashSet<UInt>)::new();
+
+            let mut constraints = GenericConstraints::new();
+            constraints.merge(&out_fsym.generics.constraints);
+            if out_fsym.parent_sym is Some(isym: *ImplSymbol) {
+                constraints.merge(&isym.generics.constraints);
+            }
+
+            let upper_bounds = constraints.upper_bounds(&key);
+            for ub in upper_bounds {
+                if ub.type_symbol is trait_sym: *TraitSymbol {
+                    let r = trait_sym.find_method(method_token, arg_count);
+                    for f in r {
+                        let fi = f as *raw FuncSymbol as UInt;
+                        if !unique.contains(&fi) {
+                            results.push(move f);
+                            unique.insert(fi);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if results.len() > 1 {
+        DiagnosticEngine::get().emit_multiple_candidate_methods(method_token.source_span);
+        return None;
+    }
+    if results.len() == 1 {
+        let r = *results.index(0).deref();
+        return Some(move r);
+    }
+
+    DiagnosticEngine::get().emit_overload_not_found(method_token.source_span, arg_count);
+    return None;
+}
+
+struct DerefMethodInfo {
+    receiver_sty: *SType,
+    target_sty: *SType,
+    method_sym: *FuncSymbol,
+}
+
+fn implemented_deref_trait(sty: *SType) -> Option<DerefMethodInfo> {
+    for i in sty.type_symbol.related_impls() {
+        if i.trait_sty is Some(trait_sty) {
+            let key = trait_sty.type_symbol.export_key();
+            if key.as_str().deref().eq(&"::std::ops::deref::Deref") {
+                // 获取 impl 里面的 Target 关联类型
+                let target_str = String::from_str("Target");
+                let target_assoc_sym = i.associated_types.at(&target_str).get_or_panic();
+
+                let mut mappings = TypeMapping::new();
+                mappings.unify(i.target_sty.type_symbol.to_sty(), i.target_sty);
+                mappings.unify(i.target_sty, sty);
+                let target_sty = mappings.subst(target_assoc_sym.target_sty);
+
+                for m in i.methods {
+                    if m.short_name().as_str().deref().eq(&"deref") {
+                        let mut ga = GenericArgs::new();
+                        ga.ty_args.push(move sty);
+                        let info = {
+                            .receiver_sty = BorrowImmutSymbol::new().to_sty(move ga),
+                            .target_sty = move target_sty,
+                            .method_sym = m,
+                        }: DerefMethodInfo;
+                        return Some(move info);
+                    }
+                }
+            }
+        }
+    }
+    return None;
+}
+
+fn implemented_derefmut_trait(sty: *SType) -> Option<DerefMethodInfo> {
+    for i in sty.type_symbol.related_impls() {
+        if i.trait_sty is Some(trait_sty) {
+            let key = trait_sty.type_symbol.export_key();
+            if key.as_str().deref().eq(&"::std::ops::deref::DerefMut") {
+                // 获取 impl 里面的 TargetMut 关联类型
+                let target_mut_str = String::from_str("TargetMut");
+                let target_assoc_sym = i.associated_types.at(&target_mut_str).get_or_panic();
+
+                let mut mappings = TypeMapping::new();
+                mappings.unify(i.target_sty.type_symbol.to_sty(), i.target_sty);
+                mappings.unify(i.target_sty, sty);
+                let target_sty = mappings.subst(target_assoc_sym.target_sty);
+
+                for m in i.methods {
+                    if m.short_name().as_str().deref().eq(&"deref_mut") {
+                        let mut ga = GenericArgs::new();
+                        ga.ty_args.push(move sty);
+                        let info = {
+                            .receiver_sty = BorrowMutSymbol::new().to_sty(move ga),
+                            .target_sty = move target_sty,
+                            .method_sym = m,
+                        }: DerefMethodInfo;
+                        return Some(move info);
+                    }
+                }
+            }
+        }
+    }
+    return None;
+}
+
+fn auto_ref_and_deref(formal_ty: *SType, actual_ty: *SType, rv: *RValue) -> *RValue {
+    let span = rv.expr_node().span();
+    if !ensure_type_valid(rv.get_stype(), span) {
+        return rv;
+    }
+
+    if stype_eq_regardless_lifetime(formal_ty, actual_ty) {
+        return rv;
+    }
+
+    if actual_ty.type_symbol is type *TypeParamSymbol &&
+        formal_ty.type_symbol is type *TraitSymbol {
+        return rv;
+    }
+
+    if formal_ty.type_symbol is ftr: *TraitSymbol &&
+        actual_ty.type_symbol is atr: *TraitSymbol {
+        // 如果 atr 继承自 ftr, 也是可以的
+        // todo 这里还应该考虑 trait 的泛型参数
+        if atr.is_inherited_from(ftr) {
+            return rv;
+        }
+    }
+
+    if actual_ty.type_symbol is assoc: *AssociatedTypeSymbol {
+        return auto_ref_and_deref(move formal_ty, assoc.target_sty, move rv);
+    }
+
+    if formal_ty.type_symbol is type *ArcPointerSymbol {
+        if actual_ty.type_symbol is type *ArcPointerSymbol {
+            let inner = auto_ref_and_deref(formal_ty.args.ty_arg(0), actual_ty.args.ty_arg(0), rv);
+            return inner;
+        } else {
+            DiagnosticEngine::get().emit_receiver_type_mismatch(formal_ty.to_string(), actual_ty.to_string(), span);
+            return rv;
+        }
+    }
+
+    if formal_ty.type_symbol is type *BorrowMutSymbol {
+        if actual_ty.type_symbol is type *ArcPointerSymbol {
+            let inner = auto_ref_and_deref(formal_ty.args.ty_arg(0), actual_ty.args.ty_arg(0), rv);
+            // reborrow
+            let deref = DerefRValue::create(span, move inner);
+            let borrow = AddressofValue::create(span, AddressofKind::RefMut, move deref as *RValue);
+            return borrow;
+        }
+        else if actual_ty.type_symbol is type *BorrowMutSymbol {
+            let inner = auto_ref_and_deref(formal_ty.args.ty_arg(0), actual_ty.args.ty_arg(0), rv);
+            return inner;
+        }
+        else if !(actual_ty.type_symbol is type *PointerLikeSymbol) {
+            let borrow = AddressofValue::create(span, AddressofKind::RefMut, rv);
+            return borrow;
+        }
+        else {
+            DiagnosticEngine::get().emit_receiver_type_mismatch(formal_ty.to_string(), actual_ty.to_string(), span);
+            return rv;
+        }
+    }
+
+    if formal_ty.type_symbol is type *BorrowImmutSymbol {
+        if actual_ty.type_symbol is type *ArcPointerSymbol {
+            let inner = auto_ref_and_deref(formal_ty.args.ty_arg(0), actual_ty.args.ty_arg(0), rv);
+            // reborrow
+            let deref = DerefRValue::create(span, move inner);
+            let borrow = AddressofValue::create(span, AddressofKind::Ref, move deref as *RValue);
+            return borrow;
+        }
+        else if actual_ty.type_symbol is type *BorrowMutSymbol {
+            let inner = auto_ref_and_deref(formal_ty.args.ty_arg(0), actual_ty.args.ty_arg(0), rv);
+            // reborrow
+            let deref = DerefRValue::create(span, move inner);
+            let borrow = AddressofValue::create(span, AddressofKind::Ref, move deref as *RValue);
+            return borrow;
+        }
+        else if actual_ty.type_symbol is type *BorrowImmutSymbol {
+            let inner = auto_ref_and_deref(formal_ty.args.ty_arg(0), actual_ty.args.ty_arg(0), rv);
+            return inner;
+        }
+        else if !(actual_ty.type_symbol is type *PointerLikeSymbol) {
+            let borrow = AddressofValue::create(span, AddressofKind::Ref, rv);
+            return borrow;
+        }
+        else {
+            DiagnosticEngine::get().emit_receiver_type_mismatch(formal_ty.to_string(), actual_ty.to_string(), span);
+            return rv;
+        }
+    }
+
+    if formal_ty.type_symbol is assoc: *AssociatedTypeSymbol &&  assoc.is_self_ty() {
+        if actual_ty.type_symbol is type *ArcPointerSymbol ||
+            actual_ty.type_symbol is type *BorrowMutSymbol ||
+            actual_ty.type_symbol is type *BorrowImmutSymbol {
+
+            let inner = auto_ref_and_deref(formal_ty, actual_ty.args.ty_arg(0), rv);
+            let deref = DerefRValue::create(span, move inner);
+            return deref;
+        }
+        else if actual_ty.type_symbol is type *WeakPointerSymbol ||
+            actual_ty.type_symbol is type *RawPointerImmutSymbol ||
+            actual_ty.type_symbol is type *RawPointerMutSymbol {
+            DiagnosticEngine::get().emit_receiver_type_mismatch(formal_ty.to_string(), actual_ty.to_string(), span);
+            return rv;
+        }
+        else {
+            return rv;
+        }
+    }
+
+    // todo 上面仅考虑了内置指针类型的 deref, 需要额外考虑自定义类型的 Deref trait 方法调用的场景
+
+    DiagnosticEngine::get().emit_receiver_type_mismatch(formal_ty.to_string(), actual_ty.to_string(), span);
+    return rv;
+}
+
+struct MethodIterInfo {
+    iterable_arg_sty: *SType,
+    iterable_param_sty: *SType,
+    iter_sty: *SType,
+    iter_method: *FuncSymbol,
+}
+
+// 还需要考虑 TypeParamSymbol 和 Constraints 的场景
+fn extract_iter_in_iterable(sty: *SType) -> Option<MethodIterInfo> {
+    let stripped_sty = strip_pointer_except_weak(sty);
+
+    for isym in stripped_sty.type_symbol.related_impls() {
+        if isym.trait_sty is Some(trait_sty) {
+            let key = trait_sty.type_symbol.export_key();
+            if key.as_str().deref().eq(&"::std::iter::Iterable") {
+                let iter_str = String::from_str("Iter");
+                let iter_assoc_sym = isym.associated_types.at(&iter_str).get_or_panic();
+
+                let mut mappings = TypeMapping::new();
+                mappings.unify(isym.target_sty, stripped_sty);
+                mappings.unify(isym.target_sty.type_symbol.to_sty(), isym.target_sty);
+
+                let iter_sty = mappings.subst(iter_assoc_sym.target_sty);
+
+                for m in isym.methods {
+                    if m.short_name().as_str().deref().eq(&"iter") {
+                        let param = m.params.at(0).get_or_panic();
+                        let info = {
+                            .iterable_arg_sty = move stripped_sty,
+                            .iterable_param_sty = mappings.subst(param.stype),
+                            .iter_sty = move iter_sty,
+                            .iter_method = move m,
+                        }: MethodIterInfo;
+                        return Some(move info);
+                    }
+                }
+            }
+        }
+    }
+    return None;
+}
+
+struct MethodNextInfo {
+    iterator_arg_sty: *SType,
+    iterator_param_sty: *SType,
+    item_sty: *SType,
+    next_method: *FuncSymbol,
+}
+
+// 还需要考虑 TypeParamSymbol 和 Constraints 的场景
+fn extract_item_in_iterator(sty: *SType) -> Option<MethodNextInfo> {
+    let stripped_sty = strip_pointer_except_weak(sty);
+
+    for isym in stripped_sty.type_symbol.related_impls() {
+        if isym.trait_sty is Some(trait_sty) {
+            let key = trait_sty.type_symbol.export_key();
+            if key.as_str().deref().eq(&"::std::iter::Iterator") {
+                let item_str = String::from_str("Item");
+                let item_assoc_sym = isym.associated_types.at(&item_str).get_or_panic();
+
+                let mut mappings = TypeMapping::new();
+                mappings.unify(isym.target_sty, stripped_sty);
+                mappings.unify(isym.target_sty.type_symbol.to_sty(), isym.target_sty);
+
+                let item_sty = mappings.subst(item_assoc_sym.target_sty);
+
+                for m in isym.methods {
+                    if m.short_name().as_str().deref().eq(&"next") {
+                        let param = m.params.at(0).get_or_panic();
+                        let info = {
+                            .iterator_arg_sty = move stripped_sty,
+                            .iterator_param_sty = mappings.subst(param.stype),
+                            .item_sty = move item_sty,
+                            .next_method = move m,
+                        }: MethodNextInfo;
+                        return Some(move info);
+                    }
+                }
+            }
+        }
+    }
+    return None;
+}
+
+fn contains_trait_symbol(sty: *SType) -> Bool {
+    let ts = sty.type_symbol;
+    if ts is type *TraitSymbol ||
+        ts is type *FnUpperTypeSymbol ||
+        ts is type *FnUpperMutTypeSymbol {
+        return true;
+    }
+    for a in sty.args.ty_args {
+        if contains_trait_symbol(a) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn contains_type_param(sty: *SType) -> Bool {
+    let ts = sty.type_symbol;
+    if ts is type *TypeParamSymbol {
+        return true;
+    }
+    for a in sty.args.ty_args {
+        if contains_type_param(a) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn contains_associated_type(sty: *SType) -> Bool {
+    let ts = sty.type_symbol;
+    if ts is type *AssociatedTypeSymbol {
+        return true;
+    }
+    for a in sty.args.ty_args {
+        if contains_associated_type(a) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn unnamed_lifetime_count(sty: *SType) -> UInt {
+
+    let mut formal_count = sty.type_symbol.to_sty().args.lt_args.len();
+    if sty.type_symbol is type *BorrowImmutSymbol ||
+        sty.type_symbol is type *BorrowMutSymbol {
+        formal_count = 1;
+    }
+
+    let mut named_arg: UInt = 0;
+    for lt in sty.args.lt_args {
+        if lt.is_named() {
+            named_arg += 1;
+        }
+    }
+    if formal_count < named_arg {
+        panic "BUG: actual lifetime args are more than formal lifetime param in semantic type";
+    }
+
+    return formal_count - named_arg;
+}
+
+// FIXME: 还需要考虑泛型参数 及其 泛型约束 之间的关系
+fn is_subtype(sub: *SType, base: *SType) -> Bool {
+    let c_sub = sub.canonical();
+    let c_base = base.canonical();
+
+    if c_sub.type_symbol is type *PointerLikeSymbol &&
+        c_base.type_symbol is type *PointerLikeSymbol {
+
+        // 它们俩必须是同类型的指针
+        if c_sub.type_symbol as *raw TypeSymbol as UInt !=
+            c_base.type_symbol as *raw TypeSymbol as UInt {
+            return false;
+        }
+
+        let sub_arg = c_sub.args.ty_arg(0);
+        let base_arg = c_base.args.ty_arg(0);
+        return is_subtype(move sub_arg, move base_arg);
+    }
+
+    if c_base.type_symbol is base_trait: *TraitSymbol {
+        let base_trait_mangle_name = base_trait.mangle_name().as_str().deref();
+        if base_trait_mangle_name.eq(&"::std::primitives::Any") {
+            return true;
+        }
+        if base_trait_mangle_name.eq(&"::std::marker::Send") {
+            return is_send_type(move c_sub);
+        }
+        if base_trait_mangle_name.eq(&"::std::marker::Sync") {
+            return is_sync_type(move c_sub);
+        }
+
+        if c_sub.type_symbol is sub_trait: *TraitSymbol {
+            // 检查 trait 继承关系
+            // FIXME: 显然这里要考虑 trait 的泛型参数, 需要用 TypeMapping 做类型替换
+            return sub_trait.is_inherited_from(base_trait);
+        } else {
+            // 检查 类型 impl 关系
+            // FIXME: 显然这里也要考虑 泛型参数的替换
+            for isym in sub.type_symbol.related_impls() {
+                if isym.trait_sty is Some(itrait_sty) {
+                    if itrait_sty.type_symbol as *raw TypeSymbol as UInt == base_trait as *raw TraitSymbol as UInt {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+    } else {
+        return false;
+    }
+}
+
+fn subst_self_ty(sty: *SType, self_ty: *SType) -> *SType {
+    if sty.type_symbol is assoc: *AssociatedTypeSymbol && assoc.is_self_ty() {
+        return self_ty;
+    }
+
+    let mut args = GenericArgs::new();
+    args.lt_args = sty.args.lt_args;
+    for a in sty.args.ty_args {
+        let na = subst_self_ty(a, self_ty);
+        args.ty_args.push(move na);
+    }
+
+    return sty.type_symbol.to_sty(move args);
+}
+
+fn has_impl_drop(ts: *TypeSymbol) -> Bool {
+    for i in ts.related_impls() {
+        if i.trait_sty is Some(trait_sty) {
+            let key = trait_sty.type_symbol.export_key();
+            if key.as_str().deref().eq(&"::std::ops::drop::Drop") {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// copy 和 dtor 都不需要做任何额外事情的类型, 叫做 trivial type
+fn is_trivial_type(sty: *SType) -> Bool {
+    match sty.type_symbol {
+        type *LifetimeSymbol => return true;
+        type *ExternTypeSymbol => return true;
+        type *FuncSymbol => return true;
+        type *TypeParamSymbol => return false;
+
+        type *BoolSymbol => return true;
+        type *CharSymbol => return true;
+        type *IntegerSymbol => return true;
+        type *FloatSymbol => return true;
+
+        type *ArcPointerSymbol => return false;
+        type *WeakPointerSymbol => return false;
+        type *BorrowImmutSymbol => return true;
+        type *BorrowMutSymbol => return true;
+        type *RawPointerImmutSymbol => return true;
+        type *RawPointerMutSymbol => return true;
+        type *TraitSymbol => return false;
+        type *UnionSymbol => return true;
+
+        alias: *TypeAliasSymbol => {
+            let mut mappings = TypeMapping::new();
+            let len_formal = alias.generics.ty_params.len();
+            let len_actual = sty.args.ty_args.len();
+            let mut i: UInt = 0;
+            while i < len_formal && i < len_actual {
+                let formal = alias.generics.ty_param(i).to_sty();
+                let actual = sty.args.ty_arg(i);
+                mappings.unify(formal, actual);
+            }
+
+            let target = mappings.subst(alias.target_sty);
+            return is_trivial_type(move target);
+        }
+        assoc: *AssociatedTypeSymbol => {
+            let mut mappings = TypeMapping::new();
+            let len_formal = assoc.generics.ty_params.len();
+            let len_actual = sty.args.ty_args.len();
+            let mut i: UInt = 0;
+            while i < len_formal && i < len_actual {
+                let formal = assoc.generics.ty_param(i).to_sty();
+                let actual = sty.args.ty_arg(i);
+                mappings.unify(formal, actual);
+            }
+
+            let target = mappings.subst(assoc.target_sty);
+            return is_trivial_type(move target);
+        }
+        type *TupleSymbol => {
+            for a in sty.args.ty_args {
+                if !is_trivial_type(move a) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        type *ArraySymbol => {
+            if sty.args.ty_args.is_empty() {
+                return true;
+            } else {
+                let arg = sty.args.ty_arg(0);
+                return is_trivial_type(move arg);
+            }
+        }
+        struct_sym: *StructSymbol => {
+            if has_impl_drop(struct_sym as *TypeSymbol) {
+                return false;
+            }
+            let mut mappings = TypeMapping::new();
+            mappings.unify(struct_sym.to_sty(), sty);
+            for field in struct_sym.fields {
+                let fty = mappings.subst(field.stype);
+                if !is_trivial_type(move fty) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        enum_sym: *EnumSymbol => {
+            if has_impl_drop(enum_sym as *TypeSymbol) {
+                return false;
+            }
+            let mut mappings = TypeMapping::new();
+            mappings.unify(enum_sym.to_sty(), sty);
+            for ev in enum_sym.variants {
+                for field in ev.fields {
+                    let fty = mappings.subst(move field);
+                    if !is_trivial_type(move fty) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+fn conform_upper_bounds(sty: *SType, constraints: &GenericConstraints, mappings: &TypeMapping) -> Bool {
+    let type_symbols = constraints.constraints.keys();
+    for ts in type_symbols {
+        let upper_bounds = constraints.constraints.at(&ts).get_or_panic();
+        let actual_sty = mappings.ty_mapping.at(&ts).get_or_panic();
+
+        for ub in upper_bounds {
+            let ub_sty = mappings.subst(ub);
+            if !is_subtype(actual_sty, ub_sty) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+fn is_send_type(sty: *SType) -> Bool {
+    if implemented_trait(sty.type_symbol, "::std::marker::Send") is Some(isym) {
+
+        let mut mappings = TypeMapping::new();
+        mappings.unify(sty.type_symbol.to_sty(), isym.target_sty);
+        mappings.unify(isym.target_sty, sty);
+
+        // 检查 constraints 是否满足
+        if isym.impl_node.bang.is_invalid() { // 检查是不是 negative impl
+            return conform_upper_bounds(sty, &isym.generics.constraints, &mappings);
+        } else {
+            if conform_upper_bounds(sty, &isym.generics.constraints, &mappings) {
+                return false;
+            }
+        }
+    }
+
+    match sty.type_symbol {
+        type *BoolSymbol => return true;
+        type *CharSymbol => return true;
+        type *IntegerSymbol => return true;
+        type *FloatSymbol => return true;
+        type *TypeAliasSymbol => return is_send_type(sty.canonical());
+        type *TypeParamSymbol => { return false; } // todo 考虑泛型约束
+        type *AssociatedTypeSymbol => { return false; } // todo 考虑泛型约束
+        type *LifetimeSymbol => return false;
+        type *ExternTypeSymbol => return false;
+        type *FuncSymbol => return true;
+        type *EnumVariantSymbol => return true;
+
+        type *PointerLikeSymbol => {
+            let pointee = sty.args.ty_arg(0);
+            return is_sync_type(move pointee);
+        }
+        type *TupleSymbol => {
+            for e in sty.args.ty_args {
+                if !is_send_type(move e) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        type *ArraySymbol => {
+            if sty.args.ty_args.is_empty() {
+                return true;
+            } else {
+                let elem = sty.args.ty_arg(0);
+                return is_send_type(move elem);
+            }
+        }
+        struct_sym: *StructSymbol => {
+            for f in struct_sym.fields {
+                if !is_send_type(f.stype) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        enum_sym: *EnumSymbol => {
+            for ev in enum_sym.variants {
+                for f in ev.fields {
+                    if !is_send_type(f) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        union_sym: *UnionSymbol => {
+            for f in union_sym.fields {
+                if !is_send_type(f.stype) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        _ => return false;
+    }
+    return false;
+}
+
+fn is_sync_type(sty: *SType) -> Bool {
+    if implemented_trait(sty.type_symbol, "::std::marker::Sync") is Some(isym) {
+        let mut mappings = TypeMapping::new();
+        mappings.unify(sty.type_symbol.to_sty(), isym.target_sty);
+        mappings.unify(isym.target_sty, sty);
+
+        // 检查 constraints 是否满足
+        if isym.impl_node.bang.is_invalid() { // 检查是不是 negative impl
+            return conform_upper_bounds(sty, &isym.generics.constraints, &mappings);
+        }
+    }
+    return false;
+}
+
+fn implemented_trait(ts: *TypeSymbol, name: Str) -> Option<*ImplSymbol> {
+    for i in ts.related_impls() {
+        if i.trait_sty is Some(trait_sty) {
+            let key = trait_sty.type_symbol.export_key();
+            if key.as_str().deref().eq(&name) {
+                return Some(move i);
+            }
+        }
+    }
+    return None;
+}

@@ -1,0 +1,59 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::syntax::token::*;
+
+use super::*;
+
+impl FnCallValue {
+    fn new(e: *ExpressionNode, callee: *RValue) -> *Self {
+        let span = e.span();
+        return box {
+            .expr = move e,
+            .parent_node = None,
+            .callee = move callee,
+            .member_of = None,
+            .generic_args = GenericArgs::new(),
+            .fn_args = (type Vec<FnArgValue>)::new(),
+            .desugared_args = (type Vec<*RValue>)::new(),
+            .sty = SType::sty_invalid(span),
+        }: FnCallValue;
+    }
+
+    pub fn fn_arg_values(&self) -> Vec<*RValue> {
+        let mut args_values = (type Vec<*RValue>)::new();
+        for arg in self.fn_args {
+            args_values.push(arg.value);
+        }
+        return args_values;
+    }
+}
+
+impl XValue for FnCallValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+        self.callee.dump();
+    }
+}
+
+impl RValue for FnCallValue {
+
+}

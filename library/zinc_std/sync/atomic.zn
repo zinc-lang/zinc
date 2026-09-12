@@ -1,0 +1,18 @@
+
+// 所有的 atomic 类型都是 UnSized 类型。是为了避免如下场景出现：
+// fn thread_func(x: *AtomicBool) {
+//     *x = AtomicBool { false };  // 通过解引用赋值可能会绕开原子指令
+// }
+// 限制它是 UnSized 之后，要修改 atomic 类型的值，就只能调用它的成员函数实现了，不可能绕开原子指令。
+// 但这么做的一个后果是，不能直接定义 static 的 atomic 变量。一个变通的方案是，定义 static 的借用指针指向临时 atomic 变量。
+// static A: AtomicBool = AtomicBool::new(false); // 编译错误, AtomicBool 是 UnSized 类型
+// static A: &'static AtomicBool = &AtomicBool::new(false); // 编译成功, &'static AtomicBool 是 Sized 类型
+//
+
+struct AtomicBool {
+    data: Mutable<Bool>
+}
+
+unsafe impl Send for AtomicBool {}
+unsafe impl Sync for AtomicBool {}
+impl UnSized for AtomicBool {}

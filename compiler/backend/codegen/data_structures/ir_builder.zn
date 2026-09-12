@@ -1,0 +1,638 @@
+use super::*;
+use super::super::*;
+use ::self::frontend::semantic::*;
+use ::self::frontend::semantic::mir::ir::*;
+use ::self::frontend::semantic::hir::ir::*;
+
+extern fn llds_verify_function(f: Ptr) -> Bool;
+extern fn llds_save_ip(ds: Ptr) -> Ptr;
+extern fn llds_restore_ip(ds: Ptr, ip: Ptr);
+extern fn llds_set_ip_for_instantiate(ds: Ptr, f: Ptr);
+extern fn llds_create_function(ds: Ptr, name: Ptr, len: UInt, ty: Ptr) -> Ptr;
+extern fn llds_create_do_nothing(ds: Ptr);
+extern fn llds_get_arg(f: Ptr, i: UInt) -> Ptr;
+extern fn llds_set_arg_name(f: Ptr, i: UInt, name: Ptr, len: UInt);
+extern fn llds_create_basicblock(ds: Ptr, name: Ptr, len: UInt, func: Ptr) -> Ptr;
+extern fn llds_create_struct_gep(ds: Ptr, ty: Ptr, val: Ptr, idx: UInt) -> Ptr;
+extern fn llds_create_gep(ds: Ptr, ty: Ptr, val: Ptr, idx: Ptr) -> Ptr;
+extern fn llds_extract_value(ds: Ptr, val: Ptr, idx: UInt) -> Ptr;
+extern fn llds_set_insert_point(ds: Ptr, bb: Ptr);
+extern fn llds_create_alloca_sized(ds: Ptr, ty: Ptr) -> Ptr;
+extern fn llds_create_alloca_unsized(ds: Ptr, size: Ptr) -> Ptr;
+extern fn llds_create_store(ds: Ptr, val: Ptr, dst: Ptr);
+extern fn llds_create_load(ds: Ptr, ty: Ptr, ptr: Ptr) -> Ptr;
+extern fn llds_create_memcpy(ds: Ptr, dst: Ptr, src: Ptr, size: Ptr);
+extern fn llds_create_memset(ds: Ptr, dst: Ptr, val: Ptr, count: Ptr);
+extern fn llds_create_br(ds: Ptr, bb: Ptr);
+extern fn llds_create_cond_br(ds: Ptr, cond: Ptr, bb1: Ptr, bb2: Ptr);
+extern fn llds_create_ret(ds: Ptr, v: Ptr);
+extern fn llds_create_retvoid(ds: Ptr);
+extern fn llds_create_unreachable(ds: Ptr);
+extern fn llds_create_call(ds: Ptr, func: Ptr, args: *raw Ptr, len: UInt) -> Ptr;
+extern fn llds_create_call_with_fnty(ds: Ptr, fnty: Ptr, func: Ptr, args: *raw Ptr, len: UInt) -> Ptr;
+extern fn llds_create_fat_ptr(ds: Ptr, p1: Ptr, p2: Ptr, p3: Ptr) -> Ptr;
+
+extern fn llds_create_ptr_to_int(ds: Ptr, ptr: Ptr) -> Ptr;
+extern fn llds_create_int_to_ptr(ds: Ptr, val: Ptr) -> Ptr;
+extern fn llds_create_zext(ds: Ptr, val: Ptr, ty: Ptr) -> Ptr;
+extern fn llds_create_sext_or_trunc(ds: Ptr, val: Ptr, ty: Ptr) -> Ptr;
+extern fn llds_create_zext_or_trunc(ds: Ptr, val: Ptr, ty: Ptr) -> Ptr;
+extern fn llds_create_si_to_fp(ds: Ptr, val: Ptr, ty: Ptr) -> Ptr;
+extern fn llds_create_ui_to_fp(ds: Ptr, val: Ptr, ty: Ptr) -> Ptr;
+extern fn llds_create_fp_to_si(ds: Ptr, val: Ptr, ty: Ptr) -> Ptr;
+extern fn llds_create_fp_to_ui(ds: Ptr, val: Ptr, ty: Ptr) -> Ptr;
+extern fn llds_create_fp_trunc(ds: Ptr, val: Ptr, ty: Ptr) -> Ptr;
+extern fn llds_create_fp_ext(ds: Ptr, val: Ptr, ty: Ptr) -> Ptr;
+extern fn llds_create_add(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_sub(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_mul(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_sdiv(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_udiv(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_srem(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_urem(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_fadd(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_fsub(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_fmul(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_fdiv(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_frem(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_neg(ds: Ptr, var: Ptr) -> Ptr;
+extern fn llds_create_fneg(ds: Ptr, var: Ptr) -> Ptr;
+
+extern fn llds_create_logic_and(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_logic_or(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+
+extern fn llds_create_bit_and(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_bit_or(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_bit_xor(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_bit_shl(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_bit_lshr(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_bit_ashr(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_bit_not(ds: Ptr, var: Ptr) -> Ptr;
+extern fn llds_create_bit_reverse(ds: Ptr, var: Ptr) -> Ptr;
+extern fn llds_create_bit_rotate_left(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_bit_rotate_right(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+
+extern fn llds_create_icmp_eq(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_icmp_ne(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_icmp_uge(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_icmp_ugt(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_icmp_ule(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_icmp_ult(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_icmp_sge(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_icmp_sgt(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_icmp_sle(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_icmp_slt(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_fcmp_oeq(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_fcmp_one(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_fcmp_ogt(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_fcmp_oge(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_fcmp_olt(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_fcmp_ole(ds: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+
+extern fn llds_create_select(ds: Ptr, cond: Ptr, lhs: Ptr, rhs: Ptr) -> Ptr;
+extern fn llds_create_phi(ds: Ptr, ty: Ptr, num: UInt) -> Ptr;
+extern fn llds_phi_add_incoming(phi: Ptr, v: Ptr, bb: Ptr);
+extern fn llds_create_insert_value(ds: Ptr, agg: Ptr, val: Ptr, idx: UInt) -> Ptr;
+
+extern fn llds_create_di_file(ds: Ptr, f: Ptr, len: UInt) -> Ptr;
+extern fn llds_create_di_subprogram(ds: Ptr, f: Ptr, n: Ptr, dif: Ptr, line: UInt32) -> Ptr;
+extern fn llds_create_di_location(ds: Ptr, f: Ptr, line: UInt32, column: UInt32) -> Ptr;
+extern fn llds_set_di_loc(ds: Ptr, loc: Ptr);
+
+impl LLDataStructures {
+
+    fn create_fn(&self, ty: CgFuncType, name: Str) -> CgFunc {
+        let ll_fn = unsafe(llds_create_function(self.ds, name.raw_ptr(), name.len(), ty.llfnty));
+        return {
+            .llfn = ll_fn
+        }: CgFunc;
+    }
+
+    fn verify_function(&self, f: CgFunc) -> Bool {
+        return unsafe(llds_verify_function(f.llfn));
+    }
+
+    fn set_ip_for_instantiate(&self, f: CgFunc) {
+        unsafe(llds_set_ip_for_instantiate(self.ds, f.llfn));
+    }
+
+    fn set_insert_point(&self, bb: CgBasicBlock) {
+        unsafe{
+            llds_set_insert_point(self.ds, bb.bb);
+        }
+    }
+
+    fn save_ip(&self) -> Ptr {
+        return unsafe(llds_save_ip(self.ds));
+    }
+
+    fn restore_ip(&self, ip: Ptr) {
+        return unsafe(llds_restore_ip(self.ds, ip));
+    }
+
+    fn get_arg(&self, func: CgFunc, i: UInt) -> CgValue {
+        unsafe {
+            let a = llds_get_arg(func.llfn, i);
+            return {
+                .value = a,
+                .indirect = false,
+            }: CgValue;
+        }
+    }
+
+    fn set_arg_name(&self, func: CgFunc, i: UInt, name: Str) {
+        unsafe {
+            llds_set_arg_name(func.llfn, i, name.raw_ptr(), name.len());
+        }
+    }
+
+    fn create_bb(&self, name: Str, func: CgFunc) -> CgBasicBlock {
+        unsafe {
+            let bb = llds_create_basicblock(self.ds, name.raw_ptr(), name.len(), func.llfn);
+            return {
+                .bb = bb,
+            }: CgBasicBlock;
+        }
+    }
+
+    fn create_do_nothing(&self) {
+        unsafe(llds_create_do_nothing(self.ds));
+    }
+
+    fn create_struct_gep(&self, ty: CgType, val: CgValue, idx: UInt) -> CgValue {
+        unsafe {
+            // FIXME, size.value 要视情况 load
+            let v = llds_create_struct_gep(self.ds, ty.llty, val.value, idx);
+            return {
+                .value = v,
+                .indirect = true,
+            }: CgValue;
+        }
+    }
+
+    fn create_gep(&self, ty: CgType, val: CgValue, idx: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_gep(self.ds, ty.llty, val.value, idx.value);
+            return {
+                .value = v,
+                .indirect = true,
+            }: CgValue;
+        }
+    }
+
+    fn extract_value(&self, val: CgValue, idx: UInt) -> CgValue {
+        unsafe {
+            let v = llds_extract_value(self.ds, val.value, idx);
+            return {
+                .value = v,
+                .indirect = false,
+            }: CgValue;
+        }
+    }
+
+    fn create_alloca_sized(&self, ty: CgType) -> CgValue {
+        unsafe {
+            let v = llds_create_alloca_sized(self.ds, ty.llty);
+            return {
+                .value = v,
+                .indirect = true,
+            }: CgValue;
+        }
+    }
+
+    fn create_alloca_unsized(&self, size: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_alloca_unsized(self.ds, size.value);
+            return {
+                .value = v,
+                .indirect = true,
+            }: CgValue;
+        }
+    }
+
+    fn create_store(&self, val: CgValue, place: CgValue) {
+        unsafe(llds_create_store(self.ds, val.value, place.value));
+    }
+
+    fn create_load(&self, ty: CgType, ptr: CgValue) -> CgValue {
+        let v = unsafe(llds_create_load(self.ds, ty.llty, ptr.value));
+        return {
+            .value = v,
+            .indirect = false,
+        }: CgValue;
+    }
+
+    fn create_memcpy(&self, dst: CgValue, src: CgValue, size: CgValue) {
+        unsafe(llds_create_memcpy(self.ds, dst.value, src.value, size.value));
+    }
+
+    fn create_memset(&self, dst: CgValue, val: CgValue, count: CgValue) {
+        unsafe(llds_create_memset(self.ds, dst.value, val.value, count.value));
+    }
+
+
+    fn create_br(&self, bb: CgBasicBlock) {
+        unsafe(llds_create_br(self.ds, bb.bb));
+    }
+
+    fn create_cond_br(&self, cond: CgValue, target_true: CgBasicBlock, target_false: CgBasicBlock) {
+        // FIXME, cond 要视情况 load
+        unsafe(llds_create_cond_br(self.ds, cond.value, target_true.bb, target_false.bb));
+    }
+
+    fn create_ret(&self, v: CgValue) {
+        // FIXME, v 要视情况 load
+        unsafe(llds_create_ret(self.ds, v.value));
+    }
+
+    fn create_retvoid(&self) {
+        unsafe(llds_create_retvoid(self.ds));
+    }
+
+    fn create_unreachable(&self) {
+        unsafe(llds_create_unreachable(self.ds));
+    }
+
+    fn create_call(&self, func: CgFunc, args: Slice<CgValue>) -> CgValue {
+        let mut llargs = (type Vec<Ptr>)::new();
+        for a in args {
+            llargs.push(a.value);
+        }
+        let v = unsafe(llds_create_call(self.ds, func.llfn, llargs.raw_ptr(), llargs.len()));
+        return {
+            .value = v,
+            .indirect = false,
+        }: CgValue;
+    }
+
+    fn create_call(&self, fnty: CgFuncType, func: CgValue, args: Slice<CgValue>) -> CgValue {
+        let mut llargs = (type Vec<Ptr>)::new();
+        for a in args {
+            llargs.push(a.value);
+        }
+        let v = unsafe(llds_create_call_with_fnty(self.ds, fnty.llfnty, func.value, llargs.raw_ptr(), llargs.len()));
+        return {
+            .value = v,
+            .indirect = false,
+        }: CgValue;
+    }
+
+    fn create_fat_ptr(&self, p1: CgValue, p2: CgValue, p3: CgValue) -> CgValue {
+        let v = unsafe(llds_create_fat_ptr(self.ds, p1.value, p2.value, p3.value));
+        return {
+            .value = v,
+            .indirect = false,
+        }: CgValue;
+    }
+
+    fn create_ptr_to_int(&self, ptr: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_ptr_to_int(self.ds, ptr.value);
+            return {
+                .value = v,
+                .indirect = false,
+            }: CgValue;
+        }
+    }
+
+    fn create_int_to_ptr(&self, val: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_int_to_ptr(self.ds, val.value);
+            return {
+                .value = v,
+                .indirect = false,
+            }: CgValue;
+        }
+    }
+
+    fn create_zext(&self, val: CgValue, ty: CgType) -> CgValue {
+        let v = unsafe(llds_create_zext(self.ds, val.value, ty.llty));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_sext_or_trunc(&self, val: CgValue, ty: CgType) -> CgValue {
+        let v = unsafe(llds_create_sext_or_trunc(self.ds, val.value, ty.llty));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_zext_or_trunc(&self, val: CgValue, ty: CgType) -> CgValue {
+        let v = unsafe(llds_create_zext_or_trunc(self.ds, val.value, ty.llty));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_si_to_fp(&self, val: CgValue, ty: CgType) -> CgValue {
+        let v = unsafe( llds_create_si_to_fp(self.ds, val.value, ty.llty));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_ui_to_fp(&self, val: CgValue, ty: CgType) -> CgValue {
+        let v = unsafe( llds_create_ui_to_fp(self.ds, val.value, ty.llty));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_fp_to_si(&self, val: CgValue, ty: CgType) -> CgValue {
+        let v = unsafe( llds_create_fp_to_si(self.ds, val.value, ty.llty));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_fp_to_ui(&self, val: CgValue, ty: CgType) -> CgValue {
+        let v = unsafe( llds_create_fp_to_ui(self.ds, val.value, ty.llty));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_fp_trunc(&self, val: CgValue, ty: CgType) -> CgValue {
+        let v = unsafe( llds_create_fp_trunc(self.ds, val.value, ty.llty));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_fp_ext(&self, val: CgValue, ty: CgType) -> CgValue {
+        let v = unsafe( llds_create_fp_ext(self.ds, val.value, ty.llty));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_add(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_add(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_sub(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_sub(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_mul(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_mul(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_sdiv(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_sdiv(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_udiv(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_udiv(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_srem(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_srem(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_urem(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_urem(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_fadd(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_fadd(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_fsub(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_fsub(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_fmul(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_fmul(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_fdiv(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_fdiv(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_frem(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_frem(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_neg(&self, val: CgValue) -> CgValue {
+        let v = unsafe(llds_create_neg(self.ds, val.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_fneg(&self, val: CgValue) -> CgValue {
+        let v = unsafe(llds_create_fneg(self.ds, val.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_logic_and(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_logic_and(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_logic_or(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_logic_or(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_bit_and(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_bit_and(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_bit_or(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_bit_or(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_bit_xor(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_bit_xor(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_bit_shl(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_bit_shl(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_bit_lshr(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_bit_lshr(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_bit_ashr(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_bit_ashr(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_bit_not(&self, val: CgValue) -> CgValue {
+        let v = unsafe(llds_create_bit_not(self.ds, val.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_bit_reverse(&self, val: CgValue) -> CgValue {
+        let v = unsafe(llds_create_bit_reverse(self.ds, val.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_bit_rotate_left(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_bit_rotate_left(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_bit_rotate_right(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        let v = unsafe(llds_create_bit_rotate_right(self.ds, lhs.value, rhs.value));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_icmp_eq(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_icmp_eq(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_icmp_ne(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_icmp_ne(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_icmp_uge(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_icmp_uge(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_icmp_ugt(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_icmp_ugt(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_icmp_ule(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_icmp_ule(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_icmp_ult(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_icmp_ult(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_icmp_sge(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_icmp_sge(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_icmp_sgt(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_icmp_sgt(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_icmp_sle(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_icmp_sle(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_icmp_slt(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_icmp_slt(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_fcmp_eq(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_fcmp_oeq(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_fcmp_ne(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_fcmp_one(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_fcmp_oge(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_fcmp_oge(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_fcmp_ogt(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_fcmp_ogt(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_fcmp_ole(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_fcmp_ole(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_fcmp_olt(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_fcmp_olt(self.ds, lhs.value, rhs.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_select(&self, cond: CgValue, v1: CgValue, v2: CgValue) -> CgValue {
+        unsafe {
+            let v = llds_create_select(self.ds, cond.value, v1.value, v2.value);
+            return { .value = v, .indirect = false, }: CgValue;
+        }
+    }
+
+    fn create_phi(&self, ty: CgType, num: UInt) -> CgValue {
+        let v = unsafe(llds_create_phi(self.ds, ty.llty, num));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn phi_add_incoming(&self, phi: CgValue, v: CgValue, bb: CgBasicBlock) {
+        unsafe(llds_phi_add_incoming(phi.value, v.value, bb.bb));
+    }
+
+    fn create_insert_value(&self, agg: CgValue, val: CgValue, idx: UInt) -> CgValue {
+        let v = unsafe(llds_create_insert_value(self.ds, agg.value, val.value, idx));
+        return { .value = v, .indirect = false, }: CgValue;
+    }
+
+    fn create_di_file(&self, name: Str) -> Ptr {
+        return unsafe(llds_create_di_file(self.ds, name.raw_ptr(), name.len()));
+    }
+
+    fn create_di_subprogram(&self, f: CgFunc, short_name: Str, dif: Ptr, line: UInt32) -> Ptr {
+        let mut sname = short_name.to_string();
+        sname.push(0_u8);
+
+        return unsafe(llds_create_di_subprogram(self.ds, f.llfn, sname.raw_ptr(), dif, line));
+    }
+
+    fn create_di_location(&self, f: CgFunc, line: UInt32, column: UInt32) -> Ptr {
+        return unsafe(llds_create_di_location(self.ds, f.llfn, line, column));
+    }
+
+    fn set_di_loc(&self, di_loc: Ptr) {
+        unsafe(llds_set_di_loc(self.ds, di_loc));
+    }
+
+    fn reset_di_loc(&self) {
+        unsafe(llds_set_di_loc(self.ds, unsafe(0_u as *raw UInt8)));
+    }
+}

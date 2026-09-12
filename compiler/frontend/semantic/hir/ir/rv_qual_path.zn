@@ -1,0 +1,58 @@
+use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
+use ::self::frontend::syntax::ast::expr::*;
+use super::*;
+
+impl QualifiedPathValue {
+    fn new(e: *QualifiedPathExpr, qty: Option<*SType>, trait_ty: Option<*SType>, sym: *Symbol) -> *Self {
+        return box {
+            .expr = e as *ExpressionNode,
+            .parent_node = None,
+            .qualified_ty = move qty,
+            .qualified_trait = move trait_ty,
+            .symbol = move sym,
+            .sty = SType::sty_invalid(e.span()),
+        }: QualifiedPathValue;
+    }
+
+    fn create(e: *ExpressionNode, sym: *Symbol) -> *Self {
+        let span = e.span();
+        return box {
+            .expr = move e,
+            .parent_node = None,
+            .qualified_ty = None,
+            .qualified_trait = None,
+            .symbol = move sym,
+            .sty = SType::sty_invalid(span),
+        }: QualifiedPathValue;
+    }
+}
+
+impl XValue for QualifiedPathValue {
+    fn expr_node(&self) -> *ExpressionNode {
+        return self.expr as *ExpressionNode;
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return self.parent_node;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        self.parent_node = Some(move ss);
+    }
+
+    fn get_stype(&self) -> *SType {
+        return self.sty;
+    }
+
+    fn set_stype(&mut self, sty: *SType) {
+        self.sty = move sty;
+    }
+
+    fn dump(&self) {
+        print(self.symbol.short_name());
+    }
+}
+
+impl RValue for QualifiedPathValue {
+
+}

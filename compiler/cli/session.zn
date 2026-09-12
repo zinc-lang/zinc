@@ -1,0 +1,90 @@
+use super::options::CliOptions;
+use super::timeline::TimeLine;
+
+use ::self::frontend::syntax::lexer::{LexerMode, Lexer};
+use ::self::frontend::syntax::token::{TokenKind, Token};
+use ::self::frontend::syntax::parser::FileParser;
+use ::self::frontend::syntax::ast::{SyntaxTree, DeclNode, LibOrExe};
+
+use ::self::frontend::semantic::*;
+use ::self::frontend::semantic::hir::ir::hir_visit::*;
+use ::self::frontend::semantic::zno::Exporter;
+
+use ::self::frontend::source_code::SourceManager;
+use ::self::frontend::diagnostic::DiagnosticEngine;
+
+use ::self::backend::codegen::*;
+
+pub struct Session {
+
+}
+
+impl Session {
+    pub fn compile(&self) {
+        let mut time_line = TimeLine::new();
+        let options = CliOptions::get();
+
+        SourceManager::get().set_entry_file(options.entry_source_file.as_str().deref());
+
+        let fid = SourceManager::get().add_file(options.entry_source_file);
+        let content = SourceManager::get().source_code_of(fid);
+
+        // 语法解析
+        let mut parser = FileParser::new(fid, content);
+
+        let mut syntax_tree = box parser.parse();
+        syntax_tree.reset_parent();
+        syntax_tree.validate(options.dump_ast);
+        // SyntaxTree::dump(syntax_tree.top_mod as *DeclNode, true);
+        time_line.record(f"SyntaxTree built");
+
+        let speak_en = options.speak.as_str().deref().eq(&"en");
+        DiagnosticEngine::get().report(speak_en);
+        if DiagnosticEngine::get().clear() > 0 {
+            return;  // 为了实现简单, 如果语法错误了, 就直接返回, 不继续往下走了
+        }
+
+        // 语义 IR 构建
+        let opt_model = SemanticModel::new(syntax_tree);
+        time_line.record(f"HIR built");
+        DiagnosticEngine::get().report(speak_en);
+        if DiagnosticEngine::get().clear() > 0 {
+            return;
+        }
+
+        if opt_model is Some(model) {
+            // 语义检查
+            model.type_check();
+            time_line.record(f"HIR checked");
+            DiagnosticEngine::get().report(speak_en);
+            if DiagnosticEngine::get().clear() > 0 {
+                return;
+            }
+
+            // CFG 构建和检查
+            model.cfg_build();
+            time_line.record(f"MIR checked");
+            model.dump_mir(options.dump_mir);
+            DiagnosticEngine::get().report(speak_en);
+            if DiagnosticEngine::get().clear() > 0 {
+                return;
+            }
+
+            // 如果是 library 则 export zno 文件
+            if syntax_tree.kind is LibOrExe::Lib(_) {
+                let mut exporter = Exporter::new(model, options);
+                exporter.export_all();
+                time_line.record(f"zno exported");
+            }
+
+            if options.check_only {
+                return;
+            }
+
+            // CodeGen
+            let mut code_generator = CodeGenerator::new(options, model);
+            code_generator.codegen();
+            time_line.record(f"Code generated");
+        }
+    }
+}

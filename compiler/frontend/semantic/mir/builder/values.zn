@@ -1,0 +1,802 @@
+use ::self::frontend::semantic::mir::ir::*;
+use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::token::*;
+use ::self::frontend::semantic::hir::constant::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::diagnostic::*;
+use super::{BasicBlockChunk, CfgBuilder, extract_logical_and_chain};
+
+use std::meta::Type;
+
+// todo promote local var
+
+impl CfgBuilder {
+
+    fn trans_xvalue(&mut self, val: *XValue, bb: *BasicBlock) -> (*XValue, *BasicBlock) {
+        match val {
+            lval: *LValue => {
+                let res = self.trans_lvalue(move lval, move bb);
+                return (res.0 as *XValue, res.1);
+            }
+            rval: *RValue => {
+                let res = self.trans_rvalue(move rval, move bb);
+                return (res.0 as *XValue, res.1);
+            }
+            _ => {
+                panic "BUG: unknown XValue in CfgBuilder::trans_xvalue.";
+            }
+        }
+        return (val, bb);
+    }
+
+    fn trans_lvalue(&mut self, val: *LValue, bb: *BasicBlock) -> (*LValue, *BasicBlock) {
+        let key = val as *raw LValue as UInt;
+        if self.cached_lvalue.at(&key) is Some(v) {
+            return (move v, move bb);
+        }
+        let res = self.do_trans_lvalue(val, bb);
+        self.cached_lvalue.insert(key, res.0);
+        return res;
+    }
+
+    fn do_trans_lvalue(&mut self, val: *LValue, bb: *BasicBlock) -> (*LValue, *BasicBlock) {
+        match val {
+            invalid: *InvalidValue => {
+                panic "CfgBuilder::trans_lvalue encounter InvalidValue.";
+            }
+
+            // LValue
+            idx_lv: *IndexLValue => {
+                let (base, base_bb) = self.trans_xvalue(idx_lv.base, bb);
+                idx_lv.base = move base;
+                let (index, index_bb) = self.trans_rvalue(idx_lv.index, base_bb);
+                idx_lv.index = move index;
+
+                index_bb.add_step(idx_lv as *XValue);
+                return (move idx_lv as *LValue, index_bb);
+            }
+            field_lv: *FieldLValue => {
+                let (base, base_bb) = self.trans_xvalue(field_lv.base, bb);
+                field_lv.base = move base;
+
+                base_bb.add_step(field_lv as *XValue);
+                return (move field_lv as *LValue, base_bb);
+            }
+            tup_lv: *TupleAccessLValue => {
+                let (base, base_bb) = self.trans_xvalue(tup_lv.base, bb);
+                tup_lv.base = move base;
+
+                base_bb.add_step(tup_lv as *XValue);
+                return (move tup_lv as *LValue, base_bb);
+            }
+            deref_lv: *DerefLValue => {
+                // 需要判断是不是 auto deref
+                if deref_lv.desugared_method is Some(method) {
+                    let (m, m_bb) = self.trans_rvalue(method as *RValue, bb);
+                    deref_lv.operand = m;
+                    let (op, op_bb) = self.trans_xvalue(deref_lv.operand, m_bb);
+                    op_bb.add_step(deref_lv as *XValue);
+                    return (move deref_lv as *LValue, op_bb);
+                } else {
+                    let (op, op_bb) = self.trans_xvalue(deref_lv.operand, bb);
+                    deref_lv.operand = move op;
+                    op_bb.add_step(deref_lv as *XValue);
+                    return (move deref_lv as *LValue, op_bb);
+                }
+            }
+            lvar: *LocalVar => {
+                bb.add_step(lvar as *XValue);
+                return (move lvar as *LValue, bb);
+            }
+            svar: *StaticVar => {
+                bb.add_step(svar as *XValue);
+                return (move svar as *LValue, bb);
+            }
+            
+            _ => {
+                panic "BUG: unknown LValue in CfgBuilder::trans_lvalue.";
+            }
+        }
+        return (val, bb);
+    }
+
+    fn trans_rvalue(&mut self, val: *RValue, bb: *BasicBlock) -> (*RValue, *BasicBlock) {
+        let key = val as *raw RValue as UInt;
+        if self.cached_rvalue.at(&key) is Some(v) {
+            return (move v, move bb);
+        }
+        let res = self.do_trans_rvalue(val, bb);
+        self.cached_rvalue.insert(key, res.0);
+        return res;
+    }
+
+    fn do_trans_rvalue(&mut self, val: *RValue, bb: *BasicBlock) -> (*RValue, *BasicBlock) {
+        match val {
+            invalid: *InvalidValue => {
+                panic "CfgBuilder::trans_rvalue encounter InvalidValue.";
+            }
+
+            rv: *ReadValue => {
+                bb.add_step(rv as *XValue);
+                return (move rv as *RValue, bb);
+            }
+            idx_rv: *IndexRValue => {
+                let (base, base_bb) = self.trans_rvalue(idx_rv.base, bb);
+                idx_rv.base = move base;
+                let (index, index_bb) = self.trans_rvalue(idx_rv.index, base_bb);
+                idx_rv.index = move index;
+
+                index_bb.add_step(idx_rv as *XValue);
+                return (move idx_rv as *RValue, index_bb);
+            }
+            field_rv: *FieldRValue => {
+                let (base, base_bb) = self.trans_rvalue(field_rv.base, bb);
+                field_rv.base = move base;
+
+                base_bb.add_step(field_rv as *XValue);
+                return (move field_rv as *RValue, base_bb);
+            }
+            tup_rv: *TupleAccessRValue => {
+                let (base, base_bb) = self.trans_rvalue(tup_rv.base, bb);
+                tup_rv.base = move base;
+
+                base_bb.add_step(tup_rv as *XValue);
+                return (move tup_rv as *RValue, base_bb);
+            }
+            deref_rv: *DerefRValue => {
+                // 需要判断是不是 auto deref
+                if deref_rv.desugared_method is Some(method) {
+                    let (m, m_bb) = self.trans_rvalue(method as *RValue, bb);
+                    deref_rv.operand = m;
+                    let (op, op_bb) = self.trans_rvalue(deref_rv.operand, m_bb);
+                    op_bb.add_step(deref_rv as *XValue);
+                    return (move deref_rv as *RValue, op_bb);
+                } else {
+                    let (op, op_bb) = self.trans_rvalue(deref_rv.operand, bb);
+                    deref_rv.operand = move op;
+                    op_bb.add_step(deref_rv as *XValue);
+                    return (move deref_rv as *RValue, op_bb);
+                }
+
+                // todo 解糖 reborrow
+                let (op, op_bb) = self.trans_rvalue(deref_rv.operand, bb);
+                deref_rv.operand = op;
+
+                op_bb.add_step(deref_rv as *XValue);
+                return (move deref_rv as *RValue, op_bb);
+            }
+            vp_rv: *VariantPayloadValue => {
+                let (ev, ev_bb) = self.trans_rvalue(vp_rv.enum_value, bb);
+                vp_rv.enum_value = move ev;
+
+                ev_bb.add_step(vp_rv as *XValue);
+                return (move vp_rv as *RValue, ev_bb);
+            }
+            wv: *WriteValue => {
+                let (src, src_bb) = self.trans_rvalue(wv.src, bb);
+                self.insert_copy_if_needed(src, src_bb);
+                wv.src = move src;
+                let (dst, dst_bb) = self.trans_lvalue(wv.dst, src_bb);
+                wv.dst = dst;
+
+                // 析构原来的数据
+                self.drop_lvalue(move dst, dst_bb);
+
+                dst_bb.add_step(wv as *XValue);
+
+                let comptime_unit = CompileTimeValue::create(
+                    box {
+                        .expr = box { .source_span = wv.expr_node().span() }: DummySyntaxNode as *ExpressionNode,
+                        .elements = (type Vec<*ConstValue>)::new(),
+                    }: TupleCValue as *ConstValue,
+                    SType::sty_unit(),
+                    wv.src.expr_node().span(),
+                ) as *RValue;
+                return (move comptime_unit as *RValue, dst_bb);
+            }
+            qp: *QualifiedPathValue => {
+                bb.add_step(qp as *XValue);
+                return (move qp as *RValue, bb);
+            }
+            ctx_rv: *ContextValue => {
+                return self.trans_rvalue(ctx_rv.inner, bb);
+            }
+            lit_rv: *LiteralValue => {
+                bb.add_step(lit_rv as *XValue);
+                return (move lit_rv as *RValue, bb);
+            }
+            ty_asc_rv: *TypeAscriptionValue => {
+               return self.trans_rvalue(ty_asc_rv.inner, bb);
+            }
+            agg_rv: *AggregateValue => {
+                let mut cur_bb = bb;
+                let fields = agg_rv.ordered_init();
+                agg_rv.transformed_init.clear();
+                for f in fields {
+                    let (fval, end_bb) = self.trans_rvalue(f, cur_bb);
+                    cur_bb = end_bb;
+                    // 更新 agg_rv 中的值
+                    self.insert_copy_if_needed(fval, cur_bb);
+
+                    agg_rv.transformed_init.push(move fval);
+                }
+
+                if agg_rv.sty.type_symbol is struct_sym: *StructSymbol {
+                    if struct_sym.fields.len() != fields.len() {
+                        panic;
+                    }
+                    if struct_sym.fields.len() != agg_rv.transformed_init.len() {
+                        panic;
+                    }
+                }
+
+                cur_bb.add_step(agg_rv as *XValue);
+                return (move agg_rv as *RValue, cur_bb);
+            }
+            tup_lit: *TupleValue => {
+                let mut cur_bb = bb;
+                let mut transformed_elements: Vec<*RValue> = Vec::new();
+                for e in tup_lit.elements {
+                    let (val, end_bb) = self.trans_rvalue(e, cur_bb);
+                    cur_bb = end_bb;
+                    self.insert_copy_if_needed(val, cur_bb);
+                    transformed_elements.push(move val);
+                }
+                tup_lit.elements = move transformed_elements;
+
+                cur_bb.add_step(tup_lit as *XValue);
+                return (move tup_lit as *RValue, cur_bb);
+            }
+            arr_lit: *ArrayLiteralValue => {
+                let mut cur_bb = bb;
+                let mut transformed_elements: Vec<*RValue> = Vec::new();
+                for e in arr_lit.elements {
+                    let (val, end_bb) = self.trans_rvalue(move e, cur_bb);
+                    cur_bb = end_bb;
+                    self.insert_copy_if_needed(val, cur_bb);
+                    transformed_elements.push(move val);
+                }
+                arr_lit.elements = move transformed_elements;
+
+                cur_bb.add_step(arr_lit as *XValue);
+                return (move arr_lit as *RValue, cur_bb);
+            }
+            repeat_lit: *RepeatValue => {
+                let (val, end_bb) = self.trans_rvalue(repeat_lit.element, bb);
+                repeat_lit.element = val;
+                // todo 这里是静态插入 N 条 copy，如果数组很大的话指令太多了，实际上应该生成循环，减少指令数量
+                let mut i: UInt = 0;
+                let len = repeat_lit.sty.args.ty_args.len();
+                while i < len {
+                    self.insert_copy(val, end_bb);
+                    i += 1;
+                }
+
+                end_bb.add_step(repeat_lit as *XValue);
+                return (move repeat_lit as *RValue, end_bb);
+            }
+            binary_rv: *BinaryExprValue => {
+                return self.trans_binary_expr(move binary_rv, move bb);
+            }
+            unary_rv: *UnaryExprValue => {
+                // todo `box literal` 可以做优化
+                let (op, op_bb) = self.trans_rvalue(unary_rv.operand, bb);
+                if unary_rv.kind is UnaryValueKind::Move {
+                    ensure_expr_can_move(unary_rv.operand);
+                    let mv = MovedValue::create(unary_rv.expr_node(), move op);
+                    op_bb.add_step(mv as *XValue);
+                    return (move mv as *RValue, move op_bb);
+                } else {
+                    unary_rv.operand = move op;
+                    op_bb.add_step(unary_rv as *XValue);
+                    return (move unary_rv as *RValue, move op_bb);
+                }
+            }
+            addr_rv: *AddressofValue => {
+                if addr_rv.operand is d: *DerefRValue {
+                    // reborrow 情况单独处理. &*x 直接翻译成对 x 做类型转换, 方便后面做 LLVM IR 生成
+                    if d.operand.get_stype().type_symbol is type *ArcPointerSymbol {
+                        // 需要新增临时变量
+                        let (op, local_bb) = self.trans_rvalue(d.operand, bb);
+                        let temp = self.new_temp(op, bb);
+                        let rd = ReadValue::new(op.expr_node(), temp.sym_var);
+                        let r = ReBorrowValue::create(move rd as *RValue, addr_rv.get_stype());
+                        local_bb.add_step(r as *XValue);
+                        return (move r as *RValue, move local_bb);
+                    } else {
+                        let (op, op_bb) = self.trans_rvalue(d.operand, bb);
+                        let r = ReBorrowValue::create(move op, addr_rv.get_stype());
+                        op_bb.add_step(r as *XValue);
+                        return (move r as *RValue, move op_bb);
+                    }
+                } else {
+                    let (operand, new_bb) = self.promote_local(addr_rv.operand, bb);
+                    addr_rv.operand = move operand;
+
+                    new_bb.add_step(addr_rv as *XValue);
+                    return (move addr_rv as *RValue, move new_bb);
+                }
+            }
+            alloca_rv: *AllocaValue => {
+                return self.trans_rvalue(alloca_rv.src, bb);
+            }
+            load_rv: *LoadValue => {
+                return self.trans_rvalue(load_rv.src, bb);
+            }
+            pmv: *PatternMatchValue => {
+                let (op, op_bb) = self.trans_rvalue(pmv.operand, bb);
+                pmv.operand = move op;
+
+                op_bb.add_step(pmv as *XValue);
+                return (move pmv as *RValue, op_bb);
+            }
+            cast_rv: *CastValue => {
+                let (op, op_bb) = self.trans_rvalue(cast_rv.operand, bb);
+                cast_rv.operand = op;
+                if cast_rv.resolved_kind is ResolvedCastKind::SameType {
+                    return (move op as *RValue, move op_bb);
+                } else {
+                    op_bb.add_step(cast_rv as *XValue);
+                    return (move cast_rv as *RValue, move op_bb);
+                }
+            }
+            fn_call: *FnCallValue => {
+                let mut cur_bb = bb;
+                let mut transformed_args: Vec<*RValue> = Vec::new();
+                for a in fn_call.desugared_args {
+                    let (val, end_bb) = self.trans_rvalue(move a, cur_bb);
+                    cur_bb = end_bb;
+                    self.insert_copy_if_needed(val, cur_bb);
+                    transformed_args.push(move val);
+                }
+                fn_call.desugared_args = move transformed_args;
+
+                // todo 根据生命周期传递规则设置 origin
+
+                cur_bb.add_step(fn_call as *XValue);
+                return (move fn_call as *RValue, cur_bb);
+            }
+            method_call: *MethodCallValue => {
+                let mut cur_bb = bb;
+                let (receiver, receiver_bb) = self.trans_rvalue(method_call.desugared_receiver.get_or_panic(), cur_bb);
+                self.insert_copy_if_needed(receiver, receiver_bb);
+                method_call.desugared_receiver = Some(move receiver);
+                cur_bb = move receiver_bb;
+
+                let mut transformed_args: Vec<*RValue> = Vec::new();
+                for a in method_call.desugared_args {
+                    let (val, end_bb) = self.trans_rvalue(move a, cur_bb);
+                    cur_bb = end_bb;
+                    self.insert_copy_if_needed(val, cur_bb);
+                    transformed_args.push(move val);
+                }
+                method_call.desugared_args = move transformed_args;
+
+                // todo 根据生命周期传递规则设置 origin
+
+                cur_bb.add_step(method_call as *XValue);
+                return (move method_call as *RValue, cur_bb);
+            }
+            select_rv: *SelectValue => {
+                if extract_logical_and_chain(select_rv.cond) is Some(chain) {
+                    return self.trans_select_and_chain(move chain, select_rv.br_true, select_rv.br_false, bb);
+                }
+                let (cond, cond_bb) = self.trans_rvalue(select_rv.cond, bb);
+
+                let true_bb = self.new_bb();
+                let false_bb = self.new_bb();
+                let end_bb = self.new_bb();
+
+                cond_bb.terminator = Some(
+                    box {
+                        .cond = cond,
+                        .target_true = true_bb,
+                        .target_false = false_bb,
+                    }: BrBool as *Terminator
+                );
+                // 初始化变量绑定
+                if cond is pmv: *PatternMatchValue {
+                    for var in pmv.pattern.collect_all_bindings() {
+                        if var.init is Some(init) {
+                            self.insert_copy(init, true_bb);
+                            let local = LocalVar::new(cond.expr_node(), var);
+                            let w = WriteValue::create(move init, move local as *LValue);
+                            true_bb.add_step(move w);
+                        }
+                    }
+                }
+
+                let (true_val, true_bb_end) = self.trans_rvalue(select_rv.br_true, move true_bb);
+                self.insert_copy_if_needed(true_val, true_bb_end);
+                let alloca_true_val = AllocaValue::create(true_val);
+                true_bb_end.add_step(alloca_true_val);
+
+                let (false_val, false_bb_end) = self.trans_rvalue(select_rv.br_false, move false_bb);
+                self.insert_copy_if_needed(false_val, false_bb_end);
+                let alloca_false_val = AllocaValue::create(false_val);
+                false_bb_end.add_step(alloca_false_val);
+
+                true_bb_end.terminator = Some(
+                    box {
+                        .target = end_bb,
+                    }: BrForward as *Terminator
+                );
+                false_bb_end.terminator = Some(
+                    box {
+                        .target = end_bb,
+                    }: BrForward as *Terminator
+                );
+
+                let phi = PhiValue::create(select_rv.cond.expr_node().span());
+                phi.for_alloca = true;
+                phi.add_incoming(alloca_true_val, true_bb_end);
+                phi.add_incoming(alloca_false_val, false_bb_end);
+
+                end_bb.add_step(phi as *XValue);
+                return (move phi as *RValue, move end_bb);
+            }
+            interpolation: *InterpolationValue => {
+                // 创建 String 类型临时变量, 调用成员方法
+                let span = interpolation.expr.span();
+                let buf = VarSymbol::create(span, interpolation.sty);
+                self.nearest_block().add_local(buf);
+
+                // 调用 String::new
+                let fn_new = self.resolver.method_string_new();
+                let qp = QualifiedPathValue::create(interpolation.expr as *ExpressionNode, fn_new as *Symbol);
+                let call_fn_new = FnCallValue::new(interpolation.expr as *ExpressionNode, move qp as *RValue);
+                call_fn_new.sty = interpolation.sty;
+                call_fn_new.member_of = Some(interpolation.sty);
+                bb.add_step(call_fn_new as *XValue);
+
+                let local = LocalVar::create(span, buf);
+                let init = WriteValue::create(call_fn_new as *RValue, move local as *LValue);
+                bb.add_step(init as *XValue);
+
+                //
+                let rd = ReadValue::new(interpolation.expr as *ExpressionNode, buf);
+                bb.add_step(rd as *XValue);
+                let mut_addr = AddressofValue::create(span, AddressofKind::RefMut, rd as *RValue);
+                bb.add_step(mut_addr as *XValue);
+                let mut args = (type Vec<*RValue>)::new();
+                args.push(move mut_addr as *RValue);
+
+                for part in interpolation.parts {
+                    match part {
+                        InterpolationPart::Str(s) => {
+                            // 调用 Str 类型的 to_string_inplace
+                            let const_str = CompileTimeValue::create(
+                                    box {
+                                        .token = Token::invalid(span),
+                                        .value = move s,
+                                    }: StringCValue as *ConstValue,
+                                    self.resolver.sty_str(),
+                                    span,
+                                );
+                            let alloca_str = AllocaValue::create(const_str as *RValue);
+                            let receiver = AddressofValue::create(span, AddressofKind::Ref, alloca_str as *RValue);
+                            let method = self.resolver.method_to_string_inplace(self.resolver.sty_str(), self.func_sym);
+                            let method_call = MethodCallValue::create(
+                                receiver as *RValue, method, GenericArgs::new(), args, SType::sty_unit()
+                            );
+                            bb.add_step(move alloca_str as *XValue);
+                            bb.add_step(move receiver as *XValue);
+                            bb.add_step(move method_call as *XValue);
+                        }
+                        InterpolationPart::Var(v) => {
+                            // 调用 v 的类型的 to_string_inplace
+                            let method = self.resolver.method_to_string_inplace(v.stype, self.func_sym);
+                            let rd = ReadValue::new(interpolation.expr as *ExpressionNode, v);
+                            rd.sty = v.stype;
+                            bb.add_step(rd as *XValue);
+                            let mut receiver = rd as *RValue;
+
+                            if !(v.stype.type_symbol is type *PointerLikeSymbol) {
+                                receiver = AddressofValue::create(span, AddressofKind::Ref, rd as *RValue) as *RValue;
+                                bb.add_step(receiver as *XValue);
+                            } else if v.stype.type_symbol is type *ArcPointerSymbol {
+                                let mut args = GenericArgs::new();
+                                args.ty_args.push(v.stype.args.ty_arg(0));
+                                let sty = BorrowImmutSymbol::new().to_sty(move args);
+                                receiver = ReBorrowValue::create(rd as *RValue, move sty) as *RValue;
+                                bb.add_step(receiver as *XValue);
+                            }
+                            let method_call = MethodCallValue::create(
+                                receiver, method, GenericArgs::new(), args, SType::sty_unit()
+                            );
+                            bb.add_step(move method_call as *XValue);
+                        }
+                    }
+                }
+
+                let res = ReadValue::new(interpolation.expr as *ExpressionNode, buf);
+                res.sty = interpolation.sty;
+                bb.add_step(res as *XValue);
+                return (move res as *RValue, move bb);
+            }
+            iter: *IteratorValue => {
+                panic "BUG: IteratorValue has been handled when translate ForLoopSentence";
+            }
+            iter_next: *IteratorNextValue => {
+                panic "BUG: IteratorNextValue has been handled when translate ForLoopSentence";
+            }
+            iter_item: *IteratorItemValue => {
+                panic "BUG: IteratorItemValue has been handled when translate ForLoopSentence";
+            }
+            moved: *MovedValue => {
+                return (move val, move bb);
+            }
+            comptime: *CompileTimeValue => {
+                return (move val, move bb);
+            }
+            rb: *ReBorrowValue => {
+                return (move val, move bb);
+            }
+            _ => {
+                let meta = Type::of(&*val as &RValue as &Any);
+                let name = meta.short_name();
+                let msg = f"BUG: unknown RValue in CfgBuilder::trans_rvalue: $(name)";
+                panic msg.as_str().deref();
+            }
+        }
+        return (val, bb);
+    }
+
+    fn trans_binary_expr(&mut self, binary_rv: *BinaryExprValue, bb: *BasicBlock) -> (*RValue, *BasicBlock) {
+        // 逻辑与、逻辑或 有短路效果，要特殊处理
+        if binary_rv.op.token_kind is TokenKind::Punctuation(PunctuationKind::AndAnd) {
+            let (lhs, lhs_end) = self.trans_rvalue(binary_rv.lhs, bb);
+            let rhs_bb = self.new_bb();
+            let rhs2_bb = self.new_bb();
+            let end_bb = self.new_bb();
+
+            lhs_end.terminator = Some(
+                    box {
+                        .cond = lhs,
+                        .target_true = rhs_bb,
+                        .target_false = end_bb,
+                    }: BrBool as *Terminator
+                );
+            
+            // 初始化变量绑定
+            if lhs is pmv: *PatternMatchValue {
+                for var in pmv.pattern.collect_all_bindings() {
+                    if var.init is Some(init) {
+                        self.insert_copy(init, rhs_bb);
+                        let local = LocalVar::new(lhs.expr_node(), var);
+                        let w = WriteValue::create(move init, move local as *LValue);
+                        rhs_bb.add_step(move w);
+                    }
+                }
+            }
+
+            let (rhs, rhs_end) = self.trans_rvalue(binary_rv.rhs, rhs_bb);
+            let load_rhs = LoadValue::create(rhs);
+            rhs_end.add_step(load_rhs);
+            rhs_end.terminator = Some(
+                box {
+                    .cond = rhs,
+                    .target_true = rhs2_bb,
+                    .target_false = end_bb,
+                }: BrBool as *Terminator
+            );
+            // 初始化变量绑定
+            if rhs is pmv: *PatternMatchValue {
+                for var in pmv.pattern.collect_all_bindings() {
+                    if var.init is Some(init) {
+                        self.insert_copy(init, rhs2_bb);
+                        let local = LocalVar::new(rhs.expr_node(), var);
+                        let w = WriteValue::create(move init, move local as *LValue);
+                        rhs2_bb.add_step(move w);
+                    }
+                }
+            }
+            rhs2_bb.terminator = Some(
+                box {
+                    .target = end_bb,
+                }: BrForward as *Terminator
+            );
+
+            let comptime_false = CompileTimeValue::create_false(binary_rv.op.source_span) as *RValue;
+            let phi = PhiValue::create(binary_rv.op.source_span);
+            phi.add_incoming(comptime_false, move lhs_end);
+            phi.add_incoming(move comptime_false, move rhs_end);
+            phi.add_incoming(move load_rhs, move rhs2_bb);
+
+            end_bb.add_step(phi as *XValue);
+            return (move phi as *RValue, move end_bb);
+        }
+        else if binary_rv.op.token_kind is TokenKind::Punctuation(PunctuationKind::OrOr) {
+            let (lhs, lhs_end) = self.trans_rvalue(binary_rv.lhs, bb);
+            let rhs_bb = self.new_bb();
+            let end_bb = self.new_bb();
+
+            lhs_end.terminator = Some(
+                    box {
+                        .cond = move lhs,
+                        .target_true = end_bb,
+                        .target_false = rhs_bb,
+                    }: BrBool as *Terminator
+                );
+
+            let (rhs, rhs_end) = self.trans_rvalue(binary_rv.rhs, rhs_bb);
+            let load_rhs = LoadValue::create(rhs);
+            rhs_end.add_step(load_rhs);
+            rhs_end.terminator = Some(
+                box {
+                    .target = end_bb
+                }: BrForward as *Terminator
+            );
+
+            let comptime_true = CompileTimeValue::create_true(binary_rv.op.source_span) as *RValue;
+            let phi = PhiValue::create(binary_rv.op.source_span);
+            phi.add_incoming(comptime_true, lhs_end);
+            phi.add_incoming(load_rhs, rhs_end);
+
+            end_bb.add_step(phi as *XValue);
+            return (move phi as *RValue, move end_bb);
+        }
+        else {
+            let (lhs, lhs_end) = self.trans_rvalue(binary_rv.lhs, bb);
+            binary_rv.lhs = lhs;
+            let (rhs, rhs_end) = self.trans_rvalue(binary_rv.rhs, lhs_end);
+            binary_rv.rhs = rhs;
+
+            rhs_end.add_step(binary_rv as *RValue);
+            return (move binary_rv as *RValue, move rhs_end);
+        }
+    }
+
+    // todo 有些临时变量, 需要在语句结束之后就马上析构。目前为了实现简单, 统一在语句块结束的时候析构, 是错误的
+    fn promote_local(&mut self, v: *RValue, bb: *BasicBlock) -> (*RValue, *BasicBlock) {
+        match v {
+            type *ReadValue => {
+                return self.trans_rvalue(move v, move bb);
+            }
+            idx_rv: *IndexRValue => {
+                let (base, new_bb) = self.promote_local(idx_rv.base, bb);
+                idx_rv.base = move base;
+                return (move idx_rv as *RValue, move new_bb);
+            }
+            field_rv: *FieldRValue => {
+                let base_sty = field_rv.base.get_stype();
+                if base_sty.type_symbol is type *ArcPointerSymbol {
+                    let (base, new_bb) = self.trans_rvalue(field_rv.base, bb);
+                    let temp = self.new_temp(base, new_bb);
+                    field_rv.base = ReadValue::new(base.expr_node(), temp.sym_var) as *RValue;
+                    return (move field_rv as *RValue, move bb);
+                } else {
+                    let (base, new_bb) = self.promote_local(field_rv.base, bb);
+                    field_rv.base = move base;
+                    return (move field_rv as *RValue, move new_bb);
+                }
+            }
+            tup_rv: *TupleAccessRValue => {
+                let (base, new_bb) = self.trans_rvalue(tup_rv.base, bb);
+                let temp = self.new_temp(base, new_bb);
+                tup_rv.base = ReadValue::new(base.expr_node(), temp.sym_var) as *RValue;
+                return (move tup_rv as *RValue, move new_bb);
+            }
+            deref_rv: *DerefRValue => {
+                let base_sty = deref_rv.operand.get_stype();
+                if base_sty.type_symbol is type *ArcPointerSymbol {
+                    let (operand, new_bb) = self.trans_rvalue(deref_rv.operand, bb);
+                    let temp = self.new_temp(operand, new_bb);
+                    deref_rv.operand = move operand;
+                    return (move deref_rv as *RValue, move bb);
+                } else {
+                    let (op, new_bb) = self.promote_local(deref_rv.operand, bb);
+                    deref_rv.operand = move op;
+                    return (move deref_rv as *RValue, move new_bb);
+                }
+            }
+            cast_rv: *CastValue => {
+                if cast_rv.resolved_kind is ResolvedCastKind::SameType {
+                    return self.promote_local(cast_rv.operand, bb);
+                } else {
+                    let (new_v, new_bb) = self.trans_rvalue(v, bb);
+                    let temp = self.new_temp(new_v, bb);
+                    return (ReadValue::new(v.expr_node(), temp.sym_var) as *RValue, move new_bb);
+                }
+            }
+            ctx_rv: *ContextValue => {
+                return self.promote_local(ctx_rv.inner, move bb);
+            }
+            type *QualifiedPathValue => {
+                return self.trans_rvalue(move v, move bb);
+            }
+            ty_asc_rv: *TypeAscriptionValue => {
+                return self.promote_local(ty_asc_rv.inner, move bb);
+            }
+            type *AllocaValue => {
+                return (move v, move bb);
+            }
+
+            _ => {
+                let (new_v, new_bb) = self.trans_rvalue(v, bb);
+                let temp = self.new_temp(move new_v, new_bb);
+                return (ReadValue::new(v.expr_node(), temp.sym_var) as *RValue, move new_bb);
+            }
+        }
+        return (move v, move bb);
+    }
+
+    fn trans_select_and_chain(&mut self, chain: Vec<*RValue>, then_br: *RValue, else_br: *RValue, bb_start: *BasicBlock) -> (*RValue, *BasicBlock) {
+        let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
+        let bb_cond_false = self.new_bb();
+        let bb_end = self.new_bb();
+
+        let mut bb = bb_start;
+        for elem in chain {
+            let (item, item_bb) = self.trans_rvalue(elem, bb);
+
+            let true_lhs_bb = self.new_bb();
+            item_bb.terminator = Some(box {
+                .cond = item,
+                .target_true = true_lhs_bb,
+                .target_false = bb_cond_false,
+            }: BrBool as *Terminator);
+
+            // true 分支初始化变量绑定
+            if item is pmv: *PatternMatchValue {
+                for var in pmv.pattern.collect_all_bindings() {
+                    if var.init is Some(init) {
+                        self.insert_copy(init, true_lhs_bb);
+                        let local = LocalVar::new(item.expr_node(), var);
+                        let w = WriteValue::create(move init, move local as *LValue);
+                        true_lhs_bb.add_step(move w);
+                    }
+                    all_pmv_bindings.push(move var);
+                }
+            }
+            bb = true_lhs_bb;
+        }
+
+        let (then_val, then_bb_end) = self.trans_rvalue(then_br, bb);
+        self.insert_copy_if_needed(then_val, then_bb_end);
+        let alloca_true_val = AllocaValue::create(then_val);
+        then_bb_end.add_step(alloca_true_val);
+
+        let (else_val, else_bb_end) = self.trans_rvalue(else_br, bb_cond_false);
+        self.insert_copy_if_needed(else_val, else_bb_end);
+        let alloca_false_val = AllocaValue::create(else_val);
+        else_bb_end.add_step(alloca_false_val);
+
+        then_bb_end.terminator = Some(box {
+            .target = bb_end
+        }: BrForward as *Terminator);
+        else_bb_end.terminator = Some(box {
+            .target = bb_end
+        }: BrForward as *Terminator);
+
+        let phi = PhiValue::create(then_val.expr_node().span()); // 位置信息不准确
+        phi.for_alloca = true;
+        phi.add_incoming(alloca_true_val, then_bb_end);
+        phi.add_incoming(alloca_false_val, else_bb_end);
+        bb_end.add_step(phi as *XValue);
+
+        // 条件析构所有的模式中的变量绑定
+        for v in all_pmv_bindings {
+            v.drop_flag = Some(VarSymbol::create(v.var_node.span(), SType::sty_bool()));
+            self.drop_var_sym(move v, bb_end);
+        }
+
+        return (move phi as *RValue, move bb_end);
+    }
+
+}
+
+// 1. 报错, static/const 名字不让 move
+// 2. tuple/struct/enum/union 成员访问 不让 move
+fn ensure_expr_can_move(v: *RValue) {
+    if v is rv: *ReadValue {
+        if !rv.sym_var.is_const() && !rv.sym_var.is_static() {
+            // ok
+            return;
+        }
+    }
+    
+    DiagnosticEngine::get().emit_expr_cannot_move(v.expr_node().span());
+}

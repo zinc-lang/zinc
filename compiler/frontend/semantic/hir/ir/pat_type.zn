@@ -1,0 +1,49 @@
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::pattern::*;
+use ::self::frontend::semantic::hir::checker::TypeCheckContext;
+use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use ::self::frontend::diagnostic::*;
+use super::*;
+
+impl TypeNamePattern {
+    fn new(n: *TypeNamePatternNode, pat_sty: *SType) -> *Self {
+        return box {
+            .node = move n,
+            .pat_sty = move pat_sty,
+            .matches_with = None,
+        }: TypeNamePattern;
+    }
+}
+
+impl Pattern for TypeNamePattern {
+    fn pattern_node(&self) -> *PatternNode {
+        return self.node as *PatternNode;
+    }
+    fn destructure(&mut self, expr: *RValue, is_refutable: Bool) {
+        self.matches_with = Some(expr);
+    }
+    fn collect_all_bindings(&self) -> Vec<*VarSymbol> {
+        return (type Vec<*VarSymbol>)::new();
+    }
+    fn type_check(&mut self, ctx: &mut TypeCheckContext) {
+        let mw = self.matches_with.get_or_panic("BUG: pattern does not know what expression it matches with");
+        let expr_ty = ctx.infer(mw);
+        if !(ensure_type_valid(expr_ty, mw.expr_node().span())) {
+            return;
+        }
+
+        if !(ensure_type_valid(self.pat_sty, self.node.span())) {
+            return;
+        }
+
+        let k = resolve_type_test_kind(expr_ty, self.pat_sty);
+        if k is TypeTestKind::AlwaysTrue {
+            DiagnosticEngine::get().emit_type_test_always_true(self.node.span());
+        }
+        if k is TypeTestKind::AlwaysFalse {
+            DiagnosticEngine::get().emit_type_test_always_false(self.node.span());
+        }
+    }
+}

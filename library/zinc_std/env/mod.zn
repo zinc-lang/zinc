@@ -1,0 +1,33 @@
+use ::self::fs::Path;
+
+extern fn zinc_core_get_main_args() -> Slice<'static, Str<'static>>;
+extern fn zinc_core_set_current_dir(path: *raw UInt8, len: UInt) -> Bool;
+extern fn zinc_core_current_exe(buf: *raw mut UInt8, len: UInt) -> UInt;
+
+pub fn args() -> Slice<'static, Str<'static>> {
+    return unsafe(zinc_core_get_main_args());
+}
+
+pub fn set_current_dir(path: &Path) -> Bool {
+    let s = path.as_str().deref();
+    return unsafe(zinc_core_set_current_dir(s.pointer as *raw UInt8, s.length));
+}
+
+pub fn current_exe() -> Option<Path> {
+    let mut buf: [UInt8; 255] = [0_u8; 255];
+    let s: SliceMut<UInt8> = &mut buf;
+    unsafe {
+        let len = zinc_core_current_exe(s.pointer as *raw mut UInt8, s.length);
+        if len == 0 {
+            return None;
+        } else {
+            let str: Str = {
+                .pointer = s.pointer as &UInt8,
+                .length = s.length,
+            }: Str;
+            return Some(Path::new(str));
+        }
+    }
+}
+
+// 获取和设置环境变量
