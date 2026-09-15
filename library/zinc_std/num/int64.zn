@@ -40,6 +40,105 @@ impl Int64 {
     pub fn bit_shr(self, n: UInt32) -> Int64 {
         return ::self::intrinsic::bit_shr(<Int64>, self, n);
     }
+    pub fn min_value() -> Int64 {
+        return 0x8000000000000000_u64 as Int64;
+    }
+    pub fn max_value() -> Int64 {
+        return 0x7FFFFFFFFFFFFFFF_i64;
+    }
+
+    pub fn wrapping_add(self, rhs: Int64) -> Int64 {
+        return self + rhs;
+    }
+
+    pub fn wrapping_sub(self, rhs: Int64) -> Int64 {
+        return self - rhs;
+    }
+
+    pub fn wrapping_mul(self, rhs: Int64) -> Int64 {
+        return self * rhs;
+    }
+
+    pub fn checked_add(self, rhs: Int64) -> Option<Int64> {
+        let sum = self + rhs;
+        if rhs > 0 && sum < self {
+            return None;
+        }
+        if rhs < 0 && sum > self {
+            return None;
+        }
+        return Some(sum);
+    }
+
+    pub fn checked_sub(self, rhs: Int64) -> Option<Int64> {
+        let diff = self - rhs;
+        if rhs > 0 && diff > self {
+            return None;
+        }
+        if rhs < 0 && diff < self {
+            return None;
+        }
+        return Some(diff);
+    }
+
+    pub fn checked_mul(self, rhs: Int64) -> Option<Int64> {
+        if self == 0 || rhs == 0 {
+            return Some(0);
+        }
+        if self == Self::min_value() && rhs == -1_i64 {
+            return None;
+        }
+        if rhs == Self::min_value() && self == -1_i64 {
+            return None;
+        }
+        let prod = self * rhs;
+        if prod / rhs != self {
+            return None;
+        }
+        return Some(prod);
+    }
+
+    pub fn saturating_add(self, rhs: Int64) -> Int64 {
+        match self.checked_add(rhs) {
+            Some(v) => {
+                return v;
+            }
+            None => {
+                if rhs > 0 {
+                    return Self::max_value();
+                }
+                return Self::min_value();
+            }
+        }
+    }
+
+    pub fn saturating_sub(self, rhs: Int64) -> Int64 {
+        match self.checked_sub(rhs) {
+            Some(v) => {
+                return v;
+            }
+            None => {
+                if rhs > 0 {
+                    return Self::min_value();
+                }
+                return Self::max_value();
+            }
+        }
+    }
+
+    pub fn saturating_mul(self, rhs: Int64) -> Int64 {
+        match self.checked_mul(rhs) {
+            Some(v) => {
+                return v;
+            }
+            None => {
+                if (self > 0) == (rhs > 0) {
+                    return Self::max_value();
+                }
+                return Self::min_value();
+            }
+        }
+    }
 }
 
 impl ToString for Int64 {

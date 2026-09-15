@@ -1,5 +1,6 @@
 use ::self::iter::Iterable;
 use ::self::iter::Iterator;
+use ::self::cmp::PartialOrd;
 
 pub struct RangeExclusive<T> {
     pub start: T,
@@ -11,24 +12,291 @@ pub struct RangeInclusive<T> {
     pub end: T,
 }
 
-trait Step: PartialOrd {
+pub trait Step: PartialOrd {
     fn forward(self, count: UInt) -> Option<Self>;
     fn backward(self, count: UInt) -> Option<Self>;
 }
 
-impl<T> Iterable for RangeExclusive<T> where T: Step {
-
+impl<T> RangeExclusive<T> {
+    pub fn new(start: T, end: T) -> Self {
+        return {
+            .start = start,
+            .end = end,
+        }: RangeExclusive<T>;
+    }
 }
 
-impl<T> Iterable for RangeInclusive<T> where T: Step {
-
+impl<T> RangeInclusive<T> {
+    pub fn new(start: T, end: T) -> Self {
+        return {
+            .start = start,
+            .end = end,
+        }: RangeInclusive<T>;
+    }
 }
 
 pub struct IterRangeExclusive<T> where T: Step {
-
+    cur: T,
+    end: T,
+    yielded: T,
+    done: Bool,
 }
 
 pub struct IterRangeInclusive<T> where T: Step {
-
+    cur: T,
+    end: T,
+    yielded: T,
+    done: Bool,
 }
 
+impl<T> Iterable for RangeExclusive<T> where T: Step {
+    // Iterator owns copies of start/end, so it does not borrow the range.
+    type Iter<'i> = IterRangeExclusive<T>;
+
+    fn iter<'a>(&'a self) -> IterRangeExclusive<T> {
+        return {
+            .cur = self.start,
+            .end = self.end,
+            .yielded = self.start,
+            .done = false,
+        }: IterRangeExclusive<T>;
+    }
+}
+
+impl<T> Iterable for RangeInclusive<T> where T: Step {
+    // Iterator owns copies of start/end, so it does not borrow the range.
+    type Iter<'i> = IterRangeInclusive<T>;
+
+    fn iter<'a>(&'a self) -> IterRangeInclusive<T> {
+        return {
+            .cur = self.start,
+            .end = self.end,
+            .yielded = self.start,
+            .done = false,
+        }: IterRangeInclusive<T>;
+    }
+}
+
+impl<T> Iterator for IterRangeExclusive<T> where T: Step {
+    type Item = T;
+
+    fn next<'n>(&'n mut self) -> Option<&'n T> {
+        if self.done {
+            return None;
+        }
+        if !self.cur.lt(&self.end) {
+            return None;
+        }
+        self.yielded = self.cur;
+        match self.cur.forward(1_u) {
+            Some(n) => {
+                self.cur = n;
+            }
+            None => {
+                self.done = true;
+            }
+        }
+        return Some(&self.yielded);
+    }
+}
+
+impl<T> Iterator for IterRangeInclusive<T> where T: Step {
+    type Item = T;
+
+    fn next<'n>(&'n mut self) -> Option<&'n T> {
+        if self.done {
+            return None;
+        }
+        if self.cur.gt(&self.end) {
+            return None;
+        }
+        self.yielded = self.cur;
+        if !self.cur.lt(&self.end) && !self.cur.gt(&self.end) {
+            self.done = true;
+        } else {
+            match self.cur.forward(1_u) {
+                Some(n) => {
+                    self.cur = n;
+                }
+                None => {
+                    self.done = true;
+                }
+            }
+        }
+        return Some(&self.yielded);
+    }
+}
+
+impl Step for Int {
+    fn forward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_add(count as Int);
+    }
+    fn backward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_sub(count as Int);
+    }
+}
+
+impl Step for Int8 {
+    fn forward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_add(count as Int8);
+    }
+    fn backward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_sub(count as Int8);
+    }
+}
+
+impl Step for Int16 {
+    fn forward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_add(count as Int16);
+    }
+    fn backward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_sub(count as Int16);
+    }
+}
+
+impl Step for Int32 {
+    fn forward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_add(count as Int32);
+    }
+    fn backward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_sub(count as Int32);
+    }
+}
+
+impl Step for Int64 {
+    fn forward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_add(count as Int64);
+    }
+    fn backward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_sub(count as Int64);
+    }
+}
+
+impl Step for Short {
+    fn forward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_add(count as Short);
+    }
+    fn backward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_sub(count as Short);
+    }
+}
+
+impl Step for UInt {
+    fn forward(self, count: UInt) -> Option<Self> {
+        return self.checked_add(count);
+    }
+    fn backward(self, count: UInt) -> Option<Self> {
+        return self.checked_sub(count);
+    }
+}
+
+impl Step for UInt8 {
+    fn forward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_add(count as UInt8);
+    }
+    fn backward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_sub(count as UInt8);
+    }
+}
+
+impl Step for UInt16 {
+    fn forward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_add(count as UInt16);
+    }
+    fn backward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_sub(count as UInt16);
+    }
+}
+
+impl Step for UInt32 {
+    fn forward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_add(count as UInt32);
+    }
+    fn backward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_sub(count as UInt32);
+    }
+}
+
+impl Step for UInt64 {
+    fn forward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_add(count as UInt64);
+    }
+    fn backward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_sub(count as UInt64);
+    }
+}
+
+impl Step for UShort {
+    fn forward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_add(count as UShort);
+    }
+    fn backward(self, count: UInt) -> Option<Self> {
+        if count > Self::max_value() as UInt {
+            return None;
+        }
+        return self.checked_sub(count as UShort);
+    }
+}

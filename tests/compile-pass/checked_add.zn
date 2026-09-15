@@ -1,0 +1,8 @@
+// checked/wrapping/saturating integer helpers and range syntax
+fn main() {
+    let a: Int = 1_i.checked_add(2_i).get_or_panic();
+    let b: Int = 7_i.wrapping_add(1_i);
+    let c: UInt8 = 250_u8.saturating_add(20_u8);
+    let d: RangeExclusive<Int> = 0_i ..< 4_i;
+    let e: RangeInclusive<Int> = 0_i ..= 3_i;
+}

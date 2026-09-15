@@ -1,0 +1,4 @@
+// r# without a following quote is not a raw string
+fn main() {
+    let s: Str = r#not_a_string;
+}

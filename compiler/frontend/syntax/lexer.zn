@@ -107,21 +107,10 @@ impl Lexer {
             }
         } else if ch == 34 { // 双引号 '"', 这么写是因为编辑器高亮功能有 bug
             return self.lex_string_literal();
-        } else if ch == b'r' && next == 34 {
-            self.cur_index += 1;
-            DiagnosticEngine::get().emit_unimplemented(
-                self.span_by_index(begin, self.cur_index),
-                "raw string literal");
-        } else if ch == b'r' && next == b'#' {
-            self.cur_index += 1;
-            DiagnosticEngine::get().emit_unimplemented(
-                self.span_by_index(begin, self.cur_index),
-                "raw string literal");
+        } else if ch == b'r' && (next == 34 || next == b'#') {
+            return self.lex_raw_string_literal();
         } else if ch == b'c' && next == 34 {
-            self.cur_index += 1;
-            DiagnosticEngine::get().emit_unimplemented(
-                self.span_by_index(begin, self.cur_index),
-                "C string literal");
+            return self.lex_c_string_literal();
         } else if ch == b'f' && next == 34 {
             // string interpolation
             self.cur_index += 1;
@@ -403,6 +392,61 @@ impl Lexer {
         return token;
     }
 
+
+    fn lex_raw_string_literal(&mut self) -> Token {
+        let begin = self.cur_index;
+        self.cur_index += 1;
+        let mut hash_count: UInt = 0;
+        while self.peek_byte(0) == b'#' {
+            hash_count += 1;
+            self.cur_index += 1;
+        }
+        if self.peek_byte(0) != 34 {
+            let span = self.span_by_index(begin, self.cur_index);
+            DiagnosticEngine::get().emit_invalid_raw_string(span);
+            return Token::invalid(span);
+        }
+        self.cur_index += 1;
+        while true {
+            let ch = self.peek_byte(0);
+            if ch == 0 {
+                let span = self.span_by_index(begin, self.cur_index);
+                DiagnosticEngine::get().emit_unterminated_string(span);
+                return Token::invalid(span);
+            }
+            if ch == 34 {
+                let mut hashes_ok = true;
+                let mut j: UInt = 0;
+                while j < hash_count {
+                    if self.peek_byte(1 + j) != b'#' {
+                        hashes_ok = false;
+                    }
+                    j += 1;
+                }
+                if hashes_ok {
+                    self.cur_index += 1 + hash_count;
+                    let span = self.span_by_index(begin, self.cur_index);
+                    let token = {
+                        .token_kind = TokenKind::Literal(LiteralKind::LIT_RAW_STR),
+                        .source_span = span,
+                    }: Token;
+                    return token;
+                }
+            }
+            self.cur_index += 1;
+        }
+        return Token::invalid(self.span_by_index(begin, self.cur_index));
+    }
+
+    fn lex_c_string_literal(&mut self) -> Token {
+        let begin = self.cur_index;
+        self.cur_index += 1;
+        let mut token = self.lex_string_literal();
+        token.token_kind = TokenKind::Literal(LiteralKind::LIT_CSTR);
+        token.source_span = self.span_by_index(begin, self.cur_index);
+        return token;
+    }
+
     fn lex_string_literal(&mut self) -> Token {
         let begin = self.cur_index;
         self.cur_index += 1; // 跳过开头的双引号 "
@@ -431,7 +475,9 @@ impl Lexer {
             }: Token;
             return token;
         }
-        return Token::invalid(self.span_by_index(begin, self.cur_index));
+        let span = self.span_by_index(begin, self.cur_index);
+        DiagnosticEngine::get().emit_unterminated_string(span);
+        return Token::invalid(span);
     }
 
     fn lex_ident(&mut self) -> Token {

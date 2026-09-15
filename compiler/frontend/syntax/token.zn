@@ -82,6 +82,8 @@ pub enum LiteralKind {
     LIT_BYTE,
     LIT_INT,
     LIT_FLOAT,
+    LIT_RAW_STR,
+    LIT_CSTR,
 }
 
 impl PartialEq for LiteralKind {
@@ -336,6 +338,8 @@ impl ToString for LiteralKind {
             LiteralKind::LIT_BYTE => buf.push_str("byte literal");
             LiteralKind::LIT_INT => buf.push_str("integer literal");
             LiteralKind::LIT_FLOAT => buf.push_str("float literal");
+            LiteralKind::LIT_RAW_STR => buf.push_str("raw string literal");
+            LiteralKind::LIT_CSTR => buf.push_str("C string literal");
         }
     }
 

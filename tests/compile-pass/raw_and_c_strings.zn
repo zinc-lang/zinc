@@ -1,0 +1,7 @@
+// raw string literals and C string literals (c"..." is Str plus a trailing NUL)
+fn main() {
+    let a: Str = r"hello";
+    let b: Str = r#"quotes " inside"#;
+    let c: Str = r##"foo #" bar"##;
+    let d: Str = c"hello";
+}

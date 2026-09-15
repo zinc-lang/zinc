@@ -1,0 +1,9 @@
+// for-in over exclusive and inclusive ranges (typecheck only)
+fn main() {
+    for i in 0_i ..< 4_i {
+        let x = i;
+    }
+    for j in 0_i ..= 3_i {
+        let y = j;
+    }
+}

@@ -6,8 +6,7 @@ use ::self::primitives::default::Default;
 
 impl ToString for Char {
     fn to_string_inplace(&self, buf: &mut String) {
-        // todo 支持 utf8 转换
-        buf.data.push(*self as UInt32 as UInt8);
+        buf.push_char(*self);
     }
 
     fn to_string(&self) -> String {

@@ -131,7 +131,14 @@ fn const_value_from_lit_token(t: Token) -> Option<*ConstValue> {
                 return Some(move v as *ConstValue);
             }
             LiteralKind::LIT_STR => {
-                let s = t.raw_str();
+                let v = box StringCValue::new(t);
+                return Some(move v as *ConstValue);
+            }
+            LiteralKind::LIT_RAW_STR => {
+                let v = box StringCValue::new(t);
+                return Some(move v as *ConstValue);
+            }
+            LiteralKind::LIT_CSTR => {
                 let v = box StringCValue::new(t);
                 return Some(move v as *ConstValue);
             }
