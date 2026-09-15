@@ -1073,6 +1073,29 @@ impl CodeGenerator {
         panic;
     }
 
+    fn cg_range_aggregate(&mut self, binary_rv: *BinaryExprValue, lhs: CgValue, rhs: CgValue, ctx: *CgContext) -> CgValue {
+        let sty = binary_rv.get_stype();
+        if self.cgtype_of(sty) is Some(cgty) {
+            let addr = self.llds.create_alloca_sized(cgty);
+            let lhs_ty = self.cgtype_of(binary_rv.lhs.get_stype().canonical()).get_or_panic();
+            let rhs_ty = self.cgtype_of(binary_rv.rhs.get_stype().canonical()).get_or_panic();
+            let f0 = self.llds.create_struct_gep(cgty, addr, 0);
+            let f1 = self.llds.create_struct_gep(cgty, addr, 1);
+            if lhs.indirect {
+                self.llds.create_memcpy(f0, lhs, self.llds.get_const_int64(self.llds.storage_size_of(lhs_ty) as UInt64).as_value());
+            } else {
+                self.llds.create_store(lhs, f0);
+            }
+            if rhs.indirect {
+                self.llds.create_memcpy(f1, rhs, self.llds.get_const_int64(self.llds.storage_size_of(rhs_ty) as UInt64).as_value());
+            } else {
+                self.llds.create_store(rhs, f1);
+            }
+            return addr;
+        }
+        panic "range type lowering failed";
+    }
+
     fn cg_binary_xvalue(&mut self, binary_rv: *BinaryExprValue, ctx: *CgContext) -> CgValue {
         let lhs_sty = binary_rv.lhs.get_stype().canonical();
         let rhs_sty = binary_rv.rhs.get_stype().canonical();
@@ -1268,6 +1291,12 @@ impl CodeGenerator {
                     } else {
                         return self.llds.create_icmp_eq(lhs, rhs);
                     }
+                }
+                PunctuationKind::RangeOpen => {
+                    return self.cg_range_aggregate(binary_rv, lhs, rhs, ctx);
+                }
+                PunctuationKind::RangeClose => {
+                    return self.cg_range_aggregate(binary_rv, lhs, rhs, ctx);
                 }
                 PunctuationKind::NotEq => {
                     if lhs_sty.type_symbol is type *FloatSymbol ||

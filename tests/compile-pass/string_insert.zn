@@ -1,0 +1,7 @@
+// String::insert UTF-8
+fn main() {
+    let mut s = String::from_str("ac");
+    s.insert(1_u, 'b');
+    s.insert_str(0_u, "z");
+    s.push_char('好');
+}

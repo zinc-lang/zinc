@@ -1,0 +1,27 @@
+{
+  "fn": {
+    "prefix": "fn",
+    "body": ["fn ${1:name}(${2}) ${3:-> ${4:Type} }{", "    $0", "}"],
+    "description": "Function"
+  },
+  "struct": {
+    "prefix": "struct",
+    "body": ["struct ${1:Name} {", "    ${2:field}: ${3:Type}", "}"],
+    "description": "Struct"
+  },
+  "impl": {
+    "prefix": "impl",
+    "body": ["impl ${1:Type} {", "    $0", "}"],
+    "description": "Inherent impl"
+  },
+  "match": {
+    "prefix": "match",
+    "body": ["match ${1:expr} {", "    ${2:Pattern} => {", "        $0", "    }", "}"],
+    "description": "Match expression"
+  },
+  "mod": {
+    "prefix": "mod",
+    "body": ["mod ${1:name} {", "    $0", "}"],
+    "description": "Module"
+  }
+}

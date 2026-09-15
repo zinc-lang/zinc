@@ -40,8 +40,106 @@ impl Short {
     pub fn bit_shr(self, n: UInt32) -> Short {
         return ::self::intrinsic::bit_shr(<Short>, self, n);
     }
+    pub fn min_value() -> Short {
+        return 0x80000000_u32 as Short;
+    }
+    pub fn max_value() -> Short {
+        return 2147483647_i32 as Short;
+    }
 
-    // todo: 加上 wrapping/saturating/checked/carry strategies
+    pub fn wrapping_add(self, rhs: Short) -> Short {
+        return self + rhs;
+    }
+
+    pub fn wrapping_sub(self, rhs: Short) -> Short {
+        return self - rhs;
+    }
+
+    pub fn wrapping_mul(self, rhs: Short) -> Short {
+        return self * rhs;
+    }
+
+    pub fn checked_add(self, rhs: Short) -> Option<Short> {
+        let sum = self + rhs;
+        if rhs > 0 && sum < self {
+            return None;
+        }
+        if rhs < 0 && sum > self {
+            return None;
+        }
+        return Some(sum);
+    }
+
+    pub fn checked_sub(self, rhs: Short) -> Option<Short> {
+        let diff = self - rhs;
+        if rhs > 0 && diff > self {
+            return None;
+        }
+        if rhs < 0 && diff < self {
+            return None;
+        }
+        return Some(diff);
+    }
+
+    pub fn checked_mul(self, rhs: Short) -> Option<Short> {
+        if self == 0 || rhs == 0 {
+            return Some(0);
+        }
+        if self == Self::min_value() && rhs == -1 as Short {
+            return None;
+        }
+        if rhs == Self::min_value() && self == -1 as Short {
+            return None;
+        }
+        let prod = self * rhs;
+        if prod / rhs != self {
+            return None;
+        }
+        return Some(prod);
+    }
+
+    pub fn saturating_add(self, rhs: Short) -> Short {
+        match self.checked_add(rhs) {
+            Some(v) => {
+                return v;
+            }
+            None => {
+                if rhs > 0 {
+                    return Self::max_value();
+                }
+                return Self::min_value();
+            }
+        }
+    }
+
+    pub fn saturating_sub(self, rhs: Short) -> Short {
+        match self.checked_sub(rhs) {
+            Some(v) => {
+                return v;
+            }
+            None => {
+                if rhs > 0 {
+                    return Self::min_value();
+                }
+                return Self::max_value();
+            }
+        }
+    }
+
+    pub fn saturating_mul(self, rhs: Short) -> Short {
+        match self.checked_mul(rhs) {
+            Some(v) => {
+                return v;
+            }
+            None => {
+                if (self > 0) == (rhs > 0) {
+                    return Self::max_value();
+                }
+                return Self::min_value();
+            }
+        }
+    }
+
 }
 
 impl ToString for Short {

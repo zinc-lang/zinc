@@ -26,7 +26,15 @@ impl ConstValue for StringCValue {
 
 impl StringCValue {
     fn new(t: Token) -> Self {
+        if t.token_kind is TokenKind::Literal(LiteralKind::LIT_RAW_STR) {
+            return StringCValue::from_raw(move t);
+        }
         let mut tok_str = t.raw_str().as_str().deref();
+        if t.token_kind is TokenKind::Literal(LiteralKind::LIT_CSTR) {
+            if tok_str.starts_with("c") {
+                tok_str = tok_str.sub_str(1);
+            }
+        }
         tok_str = trim_quotes(tok_str);
 
         let mut value = String::new();
@@ -53,6 +61,44 @@ impl StringCValue {
             i += 1;
         }
 
+        if t.token_kind is TokenKind::Literal(LiteralKind::LIT_CSTR) {
+            value.push(0_u8);
+        }
+
+        return {
+            .token = move t,
+            .value = move value,
+        }: StringCValue;
+    }
+
+    fn from_raw(t: Token) -> Self {
+        let tok_str = t.raw_str().as_str().deref();
+        let mut i: UInt = 0;
+        if tok_str.len() > 0 && tok_str.index(0) == b'r' {
+            i = 1;
+        }
+        let mut hashes: UInt = 0;
+        while i < tok_str.len() && tok_str.index(i) == b'#' {
+            hashes += 1;
+            i += 1;
+        }
+        if i < tok_str.len() && tok_str.index(i) == 34 {
+            i += 1;
+        }
+        let mut end = tok_str.len();
+        if end >= 1 + hashes {
+            end = end - (1 + hashes);
+        }
+        if i > end {
+            i = end;
+        }
+        let inner = tok_str.sub_str(i, end - i);
+        let mut value = String::new();
+        let mut k: UInt = 0;
+        while k < inner.len() {
+            value.push(inner.index(k));
+            k += 1;
+        }
         return {
             .token = move t,
             .value = move value,

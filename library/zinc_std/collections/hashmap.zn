@@ -215,7 +215,56 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         }
     }
 
-    // todo 提供 Entry 系列 API
+    pub fn or_insert<'a>(&'a mut self, key: K, default: V) -> ItemRefMut<'a, V> {
+        if self.table.len() == 0 {
+            self.resize();
+        } else if ((self.size as F64 / self.table.len() as F64) > 0.75) {
+            self.resize();
+        }
+        self.table.to_unique();
+
+        let mut index = self.ideal_index(&key);
+        let mut distance: UInt = 0;
+
+        unsafe {
+            while (true) {
+                match self.table.get_unchecked_mut(index) {
+                    Entry::Occupied(ref existing_key, ref mut value, _) => {
+                        if (existing_key.eq(&key)) {
+                            return {
+                                .ptr = self.table.ptr as *(),
+                                .size = self.size,
+                                .item = value,
+                            }: ItemRefMut<'a, V>;
+                        }
+                    }
+                    Entry::Vacant => {
+                        break;
+                    }
+                    Entry::Tombstone => {}
+                }
+
+                distance += 1;
+                index = (index + 1) % self.table.len();
+            }
+
+            *self.table.get_unchecked_mut(index) = Entry::Occupied(move key, move default, distance);
+            self.size += 1;
+            match self.table.get_unchecked_mut(index) {
+                Entry::Occupied(_, ref mut value, _) => {
+                    return {
+                        .ptr = self.table.ptr as *(),
+                        .size = self.size,
+                        .item = value,
+                    }: ItemRefMut<'a, V>;
+                }
+                _ => {
+                    panic "BUG: HashMap::or_insert failed to insert";
+                }
+            }
+        }
+    }
+
 
     pub fn contains(&self, key: &K) -> Bool {
         if self.size == 0 {

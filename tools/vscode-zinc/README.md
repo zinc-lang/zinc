@@ -1,16 +1,17 @@
-# vscode-zinc README
+# vscode-zinc
 
+VS Code support for the Zinc language (`.zn` files).
 
 ## Features
 
-Keywords highting.
+- Syntax highlighting for keywords, types, numbers, comments, strings, raw strings (`r#"..."#`), f-strings, and C strings
+- Bracket matching, comment toggling, and auto-closing pairs
+- Snippets: `fn`, `struct`, `impl`, `match`, `mod`
 
-## Requirements
+This extension does **not** include an LSP yet. Use it for editing; compile with the `zinc` CLI.
 
-打包命令: vsce package
+## Package
 
-## Extension Settings
-
-## Known Issues
-
-**Enjoy!**
+```
+vsce package
+```
