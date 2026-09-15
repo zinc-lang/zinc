@@ -69,16 +69,113 @@ LLVM_LIBS = [
     './out/llvm/lib/libLLVMTargetParser.a'
     ]
 
-def build_llvm():
-    if not os.path.exists(LLVM_CMAKE_OUTPUT_DIR):
-        shutil.rmtree('./build-llvm', ignore_errors=True)
-        os.makedirs('./build-llvm')
-        os.chdir("./build-llvm")
-        subprocess.run('cmake -DCMAKE_BUILD_TYPE=Debug -DLLVM_TARGETS_TO_BUILD=host ../third_party/llvm-project/llvm', shell=True,check=True,text=True)
-        subprocess.run('cmake --build . --config Debug --parallel 4', shell=True,check=True,text=True)
-        subprocess.run(f'cmake -DCMAKE_INSTALL_PREFIX={LLVM_CMAKE_OUTPUT_DIR} -P cmake_install.cmake', shell=True,check=True,text=True)
+STAGE0_URL = os.environ.get(
+    "ZINC_STAGE0_URL",
+    "https://github.com/zinc-lang/zinc/releases/download/v0.0.1/stage0.zip",
+)
+
+def link_stage_llvm(stage_dir):
+    if not os.path.isdir(stage_dir):
+        return
+    link = os.path.join(stage_dir, "llvm")
+    if os.path.islink(link) or os.path.exists(link):
+        if os.path.islink(link):
+            os.remove(link)
+        else:
+            return
+    if os.path.exists(LLVM_CMAKE_OUTPUT_DIR):
+        os.symlink(LLVM_CMAKE_OUTPUT_DIR, link, target_is_directory=True)
+
+def setup_stage0():
+    os.chdir(REPO_DIR)
+    stage0 = os.path.join(CMAKE_OUTPUT_DIR, "stage0")
+    zinc_bin = os.path.join(stage0, "bin", "zinc")
+    if os.path.exists(zinc_bin):
+        print(f"stage0 already present at {stage0}")
+        link_stage_llvm(stage0)
+        return
+
+    os.makedirs(CMAKE_OUTPUT_DIR, exist_ok=True)
+    zip_path = os.path.join(CMAKE_OUTPUT_DIR, "stage0.zip")
+    if not os.path.exists(zip_path):
+        print(f"download: {STAGE0_URL}")
+        subprocess.run(["curl", "-fL", "-o", zip_path, STAGE0_URL], check=True)
+
+    tmp = os.path.join(CMAKE_OUTPUT_DIR, "stage0-unpack")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    print(f"unpack {zip_path}")
+    if shutil.which("unzip"):
+        subprocess.run(["unzip", "-q", zip_path, "-d", tmp], check=True)
     else:
+        import zipfile
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(tmp)
+
+    if os.path.isdir(os.path.join(tmp, "stage0")):
+        shutil.move(os.path.join(tmp, "stage0"), stage0)
+    elif os.path.isdir(os.path.join(tmp, "stage1")):
+        # v0.0.1 ships the compiler under stage1/
+        shutil.move(os.path.join(tmp, "stage1"), stage0)
+    elif os.path.isdir(os.path.join(tmp, "bin")):
+        shutil.move(tmp, stage0)
+        tmp = None
+    else:
+        raise SystemExit(f"unrecognized stage0 zip layout in {tmp}")
+
+    if tmp is not None:
+        shutil.rmtree(tmp, ignore_errors=True)
+    os.chmod(os.path.join(stage0, "bin", "zinc"), 0o755)
+    link_stage_llvm(stage0)
+    print(f"stage0 ready at {stage0}")
+
+def build_llvm():
+    os.chdir(REPO_DIR)
+    if os.path.exists(LLVM_CMAKE_OUTPUT_DIR):
         print(f'LLVM has already been built in {LLVM_CMAKE_OUTPUT_DIR}, if you want to re-build, please delete this directory')
+        link_stage_llvm(os.path.join(CMAKE_OUTPUT_DIR, "stage0"))
+        return
+
+    llvm_src = os.path.join(REPO_DIR, "third_party", "llvm-project", "llvm")
+    if not os.path.exists(os.path.join(llvm_src, "CMakeLists.txt")):
+        raise SystemExit(
+            "LLVM sources missing. Fetch the pinned submodule, e.g.\n"
+            "  git fetch --depth 1 origin $(git ls-tree HEAD third_party/llvm-project | awk '{print $3}')"
+        )
+
+    build_type = os.environ.get("ZINC_LLVM_BUILD_TYPE", "Debug")
+    jobs = os.environ.get("ZINC_LLVM_JOBS", str(os.cpu_count() or 4))
+    shutil.rmtree('./build-llvm', ignore_errors=True)
+    os.makedirs('./build-llvm')
+    cmake = [
+        "cmake",
+        f"-DCMAKE_BUILD_TYPE={build_type}",
+        f"-DCMAKE_INSTALL_PREFIX={LLVM_CMAKE_OUTPUT_DIR}",
+        "-DLLVM_TARGETS_TO_BUILD=host",
+        "-DLLVM_INCLUDE_TESTS=OFF",
+        "-DLLVM_INCLUDE_EXAMPLES=OFF",
+        "-DLLVM_INCLUDE_BENCHMARKS=OFF",
+        "-DLLVM_INCLUDE_DOCS=OFF",
+        "-DLLVM_ENABLE_BINDINGS=OFF",
+        "-DLLVM_ENABLE_OCAMLDOC=OFF",
+        "-DLLVM_BUILD_TOOLS=OFF",
+        "-DLLVM_ENABLE_ZLIB=ON",
+        "-DLLVM_ENABLE_ZSTD=ON",
+        "-DLLVM_ENABLE_TERMINFO=OFF",
+        "-DLLVM_ENABLE_LIBXML2=OFF",
+        "-DLLVM_PARALLEL_LINK_JOBS=1",
+        llvm_src,
+    ]
+    if shutil.which("ninja"):
+        cmake[1:1] = ["-G", "Ninja"]
+    try:
+        os.chdir("./build-llvm")
+        subprocess.run(cmake, check=True, text=True)
+        subprocess.run(["cmake", "--build", ".", "--config", build_type, "--parallel", jobs], check=True, text=True)
+        subprocess.run(["cmake", "--install", ".", "--prefix", LLVM_CMAKE_OUTPUT_DIR], check=True, text=True)
+    finally:
+        os.chdir(REPO_DIR)
+    link_stage_llvm(os.path.join(CMAKE_OUTPUT_DIR, "stage0"))
 
 def build_std(folder):
     shutil.rmtree('./build-std/', ignore_errors=True)
@@ -174,5 +271,11 @@ if __name__ == "__main__":
             build(2, False)
         build(3, False)
     
+    if sys.argv[1] == "setup-stage0":
+        setup_stage0()
+
     if sys.argv[1] == "build-llvm":
         build_llvm()
+
+    if sys.argv[1] == "test":
+        print("No compile-test corpus on this branch (see the stdlib/tests PR).")
