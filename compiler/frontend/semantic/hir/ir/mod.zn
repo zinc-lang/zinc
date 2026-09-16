@@ -130,6 +130,7 @@ pub struct SymbolTable {
 pub trait TypeSymbol : Symbol {
     virtual fn to_string_with_args(&self, args: &GenericArgs) -> String;
     virtual fn related_impls(&self) -> Vec<*ImplSymbol>;
+    virtual fn lifetime_count(&self) -> UInt;
     virtual fn to_sty(*self, args: GenericArgs) -> *SType;
     virtual fn to_sty(*self) -> *SType;
 }

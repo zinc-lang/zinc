@@ -1,1 +1,150 @@
 use ::self::frontend::semantic::hir::ir::*;
+use super::*;
+use super::uint_set::*;
+
+impl LivenessChecker {
+    // 在前面的阶段中, 类型检查的时候是忽略了生命周期参数的, 这个时候把它补充完整
+    fn setup_lifetime_params(&mut self) {
+        for bb in self.cfg.basic_blocks {
+            for step in bb.steps {
+            }
+        }
+    }
+
+    // todo: complete lifetime check
+    fn check_lifetime(&mut self) {
+        for bb in self.cfg.basic_blocks {
+            for step in bb.steps {
+                if step.value is wv: *WriteValue {
+                    let sty = wv.dst.get_stype();
+                    if sty.type_symbol is type *BorrowImmutSymbol ||
+                        sty.type_symbol is type *BorrowMutSymbol {
+
+                        let src_lt = self.lifescope_of_value(wv.src);
+                        let dst_lt = self.lifescope_of_value(wv.dst);
+
+                        if dst_lt.lives_shorter_than(&src_lt) {
+                            DiagnosticEngine::get().emit_lives_not_longer_enough(wv.src.expr_node().span());
+                        }
+                    }
+                }
+            }
+            if bb.terminator is Some(ret: *BrRet) {
+                // TODO 检查返回值的生命周期是否与函数签名相匹配
+            }
+        }
+    }
+
+    fn lifescope_of_value(&self, xv: *XValue) -> LifeScope {
+
+        match xv {
+            lv: *LocalVar => {
+                if lv.sym_var.is_static() || lv.sym_var.is_const() {
+                    return LifeScope::Static;
+                }
+                let i = lv.sym_var as *raw VarSymbol as UInt;
+                if self.local_liveness.at(&i) is Some(ls) {
+                    return LifeScope::Local(move ls);
+                }
+            }
+            rv: *ReadValue => {
+                if rv.sym_var.is_static() || rv.sym_var.is_const() {
+                    return LifeScope::Static;
+                }
+                let i = rv.sym_var as *raw VarSymbol as UInt;
+                if self.local_liveness.at(&i) is Some(ls) {
+                    return LifeScope::Local(move ls);
+                }
+            }
+            addr: *AddressofValue => {
+                if extract_local(addr.operand as *XValue) is Some(vsym) {
+                    if vsym.is_static() || vsym.is_const() {
+                        return LifeScope::Static;
+                    }
+                    let i = vsym as *raw VarSymbol as UInt;
+                    if self.local_liveness.at(&i) is Some(ls) {
+                        return LifeScope::Local(move ls);
+                    }
+                }
+            }
+            _ => return LifeScope::Unknown;
+        }
+        return LifeScope::Unknown;
+    }
+}
+
+
+enum LifeScope {
+    Unknown,
+    Static,
+    Local(UIntSet),
+    Out(*LifetimeSymbol),
+}
+
+impl LifeScope {
+    fn lives_shorter_than(&self, other: &LifeScope) -> Bool {
+        if self is LifeScope::Unknown {
+            return false;
+        }
+        if other is LifeScope::Unknown {
+            return false;
+        }
+
+        match self {
+            LifeScope::Static => {
+                match other {
+                    LifeScope::Static => {
+                        return false;
+                    }
+                    LifeScope::Local(_) => {
+                        return true;
+                    }
+                    LifeScope::Out(_) => {
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+            LifeScope::Local(dst) => {
+                match other {
+                    LifeScope::Static => {
+                        return false;
+                    }
+                    LifeScope::Local(src) => {
+                        return src.is_subset_of(&dst);
+                    }
+                    LifeScope::Out(_) => {
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+            LifeScope::Out(_) => {
+                match other {
+                    LifeScope::Static => {
+                        return false;
+                    }
+                    LifeScope::Local(_) => {
+                        return true;
+                    }
+                    LifeScope::Out(_) => {
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        return false;
+    }
+
+    fn to_string(&self) -> String {
+        match self {
+            LifeScope::Unknown => return f"LifeScope::Unknown";
+            LifeScope::Static => return f"LifeScope::Static";
+            LifeScope::Local(_) => return f"LifeScope::Local";
+            LifeScope::Out(_) => return f"LifeScope::Out";
+        }
+        return String::new();
+    }
+}

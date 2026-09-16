@@ -75,6 +75,9 @@ impl TypeSymbol for ArcPointerSymbol {
     fn related_impls(&self) -> Vec<*ImplSymbol> {
         return (type Vec<*ImplSymbol>)::new();
     }
+    fn lifetime_count(&self) -> UInt {
+        return 0;
+    }
     fn to_sty(*self, args: GenericArgs) -> *SType {
         if self.cache.at(&args) is Some(t) {
             return t;
@@ -165,6 +168,9 @@ impl TypeSymbol for WeakPointerSymbol {
     }
     fn related_impls(&self) -> Vec<*ImplSymbol> {
         return (type Vec<*ImplSymbol>)::new();
+    }
+    fn lifetime_count(&self) -> UInt {
+        return 0;
     }
     fn to_sty(*self, args: GenericArgs) -> *SType {
         if self.cache.at(&args) is Some(t) {
@@ -263,6 +269,9 @@ impl TypeSymbol for BorrowImmutSymbol {
     }
     fn related_impls(&self) -> Vec<*ImplSymbol> {
         return (type Vec<*ImplSymbol>)::new();
+    }
+    fn lifetime_count(&self) -> UInt {
+        return 1;
     }
     fn to_sty(*self, args: GenericArgs) -> *SType {
         if self.cache.at(&args) is Some(t) {
@@ -363,6 +372,9 @@ impl TypeSymbol for BorrowMutSymbol {
     fn related_impls(&self) -> Vec<*ImplSymbol> {
         return (type Vec<*ImplSymbol>)::new();
     }
+    fn lifetime_count(&self) -> UInt {
+        return 1;
+    }
     fn to_sty(*self, args: GenericArgs) -> *SType {
         if self.cache.at(&args) is Some(t) {
             return t;
@@ -454,6 +466,9 @@ impl TypeSymbol for RawPointerImmutSymbol {
     fn related_impls(&self) -> Vec<*ImplSymbol> {
         return (type Vec<*ImplSymbol>)::new();
     }
+    fn lifetime_count(&self) -> UInt {
+        return 0;
+    }
     fn to_sty(*self, args: GenericArgs) -> *SType {
         if self.cache.at(&args) is Some(t) {
             return t;
@@ -544,6 +559,9 @@ impl TypeSymbol for RawPointerMutSymbol {
     }
     fn related_impls(&self) -> Vec<*ImplSymbol> {
         return (type Vec<*ImplSymbol>)::new();
+    }
+    fn lifetime_count(&self) -> UInt {
+        return 0;
     }
     fn to_sty(*self, args: GenericArgs) -> *SType {
         if self.cache.at(&args) is Some(t) {

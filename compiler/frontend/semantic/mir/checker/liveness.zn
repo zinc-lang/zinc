@@ -4,6 +4,7 @@ use std::cmp::{Eq, PartialEq};
 use std::hash::{Hash, Hasher};
 
 use super::uint_set::UIntSet;
+use super::*;
 
 use ::self::frontend::source_code::*;
 use ::self::frontend::diagnostic::*;
@@ -16,12 +17,6 @@ use ::self::frontend::diagnostic::*;
 //    注意借用指针的指向不是一成不变的，它会更改指向目标
 // 3. drop check
 //    3.1 分辨哪些地方要调用析构函数、哪些地方不能调用，以及最特别的是哪些地方需要 drop flag
-
-struct LivenessChecker {
-    cfg: *CFG,
-    alive_locals_at_point: HashMap<LivePoint, UIntSet>, // 通过 LivePoint 查找哪些 *VarSymbol 在这里是活的
-    local_liveness: HashMap<UInt, UIntSet>, // 通过 *VarSymbol 查找它在哪些 LivePoint 上是活的
-}
 
 impl LivenessChecker {
     fn new(cfg: *CFG) -> Self {
@@ -59,67 +54,6 @@ impl LivenessChecker {
                 }
             }
         }
-    }
-
-    // todo: complete lifetime check
-    fn check_lifetime(&mut self) {
-        for bb in self.cfg.basic_blocks {
-            for step in bb.steps {
-                if step.value is wv: *WriteValue {
-                    let sty = wv.dst.get_stype();
-                    if sty.type_symbol is type *BorrowImmutSymbol ||
-                        sty.type_symbol is type *BorrowMutSymbol {
-
-                        let src_lt = self.lifescope_of_value(wv.src);
-                        let dst_lt = self.lifescope_of_value(wv.dst);
-
-                        if dst_lt.lives_shorter_than(&src_lt) {
-                            DiagnosticEngine::get().emit_lives_not_longer_enough(wv.src.expr_node().span());
-                        }
-                    }
-                }
-            }
-            if bb.terminator is Some(ret: *BrRet) {
-                // TODO 检查返回值的生命周期是否与函数签名相匹配
-            }
-        }
-    }
-
-    fn lifescope_of_value(&self, xv: *XValue) -> LifeScope {
-
-        match xv {
-            lv: *LocalVar => {
-                if lv.sym_var.is_static() || lv.sym_var.is_const() {
-                    return LifeScope::Static;
-                }
-                let i = lv.sym_var as *raw VarSymbol as UInt;
-                if self.local_liveness.at(&i) is Some(ls) {
-                    return LifeScope::Local(move ls);
-                }
-            }
-            rv: *ReadValue => {
-                if rv.sym_var.is_static() || rv.sym_var.is_const() {
-                    return LifeScope::Static;
-                }
-                let i = rv.sym_var as *raw VarSymbol as UInt;
-                if self.local_liveness.at(&i) is Some(ls) {
-                    return LifeScope::Local(move ls);
-                }
-            }
-            addr: *AddressofValue => {
-                if extract_local(addr.operand as *XValue) is Some(vsym) {
-                    if vsym.is_static() || vsym.is_const() {
-                        return LifeScope::Static;
-                    }
-                    let i = vsym as *raw VarSymbol as UInt;
-                    if self.local_liveness.at(&i) is Some(ls) {
-                        return LifeScope::Local(move ls);
-                    }
-                }
-            }
-            _ => return LifeScope::Unknown;
-        }
-        return LifeScope::Unknown;
     }
 
     fn visit_bb(&mut self, bb: *BasicBlock) {
@@ -372,79 +306,4 @@ fn extract_local(rv: *XValue) -> Option<*VarSymbol> {
         _ => return None;
     }
     return None;
-}
-
-enum LifeScope {
-    Unknown,
-    Static,
-    Local(UIntSet),
-    Out(*LifetimeSymbol),
-}
-
-impl LifeScope {
-    fn lives_shorter_than(&self, other: &LifeScope) -> Bool {
-        if self is LifeScope::Unknown {
-            return false;
-        }
-        if other is LifeScope::Unknown {
-            return false;
-        }
-
-        match self {
-            LifeScope::Static => {
-                match other {
-                    LifeScope::Static => {
-                        return false;
-                    }
-                    LifeScope::Local(_) => {
-                        return true;
-                    }
-                    LifeScope::Out(_) => {
-                        return true;
-                    }
-                    _ => {}
-                }
-            }
-            LifeScope::Local(dst) => {
-                match other {
-                    LifeScope::Static => {
-                        return false;
-                    }
-                    LifeScope::Local(src) => {
-                        return src.is_subset_of(&dst);
-                    }
-                    LifeScope::Out(_) => {
-                        return true;
-                    }
-                    _ => {}
-                }
-            }
-            LifeScope::Out(_) => {
-                match other {
-                    LifeScope::Static => {
-                        return false;
-                    }
-                    LifeScope::Local(_) => {
-                        return true;
-                    }
-                    LifeScope::Out(_) => {
-                        return false;
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-        return false;
-    }
-
-    fn to_string(&self) -> String {
-        match self {
-            LifeScope::Unknown => return f"LifeScope::Unknown";
-            LifeScope::Static => return f"LifeScope::Static";
-            LifeScope::Local(_) => return f"LifeScope::Local";
-            LifeScope::Out(_) => return f"LifeScope::Out";
-        }
-        return String::new();
-    }
 }

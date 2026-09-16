@@ -108,6 +108,10 @@ impl Step {
         print(meta.short_name());
         print("]  ");
 
+        let sty = self.value.get_stype();
+        print(sty.to_string());
+        print(" ");
+
         self.value.dump();
         println();
     }

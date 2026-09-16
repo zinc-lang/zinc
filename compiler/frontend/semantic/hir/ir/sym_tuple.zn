@@ -70,6 +70,9 @@ impl TypeSymbol for TupleSymbol {
     fn related_impls(&self) -> Vec<*ImplSymbol> {
         return (type Vec<*ImplSymbol>)::new();
     }
+    fn lifetime_count(&self) -> UInt {
+        return 0;
+    }
     fn to_sty(*self, args: GenericArgs) -> *SType {
         if self.cache.at(&args) is Some(t) {
             return t;

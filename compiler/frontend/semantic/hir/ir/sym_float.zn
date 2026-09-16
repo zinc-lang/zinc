@@ -84,6 +84,9 @@ impl TypeSymbol for FloatSymbol {
     fn related_impls(&self) -> Vec<*ImplSymbol> {
         return self.all_impls;
     }
+    fn lifetime_count(&self) -> UInt {
+        return 0;
+    }
     fn to_sty(*self, args: GenericArgs) -> *SType {
         return self.to_sty();
     }

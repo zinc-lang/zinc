@@ -8,6 +8,7 @@ mod loan;
 mod uint_set;
 
 use liveness::*;
+use uint_set::*;
 
 impl CFG {
     fn check(*self) {
@@ -47,4 +48,10 @@ impl CFG {
         liveness_checker.check_lifetime();
 
     }
+}
+
+struct LivenessChecker {
+    cfg: *CFG,
+    alive_locals_at_point: HashMap<LivePoint, UIntSet>, // 通过 LivePoint 查找哪些 *VarSymbol 在这里是活的
+    local_liveness: HashMap<UInt, UIntSet>, // 通过 *VarSymbol 查找它在哪些 LivePoint 上是活的
 }

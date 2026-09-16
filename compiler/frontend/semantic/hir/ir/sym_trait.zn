@@ -208,6 +208,9 @@ impl TypeSymbol for TraitSymbol {
     fn related_impls(&self) -> Vec<*ImplSymbol> {
         return (type Vec<*ImplSymbol>)::new();
     }
+    fn lifetime_count(&self) -> UInt {
+        return self.generics.lt_params.len();
+    }
     fn to_sty(*self, args: GenericArgs) -> *SType {
         if self.cache.at(&args) is Some(cached) {
             return cached;
