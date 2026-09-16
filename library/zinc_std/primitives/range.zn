@@ -14,8 +14,8 @@ pub struct RangeInclusive<T> {
 
 pub trait Step: PartialOrd {
     // 目前返回 Option<Self> 的时候类型检查有 bug
-    fn forward(&mut self, count: UInt) -> Bool;
-    fn backward(&mut self, count: UInt) -> Bool;
+    fn forward(&mut self) -> Bool;
+    fn backward(&mut self) -> Bool;
 }
 
 impl<T> RangeExclusive<T> {
@@ -89,7 +89,7 @@ impl<T> Iterator for IterRangeExclusive<T> where T: Step {
             return None;
         }
         self.yielded = self.cur;
-        let c = self.cur.forward(1_u);
+        let c = self.cur.forward();
         if !c {
             self.done = true;
         }
@@ -111,7 +111,7 @@ impl<T> Iterator for IterRangeInclusive<T> where T: Step {
         if !self.cur.lt(&self.end) && !self.cur.gt(&self.end) {
             self.done = true;
         } else {
-            let c = self.cur.forward(1_u);
+            let c = self.cur.forward();
             if !c {
                 self.done = true;
             }
@@ -121,22 +121,16 @@ impl<T> Iterator for IterRangeInclusive<T> where T: Step {
 }
 
 impl Step for Int {
-    fn forward(&mut self, count: UInt) -> Bool {
-        if count > Int::max_value() as UInt {
-            return false;
-        }
-        let sum = *self + (count as Int);
+    fn forward(&mut self) -> Bool {
+        let sum = *self + 1_i;
         if sum < *self {
             return false;
         }
         *self = sum;
         return true;
     }
-    fn backward(&mut self, count: UInt) -> Bool {
-        if count > Int::max_value() as UInt {
-            return false;
-        }
-        let diff = *self - (count as Int);
+    fn backward(&mut self) -> Bool {
+        let diff = *self - 1_i;
         if diff > *self {
             return false;
         }
@@ -146,22 +140,16 @@ impl Step for Int {
 }
 
 impl Step for Int8 {
-    fn forward(&mut self, count: UInt) -> Bool {
-        if count > Int8::max_value() as UInt {
-            return false;
-        }
-        let sum = *self + (count as Int8);
+    fn forward(&mut self) -> Bool {
+        let sum = *self + 1_i8;
         if sum < *self {
             return false;
         }
         *self = sum;
         return true;
     }
-    fn backward(&mut self, count: UInt) -> Bool {
-        if count > Int8::max_value() as UInt {
-            return false;
-        }
-        let diff = *self - (count as Int8);
+    fn backward(&mut self) -> Bool {
+        let diff = *self - 1_i8;
         if diff > *self {
             return false;
         }
@@ -171,22 +159,16 @@ impl Step for Int8 {
 }
 
 impl Step for Int16 {
-    fn forward(&mut self, count: UInt) -> Bool {
-        if count > Int16::max_value() as UInt {
-            return false;
-        }
-        let sum = *self + (count as Int16);
+    fn forward(&mut self) -> Bool {
+        let sum = *self + 1_i16;
         if sum < *self {
             return false;
         }
         *self = sum;
         return true;
     }
-    fn backward(&mut self, count: UInt) -> Bool {
-        if count > Int16::max_value() as UInt {
-            return false;
-        }
-        let diff = *self - (count as Int16);
+    fn backward(&mut self) -> Bool {
+        let diff = *self - 1_i16;
         if diff > *self {
             return false;
         }
@@ -196,22 +178,16 @@ impl Step for Int16 {
 }
 
 impl Step for Int32 {
-    fn forward(&mut self, count: UInt) -> Bool {
-        if count > Int32::max_value() as UInt {
-            return false;
-        }
-        let sum = *self + (count as Int32);
+    fn forward(&mut self) -> Bool {
+        let sum = *self + 1_i32;
         if sum < *self {
             return false;
         }
         *self = sum;
         return true;
     }
-    fn backward(&mut self, count: UInt) -> Bool {
-        if count > Int32::max_value() as UInt {
-            return false;
-        }
-        let diff = *self - (count as Int32);
+    fn backward(&mut self) -> Bool {
+        let diff = *self - 1_i32;
         if diff > *self {
             return false;
         }
@@ -221,22 +197,16 @@ impl Step for Int32 {
 }
 
 impl Step for Int64 {
-    fn forward(&mut self, count: UInt) -> Bool {
-        if count > Int64::max_value() as UInt {
-            return false;
-        }
-        let sum = *self + (count as Int64);
+    fn forward(&mut self) -> Bool {
+        let sum = *self + 1_i64;
         if sum < *self {
             return false;
         }
         *self = sum;
         return true;
     }
-    fn backward(&mut self, count: UInt) -> Bool {
-        if count > Int64::max_value() as UInt {
-            return false;
-        }
-        let diff = *self - (count as Int64);
+    fn backward(&mut self) -> Bool {
+        let diff = *self - 1_i64;
         if diff > *self {
             return false;
         }
@@ -246,22 +216,16 @@ impl Step for Int64 {
 }
 
 impl Step for Short {
-    fn forward(&mut self, count: UInt) -> Bool {
-        if count > Short::max_value() as UInt {
-            return false;
-        }
-        let sum = *self + (count as Short);
+    fn forward(&mut self) -> Bool {
+        let sum = *self + 1;
         if sum < *self {
             return false;
         }
         *self = sum;
         return true;
     }
-    fn backward(&mut self, count: UInt) -> Bool {
-        if count > Short::max_value() as UInt {
-            return false;
-        }
-        let diff = *self - (count as Short);
+    fn backward(&mut self) -> Bool {
+        let diff = *self - 1;
         if diff > *self {
             return false;
         }
@@ -271,144 +235,129 @@ impl Step for Short {
 }
 
 impl Step for UInt {
-    fn forward(&mut self, count: UInt) -> Bool {
-        let sum = *self + count;
+    fn forward(&mut self) -> Bool {
+        let sum = *self + 1_u;
         if sum < *self {
             return false;
         }
         *self = sum;
         return true;
     }
-    fn backward(&mut self, count: UInt) -> Bool {
-        if *self < count {
+    fn backward(&mut self) -> Bool {
+        if *self < 1_u {
             return false;
         }
-        *self = *self - count;
+        *self = *self - 1_u;
         return true;
     }
 }
 
 impl Step for UInt8 {
-    fn forward(&mut self, count: UInt) -> Bool {
-        if count > UInt8::max_value() as UInt {
-            return false;
-        }
-        let sum = *self + (count as UInt8);
+    fn forward(&mut self) -> Bool {
+        let sum = *self + 1_u8;
         if sum < *self {
             return false;
         }
         *self = sum;
         return true;
     }
-    fn backward(&mut self, count: UInt) -> Bool {
-        if count > UInt8::max_value() as UInt {
+    fn backward(&mut self) -> Bool {
+        if *self < 1_u8 {
             return false;
         }
-        let count = count as UInt8;
-        if *self < count {
-            return false;
-        }
-        *self = *self - count;
+        *self = *self - 1_u8;
         return true;
     }
 }
 
 impl Step for UInt16 {
-    fn forward(&mut self, count: UInt) -> Bool {
-        if count > UInt16::max_value() as UInt {
-            return false;
-        }
-        let sum = *self + (count as UInt16);
+    fn forward(&mut self) -> Bool {
+        let sum = *self + 1_u16;
         if sum < *self {
             return false;
         }
         *self = sum;
         return true;
     }
-    fn backward(&mut self, count: UInt) -> Bool {
-        if count > UInt16::max_value() as UInt {
+    fn backward(&mut self) -> Bool {
+        if *self < 1_u16 {
             return false;
         }
-        let count = count as UInt16;
-        if *self < count {
-            return false;
-        }
-        *self = *self - count;
+        *self = *self - 1_u16;
         return true;
     }
 }
 
 impl Step for UInt32 {
-    fn forward(&mut self, count: UInt) -> Bool {
-        if count > UInt32::max_value() as UInt {
-            return false;
-        }
-        let sum = *self + (count as UInt32);
+    fn forward(&mut self) -> Bool {
+        let sum = *self + 1_u32;
         if sum < *self {
             return false;
         }
         *self = sum;
         return true;
     }
-    fn backward(&mut self, count: UInt) -> Bool {
-        if count > UInt32::max_value() as UInt {
+    fn backward(&mut self) -> Bool {
+        if *self < 1_u32 {
             return false;
         }
-        let count = count as UInt32;
-        if *self < count {
-            return false;
-        }
-        *self = *self - count;
+        *self = *self - 1_u32;
         return true;
     }
 }
 
 impl Step for UInt64 {
-    fn forward(&mut self, count: UInt) -> Bool {
-        if count > UInt64::max_value() as UInt {
-            return false;
-        }
-        let sum = *self + (count as UInt64);
+    fn forward(&mut self) -> Bool {
+        let sum = *self + 1_u64;
         if sum < *self {
             return false;
         }
         *self = sum;
         return true;
     }
-    fn backward(&mut self, count: UInt) -> Bool {
-        if count > UInt64::max_value() as UInt {
+    fn backward(&mut self) -> Bool {
+        if *self < 1_u64 {
             return false;
         }
-        let count = count as UInt64;
-        if *self < count {
-            return false;
-        }
-        *self = *self - count;
+        *self = *self - 1_u64;
         return true;
     }
 }
 
 impl Step for UShort {
-    fn forward(&mut self, count: UInt) -> Bool {
-        if count > UShort::max_value() as UInt {
-            return false;
-        }
-        let sum = *self + (count as UShort);
+    fn forward(&mut self) -> Bool {
+        let sum = *self + 1;
         if sum < *self {
             return false;
         }
         *self = sum;
         return true;
     }
-    fn backward(&mut self, count: UInt) -> Bool {
-        if count > UShort::max_value() as UInt {
+    fn backward(&mut self) -> Bool {
+        if *self < 1 {
             return false;
         }
-        let count = count as UShort;
-        if *self < count {
+        *self = *self - 1;
+        return true;
+    }
+}
+
+impl Step for Char {
+    fn forward(&mut self) -> Bool {
+        let c = *self as UInt32;
+        let sum = c + 1_u32;
+        if sum < c {
             return false;
         }
-        *self = *self - count;
+        *self = sum as Char;
+        return true;
+    }
+    fn backward(&mut self) -> Bool {
+        let c = *self as UInt32;
+        if c < 1_u32 {
+            return false;
+        }
+        *self = (c - 1_u32) as Char;
         return true;
     }
 }

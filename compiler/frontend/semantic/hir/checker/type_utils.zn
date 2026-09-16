@@ -500,6 +500,18 @@ fn implemented_derefmut_trait(sty: *SType) -> Option<DerefMethodInfo> {
     return None;
 }
 
+fn implemented_step_trait(sty: *SType) -> Bool {
+    for i in sty.type_symbol.related_impls() {
+        if i.trait_sty is Some(trait_sty) {
+            let key = trait_sty.type_symbol.export_key();
+            if key.as_str().deref().eq(&"::std::primitives::range::Step") {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 fn auto_ref_and_deref(formal_ty: *SType, actual_ty: *SType, rv: *RValue) -> *RValue {
     let span = rv.expr_node().span();
     if !ensure_type_valid(rv.get_stype(), span) {

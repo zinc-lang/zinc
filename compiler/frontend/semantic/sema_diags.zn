@@ -470,6 +470,15 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    fn emit_not_step(&mut self, ty: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型 $(ty) 不满足 std::primitives::range::Step 约束",
+            .msg_en = f"type $(ty) does not conform std::primitives::range::Step",
+        }: DiagItem);
+    }
+
     fn emit_not_const(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,

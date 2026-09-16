@@ -665,10 +665,15 @@ impl TypeCheckContext {
                         if self.resolver().lookup_prelude(&type_name) is Some(sym) {
                             if sym is ts: *TypeSymbol {
                                 Resolver::import_builtin_impls(sym);
+                                // 检查 left_sty 是不是实现了 Step trait
+                                if !implemented_step_trait(left_sty) {
+                                    DiagnosticEngine::get().emit_not_step(left_sty.to_string(), binary_rv.op.source_span);
+                                }
                                 return ts.to_sty(GenericArgs::from1(left_sty));
                             }
+                        } else {
+                            panic "BUG: range type is not found in std.";
                         }
-                        DiagnosticEngine::get().emit_unimplemented(binary_rv.op.source_span, "range expression");
                         return SType::sty_invalid(binary_rv.expr.span());
                     }
                     else if k is PunctuationKind::Plus || k is PunctuationKind::Minus ||

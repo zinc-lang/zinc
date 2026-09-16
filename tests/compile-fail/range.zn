@@ -1,0 +1,4 @@
+fn main() {
+    let r = false ..< true;
+    let r2 = 'a' ..= 'z';
+}
