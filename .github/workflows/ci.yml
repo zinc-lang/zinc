@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Keep an in-progress LLVM compile if a second event is queued.
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      ZINC_LLVM_BUILD_TYPE: Release
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ clang python3 zlib1g-dev libzstd-dev unzip
+
+      - name: LLVM pin
+        id: llvm-pin
+        run: echo "sha=$(git ls-tree HEAD third_party/llvm-project | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore LLVM cache
+        id: llvm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: out/llvm
+          # optllc suffix: Zinc codegen needs out/llvm/bin/{opt,llc}, not libs only.
+          key: llvm-${{ runner.os }}-release-host-optllc-${{ steps.llvm-pin.outputs.sha }}
+
+      - name: LLVM tools present
+        id: llvm-ready
+        run: |
+          if [[ -x out/llvm/bin/opt && -x out/llvm/bin/llc ]]; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "LLVM install missing opt/llc; will rebuild"
+            rm -rf out/llvm
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Free disk for LLVM build
+        if: steps.llvm-ready.outputs.hit != 'true'
+        run: |
+          df -h
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            /opt/az || true
+          df -h
+
+      - name: Checkout LLVM submodule
+        if: steps.llvm-ready.outputs.hit != 'true'
+        run: git submodule update --init --depth 1 third_party/llvm-project
+
+      - name: Build LLVM
+        if: steps.llvm-ready.outputs.hit != 'true'
+        run: python3 x.py build-llvm
+
+      - name: Drop LLVM build tree
+        if: steps.llvm-ready.outputs.hit != 'true'
+        run: rm -rf build-llvm
+
+      - name: Save LLVM cache
+        if: steps.llvm-ready.outputs.hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: out/llvm
+          key: llvm-${{ runner.os }}-release-host-optllc-${{ steps.llvm-pin.outputs.sha }}
+
+      - name: Fetch stage0
+        run: python3 x.py setup-stage0
+
+      - name: Check compiler
+        run: python3 x.py check
+
+      - name: Build Zinc
+        run: python3 x.py build
+
+      - name: Test
+        run: python3 x.py test

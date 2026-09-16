@@ -107,6 +107,28 @@ impl DiagnosticEngine {
         }
     }
 
+    pub fn error_count(&self) -> UInt {
+        let mut n: UInt = 0;
+        for ref diag in self.all_diags {
+            match diag.severity {
+                Severity::ICE => { n += 1; }
+                Severity::Error => { n += 1; }
+                Severity::Warning => {}
+                Severity::Note => {}
+            }
+        }
+        return n;
+    }
+
+    pub fn abort_if_errors(&mut self, speak_en: Bool) {
+        let errors = self.error_count();
+        self.report(speak_en);
+        self.clear();
+        if errors > 0 {
+            std::process::exit(1);
+        }
+    }
+
     pub fn clear(&mut self) -> UInt {
         let len = self.all_diags.len();
         self.all_diags.clear();

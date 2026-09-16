@@ -181,9 +181,9 @@ Monomorphization is only an internal optimization for some cases.
 
 Note: Only Linux/x64 platform is supported.
 
-1. download zinc compiler from https://github.com/zinc-lang/zinc/releases , and put it in `./out/stage0` folder
-2. run `python x.py build-llvm`. After this step, there will be a `./out/llvm` folder
-3. create a soft link to llvm folder inside stage0
+1. `python x.py setup-stage0` (downloads the bootstrap compiler from [Releases](https://github.com/zinc-lang/zinc/releases) into `./out/stage0`)
+2. `python x.py build-llvm`. After this step, there will be a `./out/llvm` folder including `bin/opt` and `bin/llc`. CI sets `ZINC_LLVM_BUILD_TYPE=Release`.
+3. `setup-stage0` also creates the llvm symlink. The expected layout is:
     ```
     ./out
     ├── stage0
@@ -196,6 +196,7 @@ Note: Only Linux/x64 platform is supported.
     ```
 4. run `python x.py build`
 
+GitHub Actions on `ubuntu-latest` caches LLVM and runs this sequence automatically (see `.github/workflows/ci.yml`).
 
 ## tests
 
