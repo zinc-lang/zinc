@@ -821,6 +821,17 @@ impl Resolver {
                                 let mut new_ctx: ResolveContext = ctx;
                                 new_ctx.path_scope = ss;
                                 return self.resolve_segmented_name_rest(new_ctx, move names);
+                            } else if sym is tsym: *TypeSymbol && is_builtin_type_symbol(tsym) {
+                                // 查找静态成员函数
+                                let second = *parts.index(1).deref();
+                                let name = second.to_string();
+                                for isym in tsym.related_impls() {
+                                    let r = isym.symbol_table.lookup(&name);
+                                    if r is Some(s) {
+                                        return Some(SymOrType::Sym(move s));
+                                    }
+                                }
+                                return None;
                             } else {
                                 return None;
                             }

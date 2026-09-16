@@ -13,8 +13,9 @@ pub struct RangeInclusive<T> {
 }
 
 pub trait Step: PartialOrd {
-    fn forward(self, count: UInt) -> Option<Self>;
-    fn backward(self, count: UInt) -> Option<Self>;
+    // 目前返回 Option<Self> 的时候类型检查有 bug
+    fn forward(&mut self, count: UInt) -> Bool;
+    fn backward(&mut self, count: UInt) -> Bool;
 }
 
 impl<T> RangeExclusive<T> {
@@ -88,13 +89,9 @@ impl<T> Iterator for IterRangeExclusive<T> where T: Step {
             return None;
         }
         self.yielded = self.cur;
-        match self.cur.forward(1_u) {
-            Some(n) => {
-                self.cur = n;
-            }
-            None => {
-                self.done = true;
-            }
+        let c = self.cur.forward(1_u);
+        if !c {
+            self.done = true;
         }
         return Some(&self.yielded);
     }
@@ -114,13 +111,9 @@ impl<T> Iterator for IterRangeInclusive<T> where T: Step {
         if !self.cur.lt(&self.end) && !self.cur.gt(&self.end) {
             self.done = true;
         } else {
-            match self.cur.forward(1_u) {
-                Some(n) => {
-                    self.cur = n;
-                }
-                None => {
-                    self.done = true;
-                }
+            let c = self.cur.forward(1_u);
+            if !c {
+                self.done = true;
             }
         }
         return Some(&self.yielded);
@@ -128,175 +121,294 @@ impl<T> Iterator for IterRangeInclusive<T> where T: Step {
 }
 
 impl Step for Int {
-    fn forward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn forward(&mut self, count: UInt) -> Bool {
+        if count > Int::max_value() as UInt {
+            return false;
         }
-        return self.checked_add(count as Int);
+        let sum = *self + (count as Int);
+        if sum < *self {
+            return false;
+        }
+        *self = sum;
+        return true;
     }
-    fn backward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn backward(&mut self, count: UInt) -> Bool {
+        if count > Int::max_value() as UInt {
+            return false;
         }
-        return self.checked_sub(count as Int);
+        let diff = *self - (count as Int);
+        if diff > *self {
+            return false;
+        }
+        *self = diff;
+        return true;
     }
 }
 
 impl Step for Int8 {
-    fn forward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn forward(&mut self, count: UInt) -> Bool {
+        if count > Int8::max_value() as UInt {
+            return false;
         }
-        return self.checked_add(count as Int8);
+        let sum = *self + (count as Int8);
+        if sum < *self {
+            return false;
+        }
+        *self = sum;
+        return true;
     }
-    fn backward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn backward(&mut self, count: UInt) -> Bool {
+        if count > Int8::max_value() as UInt {
+            return false;
         }
-        return self.checked_sub(count as Int8);
+        let diff = *self - (count as Int8);
+        if diff > *self {
+            return false;
+        }
+        *self = diff;
+        return true;
     }
 }
 
 impl Step for Int16 {
-    fn forward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn forward(&mut self, count: UInt) -> Bool {
+        if count > Int16::max_value() as UInt {
+            return false;
         }
-        return self.checked_add(count as Int16);
+        let sum = *self + (count as Int16);
+        if sum < *self {
+            return false;
+        }
+        *self = sum;
+        return true;
     }
-    fn backward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn backward(&mut self, count: UInt) -> Bool {
+        if count > Int16::max_value() as UInt {
+            return false;
         }
-        return self.checked_sub(count as Int16);
+        let diff = *self - (count as Int16);
+        if diff > *self {
+            return false;
+        }
+        *self = diff;
+        return true;
     }
 }
 
 impl Step for Int32 {
-    fn forward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn forward(&mut self, count: UInt) -> Bool {
+        if count > Int32::max_value() as UInt {
+            return false;
         }
-        return self.checked_add(count as Int32);
+        let sum = *self + (count as Int32);
+        if sum < *self {
+            return false;
+        }
+        *self = sum;
+        return true;
     }
-    fn backward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn backward(&mut self, count: UInt) -> Bool {
+        if count > Int32::max_value() as UInt {
+            return false;
         }
-        return self.checked_sub(count as Int32);
+        let diff = *self - (count as Int32);
+        if diff > *self {
+            return false;
+        }
+        *self = diff;
+        return true;
     }
 }
 
 impl Step for Int64 {
-    fn forward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn forward(&mut self, count: UInt) -> Bool {
+        if count > Int64::max_value() as UInt {
+            return false;
         }
-        return self.checked_add(count as Int64);
+        let sum = *self + (count as Int64);
+        if sum < *self {
+            return false;
+        }
+        *self = sum;
+        return true;
     }
-    fn backward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn backward(&mut self, count: UInt) -> Bool {
+        if count > Int64::max_value() as UInt {
+            return false;
         }
-        return self.checked_sub(count as Int64);
+        let diff = *self - (count as Int64);
+        if diff > *self {
+            return false;
+        }
+        *self = diff;
+        return true;
     }
 }
 
 impl Step for Short {
-    fn forward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn forward(&mut self, count: UInt) -> Bool {
+        if count > Short::max_value() as UInt {
+            return false;
         }
-        return self.checked_add(count as Short);
+        let sum = *self + (count as Short);
+        if sum < *self {
+            return false;
+        }
+        *self = sum;
+        return true;
     }
-    fn backward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn backward(&mut self, count: UInt) -> Bool {
+        if count > Short::max_value() as UInt {
+            return false;
         }
-        return self.checked_sub(count as Short);
+        let diff = *self - (count as Short);
+        if diff > *self {
+            return false;
+        }
+        *self = diff;
+        return true;
     }
 }
 
 impl Step for UInt {
-    fn forward(self, count: UInt) -> Option<Self> {
-        return self.checked_add(count);
+    fn forward(&mut self, count: UInt) -> Bool {
+        let sum = *self + count;
+        if sum < *self {
+            return false;
+        }
+        *self = sum;
+        return true;
     }
-    fn backward(self, count: UInt) -> Option<Self> {
-        return self.checked_sub(count);
+    fn backward(&mut self, count: UInt) -> Bool {
+        if *self < count {
+            return false;
+        }
+        *self = *self - count;
+        return true;
     }
 }
 
 impl Step for UInt8 {
-    fn forward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn forward(&mut self, count: UInt) -> Bool {
+        if count > UInt8::max_value() as UInt {
+            return false;
         }
-        return self.checked_add(count as UInt8);
+        let sum = *self + (count as UInt8);
+        if sum < *self {
+            return false;
+        }
+        *self = sum;
+        return true;
     }
-    fn backward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn backward(&mut self, count: UInt) -> Bool {
+        if count > UInt8::max_value() as UInt {
+            return false;
         }
-        return self.checked_sub(count as UInt8);
+        let count = count as UInt8;
+        if *self < count {
+            return false;
+        }
+        *self = *self - count;
+        return true;
     }
 }
 
 impl Step for UInt16 {
-    fn forward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn forward(&mut self, count: UInt) -> Bool {
+        if count > UInt16::max_value() as UInt {
+            return false;
         }
-        return self.checked_add(count as UInt16);
+        let sum = *self + (count as UInt16);
+        if sum < *self {
+            return false;
+        }
+        *self = sum;
+        return true;
     }
-    fn backward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn backward(&mut self, count: UInt) -> Bool {
+        if count > UInt16::max_value() as UInt {
+            return false;
         }
-        return self.checked_sub(count as UInt16);
+        let count = count as UInt16;
+        if *self < count {
+            return false;
+        }
+        *self = *self - count;
+        return true;
     }
 }
 
 impl Step for UInt32 {
-    fn forward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn forward(&mut self, count: UInt) -> Bool {
+        if count > UInt32::max_value() as UInt {
+            return false;
         }
-        return self.checked_add(count as UInt32);
+        let sum = *self + (count as UInt32);
+        if sum < *self {
+            return false;
+        }
+        *self = sum;
+        return true;
     }
-    fn backward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn backward(&mut self, count: UInt) -> Bool {
+        if count > UInt32::max_value() as UInt {
+            return false;
         }
-        return self.checked_sub(count as UInt32);
+        let count = count as UInt32;
+        if *self < count {
+            return false;
+        }
+        *self = *self - count;
+        return true;
     }
 }
 
 impl Step for UInt64 {
-    fn forward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn forward(&mut self, count: UInt) -> Bool {
+        if count > UInt64::max_value() as UInt {
+            return false;
         }
-        return self.checked_add(count as UInt64);
+        let sum = *self + (count as UInt64);
+        if sum < *self {
+            return false;
+        }
+        *self = sum;
+        return true;
     }
-    fn backward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn backward(&mut self, count: UInt) -> Bool {
+        if count > UInt64::max_value() as UInt {
+            return false;
         }
-        return self.checked_sub(count as UInt64);
+        let count = count as UInt64;
+        if *self < count {
+            return false;
+        }
+        *self = *self - count;
+        return true;
     }
 }
 
 impl Step for UShort {
-    fn forward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn forward(&mut self, count: UInt) -> Bool {
+        if count > UShort::max_value() as UInt {
+            return false;
         }
-        return self.checked_add(count as UShort);
+        let sum = *self + (count as UShort);
+        if sum < *self {
+            return false;
+        }
+        *self = sum;
+        return true;
     }
-    fn backward(self, count: UInt) -> Option<Self> {
-        if count > Self::max_value() as UInt {
-            return None;
+    fn backward(&mut self, count: UInt) -> Bool {
+        if count > UShort::max_value() as UInt {
+            return false;
         }
-        return self.checked_sub(count as UShort);
+        let count = count as UShort;
+        if *self < count {
+            return false;
+        }
+        *self = *self - count;
+        return true;
     }
 }

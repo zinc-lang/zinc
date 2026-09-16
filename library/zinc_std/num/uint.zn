@@ -92,7 +92,7 @@ impl UInt {
                 return v;
             }
             None => {
-                return Self::max_value();
+                return UInt::max_value();
             }
         }
     }
@@ -103,7 +103,7 @@ impl UInt {
                 return v;
             }
             None => {
-                return Self::min_value();
+                return UInt::min_value();
             }
         }
     }
@@ -114,7 +114,7 @@ impl UInt {
                 return v;
             }
             None => {
-                return Self::max_value();
+                return UInt::max_value();
             }
         }
     }

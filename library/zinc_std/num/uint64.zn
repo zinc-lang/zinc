@@ -91,7 +91,7 @@ impl UInt64 {
                 return v;
             }
             None => {
-                return Self::max_value();
+                return UInt64::max_value();
             }
         }
     }
@@ -102,7 +102,7 @@ impl UInt64 {
                 return v;
             }
             None => {
-                return Self::min_value();
+                return UInt64::min_value();
             }
         }
     }
@@ -113,7 +113,7 @@ impl UInt64 {
                 return v;
             }
             None => {
-                return Self::max_value();
+                return UInt64::max_value();
             }
         }
     }

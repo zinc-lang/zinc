@@ -85,10 +85,10 @@ impl Short {
         if self == 0 || rhs == 0 {
             return Some(0);
         }
-        if self == Self::min_value() && rhs == -1 as Short {
+        if self == Short::min_value() && rhs == -1 as Short {
             return None;
         }
-        if rhs == Self::min_value() && self == -1 as Short {
+        if rhs == Short::min_value() && self == -1 as Short {
             return None;
         }
         let prod = self * rhs;
@@ -105,9 +105,9 @@ impl Short {
             }
             None => {
                 if rhs > 0 {
-                    return Self::max_value();
+                    return Short::max_value();
                 }
-                return Self::min_value();
+                return Short::min_value();
             }
         }
     }
@@ -119,9 +119,9 @@ impl Short {
             }
             None => {
                 if rhs > 0 {
-                    return Self::min_value();
+                    return Short::min_value();
                 }
-                return Self::max_value();
+                return Short::max_value();
             }
         }
     }
@@ -133,9 +133,9 @@ impl Short {
             }
             None => {
                 if (self > 0) == (rhs > 0) {
-                    return Self::max_value();
+                    return Short::max_value();
                 }
-                return Self::min_value();
+                return Short::min_value();
             }
         }
     }

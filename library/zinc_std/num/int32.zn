@@ -85,10 +85,10 @@ impl Int32 {
         if self == 0 || rhs == 0 {
             return Some(0);
         }
-        if self == Self::min_value() && rhs == -1_i32 {
+        if self == Int32::min_value() && rhs == -1_i32 {
             return None;
         }
-        if rhs == Self::min_value() && self == -1_i32 {
+        if rhs == Int32::min_value() && self == -1_i32 {
             return None;
         }
         let prod = self * rhs;
@@ -105,9 +105,9 @@ impl Int32 {
             }
             None => {
                 if rhs > 0 {
-                    return Self::max_value();
+                    return Int32::max_value();
                 }
-                return Self::min_value();
+                return Int32::min_value();
             }
         }
     }
@@ -119,9 +119,9 @@ impl Int32 {
             }
             None => {
                 if rhs > 0 {
-                    return Self::min_value();
+                    return Int32::min_value();
                 }
-                return Self::max_value();
+                return Int32::max_value();
             }
         }
     }
@@ -133,9 +133,9 @@ impl Int32 {
             }
             None => {
                 if (self > 0) == (rhs > 0) {
-                    return Self::max_value();
+                    return Int32::max_value();
                 }
-                return Self::min_value();
+                return Int32::min_value();
             }
         }
     }

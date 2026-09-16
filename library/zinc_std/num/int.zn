@@ -86,10 +86,10 @@ impl Int {
         if self == 0 || rhs == 0 {
             return Some(0);
         }
-        if self == Self::min_value() && rhs == -1_i {
+        if self == Int::min_value() && rhs == -1_i {
             return None;
         }
-        if rhs == Self::min_value() && self == -1_i {
+        if rhs == Int::min_value() && self == -1_i {
             return None;
         }
         let prod = self * rhs;
@@ -106,9 +106,9 @@ impl Int {
             }
             None => {
                 if rhs > 0 {
-                    return Self::max_value();
+                    return Int::max_value();
                 }
-                return Self::min_value();
+                return Int::min_value();
             }
         }
     }
@@ -120,9 +120,9 @@ impl Int {
             }
             None => {
                 if rhs > 0 {
-                    return Self::min_value();
+                    return Int::min_value();
                 }
-                return Self::max_value();
+                return Int::max_value();
             }
         }
     }
@@ -134,9 +134,9 @@ impl Int {
             }
             None => {
                 if (self > 0) == (rhs > 0) {
-                    return Self::max_value();
+                    return Int::max_value();
                 }
-                return Self::min_value();
+                return Int::min_value();
             }
         }
     }

@@ -1028,6 +1028,10 @@ impl FileParser {
             struct_decl.generic_params = self.parse_generic_type_params();
         }
 
+        if self.lexer.peek(0).token_kind is TokenKind::Keyword(KeywordKind::KW_WHERE) {
+            struct_decl.where_conds = self.parse_where_conditions();
+        }
+
         if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::LBrace) {
             self.lexer.next();
             struct_decl.fields = self.parse_struct_fields(struct_decl as *DeclNode);
