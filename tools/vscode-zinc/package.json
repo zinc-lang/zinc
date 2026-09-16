@@ -1,8 +1,8 @@
 {
   "name": "zinc",
-  "displayName": "zinc",
-  "description": "Zinc Language support",
-  "version": "0.0.1",
+  "displayName": "Zinc",
+  "description": "Zinc language: syntax highlighting, brackets, comments, and snippets for .zn files",
+  "version": "0.0.2",
   "publisher": "F001",
   "icon": "./zinc-logo.png",
   "license": "MIT",
@@ -14,12 +14,13 @@
     "vscode": "^1.8.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Snippets"
   ],
   "contributes": {
     "languages": [{
       "id": "zinc",
-      "aliases": ["zinc", "zinc"],
+      "aliases": ["Zinc", "zinc"],
       "extensions": [".zn"],
       "configuration": "./language-configuration.json"
     }],
@@ -27,6 +28,10 @@
       "language": "zinc",
       "scopeName": "source.zinc",
       "path": "./syntaxes/zinc.tmLanguage.json"
+    }],
+    "snippets": [{
+      "language": "zinc",
+      "path": "./snippets/zinc.json"
     }]
   }
 }

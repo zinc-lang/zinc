@@ -128,6 +128,24 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    fn emit_unterminated_string(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"字符串字面量未闭合",
+            .msg_en = f"unterminated string literal",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_raw_string(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"非法的 raw string literal",
+            .msg_en = f"invalid raw string literal",
+        }: DiagItem);
+    }
+
     fn emit_compiler_recursion_exceed_limit(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,

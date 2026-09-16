@@ -195,3 +195,16 @@ Note: Only Linux/x64 platform is supported.
     │   └── llvm -> ../llvm
     ```
 4. run `python x.py build`
+
+
+## tests
+
+```
+python x.py test
+```
+
+Requires `./out/stage1/bin/zinc` from `python x.py build`. See `tests/` and [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Contributing
+
+Please read [CONTRIBUTING.md](CONTRIBUTING.md). Design discussion belongs in [zinc-lang/zinc-design](https://github.com/zinc-lang/zinc-design).

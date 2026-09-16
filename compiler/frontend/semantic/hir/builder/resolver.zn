@@ -427,6 +427,14 @@ impl Resolver {
             let full_name = ["std", "primitives", "slice", "SliceMut"];
             key = ExportKey::from_slice(&full_name as Slice<Str>);
         }
+        else if name.eq(&"RangeExclusive") {
+            let full_name = ["std", "primitives", "range", "RangeExclusive"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
+        else if name.eq(&"RangeInclusive") {
+            let full_name = ["std", "primitives", "range", "RangeInclusive"];
+            key = ExportKey::from_slice(&full_name as Slice<Str>);
+        }
         else if name.eq(&"Drop") {
             let full_name = ["std", "ops", "drop", "Drop"];
             key = ExportKey::from_slice(&full_name as Slice<Str>);

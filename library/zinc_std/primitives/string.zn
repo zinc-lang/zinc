@@ -109,6 +109,41 @@ impl String {
         self.data.push(byte);
     }
 
+    fn is_char_boundary_at(&self, idx: UInt) -> Bool {
+        if idx > self.len() {
+            return false;
+        }
+        if idx == 0 || idx == self.len() {
+            return true;
+        }
+        let b = self.index(idx);
+        return b.bit_and(0xC0_u8) != 0x80_u8;
+    }
+
+    fn encode_utf8_char(ch: Char, buf: &mut Vec<UInt8>) {
+        let cp = ch as UInt32;
+        if cp <= 0x7F_u32 {
+            buf.push(cp as UInt8);
+        } else if cp <= 0x7FF_u32 {
+            buf.push((0xC0_u32.bit_or(cp.bit_shr(6_u32))) as UInt8);
+            buf.push((0x80_u32.bit_or(cp.bit_and(0x3F_u32))) as UInt8);
+        } else if cp <= 0xFFFF_u32 {
+            buf.push((0xE0_u32.bit_or(cp.bit_shr(12_u32))) as UInt8);
+            buf.push((0x80_u32.bit_or((cp.bit_shr(6_u32)).bit_and(0x3F_u32))) as UInt8);
+            buf.push((0x80_u32.bit_or(cp.bit_and(0x3F_u32))) as UInt8);
+        } else {
+            buf.push((0xF0_u32.bit_or(cp.bit_shr(18_u32))) as UInt8);
+            buf.push((0x80_u32.bit_or((cp.bit_shr(12_u32)).bit_and(0x3F_u32))) as UInt8);
+            buf.push((0x80_u32.bit_or((cp.bit_shr(6_u32)).bit_and(0x3F_u32))) as UInt8);
+            buf.push((0x80_u32.bit_or(cp.bit_and(0x3F_u32))) as UInt8);
+        }
+    }
+
+    pub fn push_char(&mut self, ch: Char) {
+        Self::encode_utf8_char(ch, &mut self.data);
+    }
+
+
     pub fn index<'a>(&'a self, idx: UInt) -> UInt8 {
         if idx >= self.len() {
             let len = self.len();
@@ -120,8 +155,17 @@ impl String {
     }
 
     pub fn insert(&mut self, idx: UInt, ch: Char) {
-        // todo 根据 utf8 编码来实现
-        panic "unimplemented String::insert";
+        if !self.is_char_boundary_at(idx) {
+            panic("index is not a UTF-8 char boundary in String::insert");
+        }
+        let mut encoded = (type Vec<UInt8>)::new();
+        Self::encode_utf8_char(ch, &mut encoded);
+        let mut i = encoded.len();
+        while i > 0 {
+            i -= 1;
+            let b = unsafe(*encoded.get_unchecked(i));
+            self.data.insert(idx, b);
+        }
     }
 
     pub fn insert_byte(&mut self, idx: UInt, b: UInt8) {
@@ -129,7 +173,14 @@ impl String {
     }
 
     pub fn insert_str(&mut self, idx: UInt, s: Str) {
-        // todo 根据 utf8 编码来实现
+        if !self.is_char_boundary_at(idx) {
+            panic("index is not a UTF-8 char boundary in String::insert_str");
+        }
+        let mut i = s.len();
+        while i > 0 {
+            i -= 1;
+            self.data.insert(idx, s.index(i));
+        }
     }
 
     pub fn reserve(&mut self, additional: UInt) {

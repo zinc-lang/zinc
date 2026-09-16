@@ -154,6 +154,53 @@ def build(stage, check_only):
         # 后面用这个编译器把标准库编译一遍
         build_std(out_dir)
 
+
+def run_tests():
+    # compile-pass cases use new lexer/std APIs; they need the stage1 compiler
+    # produced by `python x.py build`, not the bootstrap stage0.
+    compiler = "./out/stage1/bin/zinc"
+    if not os.path.exists(compiler):
+        print("python x.py test requires ./out/stage1/bin/zinc. Run `python x.py build` first.")
+        os._exit(1)
+
+    pass_dir = os.path.join(REPO_DIR, "tests", "compile-pass")
+    fail_dir = os.path.join(REPO_DIR, "tests", "compile-fail")
+    failed = 0
+    ran = 0
+
+    def zinc_check(path):
+        cmd = [compiler, "-O0", path, "--check-only"]
+        print("run:", " ".join(cmd))
+        return subprocess.run(cmd, text=True)
+
+    if os.path.isdir(pass_dir):
+        for name in sorted(os.listdir(pass_dir)):
+            if not name.endswith(".zn"):
+                continue
+            ran += 1
+            result = zinc_check(os.path.join(pass_dir, name))
+            if result.returncode != 0:
+                print(f"FAIL compile-pass {name}")
+                failed += 1
+            else:
+                print(f"ok   compile-pass {name}")
+
+    if os.path.isdir(fail_dir):
+        for name in sorted(os.listdir(fail_dir)):
+            if not name.endswith(".zn"):
+                continue
+            ran += 1
+            result = zinc_check(os.path.join(fail_dir, name))
+            if result.returncode == 0:
+                print(f"FAIL compile-fail {name} (compiler accepted it)")
+                failed += 1
+            else:
+                print(f"ok   compile-fail {name}")
+
+    print(f"{ran - failed}/{ran} tests passed")
+    if failed:
+        os._exit(1)
+
 if __name__ == "__main__":
 
     if sys.argv[1] == "check":
@@ -176,3 +223,6 @@ if __name__ == "__main__":
     
     if sys.argv[1] == "build-llvm":
         build_llvm()
+
+    if sys.argv[1] == "test":
+        run_tests()

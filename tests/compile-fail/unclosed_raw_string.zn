@@ -1,0 +1,4 @@
+// unclosed raw string should not typecheck
+fn main() {
+    let s: Str = r#"unterminated;
+}

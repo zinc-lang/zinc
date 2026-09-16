@@ -482,6 +482,8 @@ impl TypeCheckContext {
                             return sty;
                         }
                         LiteralKind::LIT_STR => { return self.resolver().sty_str(); }
+                        LiteralKind::LIT_RAW_STR => { return self.resolver().sty_str(); }
+                        LiteralKind::LIT_CSTR => { return self.resolver().sty_str(); }
                         LiteralKind::LIT_BYTE => {
                             let sty = IntegerSymbol::new(IntegerKind::U8).to_sty();
                             Resolver::import_builtin_impls(sty.type_symbol);
@@ -654,6 +656,20 @@ impl TypeCheckContext {
                         self.check_value(binary_rv.lhs, SType::sty_bool());
                         self.check_value(binary_rv.rhs, SType::sty_bool());
                         return SType::sty_bool();
+                    }
+                    else if k is PunctuationKind::RangeOpen || k is PunctuationKind::RangeClose {
+                        let mut type_name = String::from_str("RangeExclusive");
+                        if k is PunctuationKind::RangeClose {
+                            type_name = String::from_str("RangeInclusive");
+                        }
+                        if self.resolver().lookup_prelude(&type_name) is Some(sym) {
+                            if sym is ts: *TypeSymbol {
+                                Resolver::import_builtin_impls(sym);
+                                return ts.to_sty(GenericArgs::from1(left_sty));
+                            }
+                        }
+                        DiagnosticEngine::get().emit_unimplemented(binary_rv.op.source_span, "range expression");
+                        return SType::sty_invalid(binary_rv.expr.span());
                     }
                     else if k is PunctuationKind::Plus || k is PunctuationKind::Minus ||
                         k is PunctuationKind::Star || k is PunctuationKind::Div || k is PunctuationKind::Percent {
@@ -1002,6 +1018,12 @@ impl TypeCheckContext {
                             expect_type_eq(csty, SType::sty_char(), lit_rv.expr.span());
                         }
                         LiteralKind::LIT_STR => {
+                            expect_type_eq(csty, self.resolver().sty_str(), lit_rv.expr.span());
+                        }
+                        LiteralKind::LIT_RAW_STR => {
+                            expect_type_eq(csty, self.resolver().sty_str(), lit_rv.expr.span());
+                        }
+                        LiteralKind::LIT_CSTR => {
                             expect_type_eq(csty, self.resolver().sty_str(), lit_rv.expr.span());
                         }
                         LiteralKind::LIT_BYTE => {

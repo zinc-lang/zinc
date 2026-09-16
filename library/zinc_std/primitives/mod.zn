@@ -2,7 +2,7 @@
 // Any 是所有 trait 的父类型。任何 `*Trait` 都可以隐式转换为 `*Any`。借用指针也类似。
 // 所有类型都实现了 Any trait。任何 `*T` 都可以隐式转换为 `*Any`。借用指针也类似。
 
-//mod range;
+pub mod range;
 
 pub mod bool;
 pub mod char;

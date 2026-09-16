@@ -1,0 +1,5 @@
+// HashMap::or_insert
+fn main() {
+    let mut m = (type HashMap<Int, Int>)::new();
+    m.or_insert(1_i, 10_i);
+}
