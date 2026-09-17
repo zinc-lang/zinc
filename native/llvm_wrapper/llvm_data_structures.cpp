@@ -819,8 +819,9 @@ bool llds_verify_function(llvm::Function* f) {
     bool r = llvm::verifyFunction(*f, &llvm::errs());
     if (r) {
         llvm::errs() << "[Debug] LLVM verify failed: " << f->getName() << "\n";
-        f->dump();
-        llvm::errs() << "=======================\n";
+        // dump() is compiled out of Release LLVM; print() is always available.
+        f->print(llvm::errs());
+        llvm::errs() << "\n=======================\n";
     }
     return !r;
 }

@@ -69,16 +69,149 @@ LLVM_LIBS = [
     './out/llvm/lib/libLLVMTargetParser.a'
     ]
 
-def build_llvm():
-    if not os.path.exists(LLVM_CMAKE_OUTPUT_DIR):
-        shutil.rmtree('./build-llvm', ignore_errors=True)
-        os.makedirs('./build-llvm')
-        os.chdir("./build-llvm")
-        subprocess.run('cmake -DCMAKE_BUILD_TYPE=Debug -DLLVM_TARGETS_TO_BUILD=host ../third_party/llvm-project/llvm', shell=True,check=True,text=True)
-        subprocess.run('cmake --build . --config Debug --parallel 4', shell=True,check=True,text=True)
-        subprocess.run(f'cmake -DCMAKE_INSTALL_PREFIX={LLVM_CMAKE_OUTPUT_DIR} -P cmake_install.cmake', shell=True,check=True,text=True)
+STAGE0_URL = os.environ.get(
+    "ZINC_STAGE0_URL",
+    "https://github.com/zinc-lang/zinc/releases/download/v0.0.1/stage0.zip",
+)
+
+# Zinc's codegen shells out to these binaries at out/llvm/bin/{opt,llc}.
+LLVM_REQUIRED_TOOLS = ("opt", "llc")
+
+def llvm_tool_path(name):
+    return os.path.join(LLVM_CMAKE_OUTPUT_DIR, "bin", name)
+
+def llvm_has_required_tools():
+    return all(os.path.exists(llvm_tool_path(name)) for name in LLVM_REQUIRED_TOOLS)
+
+def require_llvm_tools():
+    missing = [name for name in LLVM_REQUIRED_TOOLS if not os.path.exists(llvm_tool_path(name))]
+    if missing:
+        raise SystemExit(
+            "LLVM install is missing " + ", ".join(llvm_tool_path(n) for n in missing) + ". "
+            "The compiler invokes these to emit object files. Rebuild with `python x.py build-llvm` "
+            "(delete out/llvm first if an old install is incomplete)."
+        )
+
+def link_stage_llvm(stage_dir):
+    if not os.path.isdir(stage_dir):
+        return
+    link = os.path.join(stage_dir, "llvm")
+    if os.path.islink(link) or os.path.exists(link):
+        if os.path.islink(link):
+            os.remove(link)
+        else:
+            return
+    if os.path.exists(LLVM_CMAKE_OUTPUT_DIR):
+        os.symlink(LLVM_CMAKE_OUTPUT_DIR, link, target_is_directory=True)
+
+def setup_stage0():
+    os.chdir(REPO_DIR)
+    stage0 = os.path.join(CMAKE_OUTPUT_DIR, "stage0")
+    zinc_bin = os.path.join(stage0, "bin", "zinc")
+    if os.path.exists(zinc_bin):
+        print(f"stage0 already present at {stage0}")
+        link_stage_llvm(stage0)
+        return
+
+    os.makedirs(CMAKE_OUTPUT_DIR, exist_ok=True)
+    zip_path = os.path.join(CMAKE_OUTPUT_DIR, "stage0.zip")
+    if not os.path.exists(zip_path):
+        print(f"download: {STAGE0_URL}")
+        subprocess.run(["curl", "-fL", "-o", zip_path, STAGE0_URL], check=True)
+
+    tmp = os.path.join(CMAKE_OUTPUT_DIR, "stage0-unpack")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    print(f"unpack {zip_path}")
+    if shutil.which("unzip"):
+        subprocess.run(["unzip", "-q", zip_path, "-d", tmp], check=True)
     else:
+        import zipfile
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(tmp)
+
+    if os.path.isdir(os.path.join(tmp, "stage0")):
+        shutil.move(os.path.join(tmp, "stage0"), stage0)
+    elif os.path.isdir(os.path.join(tmp, "stage1")):
+        # v0.0.1 ships the compiler under stage1/
+        shutil.move(os.path.join(tmp, "stage1"), stage0)
+    elif os.path.isdir(os.path.join(tmp, "bin")):
+        shutil.move(tmp, stage0)
+        tmp = None
+    else:
+        raise SystemExit(f"unrecognized stage0 zip layout in {tmp}")
+
+    if tmp is not None:
+        shutil.rmtree(tmp, ignore_errors=True)
+    os.chmod(os.path.join(stage0, "bin", "zinc"), 0o755)
+    link_stage_llvm(stage0)
+    print(f"stage0 ready at {stage0}")
+
+def build_llvm():
+    os.chdir(REPO_DIR)
+    if os.path.exists(LLVM_CMAKE_OUTPUT_DIR) and llvm_has_required_tools():
         print(f'LLVM has already been built in {LLVM_CMAKE_OUTPUT_DIR}, if you want to re-build, please delete this directory')
+        link_stage_llvm(os.path.join(CMAKE_OUTPUT_DIR, "stage0"))
+        return
+    if os.path.exists(LLVM_CMAKE_OUTPUT_DIR):
+        print(f'LLVM at {LLVM_CMAKE_OUTPUT_DIR} is missing opt/llc; rebuilding')
+        shutil.rmtree(LLVM_CMAKE_OUTPUT_DIR)
+
+    llvm_src = os.path.join(REPO_DIR, "third_party", "llvm-project", "llvm")
+    if not os.path.exists(os.path.join(llvm_src, "CMakeLists.txt")):
+        raise SystemExit(
+            "LLVM sources missing. Fetch the pinned submodule, e.g.\n"
+            "  git fetch --depth 1 origin $(git ls-tree HEAD third_party/llvm-project | awk '{print $3}')"
+        )
+
+    build_type = os.environ.get("ZINC_LLVM_BUILD_TYPE", "Debug")
+    jobs = os.environ.get("ZINC_LLVM_JOBS", str(os.cpu_count() or 4))
+    shutil.rmtree('./build-llvm', ignore_errors=True)
+    os.makedirs('./build-llvm')
+    cmake = [
+        "cmake",
+        f"-DCMAKE_BUILD_TYPE={build_type}",
+        f"-DCMAKE_INSTALL_PREFIX={LLVM_CMAKE_OUTPUT_DIR}",
+        "-DLLVM_TARGETS_TO_BUILD=host",
+        "-DLLVM_INCLUDE_TESTS=OFF",
+        "-DLLVM_INCLUDE_EXAMPLES=OFF",
+        "-DLLVM_INCLUDE_BENCHMARKS=OFF",
+        "-DLLVM_INCLUDE_DOCS=OFF",
+        "-DLLVM_ENABLE_BINDINGS=OFF",
+        "-DLLVM_ENABLE_OCAMLDOC=OFF",
+        # Keep the default `all` target to libraries; Zinc only needs opt and llc.
+        "-DLLVM_BUILD_TOOLS=OFF",
+        "-DLLVM_ENABLE_ZLIB=ON",
+        "-DLLVM_ENABLE_ZSTD=ON",
+        "-DLLVM_ENABLE_TERMINFO=OFF",
+        "-DLLVM_ENABLE_LIBXML2=OFF",
+        "-DLLVM_PARALLEL_LINK_JOBS=1",
+        llvm_src,
+    ]
+    if shutil.which("ninja"):
+        cmake[1:1] = ["-G", "Ninja"]
+    try:
+        os.chdir("./build-llvm")
+        subprocess.run(cmake, check=True, text=True)
+        subprocess.run(["cmake", "--build", ".", "--config", build_type, "--parallel", jobs], check=True, text=True)
+        tool_build = ["cmake", "--build", ".", "--config", build_type, "--parallel", jobs]
+        for name in LLVM_REQUIRED_TOOLS:
+            tool_build.extend(["--target", name])
+        subprocess.run(tool_build, check=True, text=True)
+        subprocess.run(["cmake", "--install", ".", "--prefix", LLVM_CMAKE_OUTPUT_DIR], check=True, text=True)
+        # LLVM_BUILD_TOOLS=OFF still generates opt/llc targets, but skips their install rules.
+        dest_bin = os.path.join(LLVM_CMAKE_OUTPUT_DIR, "bin")
+        os.makedirs(dest_bin, exist_ok=True)
+        for name in LLVM_REQUIRED_TOOLS:
+            built = os.path.join("bin", name)
+            if not os.path.isfile(built):
+                raise SystemExit(f"LLVM build did not produce {os.path.abspath(built)}")
+            shutil.copy2(built, os.path.join(dest_bin, name))
+            os.chmod(os.path.join(dest_bin, name), 0o755)
+    finally:
+        os.chdir(REPO_DIR)
+    require_llvm_tools()
+    link_stage_llvm(os.path.join(CMAKE_OUTPUT_DIR, "stage0"))
 
 def build_std(folder):
     shutil.rmtree('./build-std/', ignore_errors=True)
@@ -107,7 +240,7 @@ def build(stage, check_only):
     os.chdir(REPO_DIR)
     if stage != 1 and stage != 2 and stage != 3:
         print('stage can only support 1, 2 and 3')
-        os._exit(1)
+        sys.exit(1)
 
     if stage == 1:
         out_dir = './out/stage1'
@@ -143,8 +276,19 @@ def build(stage, check_only):
 
         cmd += " --extra-link='-lzstd -lz -lpthread -lm -ldl' "
 
+        require_llvm_tools()
+        if not shutil.which("clang++"):
+            raise SystemExit("clang++ is required to link Zinc (install the clang package)")
         print(f"run: {cmd}")
         subprocess.run(cmd, check=True, shell=True, text=True)
+
+        zinc_out = os.path.join(out_dir, "bin", "zinc")
+        if not os.path.exists(zinc_out):
+            raise SystemExit(
+                f"build did not produce {zinc_out}. "
+                "stage0 needs working LLVM tools at out/llvm/bin/opt and out/llvm/bin/llc "
+                "(symlinked as out/stage0/llvm)."
+            )
 
         # 在 stage1 目录下生成一个软链接指向上层的 llvm 目录
         if os.path.exists(f'{out_dir}/llvm'):
@@ -161,7 +305,7 @@ def run_tests():
     compiler = "./out/stage1/bin/zinc"
     if not os.path.exists(compiler):
         print("python x.py test requires ./out/stage1/bin/zinc. Run `python x.py build` first.")
-        os._exit(1)
+        sys.exit(1)
 
     pass_dir = os.path.join(REPO_DIR, "tests", "compile-pass")
     fail_dir = os.path.join(REPO_DIR, "tests", "compile-fail")
@@ -200,7 +344,7 @@ def run_tests():
 
     print(f"{ran - failed}/{ran} tests passed")
     if failed:
-        os._exit(1)
+        sys.exit(1)
 
 if __name__ == "__main__":
 
@@ -222,6 +366,9 @@ if __name__ == "__main__":
             build(2, False)
         build(3, False)
     
+    if sys.argv[1] == "setup-stage0":
+        setup_stage0()
+
     if sys.argv[1] == "build-llvm":
         build_llvm()
 
