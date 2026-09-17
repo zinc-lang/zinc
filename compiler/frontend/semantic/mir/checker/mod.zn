@@ -45,7 +45,6 @@ impl CFG {
     fn check_liveness(*self) {
         let mut liveness_checker = LivenessChecker::new(self);
         liveness_checker.determine_local_liveness();
-        // P-d: origin 数据流 (汇合点用并集, worklist 迭代处理回边)
         liveness_checker.determine_origins();
         liveness_checker.check_lifetime();
 

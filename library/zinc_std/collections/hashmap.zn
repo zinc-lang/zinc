@@ -298,7 +298,7 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         unsafe {
             while distance < self.table.len() {
                 match self.table.get_unchecked(index) {
-                    Entry::Occupied(existing_key, value, existing_distance) => {
+                    Entry::Occupied(existing_key, _, _) => {
                         if (existing_key.eq(key)) {
                             return true;
                         }
@@ -328,7 +328,7 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         while distance < cap {
             let entry = unsafe(self.table.get_unchecked_mut(index));
             // 按值取出 payload; ref 模式在 stage1 编 std 时非法(除非包在 unsafe match 里)。
-            if entry is Entry::Occupied(existing_key, existing_value, existing_distance) {
+            if entry is Entry::Occupied(existing_key, existing_value, _) {
                 if existing_key.eq(key) {
                     *entry = Entry::Tombstone;
                     self.size -= 1;
