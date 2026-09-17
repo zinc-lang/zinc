@@ -7,6 +7,9 @@ use ::self::collections::vec::VecIter;
 
 use super::hashmap::*;
 
+// HashSet 是 HashMap<T, ()>。T = UInt 的 Hash/Eq 没问题; 以前 liveness 卡死是
+// HashMap 墓碑探测死循环 / insert 占墓碑导致重复 key, 见 hashmap.zn。
+
 pub struct HashSet<T> {
     map: HashMap<T, ()>,
 }

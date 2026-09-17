@@ -1,0 +1,22 @@
+// Insert, delete, then lookup again. This is the liveness-checker workload
+// that used to infinite-loop in HashMap::{contains, get, remove}.
+fn main() {
+    let mut m = (type HashMap<UInt, UInt>)::new();
+    let mut i: UInt = 0;
+    while i < 32_u {
+        m.insert(i, i);
+        i += 1_u;
+    }
+    i = 0_u;
+    while i < 32_u {
+        m.remove(&i);
+        i += 1_u;
+    }
+    if m.contains(&0_u) {
+        m.remove(&0_u);
+    }
+    m.insert(99_u, 1_u);
+    if m.contains(&99_u) {
+        m.or_insert(99_u, 2_u);
+    }
+}

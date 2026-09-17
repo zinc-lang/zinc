@@ -1,0 +1,34 @@
+// HashSet<UInt> used to look broken because HashMap lookup never terminated
+// once a table was full of Occupied + Tombstone (insert/remove of many keys).
+use std::collections::hashset::HashSet;
+
+fn main() {
+    let mut s = (type HashSet<UInt>)::new();
+    let mut i: UInt = 0;
+    while i < 64_u {
+        s.insert(i);
+        i += 1_u;
+    }
+    i = 0_u;
+    while i < 64_u {
+        if i % 2_u == 0_u {
+            s.remove(&i);
+        }
+        i += 1_u;
+    }
+    i = 0_u;
+    while i < 64_u {
+        if s.contains(&i) {
+            s.insert(i);
+        }
+        i += 1_u;
+    }
+
+    let mut nested = (type HashMap<UInt, HashSet<UInt>>)::new();
+    let mut inner = (type HashSet<UInt>)::new();
+    inner.insert(1_u);
+    nested.insert(0_u, move inner);
+    if nested.contains(&0_u) {
+        nested.remove(&0_u);
+    }
+}
