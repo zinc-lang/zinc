@@ -1,6 +1,13 @@
 
 // 这个版本的 hashmap 使用 robin hood 算法实现。
 // 等后续 SIMD 支持完成, 再改用 swisstable 实现。
+//
+// Lookup 必须跳过 Tombstone, 原先只在 Vacant 时退出 `while (true)`。
+// 表被 Occupied+Tombstone 填满后 contains/get/remove 会永远循环。
+// 这就是 MIR liveness 没法直接用 HashSet<UInt> 的根因。探测次数上限是一张表的长度。
+//
+// insert 也必须先确认 key 不在表中再占用 Tombstone, 否则同一探测链会写出重复 key,
+// size 虚高后每次插入都 resize, stage1 编 std 时表现为挂死。
 use ::self::cmp::Eq;
 use ::self::hash::Hash;
 use ::self::hash::default_hasher;
@@ -89,6 +96,7 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         }
 
         self.table = new_table.table;
+        self.size = new_table.size;
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
@@ -99,35 +107,45 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         }
         self.table.to_unique();
 
+        let cap = self.table.len();
         let mut index: UInt = self.ideal_index(&key);
-        let mut key = move key;
-        let mut value = move value;
         let mut distance: UInt = 0;
+        let mut hole: Option<UInt> = None;
+        let mut hole_distance: UInt = 0;
 
-        while (true) {
+        // 第一趟: 找已有 key; 同时记下第一个可复用的 Tombstone/Vacant。
+        // 绝不能一碰到 Tombstone 就写入, 否则探测链后方的同一 key 会变成重复条目。
+        while distance < cap {
             let entry = unsafe(self.table.get_unchecked_mut(index));
             if entry is Entry::Occupied(existing_key, existing_value, existing_distance) {
-                if existing_key.eq(&key) { // 找到了
-                    *entry = Entry::Occupied(move key, move value, distance);
+                if existing_key.eq(&key) {
+                    *entry = Entry::Occupied(move key, move value, existing_distance);
                     return Some(move existing_value);
                 }
-                // Robin Hood: take from the rich (existing entry with larger distance)
-                if distance > existing_distance {
-                    *entry = Entry::Occupied(move key, move value, distance);
-                    key = move existing_key;
-                    value = move existing_value;
-                }
-
             } else {
-                *entry = Entry::Occupied(move key, move value, distance);
-                self.size += 1;
-                return None;
+                if hole is None {
+                    hole = Some(index);
+                    hole_distance = distance;
+                }
+                if entry is Entry::Vacant {
+                    break;
+                }
             }
 
             distance += 1;
-            index = (index + 1) % self.table.len();
+            index = (index + 1) % cap;
         }
-        return None;
+
+        if hole is Some(place) {
+            // Robin Hood 从 hole 起继续向前排空槽; 简单起见直接写入第一个 hole。
+            let entry = unsafe(self.table.get_unchecked_mut(place));
+            *entry = Entry::Occupied(move key, move value, hole_distance);
+            self.size += 1;
+            return None;
+        }
+
+        self.resize();
+        return self.insert(move key, move value);
     }
 
     pub fn to_unique(&mut self) {
@@ -144,7 +162,7 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         let mut distance: UInt = 0;
 
         unsafe {
-            while (true) {
+            while distance < self.table.len() {
                 let entry = self.table.get_unchecked(index);
                 match entry {
                     Entry::Occupied(ref existing_key, ref value, existing_distance) => {
@@ -155,9 +173,6 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
                                 .item = value,
                             } : ItemRef<'a, V>);
                         }
-                        // if (distance > existing_distance) {
-                        //     return None;
-                        // }
                     }
                     Entry::Vacant => return None;
                     Entry::Tombstone => {}
@@ -180,7 +195,7 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         let mut distance: UInt = 0;
 
         unsafe {
-            while (true) {
+            while distance < self.table.len() {
                 match self.table.get_unchecked_mut(index) {
                     Entry::Occupied(ref existing_key, ref mut value, existing_distance) => {
                         if (existing_key.eq(key)) {
@@ -190,9 +205,6 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
                                 .item = value,
                             } : ItemRefMut<'a, V>);
                         }
-                        // if (distance > existing_distance) {
-                        //     return None;
-                        // }
                     }
                     Entry::Vacant => return None;
                     Entry::Tombstone => {}
@@ -223,11 +235,13 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         }
         self.table.to_unique();
 
+        let cap = self.table.len();
         let mut index = self.ideal_index(&key);
         let mut distance: UInt = 0;
+        let mut hole: Option<UInt> = None;
 
         unsafe {
-            while (true) {
+            while distance < cap {
                 match self.table.get_unchecked_mut(index) {
                     Entry::Occupied(ref existing_key, ref mut value, _) => {
                         if (existing_key.eq(&key)) {
@@ -239,18 +253,32 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
                         }
                     }
                     Entry::Vacant => {
+                        if hole is None {
+                            hole = Some(index);
+                        }
                         break;
                     }
-                    Entry::Tombstone => {}
+                    Entry::Tombstone => {
+                        if hole is None {
+                            hole = Some(index);
+                        }
+                    }
                 }
 
                 distance += 1;
-                index = (index + 1) % self.table.len();
+                index = (index + 1) % cap;
             }
 
-            *self.table.get_unchecked_mut(index) = Entry::Occupied(move key, move default, distance);
+            if hole is None {
+                self.resize();
+                return self.or_insert(move key, move default);
+            }
+
+            let place = hole.get_or_panic();
+            let place_distance = self.probe_distance(&key, place);
+            *self.table.get_unchecked_mut(place) = Entry::Occupied(move key, move default, place_distance);
             self.size += 1;
-            match self.table.get_unchecked_mut(index) {
+            match self.table.get_unchecked_mut(place) {
                 Entry::Occupied(_, ref mut value, _) => {
                     return {
                         .ptr = self.table.ptr as *(),
@@ -275,15 +303,12 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         let mut distance: UInt = 0;
 
         unsafe {
-            while (true) {
+            while distance < self.table.len() {
                 match self.table.get_unchecked(index) {
                     Entry::Occupied(existing_key, value, existing_distance) => {
                         if (existing_key.eq(key)) {
                             return true;
                         }
-                        // if (distance > existing_distance) {
-                        //     return false;
-                        // }
                     }
                     Entry::Vacant => return false;
                     _ => {}
@@ -305,30 +330,23 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
 
         let mut index = self.ideal_index(key);
         let mut distance: UInt = 0;
+        let cap = self.table.len();
 
-        unsafe {
-            while(true) {
-                let entry = self.table.get_unchecked_mut(index);
-                match entry {
-                    Entry::Occupied(ref existing_key, ref mut value, ref existing_distance) => {
-                        if (existing_key.eq(key)) {
-                            let zero: V = std::intrinsic::zeroed(<V>);
-                            let old_value = std::mem::replace(value, move zero);
-                            *entry = Entry::Tombstone;
-                            self.size -= 1;
-                            return Some(move old_value);
-                        }
-                        // if (distance > *existing_distance) {
-                        //     return None;
-                        // }
-                    }
-                    Entry::Vacant => return None;
-                    Entry::Tombstone => {}
+        while distance < cap {
+            let entry = unsafe(self.table.get_unchecked_mut(index));
+            // 按值取出 payload; ref 模式在 stage1 编 std 时非法(除非包在 unsafe match 里)。
+            if entry is Entry::Occupied(existing_key, existing_value, existing_distance) {
+                if existing_key.eq(key) {
+                    *entry = Entry::Tombstone;
+                    self.size -= 1;
+                    return Some(move existing_value);
                 }
-
-                distance += 1;
-                index = (index + 1) % self.table.len();
+            } else if entry is Entry::Vacant {
+                return None;
             }
+
+            distance += 1;
+            index = (index + 1) % cap;
         }
         return None;
     }

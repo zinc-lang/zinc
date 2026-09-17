@@ -1,0 +1,48 @@
+// Mimic MIR liveness: COW-insert the same set into a map at many points,
+// interleaved with remove/insert on the working set (tombstones + shared Vec).
+// The broken HashMap either infinite-looped on lookup or resize-stormed here.
+use std::collections::hashset::HashSet;
+
+fn main() {
+    let mut alive_at = (type HashMap<UInt, HashSet<UInt>>)::new();
+    let mut alived = (type HashSet<UInt>)::new();
+
+    let mut step: UInt = 0;
+    while step < 128_u {
+        let key = step % 17_u;
+        if step % 3_u == 0_u {
+            alived.insert(key);
+        } else if step % 3_u == 1_u {
+            alived.remove(&key);
+        }
+        if alived.contains(&key) {
+            alived.insert(key);
+        }
+
+        // Store a snapshot (COW share), then keep mutating alived.
+        alive_at.insert(step, alived);
+
+        let mut other = (type HashSet<UInt>)::new();
+        other.insert((step * 3_u) % 17_u);
+        other.insert((step * 5_u) % 17_u);
+        // Union/intersect style traffic via keys.
+        let keys = other.keys();
+        let mut i: UInt = 0;
+        while i < keys.len() {
+            let v = keys.at(i).get_or_panic();
+            alived.insert(v);
+            i += 1_u;
+        }
+
+        step += 1_u;
+    }
+
+    let mut i: UInt = 0;
+    while i < 128_u {
+        if alive_at.contains(&i) {
+            let snap = alive_at.at(&i).get_or_panic();
+            let _ = snap.contains(&0_u);
+        }
+        i += 1_u;
+    }
+}
