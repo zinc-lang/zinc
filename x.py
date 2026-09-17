@@ -171,7 +171,8 @@ def run_tests():
     def zinc_check(path):
         cmd = [compiler, "-O0", path, "--check-only"]
         print("run:", " ".join(cmd))
-        return subprocess.run(cmd, text=True)
+        # 编译器的 stdout/stderr 全部丢弃, 测试结果只通过退出码判断
+        return subprocess.run(cmd, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     if os.path.isdir(pass_dir):
         for name in sorted(os.listdir(pass_dir)):
