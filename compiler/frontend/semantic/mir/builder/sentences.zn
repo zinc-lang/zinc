@@ -484,10 +484,15 @@ impl CfgBuilder {
             if s is type *ExprSentence || s is type *LetSentence {
                 end = connect_and_merge(end, &res);
             } else {
-                end.terminator = Some(box {
-                    .target = res.start
-                }: BrForward as *Terminator);
-                end = res.end;
+                // 如果前一条语句已经终止 (return/panic/break/continue), 当前语句就不可达。
+                // 这里不能覆盖已有的 terminator, 否则 return 会丢失, 不可达代码会重新变成可达,
+                // 从而让存活分析/生命周期检查产生误报。
+                if end.terminator is None {
+                    end.terminator = Some(box {
+                        .target = res.start
+                    }: BrForward as *Terminator);
+                    end = res.end;
+                }
             }
         }
         self.handle_temps_after_stmt(end);

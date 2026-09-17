@@ -132,12 +132,14 @@ impl CfgBuilder {
     }
 
     fn drop_var_sym(&mut self, vs: *VarSymbol, bb: *BasicBlock) {
-        let sty = vs.stype;
-        if has_destructor(sty) {
-            let local = LocalVar::create(vs.var_node.span(), vs);
-            let d = DtorValue::create(vs.var_node.span(), local as *LValue);
-            bb.add_step(move d as *XValue);
+        let local = LocalVar::create(vs.var_node.span(), vs);
+        let mut d = DtorValue::create(vs.var_node.span(), local as *LValue);
+        // 没有析构函数的类型不需要生成析构调用, 用 no_need 标记。
+        // 但这条指令依然承担"变量存储期到此结束"的语义, 存活分析依赖它判断变量的死亡点。
+        if !has_destructor(vs.stype) {
+            d.no_need = true;
         }
+        bb.add_step(move d as *XValue);
     }
 
     fn drop_locals_when_exit_block(&mut self, blk: *BlockSentence, bb: *BasicBlock) {

@@ -93,34 +93,38 @@ impl LivenessChecker {
                     }
                 }
                 d: *DtorValue => {
-                    if d.no_need {
-                        continue;
-                    }
                     if extract_local(d.src as *XValue) is Some(vsym) {
                         let j = vsym as *raw VarSymbol as UInt;
+                        // 无论是有析构函数的真正析构, 还是无析构函数(no_need)的存储期结束标记,
+                        // 该变量在此刻都不再存活
                         alived.remove(j);
-                        if vsym.drop_flag is None {
-                            // 这个变量现在本来就不是 alived 状态, 有两种可能:
-                            // 1. 变量已经析构
-                            // 2. 变量来自多个分支，其中某些分支中已经析构
-                            // 分析 incomings
-                            let incoming_liveness = self.preceding_liveness_of(bb, j);
-                            if incoming_liveness.len() == 0 {
-                                d.no_need = true;
-                            } else if incoming_liveness.len() == 1 && incoming_liveness.contains(0_u) {
-                                d.no_need = true;
-                            } else if incoming_liveness.len() == 2 {
-                                // 添加 drop flag
-                                if vsym.drop_flag is None {
-                                    let df = VarSymbol::create(vsym.var_node.span(), SType::sty_bool());
-                                    vsym.drop_flag = Some(move df);
+                        if d.no_need {
+                            // 没有析构函数: 只需要结束存储期, 不需要做 drop flag 分析
+                            dead.insert(j);
+                        } else {
+                            if vsym.drop_flag is None {
+                                // 这个变量现在本来就不是 alived 状态, 有两种可能:
+                                // 1. 变量已经析构
+                                // 2. 变量来自多个分支，其中某些分支中已经析构
+                                // 分析 incomings
+                                let incoming_liveness = self.preceding_liveness_of(bb, j);
+                                if incoming_liveness.len() == 0 {
+                                    d.no_need = true;
+                                } else if incoming_liveness.len() == 1 && incoming_liveness.contains(0_u) {
+                                    d.no_need = true;
+                                } else if incoming_liveness.len() == 2 {
+                                    // 添加 drop flag
+                                    if vsym.drop_flag is None {
+                                        let df = VarSymbol::create(vsym.var_node.span(), SType::sty_bool());
+                                        vsym.drop_flag = Some(move df);
+                                    }
                                 }
                             }
-                        }
-                        if dead.contains(j) {
-                            d.no_need = true;
-                        } else {
-                            dead.insert(j);
+                            if dead.contains(j) {
+                                d.no_need = true;
+                            } else {
+                                dead.insert(j);
+                            }
                         }
                     }
                 }
