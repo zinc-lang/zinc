@@ -3,13 +3,15 @@ use ::self::frontend::source_code::*;
 use ::self::frontend::diagnostic::*;
 
 struct TypeMapping {
-    ty_mapping: HashMap<UInt, *SType>, // key 是 *TypeParamSymbol 或者 *LifetimeSymbol
+    ty_mapping: HashMap<UInt, *SType>,   // key 是 *TypeParamSymbol
+    lt_mapping: HashMap<UInt, Lifetime>, // key 是 *LifetimeSymbol
 }
 
 impl TypeMapping {
     fn new() -> Self {
         return {
             .ty_mapping = (type HashMap<UInt, *SType>)::new(),
+            .lt_mapping = (type HashMap<UInt, Lifetime>)::new(),
         }: TypeMapping;
     }
 
@@ -55,18 +57,18 @@ impl TypeMapping {
                     i += 1;
                 }
             }
-            return true;
 
-            // let len1 = aty.args.lt_args.len();
-            // let len2 = fty.args.lt_args.len();
-            // let mut j: UInt = 0;
-            // while j < len1 && j < len2 {
-            //     let a = aty.args.lt_arg(j);
-            //     let f = fty.args.lt_arg(j);
-            //     if f.is_named() {
-            //         self.lt_substs.insert(move f, move a);
-            //     }
-            // }
+            // 记录生命周期形参 -> 实参 的替换关系
+            let len1 = aty.args.lt_args.len();
+            let len2 = fty.args.lt_args.len();
+            let mut j: UInt = 0;
+            while j < len1 && j < len2 {
+                let a = aty.args.lt_arg(j);
+                let f = fty.args.lt_arg(j);
+                self.unify_lt(f, a);
+                j += 1;
+            }
+            return true;
         }
         return false;
     }
@@ -89,13 +91,15 @@ impl TypeMapping {
         }
     }
 
-    // fn unify_lt(&mut self, formal: Lifetime, actual: Lifetime) -> Bool {
-    //     if formal.is_named() {
-    //         self.lt_substs.insert(move formal, move actual);
-    //         return true;
-    //     }
-    //     return false;
-    // }
+    fn unify_lt(&mut self, formal: Lifetime, actual: Lifetime) -> Bool {
+        // 只有形参侧确实是一个生命周期形参(具名, 或者生命周期省略规则补全出来的匿名形参)时才记录
+        if formal.resolved is Some(lt_sym) {
+            let key = lt_sym as *raw LifetimeSymbol as UInt;
+            self.lt_mapping.insert(key, move actual);
+            return true;
+        }
+        return false;
+    }
 
     fn subst(&self, sty: *SType) -> *SType {
         if sty.type_symbol is ts: *TypeParamSymbol {
@@ -118,18 +122,27 @@ impl TypeMapping {
         for t in sty.args.ty_args {
             new_args.ty_args.push(self.subst(t));
         }
-        // for l in sty.args.lt_args {
-        //     new_args.lt_args.push(self.subst_lt(l));
-        // }
+        {
+            let mut i: UInt = 0;
+            let len = sty.args.lt_args.len();
+            while i < len {
+                let l: Lifetime = sty.args.lt_arg(i);
+                let substituted = self.subst_lt(l);
+                new_args.lt_args.push(move substituted);
+                i += 1;
+            }
+        }
         return sty.type_symbol.to_sty(move new_args);
     }
 
-    // fn subst_lt(&self, lt: Lifetime) -> Lifetime {
-    //     if self.lt_substs.at(&lt) is Some(r) {
-    //         return r;
-    //     } else {
-    //         return Lifetime::new();
-    //     }
-    // }
+    fn subst_lt(&self, lt: Lifetime) -> Lifetime {
+        if lt.resolved is Some(lt_sym) {
+            let key = lt_sym as *raw LifetimeSymbol as UInt;
+            if self.lt_mapping.at(&key) is Some(replacement) {
+                return replacement;
+            }
+        }
+        return lt;
+    }
 
 }

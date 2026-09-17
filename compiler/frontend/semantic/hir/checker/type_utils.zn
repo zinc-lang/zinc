@@ -27,14 +27,15 @@ impl SType {
                     }
                 }
                 {
-                    // let len_formal = alias.generics.lt_params.len();
-                    // let len_actual = self.args.lt_args.len();
-                    // let mut i: UInt = 0;
-                    // while i < len_formal && i < len_actual {
-                    //     let formal = alias.generics.lt_param(i);
-                    //     let actual = self.args.lt_arg(i);
-                    //     mappings.unify_lt(formal, actual);
-                    // }
+                    let len_formal = alias.generics.lt_params.len();
+                    let len_actual = self.args.lt_args.len();
+                    let mut i: UInt = 0;
+                    while i < len_formal && i < len_actual {
+                        let formal = alias.generics.lt_param(i).to_lifetime();
+                        let actual = self.args.lt_arg(i);
+                        mappings.unify_lt(formal, actual);
+                        i += 1;
+                    }
                 }
                 return mappings.subst(alias.target_sty);
             }
@@ -54,12 +55,33 @@ impl SType {
                     mappings.unify(formal, actual);
                 }
             }
+            {
+                let len_formal = assoc.generics.lt_params.len();
+                let len_actual = self.args.lt_args.len();
+                let mut i: UInt = 0;
+                while i < len_formal && i < len_actual {
+                    let formal = assoc.generics.lt_param(i).to_lifetime();
+                    let actual = self.args.lt_arg(i);
+                    mappings.unify_lt(formal, actual);
+                    i += 1;
+                }
+            }
             return mappings.subst(assoc.target_sty);
         }
 
         let mut args = GenericArgs::new();
         for a in self.args.ty_args {
             args.ty_args.push(a.canonical());
+        }
+        {
+            // 生命周期实参不做归一化, 但要原样保留, 否则生命周期信息会在 canonical 之后丢失
+            let mut i: UInt = 0;
+            let len = self.args.lt_args.len();
+            while i < len {
+                let l: Lifetime = self.args.lt_arg(i);
+                args.lt_args.push(move l);
+                i += 1;
+            }
         }
 
         return self.type_symbol.to_sty(move args);
