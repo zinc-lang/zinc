@@ -274,7 +274,7 @@ impl CfgBuilder {
                 // deref 的结果需要 copy, raw pointer 除外
                 let op_sty = deref_rv.operand.get_stype();
                 if op_sty.type_symbol is type *RawPointerImmutSymbol ||
-                    op_sty.type_symbol is type *RawPointerImmutSymbol {
+                    op_sty.type_symbol is type *RawPointerMutSymbol {
                     return;
                 } else {
                     let copy = CopyValue::create(rval.expr_node(), rval);

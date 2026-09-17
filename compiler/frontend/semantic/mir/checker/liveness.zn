@@ -24,6 +24,7 @@ impl LivenessChecker {
             .cfg = move cfg,
             .alive_locals_at_point = (type HashMap<LivePoint, UIntSet>)::new(),
             .local_liveness = (type HashMap<UInt, UIntSet>)::new(),
+            .origin_in_states = (type HashMap<UInt, HashMap<UInt, OriginSet>>)::new(),
         }: LivenessChecker;
     }
 

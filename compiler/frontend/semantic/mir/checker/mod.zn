@@ -45,13 +45,25 @@ impl CFG {
     fn check_liveness(*self) {
         let mut liveness_checker = LivenessChecker::new(self);
         liveness_checker.determine_local_liveness();
+        // P-d: origin 数据流 (汇合点用并集, worklist 迭代处理回边)
+        liveness_checker.determine_origins();
         liveness_checker.check_lifetime();
 
     }
+}
+
+// 一个指针值可能的来源集合 (may-origin)。
+// 与 liveness 的"确定存活"相反, 这是一个 may 分析, 汇合点取并集。
+struct OriginSet {
+    locals: UIntSet,   // 可能指向的局部变量 (*VarSymbol)
+    has_static: Bool,  // 可能指向 static/const
+    has_raw: Bool,     // 可能是原始指针, 不做生命周期约束
+    has_unknown: Bool, // 来源无法解析
 }
 
 struct LivenessChecker {
     cfg: *CFG,
     alive_locals_at_point: HashMap<LivePoint, UIntSet>, // 通过 LivePoint 查找哪些 *VarSymbol 在这里是活的
     local_liveness: HashMap<UInt, UIntSet>, // 通过 *VarSymbol 查找它在哪些 LivePoint 上是活的
+    origin_in_states: HashMap<UInt, HashMap<UInt, OriginSet>>, // bb -> (局部变量 -> 它可能指向的来源)
 }

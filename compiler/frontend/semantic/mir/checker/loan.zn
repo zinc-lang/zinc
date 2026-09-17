@@ -1,4 +1,5 @@
 use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
 use super::*;
 use super::uint_set::*;
 
@@ -147,4 +148,483 @@ impl LifeScope {
         }
         return String::new();
     }
+}
+
+
+// ==================== P-d: origin 数据流 ====================
+//
+// 与 liveness 相反, origin 回答的是"这个指针值可能指向哪些存储", 是一个 may 分析:
+//   - 基本块入口: 所有前驱出口状态的 **并集** (liveness 用的是交集)
+//   - 循环回边: 作为普通前驱参与并集; 用 worklist 迭代到不动点
+// origin 集合单调且有界 (来源只有有限的局部变量和几个标志位), 所以迭代必然收敛。
+
+impl OriginSet {
+    fn new() -> Self {
+        return {
+            .locals = UIntSet::new(),
+            .has_static = false,
+            .has_raw = false,
+            .has_unknown = false,
+        }: OriginSet;
+    }
+
+    fn from_local(vs: *VarSymbol) -> Self {
+        let mut s = OriginSet::new();
+        s.locals.insert(vs as *raw VarSymbol as UInt);
+        return s;
+    }
+
+    fn static_set() -> Self {
+        let mut s = OriginSet::new();
+        s.has_static = true;
+        return s;
+    }
+
+    fn raw_set() -> Self {
+        let mut s = OriginSet::new();
+        s.has_raw = true;
+        return s;
+    }
+
+    fn unknown_set() -> Self {
+        let mut s = OriginSet::new();
+        s.has_unknown = true;
+        return s;
+    }
+
+    fn is_empty(&self) -> Bool {
+        return self.locals.len() == 0 &&
+            !self.has_static && !self.has_raw && !self.has_unknown;
+    }
+
+    // self 是否已经包含 other 的所有来源
+    fn is_superset_of(&self, other: &OriginSet) -> Bool {
+        if !self.locals.is_superset_of(&other.locals) {
+            return false;
+        }
+        if other.has_static && !self.has_static { return false; }
+        if other.has_raw && !self.has_raw { return false; }
+        if other.has_unknown && !self.has_unknown { return false; }
+        return true;
+    }
+
+    // 求并集, 返回是否发生了变化
+    fn union_with(&mut self, other: &OriginSet) -> Bool {
+        if self.is_superset_of(other) {
+            return false;
+        }
+        self.locals.union_set(&other.locals);
+        if other.has_static { self.has_static = true; }
+        if other.has_raw { self.has_raw = true; }
+        if other.has_unknown { self.has_unknown = true; }
+        return true;
+    }
+}
+
+impl LivenessChecker {
+    // origin 数据流的不动点计算
+    fn determine_origins(&mut self) {
+        let mut worklist = (type Vec<*BasicBlock>)::new();
+
+        for bb in self.cfg.basic_blocks {
+            let mut st = (type HashMap<UInt, OriginSet>)::new();
+            if bb.index == 0 {
+                // 入口: 借用参数的被引用对象在函数外部, 先记为 Unknown
+                // (P3 会结合函数签名里的生命周期实参, 把它映射为 Param('a))
+                for p in self.cfg.func_sym.params {
+                    if type_contains_pointer(p.stype) {
+                        st.insert(p as *raw VarSymbol as UInt, OriginSet::unknown_set());
+                    }
+                }
+            }
+            self.origin_in_states.insert(bb as *raw BasicBlock as UInt, move st);
+            worklist.push(bb);
+        }
+
+        // worklist 不动点: 后继的入口状态只有在真的增长时才重新入队。
+        // 回边(BrBackward)就是普通边, 由 successors() 一并给出。
+        // in_states 只增不减 (并集) 且有界 (来源是有限个局部变量), 所以必然收敛。
+        while !worklist.is_empty() {
+            let first: Option<*BasicBlock> = worklist.pop_front();
+            if first is Some(bb) {
+                let bb_key = bb as *raw BasicBlock as UInt;
+                // 入口状态 = 所有前驱出口状态的并集 (在前驱处理时已经累积好)
+                let in_state = self.origin_in_states.at(&bb_key).get_or_panic();
+                let out_state = self.transfer_origins(bb, &in_state);
+                if bb.terminator is Some(term) {
+                    for succ in term.successors() {
+                        let succ_key = succ as *raw BasicBlock as UInt;
+                        if self.origin_in_states.get_mut(&succ_key) is Some(mut succ_in) {
+                            if merge_origin_state(succ_in.deref_mut(), &out_state) {
+                                worklist.push(succ);
+                            }
+                        }
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    // 把入口状态在基本块内做一遍前向传递
+    fn transfer_origins(&self, bb: *BasicBlock, in_state: &HashMap<UInt, OriginSet>) -> HashMap<UInt, OriginSet> {
+        let mut state = (type HashMap<UInt, OriginSet>)::new();
+        for ref kv in in_state {
+            let key = kv.0;
+            let val = kv.1;
+            state.insert(key, move val);
+        }
+        for step in bb.steps {
+            if step.value is w: *WriteValue {
+                self.apply_write_origin(w, &mut state);
+            }
+        }
+        return state;
+    }
+
+    fn apply_write_origin(&self, w: *WriteValue, state: &mut HashMap<UInt, OriginSet>) {
+        if !type_contains_pointer(w.dst.get_stype()) {
+            // 非指针变量不记录来源。变量类型是固定的, 指针类型的变量不会走到这里,
+            // 所以不需要删除已有条目。
+            return;
+        }
+        if root_local(w.dst as *XValue) is Some(vs) {
+            let key = vs as *raw VarSymbol as UInt;
+            let src_origin = self.origin_of(w.src as *XValue, state);
+            if w.dst is type *LocalVar {
+                // 整个变量被重新赋值: 强更新
+                state.insert(key, move src_origin);
+            } else {
+                // 字段/下标等投影赋值: 弱更新 (与已有来源求并集)
+                if state.get_mut(&key) is Some(mut existing) {
+                    existing.deref_mut().union_with(&src_origin);
+                } else {
+                    state.insert(key, move src_origin);
+                }
+            }
+        }
+    }
+
+    // 计算一个值可能指向哪些存储
+    fn origin_of(&self, xv: *XValue, state: &HashMap<UInt, OriginSet>) -> OriginSet {
+        match xv {
+            lv: *LocalVar => {
+                if lv.sym_var.is_static() || lv.sym_var.is_const() {
+                    return OriginSet::static_set();
+                }
+                return lookup_origin(state, lv.sym_var);
+            }
+            rv: *ReadValue => {
+                if rv.sym_var.is_static() || rv.sym_var.is_const() {
+                    return OriginSet::static_set();
+                }
+                return lookup_origin(state, rv.sym_var);
+            }
+            addr: *AddressofValue => {
+                if addr.kind is AddressofKind::RefRaw || addr.kind is AddressofKind::RefRawMut {
+                    return OriginSet::raw_set();
+                }
+                if root_local(addr.operand as *XValue) is Some(vs) {
+                    if vs.is_static() || vs.is_const() {
+                        return OriginSet::static_set();
+                    }
+                    return OriginSet::from_local(vs);
+                }
+                // 例如 &*p: 借用的来源就是 p 的来源
+                return self.origin_of(addr.operand as *XValue, state);
+            }
+            reb: *ReBorrowValue => {
+                return self.origin_of(reb.src as *XValue, state);
+            }
+            cp: *CopyValue => {
+                return self.origin_of(cp.src as *XValue, state);
+            }
+            mv: *MovedValue => {
+                return self.origin_of(mv.src as *XValue, state);
+            }
+            ta: *TypeAscriptionValue => {
+                return self.origin_of(ta.inner as *XValue, state);
+            }
+            ctx: *ContextValue => {
+                return self.origin_of(ctx.inner as *XValue, state);
+            }
+            al: *AllocaValue => {
+                return self.origin_of(al.src as *XValue, state);
+            }
+            ld: *LoadValue => {
+                return self.origin_of(ld.src as *XValue, state);
+            }
+            cast: *CastValue => {
+                if cast_keeps_pointer(cast.resolved_kind) {
+                    return self.origin_of(cast.operand as *XValue, state);
+                }
+                return OriginSet::new();
+            }
+            fld: *FieldRValue => {
+                if type_contains_pointer(fld.get_stype()) {
+                    return self.origin_of(fld.base as *XValue, state);
+                }
+                return OriginSet::new();
+            }
+            tup: *TupleAccessRValue => {
+                if type_contains_pointer(tup.get_stype()) {
+                    return self.origin_of(tup.base as *XValue, state);
+                }
+                return OriginSet::new();
+            }
+            idx: *IndexRValue => {
+                if type_contains_pointer(idx.get_stype()) {
+                    return self.origin_of(idx.base as *XValue, state);
+                }
+                return OriginSet::new();
+            }
+            dr: *DerefRValue => {
+                let op_sty = dr.operand.get_stype();
+                if op_sty.type_symbol is type *BorrowImmutSymbol ||
+                    op_sty.type_symbol is type *BorrowMutSymbol {
+                    return self.origin_of(dr.operand as *XValue, state);
+                }
+                return OriginSet::new();
+            }
+            phi: *PhiValue => {
+                let mut res = OriginSet::new();
+                for item in phi.incoming {
+                    let v = self.origin_of(item.0 as *XValue, state);
+                    res.union_with(&v);
+                }
+                return res;
+            }
+            agg: *AggregateValue => {
+                let mut res = OriginSet::new();
+                for f in agg.transformed_init {
+                    let v = self.origin_of(f as *XValue, state);
+                    res.union_with(&v);
+                }
+                return res;
+            }
+            tupv: *TupleValue => {
+                let mut res = OriginSet::new();
+                for e in tupv.elements {
+                    let v = self.origin_of(e as *XValue, state);
+                    res.union_with(&v);
+                }
+                return res;
+            }
+            arr: *ArrayLiteralValue => {
+                let mut res = OriginSet::new();
+                for e in arr.elements {
+                    let v = self.origin_of(e as *XValue, state);
+                    res.union_with(&v);
+                }
+                return res;
+            }
+            rep: *RepeatValue => {
+                return self.origin_of(rep.element as *XValue, state);
+            }
+            qp: *QualifiedPathValue => {
+                if qp.symbol is vs: *VarSymbol {
+                    if vs.is_static() || vs.is_const() {
+                        return OriginSet::static_set();
+                    }
+                }
+                return OriginSet::new();
+            }
+            pmv: *PatternMatchValue => {
+                return self.origin_of(pmv.operand as *XValue, state);
+            }
+            vpv: *VariantPayloadValue => {
+                return self.origin_of(vpv.enum_value as *XValue, state);
+            }
+            _ => {
+                return OriginSet::new();
+            }
+        }
+        return OriginSet::new();
+    }
+
+    fn dump_origins(&self) {
+        let names = collect_var_names(self.cfg);
+        print("==== origins of ");
+        print(self.cfg.func_sym.mangle_name());
+        println(" ====");
+        for bb in self.cfg.basic_blocks {
+            let bb_key = bb as *raw BasicBlock as UInt;
+            print("bb");
+            print(bb.index);
+            println(" origin-in:");
+            if self.origin_in_states.at(&bb_key) is Some(st) {
+                for ref kv in st {
+                    let key = kv.0;
+                    let orig = kv.1;
+                    if orig.is_empty() {
+                        continue;
+                    }
+                    print("    ");
+                    print_var_name(&names, key);
+                    print(" -> ");
+                    dump_origin_set(&orig, &names);
+                    println("");
+                }
+            }
+        }
+    }
+}
+
+impl CFG {
+    // 只运行 origin 数据流, 用于 --dump-mir 调试
+    fn dump_origins(*self) {
+        let mut liveness_checker = LivenessChecker::new(self);
+        liveness_checker.determine_origins();
+        liveness_checker.dump_origins();
+    }
+}
+
+fn lookup_origin(state: &HashMap<UInt, OriginSet>, vs: *VarSymbol) -> OriginSet {
+    let key = vs as *raw VarSymbol as UInt;
+    if state.at(&key) is Some(o) {
+        return o;
+    }
+    return OriginSet::new();
+}
+
+// 把 src 的来源求并集进 dst, 返回 dst 是否发生了变化
+fn merge_origin_state(dst: &mut HashMap<UInt, OriginSet>, src: &HashMap<UInt, OriginSet>) -> Bool {
+    let mut changed = false;
+    for ref kv in src {
+        let key = kv.0;
+        let val = kv.1;
+        if dst.get_mut(&key) is Some(mut existing) {
+            if existing.deref_mut().union_with(&val) {
+                changed = true;
+            }
+        } else {
+            dst.insert(key, move val);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+fn type_contains_pointer(sty: *SType) -> Bool {
+    let ts = sty.type_symbol;
+    if ts is type *ArcPointerSymbol || ts is type *WeakPointerSymbol ||
+        ts is type *BorrowImmutSymbol || ts is type *BorrowMutSymbol ||
+        ts is type *RawPointerImmutSymbol || ts is type *RawPointerMutSymbol {
+        return true;
+    }
+    for a in sty.args.ty_args {
+        if type_contains_pointer(a) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn cast_keeps_pointer(kind: ResolvedCastKind) -> Bool {
+    if kind is ResolvedCastKind::SameType ||
+        kind is ResolvedCastKind::LifetimeCast ||
+        kind is ResolvedCastKind::MutBorrowToImmut ||
+        kind is ResolvedCastKind::ArrayRefToSlice ||
+        kind is ResolvedCastKind::PointerSafeToUnsafe ||
+        kind is ResolvedCastKind::PointerUnsafeToSafe ||
+        kind is ResolvedCastKind::UnsafePointerToUnsafePointer {
+        return true;
+    }
+    return false;
+}
+
+// 找到值表达式的根局部变量 (穿透字段/下标/元组访问/类型标注等)
+fn root_local(xv: *XValue) -> Option<*VarSymbol> {
+    match xv {
+        lv: *LocalVar => {
+            return Some(lv.sym_var);
+        }
+        rv: *ReadValue => {
+            return Some(rv.sym_var);
+        }
+        fl: *FieldLValue => {
+            return root_local(fl.base);
+        }
+        tl: *TupleAccessLValue => {
+            return root_local(tl.base);
+        }
+        il: *IndexLValue => {
+            return root_local(il.base);
+        }
+        fr: *FieldRValue => {
+            return root_local(fr.base as *XValue);
+        }
+        tr: *TupleAccessRValue => {
+            return root_local(tr.base as *XValue);
+        }
+        ir: *IndexRValue => {
+            return root_local(ir.base as *XValue);
+        }
+        ta: *TypeAscriptionValue => {
+            return root_local(ta.inner as *XValue);
+        }
+        ctx: *ContextValue => {
+            return root_local(ctx.inner as *XValue);
+        }
+        cast: *CastValue => {
+            return root_local(cast.operand as *XValue);
+        }
+        mv: *MovedValue => {
+            return root_local(mv.src as *XValue);
+        }
+        _ => {
+            return (type Option<*VarSymbol>)::None;
+        }
+    }
+    return (type Option<*VarSymbol>)::None;
+}
+
+fn collect_var_names(cfg: *CFG) -> HashMap<UInt, String> {
+    let mut names = (type HashMap<UInt, String>)::new();
+    for bb in cfg.basic_blocks {
+        for step in bb.steps {
+            if extract_local(step.value) is Some(vs) {
+                names.insert(vs as *raw VarSymbol as UInt, vs.short_name());
+            }
+        }
+    }
+    return names;
+}
+
+fn print_var_name(names: &HashMap<UInt, String>, key: UInt) {
+    if names.at(&key) is Some(n) {
+        print(n);
+    } else {
+        print("var#");
+        print(key);
+    }
+}
+
+fn dump_origin_set(orig: &OriginSet, names: &HashMap<UInt, String>) {
+    print("{");
+    let mut first = true;
+    for v in orig.locals {
+        if !first {
+            print(", ");
+        }
+        print_var_name(names, v);
+        first = false;
+    }
+    if orig.has_static {
+        if !first { print(", "); }
+        print("'static");
+        first = false;
+    }
+    if orig.has_raw {
+        if !first { print(", "); }
+        print("*raw");
+        first = false;
+    }
+    if orig.has_unknown {
+        if !first { print(", "); }
+        print("?");
+        first = false;
+    }
+    print("}");
 }

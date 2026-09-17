@@ -1,0 +1,16 @@
+// HashMap::remove 在返回被移除的值时不能析构 zeroed 占位值
+fn main() {
+    let mut m = (type HashMap<UInt, *Int>)::new();
+    m.insert(1_u, box 10_i);
+    m.insert(2_u, box 20_i);
+
+    let removed = m.remove(&1_u);
+    if removed is Some(p) {
+        println(*p);
+    }
+
+    let missing = m.remove(&42_u);
+    if missing is None {
+        let _ = 0_i;
+    }
+}

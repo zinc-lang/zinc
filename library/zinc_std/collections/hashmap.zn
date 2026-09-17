@@ -1,13 +1,6 @@
 
 // 这个版本的 hashmap 使用 robin hood 算法实现。
 // 等后续 SIMD 支持完成, 再改用 swisstable 实现。
-//
-// Lookup 必须跳过 Tombstone, 原先只在 Vacant 时退出 `while (true)`。
-// 表被 Occupied+Tombstone 填满后 contains/get/remove 会永远循环。
-// 这就是 MIR liveness 没法直接用 HashSet<UInt> 的根因。探测次数上限是一张表的长度。
-//
-// insert 也必须先确认 key 不在表中再占用 Tombstone, 否则同一探测链会写出重复 key,
-// size 虚高后每次插入都 resize, stage1 编 std 时表现为挂死。
 use ::self::cmp::Eq;
 use ::self::hash::Hash;
 use ::self::hash::default_hasher;

@@ -58,12 +58,12 @@ pub unsafe fn mem_move<T>(src: *raw T, dst: *raw mut T, count: UInt) {
 }
 
 pub fn replace<T>(dst: &mut T, val: T) -> T {
-    let tmp: T = *dst;
     unsafe {
         let addr: *raw mut T = dst as *raw mut T;
-        *addr = move val; // 避免触发原来变量的析构
+        let tmp: T = *addr;
+        *addr = move val;
+        return tmp;
     }
-    return tmp;
 }
 
 pub fn forget<T>(val: T) {

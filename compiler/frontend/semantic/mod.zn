@@ -98,6 +98,7 @@ impl SemanticModel {
                 let key = f as *raw FuncSymbol as UInt;
                 if self.all_cfg.at(&key) is Some(cfg) {
                     cfg.dump();
+                    cfg.dump_origins();
                 }
             }
         }
