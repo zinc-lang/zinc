@@ -1,0 +1,11 @@
+// 生命周期: 在 if 分支里借用内层局部变量, 分支合并之后继续使用
+fn main() {
+    let mut r: &Int = &1_i;
+    {
+        let a = 1_i;
+        if true {
+            r = &a;
+        }
+    }
+    println(*r);
+}

@@ -57,6 +57,15 @@ impl LivenessChecker {
         }
     }
 
+    // 查询某个程序点上"确定存活"的变量集合 (供 loan 检查使用, 避免它直接依赖 LivePoint)
+    fn alive_at(&self, bb_idx: UInt, step_idx: UInt) -> UIntSet {
+        let p = LivePoint::new(bb_idx, step_idx);
+        if self.alive_locals_at_point.at(&p) is Some(s) {
+            return s;
+        }
+        return UIntSet::new();
+    }
+
     fn visit_bb(&mut self, bb: *BasicBlock) {
         let mut alived: UIntSet = UIntSet::new(); // 保存的是 *VarSymbol
         let mut dead: UIntSet = UIntSet::new(); // 保存的是 *VarSymbol

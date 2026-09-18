@@ -1,0 +1,9 @@
+// 生命周期: 返回指向按值形参栈槽的引用 (形参存储是函数局部的)
+fn f<'a>(x: Int) -> &'a Int {
+    return &x;
+}
+
+fn main() {
+    let r = f(1_i);
+    println(*r);
+}

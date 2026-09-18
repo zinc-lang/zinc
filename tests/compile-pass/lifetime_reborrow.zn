@@ -1,0 +1,7 @@
+// 生命周期: 对一个借用再做一次借用 (reborrow), 指向同一个对象
+fn main() {
+    let a = 1_i;
+    let b = &a;
+    let c = &*b;
+    println(*c);
+}

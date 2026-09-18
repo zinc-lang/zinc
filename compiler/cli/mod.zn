@@ -9,5 +9,6 @@ fn run() {
     let compilation: session::Session = {
         ...
     };
-    compilation.compile();
+    let exit_code = compilation.compile();
+    std::process::exit(exit_code);
 }

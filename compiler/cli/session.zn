@@ -20,7 +20,7 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn compile(&self) {
+    pub fn compile(&self) -> UInt32 {
         let mut time_line = TimeLine::new();
         let options = CliOptions::get();
 
@@ -39,24 +39,36 @@ impl Session {
         time_line.record(f"SyntaxTree built");
 
         let speak_en = options.speak.as_str().deref().eq(&"en");
-        DiagnosticEngine::get().abort_if_errors(speak_en);
+        DiagnosticEngine::get().report(speak_en);
+        if DiagnosticEngine::get().clear() > 0 {
+            return 1; // 为了实现简单, 如果语法错误了, 就直接返回, 不继续往下走了
+        }
 
         // 语义 IR 构建
         let opt_model = SemanticModel::new(syntax_tree);
         time_line.record(f"HIR built");
-        DiagnosticEngine::get().abort_if_errors(speak_en);
+        DiagnosticEngine::get().report(speak_en);
+        if DiagnosticEngine::get().clear() > 0 {
+            return 1;
+        }
 
         if opt_model is Some(model) {
             // 语义检查
             model.type_check();
             time_line.record(f"HIR checked");
-            DiagnosticEngine::get().abort_if_errors(speak_en);
+            DiagnosticEngine::get().report(speak_en);
+            if DiagnosticEngine::get().clear() > 0 {
+                return 1;
+            }
 
             // CFG 构建和检查
             model.cfg_build();
             time_line.record(f"MIR checked");
             model.dump_mir(options.dump_mir);
-            DiagnosticEngine::get().abort_if_errors(speak_en);
+            DiagnosticEngine::get().report(speak_en);
+            if DiagnosticEngine::get().clear() > 0 {
+                return 1;
+            }
 
             // 如果是 library 则 export zno 文件
             if syntax_tree.kind is LibOrExe::Lib(_) {
@@ -66,7 +78,7 @@ impl Session {
             }
 
             if options.check_only {
-                return;
+                return 0;
             }
 
             // CodeGen
@@ -74,5 +86,7 @@ impl Session {
             code_generator.codegen();
             time_line.record(f"Code generated");
         }
+
+        return 0;
     }
 }

@@ -1,0 +1,8 @@
+// 生命周期: 先使用旧引用, 之后再让引用指向新变量 (安全)
+fn main() {
+    let mut r: &Int = &1_i;
+    println(*r);
+    let a = 2_i;
+    r = &a;
+    println(*r);
+}

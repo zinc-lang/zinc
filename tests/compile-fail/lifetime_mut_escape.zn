@@ -1,0 +1,10 @@
+// 生命周期: 可变借用活得比被引用的局部变量长
+fn main() {
+    let mut outer = 1_i;
+    let mut r: &mut Int = &mut outer;
+    {
+        let mut a = 1_i;
+        r = &mut a;
+    }
+    println(*r);
+}

@@ -1,0 +1,11 @@
+// 生命周期: 循环体内局部变量的引用被带到循环外使用
+fn main() {
+    let mut r: &Int = &1_i;
+    let mut i = 0_i;
+    while i < 3_i {
+        let a = 1_i;
+        r = &a;
+        i = i + 1_i;
+    }
+    println(*r);
+}

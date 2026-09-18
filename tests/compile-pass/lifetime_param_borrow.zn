@@ -1,0 +1,10 @@
+// 生命周期: 借用作为参数传给函数, 在函数内部立即使用
+fn use_ref(x: &Int) -> Int {
+    return *x;
+}
+
+fn main() {
+    let a = 1_i;
+    let b = &a;
+    println(use_ref(b));
+}

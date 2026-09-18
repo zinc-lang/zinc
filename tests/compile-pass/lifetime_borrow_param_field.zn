@@ -1,0 +1,14 @@
+// 生命周期: 借用形参指向外部对象, 返回它的字段引用是安全的
+struct S {
+    r: &Int,
+}
+
+fn get<'a>(s: &'a S) -> &'a Int {
+    return s.r;
+}
+
+fn main() {
+    let a = 1_i;
+    let s: S = { .r = &a }:S;
+    println(*(get(&s)));
+}

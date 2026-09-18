@@ -1,0 +1,10 @@
+// 生命周期: 返回指向函数内部局部变量的引用
+fn f<'a>() -> &'a Int {
+    let a = 1_i;
+    return &a;
+}
+
+fn main() {
+    let r = f();
+    println(*r);
+}

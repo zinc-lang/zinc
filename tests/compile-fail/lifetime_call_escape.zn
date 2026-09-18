@@ -1,0 +1,13 @@
+// 生命周期: 借用经过函数调用返回后, 活得比被引用对象长
+fn id<'a>(x: &'a Int) -> &'a Int {
+    return x;
+}
+
+fn main() {
+    let mut r: &Int = &1_i;
+    {
+        let a = 1_i;
+        r = id(&a);
+    }
+    println(*r);
+}

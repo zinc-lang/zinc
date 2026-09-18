@@ -1,0 +1,13 @@
+// 生命周期: 结构体字段被重新指向内层局部变量, 之后仍被使用
+struct S {
+    r: &Int,
+}
+
+fn main() {
+    let mut s: S = { .r = &1_i }:S;
+    {
+        let a = 1_i;
+        s.r = &a;
+    }
+    println(*(s.r));
+}

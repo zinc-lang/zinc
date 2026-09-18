@@ -1,0 +1,9 @@
+// 生命周期: 从 ARC 指针取得借用, 借用活过了持有强引用的临时变量
+fn main() {
+    let mut r: &Int = &1_i;
+    {
+        let p = box 1_i;
+        r = &*p;
+    }
+    println(*r);
+}

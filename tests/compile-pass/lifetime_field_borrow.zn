@@ -1,0 +1,10 @@
+// 生命周期: 结构体字段里的引用不超出被引用对象的作用域
+struct S {
+    r: &Int,
+}
+
+fn main() {
+    let a = 1_i;
+    let s: S = { .r = &a }:S;
+    println(*(s.r));
+}

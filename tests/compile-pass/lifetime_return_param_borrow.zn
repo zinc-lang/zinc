@@ -1,0 +1,10 @@
+// 生命周期: 返回值沿用参数的生命周期, 调用方保证被引用对象活着
+fn id<'a>(x: &'a Int) -> &'a Int {
+    return x;
+}
+
+fn main() {
+    let a = 1_i;
+    let r = id(&a);
+    println(*r);
+}

@@ -1,0 +1,9 @@
+// 生命周期: 取按值形参的地址并在函数内使用, 安全 (不应误报)
+fn g(x: Int) -> Int {
+    let r = &x;
+    return *r;
+}
+
+fn main() {
+    println(g(1_i));
+}

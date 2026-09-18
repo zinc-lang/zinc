@@ -1,0 +1,7 @@
+// 生命周期: 对 static 取引用, 生命周期是 'static
+static G: Int = 1_i;
+
+fn main() {
+    let r: &Int = &G;
+    println(*r);
+}

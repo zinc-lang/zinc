@@ -1,0 +1,11 @@
+// 生命周期: 循环里把引用重新指向循环外的变量, 引用不会活过该变量
+fn main() {
+    let a = 1_i;
+    let mut r = &a;
+    let mut i = 0_i;
+    while i < 3_i {
+        r = &a;
+        i = i + 1_i;
+    }
+    println(*r);
+}

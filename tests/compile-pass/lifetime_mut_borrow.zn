@@ -1,0 +1,9 @@
+// 生命周期: 可变借用只活在内层作用域内
+fn main() {
+    let mut a = 1_i;
+    {
+        let r = &mut a;
+        *r = 2_i;
+    }
+    println(a);
+}

@@ -4,152 +4,77 @@ use super::*;
 use super::uint_set::*;
 
 impl LivenessChecker {
-    // 在前面的阶段中, 类型检查的时候是忽略了生命周期参数的, 这个时候把它补充完整
-    fn setup_lifetime_params(&mut self) {
-        for bb in self.cfg.basic_blocks {
-            for step in bb.steps {
-            }
-        }
-    }
-
-    // todo: complete lifetime check
+    // 不变式: 在引用被使用的每个程序点, 它可能指向的每一个存储 (origin) 都必须存活。
+    // liveness 提供"该点哪些变量还持有有效值", origin 数据流提供"引用可能指向谁"。
+    // 注意: alive_locals_at_point 是"存储有效"(storage validity), 不是"之后还会被使用",
+    // 所以检查必须放在使用点 (读取/解引用/返回), 否则会误报"引用之后不再使用, 但对象先析构"。
     fn check_lifetime(&mut self) {
+        let vars = collect_all_vars(self.cfg);
+        // 同一个引用变量最多报一次
+        let mut reported = UIntSet::new();
+
         for bb in self.cfg.basic_blocks {
+            let bb_key = bb as *raw BasicBlock as UInt;
+            // 从收敛后的基本块入口状态出发, 在块内重放一遍
+            let mut state = self.origin_in_states.at(&bb_key).get_or_panic();
+            let mut step_idx: UInt = 0;
+
             for step in bb.steps {
-                if step.value is wv: *WriteValue {
-                    let sty = wv.dst.get_stype();
-                    if sty.type_symbol is type *BorrowImmutSymbol ||
-                        sty.type_symbol is type *BorrowMutSymbol {
+                // 使用点: 读取 / 解引用一个引用时, 它指向的对象必须还活着
+                if step.value is rv: *ReadValue {
+                    self.check_use_origin(rv.sym_var, bb.index, step_idx, &state, &vars, &mut reported);
+                } else if step.value is dr: *DerefRValue {
+                    if root_local(dr.operand as *XValue) is Some(vs) {
+                        self.check_use_origin(vs, bb.index, step_idx, &state, &vars, &mut reported);
+                    }
+                } else if step.value is dl: *DerefLValue {
+                    if root_local(dl.operand as *XValue) is Some(vs) {
+                        self.check_use_origin(vs, bb.index, step_idx, &state, &vars, &mut reported);
+                    }
+                }
 
-                        let src_lt = self.lifescope_of_value(wv.src);
-                        let dst_lt = self.lifescope_of_value(wv.dst);
+                if step.value is w: *WriteValue {
+                    self.apply_write_origin(w, &mut state);
+                }
+                step_idx += 1;
+            }
 
-                        if dst_lt.lives_shorter_than(&src_lt) {
-                            DiagnosticEngine::get().emit_lives_not_longer_enough(wv.src.expr_node().span());
+            // 返回检查: 返回值的 origin 里还留着本函数的局部变量, 说明返回了一个
+            // 指向栈上存储的引用 (形参的 origin 是 Unknown, 不会出现在 locals 里)
+            if bb.terminator is Some(ret_term: *BrRet) {
+                if ret_term.ret_val is Some(rv) {
+                    // 只有返回类型里含借用时才需要检查来源; `return *r` 这种解引用结果是值拷贝
+                    if type_contains_borrow(rv.get_stype()) {
+                        let os = self.origin_of(rv as *XValue, &state);
+                        if os.locals.len() > 0 {
+                            DiagnosticEngine::get().emit_lives_not_longer_enough(rv.expr_node().span());
                         }
                     }
                 }
             }
-            if bb.terminator is Some(ret: *BrRet) {
-                // TODO 检查返回值的生命周期是否与函数签名相匹配
+        }
+    }
+
+    fn check_use_origin(&self, vs: *VarSymbol, bb_idx: UInt, step_idx: UInt, state: &HashMap<UInt, OriginSet>, vars: &HashMap<UInt, *VarSymbol>, reported: &mut UIntSet) {
+        let d = vs as *raw VarSymbol as UInt;
+        if state.at(&d) is Some(os) {
+            let alive = self.alive_at(bb_idx, step_idx);
+            for o in os.locals {
+                if !alive.contains(o) {
+                    if !reported.contains(d) {
+                        reported.insert(d);
+                        let mut span = self.cfg.func_sym.func_node.name.source_span;
+                        if vars.at(&d) is Some(v) {
+                            span = v.var_node.span();
+                        }
+                        DiagnosticEngine::get().emit_lives_not_longer_enough(move span);
+                    }
+                }
             }
         }
     }
 
-    fn lifescope_of_value(&self, xv: *XValue) -> LifeScope {
-
-        match xv {
-            lv: *LocalVar => {
-                if lv.sym_var.is_static() || lv.sym_var.is_const() {
-                    return LifeScope::Static;
-                }
-                let i = lv.sym_var as *raw VarSymbol as UInt;
-                if self.local_liveness.at(&i) is Some(ls) {
-                    return LifeScope::Local(move ls);
-                }
-            }
-            rv: *ReadValue => {
-                if rv.sym_var.is_static() || rv.sym_var.is_const() {
-                    return LifeScope::Static;
-                }
-                let i = rv.sym_var as *raw VarSymbol as UInt;
-                if self.local_liveness.at(&i) is Some(ls) {
-                    return LifeScope::Local(move ls);
-                }
-            }
-            addr: *AddressofValue => {
-                if extract_local(addr.operand as *XValue) is Some(vsym) {
-                    if vsym.is_static() || vsym.is_const() {
-                        return LifeScope::Static;
-                    }
-                    let i = vsym as *raw VarSymbol as UInt;
-                    if self.local_liveness.at(&i) is Some(ls) {
-                        return LifeScope::Local(move ls);
-                    }
-                }
-            }
-            _ => return LifeScope::Unknown;
-        }
-        return LifeScope::Unknown;
-    }
 }
-
-
-enum LifeScope {
-    Unknown,
-    Static,
-    Local(UIntSet),
-    Out(*LifetimeSymbol),
-}
-
-impl LifeScope {
-    fn lives_shorter_than(&self, other: &LifeScope) -> Bool {
-        if self is LifeScope::Unknown {
-            return false;
-        }
-        if other is LifeScope::Unknown {
-            return false;
-        }
-
-        match self {
-            LifeScope::Static => {
-                match other {
-                    LifeScope::Static => {
-                        return false;
-                    }
-                    LifeScope::Local(_) => {
-                        return true;
-                    }
-                    LifeScope::Out(_) => {
-                        return true;
-                    }
-                    _ => {}
-                }
-            }
-            LifeScope::Local(dst) => {
-                match other {
-                    LifeScope::Static => {
-                        return false;
-                    }
-                    LifeScope::Local(src) => {
-                        return src.is_subset_of(&dst);
-                    }
-                    LifeScope::Out(_) => {
-                        return true;
-                    }
-                    _ => {}
-                }
-            }
-            LifeScope::Out(_) => {
-                match other {
-                    LifeScope::Static => {
-                        return false;
-                    }
-                    LifeScope::Local(_) => {
-                        return true;
-                    }
-                    LifeScope::Out(_) => {
-                        return false;
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-        return false;
-    }
-
-    fn to_string(&self) -> String {
-        match self {
-            LifeScope::Unknown => return f"LifeScope::Unknown";
-            LifeScope::Static => return f"LifeScope::Static";
-            LifeScope::Local(_) => return f"LifeScope::Local";
-            LifeScope::Out(_) => return f"LifeScope::Out";
-        }
-        return String::new();
-    }
-}
-
 
 // 与 liveness 相反, origin 回答的是"这个指针值可能指向哪些存储", 是一个 may 分析:
 //   - 基本块入口: 所有前驱出口状态的 **并集** (liveness 用的是交集)
@@ -327,12 +252,27 @@ impl LivenessChecker {
                     if vs.is_static() || vs.is_const() {
                         return OriginSet::static_set();
                     }
+                    if through_pointer(addr.operand as *XValue) {
+                        // 穿过借用/ARC 指针才到达的存储 (例如 &self.field): 真外部借用或堆对象,
+                        // 它的生命周期在函数内无法确定, 记为 Unknown
+                        return OriginSet::unknown_set();
+                    }
+                    // 直接对某个存储取地址: 局部变量, 或者按值形参的栈槽
                     return OriginSet::from_local(vs);
                 }
                 // 例如 &*p: 借用的来源就是 p 的来源
                 return self.origin_of(addr.operand as *XValue, state);
             }
             reb: *ReBorrowValue => {
+                // &*p (p 是 ARC 指针): builder 会先造一个持有强引用的 temp, 再对它
+                // 做 reborrow。此时借用的"存储"是那个 temp, 而不是 temp 里 ARC 值的来源。
+                if reb.src.get_stype().type_symbol is type *ArcPointerSymbol {
+                    if root_local(reb.src as *XValue) is Some(vs) {
+                        return OriginSet::from_local(vs);
+                    }
+                    return OriginSet::new();
+                }
+                // &*b (b 是借用): 来源就是 b 原本指向的对象
                 return self.origin_of(reb.src as *XValue, state);
             }
             cp: *CopyValue => {
@@ -434,11 +374,75 @@ impl LivenessChecker {
             vpv: *VariantPayloadValue => {
                 return self.origin_of(vpv.enum_value as *XValue, state);
             }
+            call: *FnCallValue => {
+                // 返回值里出现的生命周期形参, 其来源就是对应实参的来源
+                if call.callee is qp: *QualifiedPathValue {
+                    if qp.symbol is fsym: *FuncSymbol {
+                        return self.call_return_origin(fsym, call.desugared_args, state);
+                    }
+                }
+                return OriginSet::new();
+            }
+            mcall: *MethodCallValue => {
+                if mcall.resolved_method is Some(fsym) {
+                    let mut args = (type Vec<*RValue>)::new();
+                    if mcall.desugared_receiver is Some(recv) {
+                        args.push(recv);
+                    }
+                    for a in mcall.desugared_args {
+                        args.push(a);
+                    }
+                    return self.call_return_origin(fsym, move args, state);
+                }
+                return OriginSet::new();
+            }
             _ => {
                 return OriginSet::new();
             }
         }
         return OriginSet::new();
+    }
+
+    // 函数调用返回值的来源: 找到返回类型里出现的生命周期形参, 再看哪个形参含有
+    // 同一个生命周期形参, 取对应实参的 origin。
+    fn call_return_origin(&self, fsym: *FuncSymbol, actual_args: Vec<*RValue>, state: &HashMap<UInt, OriginSet>) -> OriginSet {
+        let mut res = OriginSet::new();
+        if fsym.return_sty is None {
+            return res;
+        }
+        let mut ret_lts = UIntSet::new();
+        collect_lifetimes(fsym.return_sty.get_or_panic(), &mut ret_lts);
+        if ret_lts.len() == 0 {
+            return res;
+        }
+        let mut idx: UInt = 0;
+        for p in fsym.params {
+            let mut param_lts = UIntSet::new();
+            collect_lifetimes(p.stype, &mut param_lts);
+            param_lts.intersect_set(&ret_lts);
+            if param_lts.len() > 0 {
+                if idx < actual_args.len() {
+                    let arg: *RValue = *actual_args.index(idx).deref();
+                    let o = self.call_arg_origin(arg, state);
+                    res.union_with(&o);
+                }
+            }
+            idx += 1;
+        }
+        return res;
+    }
+
+    // 计算实参对应的"被引用对象"的来源。
+    // 对于 &x 形式的实参, 如果 x 本身是内部含指针/引用的包装类型
+    // (例如 StringSlice/Vec), 那么方法返回的引用通常指向 x 内部包装的数据,
+    // 而不是 x 的栈槽, 因此取 x 的内部来源。
+    fn call_arg_origin(&self, arg: *RValue, state: &HashMap<UInt, OriginSet>) -> OriginSet {
+        if arg is addr: *AddressofValue {
+            if type_contains_pointer(addr.operand.get_stype()) {
+                return self.origin_of(addr.operand as *XValue, state);
+            }
+        }
+        return self.origin_of(arg as *XValue, state);
     }
 
     fn dump_origins(&self) {
@@ -504,6 +508,47 @@ fn merge_origin_state(dst: &mut HashMap<UInt, OriginSet>, src: &HashMap<UInt, Or
     return changed;
 }
 
+// 类型里是否含借用 (&T / &mut T), 递归进泛型实参和结构体/联合体/枚举字段。
+// 遇到指针 (ARC/Weak/raw) 立即停止, 不递归进被指向对象: 指针本身不是借用,
+// 而且被指向类型可能是递归的 (struct X { next: *X }), 递归会栈溢出。
+fn type_contains_borrow(sty: *SType) -> Bool {
+    let ts = sty.type_symbol;
+    if ts is type *BorrowImmutSymbol || ts is type *BorrowMutSymbol {
+        return true;
+    }
+    if ts is type *ArcPointerSymbol || ts is type *WeakPointerSymbol ||
+        ts is type *RawPointerImmutSymbol || ts is type *RawPointerMutSymbol {
+        return false;
+    }
+    for a in sty.args.ty_args {
+        if type_contains_borrow(a) {
+            return true;
+        }
+    }
+    if ts is s: *StructSymbol {
+        for f in s.fields {
+            if type_contains_borrow(f.stype) {
+                return true;
+            }
+        }
+    } else if ts is u: *UnionSymbol {
+        for f in u.fields {
+            if type_contains_borrow(f.stype) {
+                return true;
+            }
+        }
+    } else if ts is e: *EnumSymbol {
+        for v in e.variants {
+            for f in v.fields {
+                if type_contains_borrow(f) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 fn type_contains_pointer(sty: *SType) -> Bool {
     let ts = sty.type_symbol;
     if ts is type *ArcPointerSymbol || ts is type *WeakPointerSymbol ||
@@ -514,6 +559,28 @@ fn type_contains_pointer(sty: *SType) -> Bool {
     for a in sty.args.ty_args {
         if type_contains_pointer(a) {
             return true;
+        }
+    }
+    // 结构体/联合体/枚举的字段里也可能含有指针/引用 (例如 StringSlice 的 start)
+    if ts is s: *StructSymbol {
+        for f in s.fields {
+            if type_contains_pointer(f.stype) {
+                return true;
+            }
+        }
+    } else if ts is u: *UnionSymbol {
+        for f in u.fields {
+            if type_contains_pointer(f.stype) {
+                return true;
+            }
+        }
+    } else if ts is e: *EnumSymbol {
+        for v in e.variants {
+            for f in v.fields {
+                if type_contains_pointer(f) {
+                    return true;
+                }
+            }
         }
     }
     return false;
@@ -576,6 +643,117 @@ fn root_local(xv: *XValue) -> Option<*VarSymbol> {
         }
     }
     return (type Option<*VarSymbol>)::None;
+}
+
+// 类型本身是不是一个指针/借用 (不递归)
+fn is_pointer_type(sty: *SType) -> Bool {
+    let ts = sty.type_symbol;
+    return ts is type *ArcPointerSymbol || ts is type *WeakPointerSymbol ||
+        ts is type *BorrowImmutSymbol || ts is type *BorrowMutSymbol ||
+        ts is type *RawPointerImmutSymbol || ts is type *RawPointerMutSymbol;
+}
+
+// 一个"位置"表达式是不是必须穿过指针才能到达。
+// 用来区分两种来源:
+//   - 直接对局部变量/按值形参的栈槽取地址 -> 函数内的存储 (Local)
+//   - 对借用/ARC 指向的对象取地址 (例如 &self.field) -> 真外部借用或堆对象 (Unknown)
+fn through_pointer(xv: *XValue) -> Bool {
+    match xv {
+        type *DerefRValue => {
+            return true;
+        }
+        type *DerefLValue => {
+            return true;
+        }
+        fr: *FieldRValue => {
+            if is_pointer_type(fr.base.get_stype()) {
+                return true;
+            }
+            return through_pointer(fr.base as *XValue);
+        }
+        fl: *FieldLValue => {
+            if is_pointer_type(fl.base.get_stype()) {
+                return true;
+            }
+            return through_pointer(fl.base);
+        }
+        tr: *TupleAccessRValue => {
+            if is_pointer_type(tr.base.get_stype()) {
+                return true;
+            }
+            return through_pointer(tr.base as *XValue);
+        }
+        tl: *TupleAccessLValue => {
+            if is_pointer_type(tl.base.get_stype()) {
+                return true;
+            }
+            return through_pointer(tl.base);
+        }
+        ir: *IndexRValue => {
+            if is_pointer_type(ir.base.get_stype()) {
+                return true;
+            }
+            return through_pointer(ir.base as *XValue);
+        }
+        il: *IndexLValue => {
+            if is_pointer_type(il.base.get_stype()) {
+                return true;
+            }
+            return through_pointer(il.base);
+        }
+        ta: *TypeAscriptionValue => {
+            return through_pointer(ta.inner as *XValue);
+        }
+        ctx: *ContextValue => {
+            return through_pointer(ctx.inner as *XValue);
+        }
+        cast: *CastValue => {
+            return through_pointer(cast.operand as *XValue);
+        }
+        mv: *MovedValue => {
+            return through_pointer(mv.src as *XValue);
+        }
+        _ => {
+            return false;
+        }
+    }
+    return false;
+}
+
+// 收集本函数里出现过的所有局部变量, 用来把 origin 里的 key 映射回 *VarSymbol
+fn collect_all_vars(cfg: *CFG) -> HashMap<UInt, *VarSymbol> {
+    let mut vars = (type HashMap<UInt, *VarSymbol>)::new();
+    for p in cfg.func_sym.params {
+        vars.insert(p as *raw VarSymbol as UInt, p);
+    }
+    for bb in cfg.basic_blocks {
+        for step in bb.steps {
+            if step.value is lv: *LocalVar {
+                vars.insert(lv.sym_var as *raw VarSymbol as UInt, lv.sym_var);
+            }
+            if step.value is rv: *ReadValue {
+                vars.insert(rv.sym_var as *raw VarSymbol as UInt, rv.sym_var);
+            }
+            if step.value is w: *WriteValue {
+                if root_local(w.dst as *XValue) is Some(vs) {
+                    vars.insert(vs as *raw VarSymbol as UInt, vs);
+                }
+            }
+        }
+    }
+    return vars;
+}
+
+// 递归收集一个类型里出现的所有生命周期形参
+fn collect_lifetimes(sty: *SType, set: &mut UIntSet) {
+    for l in sty.args.lt_args {
+        if l.resolved is Some(sym) {
+            set.insert(sym as *raw LifetimeSymbol as UInt);
+        }
+    }
+    for a in sty.args.ty_args {
+        collect_lifetimes(a, set);
+    }
 }
 
 fn collect_var_names(cfg: *CFG) -> HashMap<UInt, String> {
