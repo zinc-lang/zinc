@@ -20,7 +20,7 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn compile(&self) -> UInt32 {
+    pub fn compile(&self) -> Int32 {
         let mut time_line = TimeLine::new();
         let options = CliOptions::get();
 

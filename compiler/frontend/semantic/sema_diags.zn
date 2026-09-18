@@ -677,12 +677,12 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
-    fn emit_lives_not_longer_enough(&mut self,span: SourceSpan) {
+    fn emit_lives_not_longer_enough(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,
             .severity = Severity::Error,
-            .msg_zn = f"表达式活得不够长",
-            .msg_en = f"expression does not live long enough",
+            .msg_zn = f"生命周期错误, 实际使用时长超出了预期寿命",
+            .msg_en = f"lifetime error, it has been used longer than its expected lifetime",
         }: DiagItem);
     }
 }
