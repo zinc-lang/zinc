@@ -1,0 +1,28 @@
+// HashMap: 插入/读取/删除, 运行期结果用 assert 系列校验。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut m = (type HashMap<Int, Int>)::new();
+    assert_eq(m.len(), 0_u);
+
+    m.insert(1_i, 10_i);
+    m.insert(2_i, 20_i);
+    assert_eq(m.len(), 2_u);
+
+    let v = m.at(&1_i);
+    if v is Some(x) {
+        assert_eq(x, 10_i);
+    } else {
+        assert(false, "key 1 missing");
+    }
+
+    let removed = m.remove(&1_i);
+    if removed is Some(x) {
+        assert_eq(x, 10_i);
+    } else {
+        assert(false, "remove key 1 failed");
+    }
+    assert_eq(m.len(), 1_u);
+    assert(!m.contains(&1_i));
+    assert(m.contains(&2_i));
+}

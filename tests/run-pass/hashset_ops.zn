@@ -1,0 +1,28 @@
+// HashSet: 插入/删除/查找, 运行期结果用 assert 系列校验。
+use std::collections::hashset::HashSet;
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut s = (type HashSet<UInt>)::new();
+    assert_eq(s.len(), 0_u);
+
+    let mut i: UInt = 0_u;
+    while i < 64_u {
+        s.insert(i);
+        i += 1_u;
+    }
+    assert_eq(s.len(), 64_u);
+    assert(s.contains(&0_u));
+    assert(s.contains(&63_u));
+
+    i = 0_u;
+    while i < 64_u {
+        if i % 2_u == 0_u {
+            assert(s.remove(&i));
+        }
+        i += 1_u;
+    }
+    assert_eq(s.len(), 32_u);
+    assert(!s.contains(&0_u));
+    assert(s.contains(&1_u));
+}

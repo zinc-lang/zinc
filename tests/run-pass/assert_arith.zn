@@ -1,0 +1,25 @@
+// 基础断言与算术: 编译执行后用标准库 assert 系列判断结果。
+use std::{assert, assert_eq, assert_ne};
+
+fn add(a: Int, b: Int) -> Int {
+    return a + b;
+}
+
+fn factorial(n: Int) -> Int {
+    let mut acc: Int = 1_i;
+    let mut i: Int = 2_i;
+    while i <= n {
+        acc = acc * i;
+        i = i + 1_i;
+    }
+    return acc;
+}
+
+fn main() {
+    assert(true);
+    assert(1_i + 1_i == 3_i);
+    assert_eq(add(2_i, 3_i), 5_i);
+    assert_eq(factorial(5_i), 120_i);
+    assert_eq(add(0_i, 0_i), 0_i, "zero add");
+    assert_ne(add(2_i, 3_i), 6_i);
+}
