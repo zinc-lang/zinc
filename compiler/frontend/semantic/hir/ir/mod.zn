@@ -20,6 +20,7 @@ mod sym_union;
 mod sym_tuple;
 mod sym_array;
 mod sym_extern_type;
+mod sym_lambda;
 mod common;
 mod lifetime;
 mod stype;
@@ -328,7 +329,16 @@ pub struct FnUpperTypeSymbol {
 }
 
 pub struct LambdaSymbol {
-    // todo
+    lambda_node: *LambdaExpr,
+    parent_sym: Option<*ScopeSymbol>,
+    generics: GenericParams,
+    params: Vec<*VarSymbol>,
+    captures: Vec<*VarSymbol>,
+    symbol_table: SymbolTable,
+    return_sty: Option<*SType>,
+    body_block: Option<*BlockSentence>,  // `.{ ... }` 形式的函数体
+    body_expr: Option<*RValue>,          // `(a, b) => expr` 形式的函数体
+    cache: HashMap<GenericArgs, *SType>,
 }
 
 pub struct BoolSymbol {
