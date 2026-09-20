@@ -51,6 +51,8 @@ impl CFG {
     }
 }
 
+// todo: 对 'a 和 'b 这种命名生命周期做检查
+
 // 一个指针值可能的来源集合 (may-origin)。
 // 与 liveness 的"确定存活"相反, 这是一个 may 分析, 汇合点取并集。
 struct OriginSet {

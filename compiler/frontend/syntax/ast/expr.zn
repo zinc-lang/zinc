@@ -146,6 +146,7 @@ pub enum LambdaCapture {
     Move(Token, Token), // by value capture with move
     Ref(Token, Token), // by reference capture
     RefMut(Token, Token, Token), // by mutable reference capture
+    Weak(Token, Token), // weak capture
 }
 
 pub struct LambdaExpr {

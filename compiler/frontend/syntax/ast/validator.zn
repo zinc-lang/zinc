@@ -184,6 +184,13 @@ impl SyntaxVisitor for SyntaxValidator {
         return VisitResult::Continue;
     }
     fn visit_fn_param(&mut self, node: *FnParamDecl) -> VisitResult {
+        // 闭包的裸参数没有显式类型, 解析器用 DummySyntaxNode 占位。
+        // 这里跳过它, 避免误报 "非法的语法节点"。
+        if node.decl_kind is FnParamDeclKind::Normal(_, ty, _) {
+            if ty is type *DummySyntaxNode {
+                return VisitResult::SkipChildren;
+            }
+        }
         return VisitResult::Continue;
     }
     fn visit_fn(&mut self, node: *FuncDecl) -> VisitResult {
@@ -682,7 +689,9 @@ impl SyntaxVisitor for SyntaxValidator {
         return VisitResult::Continue;
     }
     fn visit_lambda_expr(&mut self, node: *LambdaExpr) -> VisitResult {
-        DiagnosticEngine::get().emit_unimplemented(node.span(), "lambda expression");
+        let expected: [QualifierKind; 3] = [QualifierKind::Async, QualifierKind::Const, QualifierKind::Unsafe];
+        accept_qualifiers(&expected as Slice<QualifierKind>, &node.qualifier_list, "lambda");
+
         return VisitResult::Continue;
     }
 
