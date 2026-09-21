@@ -63,6 +63,7 @@ mod rv_lit;
 mod rv_method_call;
 mod rv_pattern_match;
 mod rv_qual_path;
+mod rv_lambda;
 mod rv_read;
 mod rv_select;
 mod rv_tup_access;
@@ -640,6 +641,13 @@ pub struct QualifiedPathValue {
     qualified_ty: Option<*SType>,
     qualified_trait: Option<*SType>,
     symbol: *Symbol, // 可能是 FuncSymbol, EnumVariantSymbol, VarSymbol
+    sty: *SType,
+}
+
+pub struct LambdaValue { // 闭包字面量作为一等公民使用时的值
+    expr: *LambdaExpr,
+    parent_node: Option<*ScopeSymbol>,
+    lambda_sym: *LambdaSymbol,
     sty: *SType,
 }
 

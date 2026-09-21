@@ -4,6 +4,7 @@ use ::self::frontend::syntax::ast::stmt::*;
 use ::self::frontend::syntax::ast::visit::*;
 use ::self::frontend::syntax::ast::ty::*;
 use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::syntax::ast::pattern::*;
 use ::self::frontend::syntax::token::*;
 use ::self::frontend::semantic::hir::ir::*;
 
@@ -11,6 +12,9 @@ use ::self::frontend::diagnostic::*;
 use ::self::frontend::source_code::*;
 
 use super::resolver::*;
+use super::round1::build_lambda_symbol;
+use super::round2::resolve_constraints;
+use super::stmts::StmtTransformer;
 
 struct ExprTransformer {
     current_block: *BlockSentence,
@@ -21,24 +25,24 @@ struct ExprTransformer {
 
 impl ExprTransformer {
 
-    fn get_ctx(&self) -> ResolveContext {
-        let mut scope: Option<*ScopeSymbol> = None;
-        let mut outer: Option<*SType> = None;
+    // 解析 Self 类型需要外层 impl/trait 的 self 类型, 闭包体继承外层函数的上下文
+    fn outer_self_sty(&self) -> Option<*SType> {
         if self.func_sym.parent_sym is Some(trait_sym: *TraitSymbol) {
-            scope = Some(trait_sym as *ScopeSymbol);
-            outer = Some(trait_sym.self_ty.to_sty());
+            return Some(trait_sym.self_ty.to_sty());
         }
         if self.func_sym.parent_sym is Some(impl_sym: *ImplSymbol) {
-            scope = Some(impl_sym as *ScopeSymbol);
-            outer = Some(impl_sym.self_ty.to_sty());
+            return Some(impl_sym.self_ty.to_sty());
         }
+        return None;
+    }
 
+    fn get_ctx(&self) -> ResolveContext {
         let blk = self.current_block as *ScopeSymbol;
 
         let ctx = {
             .entry_scope = blk,
             .path_scope = blk,
-            .self_sty = move outer,
+            .self_sty = self.outer_self_sty(),
         }: ResolveContext;
         return ctx;
     }
@@ -275,8 +279,159 @@ impl ExprTransformer {
         }
     }
 
+    // 闭包翻译: 构造 LambdaSymbol, 解析参数类型/返回类型/where 约束/捕获, 再构建 body。
+    // 闭包体在外层函数体的构建过程中处理, 这样外层局部变量已经存在, 捕获才能解析。
     fn visit_lambda_expr(&mut self, e: *LambdaExpr) -> *RValue {
-        panic "unimplemented lambda expression";
+        let enclosing = self.current_block as *ScopeSymbol;
+        let lsym = build_lambda_symbol(e, enclosing);
+
+        let inner_ctx = {
+            .entry_scope = lsym as *ScopeSymbol,
+            .path_scope = lsym as *ScopeSymbol,
+            .self_sty = self.outer_self_sty(),
+        }: ResolveContext;
+
+        // 参数类型。省略类型的参数留空, 交给后续的类型推导
+        let mut i: UInt = 0;
+        for p in e.params {
+            match p.decl_kind {
+                FnParamDeclKind::Normal(_, ty, _) => {
+                    if !(ty is type *DummySyntaxNode) {
+                        let sty = self.resolver.resolve_type_node(inner_ctx, ty);
+                        if sty is Some(t) {
+                            let param_var: *VarSymbol = *lsym.params.index(i).deref();
+                            param_var.stype = move t;
+                        } else {
+                            DiagnosticEngine::get().emit_invalid_type_node(ty.to_string(), ty.span());
+                        }
+                    }
+                }
+                FnParamDeclKind::Ellipsis(_) => {
+                    DiagnosticEngine::get().emit_unimplemented(p.span(), "variadic lambda parameter");
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        // 返回类型
+        if e.return_type is Some(rt) {
+            let sty = self.resolver.resolve_type_node(inner_ctx, rt);
+            if sty is Some(t) {
+                lsym.return_sty = Some(move t);
+            } else {
+                DiagnosticEngine::get().emit_invalid_type_node(rt.to_string(), rt.span());
+            }
+        }
+
+        // where 约束
+        lsym.generics.constraints = resolve_constraints(&self.resolver, inner_ctx, &e.where_conds);
+
+        // 捕获列表
+        self.resolve_lambda_captures(e, lsym);
+
+        // body
+        if e.body_block is Some(block) {
+            let mut strans = StmtTransformer::new_for_lambda(self.resolver, self.func_sym, lsym);
+            strans.traverse_lambda(lsym);
+        }
+        else if e.body_expr is Some(expr) {
+            // 表达式体: 造一个空的 block 作为 ExprTransformer 的当前作用域
+            let dummy = box { .source_span = e.span() }: DummySyntaxNode as *StatementNode;
+            let blk = BlockSentence::new(dummy);
+            blk.parent_stmt = Some(lsym as *ScopeSymbol);
+
+            let mut etrans = {
+                .current_block = move blk,
+                .func_sym = self.func_sym,
+                .expr_to_sentence = (type HashMap<UInt, *Sentence>)::new(),
+                .resolver = self.resolver,
+            }: ExprTransformer;
+            let v = etrans.visit_expr(expr);
+            lsym.body_expr = Some(move v);
+        }
+
+        return LambdaValue::new(e, lsym) as *RValue;
+    }
+
+    fn resolve_lambda_captures(&mut self, e: *LambdaExpr, lsym: *LambdaSymbol) {
+        if e.captures.is_empty() {
+            return;
+        }
+
+        let outer_ctx = {
+            .entry_scope = self.current_block as *ScopeSymbol,
+            .path_scope = self.current_block as *ScopeSymbol,
+            .self_sty = self.outer_self_sty(),
+        }: ResolveContext;
+
+        for cap in e.captures {
+            let mut ident: Token = Token::invalid(e.span());
+            let mut mode: LambdaCaptureKind = LambdaCaptureKind::Value;
+            match cap {
+                LambdaCapture::Ident(t) => { ident = move t; }
+                LambdaCapture::Move(_, t) => { ident = move t; }
+                LambdaCapture::Ref(_, t) => { ident = move t; mode = LambdaCaptureKind::Ref; }
+                LambdaCapture::RefMut(_, _, t) => { ident = move t; mode = LambdaCaptureKind::RefMut; }
+                LambdaCapture::Weak(_, t) => { ident = move t; mode = LambdaCaptureKind::Weak; }
+            }
+
+            let name = ident.raw_str();
+            let found = self.resolver.lookup(outer_ctx, &name);
+            if found is Some(outer_sym) {
+                if outer_sym is outer_var: *VarSymbol {
+                    let local = self.create_capture_var(ident, lsym, outer_var, mode);
+                    lsym.add_capture(move local);
+                } else {
+                    DiagnosticEngine::get().emit_unimplemented(ident.span(), "capture a non-variable");
+                }
+            } else {
+                DiagnosticEngine::get().emit_name_not_found(name, ident.span());
+            }
+        }
+    }
+
+    // 捕获在闭包体内按名字可见, 所以用 IdentPatternNode 承载变量名
+    fn create_capture_var(&self, ident: Token, lsym: *LambdaSymbol, outer: *VarSymbol, mode: LambdaCaptureKind) -> *VarSymbol {
+        let seg = SegmentedName::new_segmented_name();
+        seg.names.push(box SegmentedPart::Ident(ident));
+
+        let dummy = box { .source_span = ident.span() }: DummySyntaxNode;
+        let pat = box {
+            .parent_node = dummy as *SyntaxNode as *weak SyntaxNode,
+            .name = move seg,
+            .mutability = None,
+            .ty = None,
+        }: IdentPatternNode;
+
+        let var = VarSymbol::new(pat as *SyntaxNode);
+        var.parent_sym = Some(lsym as *ScopeSymbol);
+        var.set_parent_scope(lsym as *ScopeSymbol);
+        var.stype = self.capture_sty(mode, outer.stype, ident.span());
+        return var;
+    }
+
+    fn capture_sty(&self, mode: LambdaCaptureKind, outer_sty: *SType, span: SourceSpan) -> *SType {
+        if mode is LambdaCaptureKind::Value {
+            return outer_sty;
+        }
+        // 外层变量的类型可能还没推导出来, 留待类型检查阶段再确定捕获的类型
+        if outer_sty.is_invalid() {
+            return SType::sty_invalid(span);
+        }
+        if mode is LambdaCaptureKind::Ref {
+            return BorrowImmutSymbol::new().to_sty(GenericArgs::from1(outer_sty));
+        }
+        if mode is LambdaCaptureKind::RefMut {
+            return BorrowMutSymbol::new().to_sty(GenericArgs::from1(outer_sty));
+        }
+        // weak 捕获要求外层变量是 Arc
+        if outer_sty.type_symbol is type *ArcPointerSymbol {
+            let inner = outer_sty.args.ty_arg(0);
+            return WeakPointerSymbol::new().to_sty(GenericArgs::from1(inner));
+        }
+        DiagnosticEngine::get().emit_unimplemented(span, "weak capture of a non-Arc value");
+        return SType::sty_invalid(span);
     }
 
     fn visit_struct_init_expr(&mut self, e: *StructInitExpr) -> *RValue {
@@ -461,4 +616,9 @@ impl ExprTransformer {
 
         return InvalidValue::new(e as *ExpressionNode) as *RValue;
     }
+}
+
+// 闭包捕获的模式
+enum LambdaCaptureKind {
+    Value, Ref, RefMut, Weak,
 }

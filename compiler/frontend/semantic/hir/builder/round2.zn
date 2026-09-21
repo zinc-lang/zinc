@@ -67,42 +67,7 @@ impl TopLevelAstVisitor2 {
 
     fn build_constraints(&mut self, ctx: ResolveContext, conds: &Vec<*WhereCondDecl>) -> GenericConstraints {
         let resolver = self.resolver();
-        let mut constraints = GenericConstraints::new();
-        for cond in conds {
-            let lhs = resolver.resolve_type_node(ctx, cond.lhs);
-            if lhs is Some(lhs_sty) {
-                if lhs_sty.type_symbol is tps: *TypeParamSymbol {
-                    for upper in cond.upper_bounds {
-                        let rhs = resolver.resolve_type_node(ctx, upper);
-                        if rhs is Some(rhs_sty) {
-                            constraints.add(tps, move rhs_sty);
-                        } else {
-                            DiagnosticEngine::get().emit_invalid_type_node(upper.to_string(), upper.span());
-                        }
-                    }
-                }
-                else if lhs_sty.type_symbol is lhs_lt: *LifetimeSymbol {
-                    for upper in cond.upper_bounds {
-                        let rhs = resolver.resolve_type_node(ctx, upper);
-                        if rhs is Some(rhs_sty) {
-                            if rhs_sty.type_symbol is rhs_lt: *LifetimeSymbol {
-                                constraints.add_lt(lhs_lt, rhs_lt);
-                            } else {
-                                DiagnosticEngine::get().emit_illegal_rhs_of_lifetime_upper_bound(upper.span());
-                            }
-                        } else {
-                            DiagnosticEngine::get().emit_invalid_type_node(upper.to_string(), upper.span());
-                        }
-                    }
-                }
-                else {
-                    DiagnosticEngine::get().emit_illegal_lhs_of_constraint(cond.lhs.span());
-                }
-            } else {
-                DiagnosticEngine::get().emit_invalid_type_node(cond.lhs.to_string(), cond.lhs.span());
-            }
-        }
-        return constraints;
+        return resolve_constraints(&resolver, ctx, conds);
     }
     
     // 遍历完成后对每个 trait 执行检查，禁止出现递归继承
@@ -884,6 +849,46 @@ impl SyntaxVisitor for TopLevelAstVisitor2 {
         return None;
     }
 
+}
+
+// 解析 where 子句, 供顶层声明和闭包共用
+pub fn resolve_constraints(resolver: &Resolver, ctx: ResolveContext, conds: &Vec<*WhereCondDecl>) -> GenericConstraints {
+    let mut constraints = GenericConstraints::new();
+    for cond in conds {
+        let lhs = resolver.resolve_type_node(ctx, cond.lhs);
+        if lhs is Some(lhs_sty) {
+            if lhs_sty.type_symbol is tps: *TypeParamSymbol {
+                for upper in cond.upper_bounds {
+                    let rhs = resolver.resolve_type_node(ctx, upper);
+                    if rhs is Some(rhs_sty) {
+                        constraints.add(tps, move rhs_sty);
+                    } else {
+                        DiagnosticEngine::get().emit_invalid_type_node(upper.to_string(), upper.span());
+                    }
+                }
+            }
+            else if lhs_sty.type_symbol is lhs_lt: *LifetimeSymbol {
+                for upper in cond.upper_bounds {
+                    let rhs = resolver.resolve_type_node(ctx, upper);
+                    if rhs is Some(rhs_sty) {
+                        if rhs_sty.type_symbol is rhs_lt: *LifetimeSymbol {
+                            constraints.add_lt(lhs_lt, rhs_lt);
+                        } else {
+                            DiagnosticEngine::get().emit_illegal_rhs_of_lifetime_upper_bound(upper.span());
+                        }
+                    } else {
+                        DiagnosticEngine::get().emit_invalid_type_node(upper.to_string(), upper.span());
+                    }
+                }
+            }
+            else {
+                DiagnosticEngine::get().emit_illegal_lhs_of_constraint(cond.lhs.span());
+            }
+        } else {
+            DiagnosticEngine::get().emit_invalid_type_node(cond.lhs.to_string(), cond.lhs.span());
+        }
+    }
+    return constraints;
 }
 
 // 把不带 trait 的排到前面

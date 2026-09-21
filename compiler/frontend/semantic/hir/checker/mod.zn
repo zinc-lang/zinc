@@ -470,6 +470,10 @@ impl TypeCheckContext {
                     return SType::sty_invalid(qp.expr.span());
                 }
             }
+            lam: *LambdaValue => {
+                // todo 目前只返回闭包自身的类型, 还没有检查闭包体以及到 Fn/FnMut 的转换
+                return lam.lambda_sym.to_sty();
+            }
             ctx_rv: *ContextValue => {
                 return self.infer(ctx_rv.inner as *XValue);
             }
@@ -1011,6 +1015,9 @@ impl TypeCheckContext {
                 } else {
                     expect_type_eq(sty, self.infer(qp as *XValue), qp.expr.span());
                 }
+            }
+            lam: *LambdaValue => {
+                // todo 目前还不检查闭包体, 也不处理到 Fn/FnMut 的转换
             }
             ctx_rv: *ContextValue => {
                 self.check_value(ctx_rv.inner, sty);

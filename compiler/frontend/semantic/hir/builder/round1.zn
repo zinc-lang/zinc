@@ -59,20 +59,10 @@ impl TopLevelAstVisitor1 {
 
     // todo 需要处理 upper_bounds
     fn build_generics(&mut self, params: &Vec<*GenericTypeParamDecl>, parent_scope: *ScopeSymbol) -> GenericParams {
-        let mut gp = GenericParams::new();
-        for p in params {
-            if p.name.is_lifetime() {
-                let lt_sym = LifetimeSymbol::new(p.name);
-                parent_scope.sym_table().add_child(lt_sym as *Symbol);
-                gp.lt_params.push(move lt_sym);
-            } else {
-                let tps = TypeParamSymbol::new(p);
-                tps.parent_sym = Some(parent_scope);
-                self.mapping(p, tps);
-                tps.set_parent_scope(parent_scope);
-                parent_scope.sym_table().add_child(tps as *Symbol);
-                gp.ty_params.push(move tps);
-            }
+        let gp = build_generics_in_scope(params, parent_scope);
+        // 顶层声明需要把泛型参数记录到 syntax -> symbol 映射里
+        for tps in gp.ty_params {
+            self.mapping(tps.type_param_node as *SyntaxNode, tps as *Symbol);
         }
         return gp;
     }
@@ -89,6 +79,43 @@ impl TopLevelAstVisitor1 {
         }
         return var_syms;
     }
+}
+
+// 把泛型参数注册到 parent_scope 并构造 GenericParams。
+// 闭包没有 syntax -> symbol 映射, 所以把这段逻辑抽出来供闭包复用。
+pub fn build_generics_in_scope(params: &Vec<*GenericTypeParamDecl>, parent_scope: *ScopeSymbol) -> GenericParams {
+    let mut gp = GenericParams::new();
+    for p in params {
+        if p.name.is_lifetime() {
+            let lt_sym = LifetimeSymbol::new(p.name);
+            parent_scope.sym_table().add_child(lt_sym as *Symbol);
+            gp.lt_params.push(move lt_sym);
+        } else {
+            let tps = TypeParamSymbol::new(p);
+            tps.parent_sym = Some(parent_scope);
+            tps.set_parent_scope(parent_scope);
+            parent_scope.sym_table().add_child(tps as *Symbol);
+            gp.ty_params.push(move tps);
+        }
+    }
+    return gp;
+}
+
+// 构造闭包符号: 先把泛型参数和参数注册到闭包自己的作用域,
+// 参数类型/返回类型/捕获/body 由 round2 在构建外层函数体时补全。
+pub fn build_lambda_symbol(node: *LambdaExpr, parent_scope: *ScopeSymbol) -> *LambdaSymbol {
+    let lsym = LambdaSymbol::new(node);
+    lsym.set_parent_scope(parent_scope);
+    lsym.generics = build_generics_in_scope(&node.generic_params, lsym as *ScopeSymbol);
+
+    for p in node.params {
+        let gs = VarSymbol::new(p as *SyntaxNode);
+        gs.parent_sym = Some(lsym as *ScopeSymbol);
+        gs.set_parent_scope(lsym as *ScopeSymbol);
+        lsym.symbol_table.add_child(gs as *Symbol);
+        lsym.params.push(move gs);
+    }
+    return lsym;
 }
 
 impl SyntaxVisitor for TopLevelAstVisitor1 {
@@ -218,5 +245,17 @@ impl SyntaxVisitor for TopLevelAstVisitor1 {
 
     fn visit_block(&mut self, node: *BlockStmt) -> VisitResult {
         return VisitResult::SkipChildren;
+    }
+
+    // 闭包符号主要由 round2 构建函数体时创建; 这里覆盖 round1 能到达的闭包
+    // (例如顶层 const/static 的初始化表达式), 已经创建过的就跳过。
+    fn visit_lambda_expr(&mut self, node: *LambdaExpr) -> VisitResult {
+        if self.corresponding_symbol(node as *SyntaxNode as *weak SyntaxNode) is None {
+            if self.parent_sym(node as *SyntaxNode) is Some(psym) {
+                let lsym = build_lambda_symbol(node, psym);
+                self.mapping(node as *SyntaxNode, lsym as *Symbol);
+            }
+        }
+        return VisitResult::Continue;
     }
 }

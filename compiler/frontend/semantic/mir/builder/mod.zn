@@ -249,6 +249,7 @@ impl CfgBuilder {
                 }
             }
             type *QualifiedPathValue => return;
+            type *LambdaValue => return;
             type *WriteValue => return;
             type *LiteralValue => return;
             type *AggregateValue => return;

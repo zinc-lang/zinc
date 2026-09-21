@@ -200,6 +200,11 @@ impl CfgBuilder {
                 bb.add_step(qp as *XValue);
                 return (move qp as *RValue, bb);
             }
+            lam: *LambdaValue => {
+                // todo 还没有为闭包生成单独的 MIR 函数
+                bb.add_step(lam as *XValue);
+                return (move lam as *RValue, bb);
+            }
             ctx_rv: *ContextValue => {
                 return self.trans_rvalue(ctx_rv.inner, bb);
             }

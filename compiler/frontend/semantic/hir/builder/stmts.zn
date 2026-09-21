@@ -18,14 +18,28 @@ struct StmtTransformer {
     stmt_to_sentence: HashMap<UInt, *Sentence>,
     block_chain: Vec<*BlockSentence>,
     func_sym: *FuncSymbol,
+    owner: *ScopeSymbol, // 正在构建 body 的函数或者闭包
 }
 
 impl StmtTransformer {
 
     fn new(r: Resolver, fs: *FuncSymbol) -> Self {
+        let owner = fs as *ScopeSymbol;
         return {
             .resolver = move r,
             .func_sym = move fs,
+            .owner = move owner,
+            .stmt_to_sentence = (type HashMap<UInt, *Sentence>)::new(),
+            .block_chain = (type Vec<*BlockSentence>)::new(),
+        }: StmtTransformer;
+    }
+
+    // 构建闭包 body 时使用。func_sym 是最近的外层函数, 用来解析 Self 类型
+    fn new_for_lambda(r: Resolver, fs: *FuncSymbol, lsym: *LambdaSymbol) -> Self {
+        return {
+            .resolver = move r,
+            .func_sym = move fs,
+            .owner = lsym as *ScopeSymbol,
             .stmt_to_sentence = (type HashMap<UInt, *Sentence>)::new(),
             .block_chain = (type Vec<*BlockSentence>)::new(),
         }: StmtTransformer;
@@ -42,6 +56,14 @@ impl StmtTransformer {
                 self.visit_stmt(s);
             }
             self.exit_block(bs);
+        }
+    }
+
+    // 结果保存在 LambdaSymbol::body_block 字段里面
+    fn traverse_lambda(&mut self, lsym: *LambdaSymbol) {
+        if lsym.lambda_node.body_block is Some(block) {
+            let bs = self.visit_block(block);
+            lsym.body_block = Some(move bs);
         }
     }
 
@@ -62,7 +84,7 @@ impl StmtTransformer {
         let bs = BlockSentence::new(block);
         self.mapping(block as *SyntaxNode, bs as *Sentence);
         if self.block_chain.is_empty() {
-            bs.parent_stmt = Some(self.func_sym as *ScopeSymbol);
+            bs.parent_stmt = Some(self.owner);
         } else {
             bs.parent_stmt = Some(self.nearest_block() as *ScopeSymbol);
         }
