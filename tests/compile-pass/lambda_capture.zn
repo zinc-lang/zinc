@@ -1,0 +1,17 @@
+// 闭包捕获: 显式捕获列表 + 隐式捕获; static/const 全局变量不作为捕获。
+const GLOBAL: UInt = 7_u;
+
+fn make(seed: UInt) -> UInt {
+    let mut acc = seed;
+    // 隐式捕获 acc 并被写入 -> 按可变借用捕获
+    let inc = .{ -> UInt => acc = acc + 1_u; return acc; };
+    // 隐式捕获 acc (只读) 并读取全局常量 (全局变量不算捕获)
+    let read = .{ -> UInt => return acc + GLOBAL; };
+    // 显式按值捕获
+    let moved = .{ [move seed] -> UInt => return seed; };
+    return inc() + read() + moved();
+}
+
+fn main() {
+    let v = make(1_u);
+}

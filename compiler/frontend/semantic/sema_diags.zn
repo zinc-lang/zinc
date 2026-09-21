@@ -218,6 +218,15 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    fn emit_wrong_arg_count(&mut self, expected: UInt, actual: UInt, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"参数个数不匹配: 期望 $(expected) 个, 实际 $(actual) 个",
+            .msg_en = f"wrong number of arguments: expected $(expected), got $(actual)",
+        }: DiagItem);
+    }
+
     fn emit_irrefutable_pattern_only(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,

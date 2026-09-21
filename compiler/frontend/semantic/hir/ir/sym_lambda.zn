@@ -1,7 +1,47 @@
 use super::*;
 use ::self::frontend::syntax::ast::*;
 use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::syntax::token::*;
 use ::self::frontend::source_code::*;
+
+impl LambdaCapture {
+    // 根据外层变量的类型和捕获模式计算闭包内部绑定的类型。
+    // builder 阶段外层变量的类型常常还未知, 此时返回 invalid,
+    // 由类型检查阶段 (check_lambda_body) 再算一次。
+    pub fn local_sty(&self) -> *SType {
+        let outer_sty = self.outer_var.stype;
+        if self.mode is LambdaCaptureKind::Value {
+            return outer_sty;
+        }
+        if outer_sty.is_invalid() {
+            return SType::sty_invalid(self.token.span());
+        }
+        if self.mode is LambdaCaptureKind::Ref {
+            return BorrowImmutSymbol::new().to_sty(GenericArgs::from1(outer_sty));
+        }
+        if self.mode is LambdaCaptureKind::RefMut {
+            return BorrowMutSymbol::new().to_sty(GenericArgs::from1(outer_sty));
+        }
+        // weak 捕获要求外层变量是 Arc
+        if outer_sty.type_symbol is type *ArcPointerSymbol {
+            return WeakPointerSymbol::new().to_sty(GenericArgs::from1(outer_sty.args.ty_arg(0)));
+        }
+        return SType::sty_invalid(self.token.span());
+    }
+
+    // 创建捕获项, 并给闭包内部的绑定定好类型 (外层类型已知时)
+    pub fn create(mode: LambdaCaptureKind, is_explicit: Bool, token: Token, outer: *VarSymbol, local: *VarSymbol) -> *Self {
+        let capture = box {
+            .mode = mode,
+            .is_explicit = is_explicit,
+            .token = token,
+            .outer_var = move outer,
+            .local_var = move local,
+        }: LambdaCapture;
+        capture.local_var.stype = capture.local_sty();
+        return capture;
+    }
+}
 
 impl LambdaSymbol {
     pub fn new(node: *LambdaExpr) -> *Self {
@@ -10,7 +50,7 @@ impl LambdaSymbol {
             .parent_sym = None,
             .generics = GenericParams::new(),
             .params = (type Vec<*VarSymbol>)::new(),
-            .captures = (type Vec<*VarSymbol>)::new(),
+            .captures = (type Vec<*LambdaCapture>)::new(),
             .symbol_table = SymbolTable::new(),
             .return_sty = None,
             .body_block = None,
@@ -41,15 +81,26 @@ impl LambdaSymbol {
         return self.captures.len() > 0;
     }
 
-    // 捕获在闭包内部对应一个局部变量, 需要同时注册进闭包的作用域
-    pub fn add_capture(&mut self, var: *VarSymbol) {
-        self.captures.push(var);
-        self.symbol_table.add_child(move var);
+    // 显式捕获在闭包体内按名字可见, 需要把内部绑定注册进闭包的作用域
+    pub fn add_capture(&mut self, capture: *LambdaCapture) {
+        let local = capture.local_var;
+        self.captures.push(capture);
+        self.symbol_table.add_child(local as *Symbol);
     }
 
-    pub fn find_capture(&self, name: &String) -> Option<*VarSymbol> {
+    pub fn find_capture(&self, name: &String) -> Option<*LambdaCapture> {
         for c in self.captures {
-            if c.short_name().eq(name) {
+            if c.local_var.short_name().eq(name) {
+                return Some(move c);
+            }
+        }
+        return None;
+    }
+
+    // 查找捕获了指定外层变量的捕获项
+    pub fn find_capture_of(&self, outer: *VarSymbol) -> Option<*LambdaCapture> {
+        for c in self.captures {
+            if c.outer_var as *raw VarSymbol as UInt == outer as *raw VarSymbol as UInt {
                 return Some(move c);
             }
         }

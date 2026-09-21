@@ -1,0 +1,8 @@
+// 闭包作为一等公民: 调用时检查实参与形参匹配。
+fn main() {
+    let add = (a: UInt, b: UInt) -> UInt => a + b;
+    let r: UInt = add(1_u, 2_u);
+
+    let id = (x: UInt) -> UInt => x;
+    let s: UInt = id(3_u);
+}

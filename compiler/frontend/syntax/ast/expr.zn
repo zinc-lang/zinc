@@ -141,7 +141,7 @@ pub struct FnCallExpr {
     rparen: Token,
 }
 
-pub enum LambdaCapture {
+pub enum LambdaCaptureItem {
     Ident(Token), // by value capture
     Move(Token, Token), // by value capture with move
     Ref(Token, Token), // by reference capture
@@ -149,11 +149,42 @@ pub enum LambdaCapture {
     Weak(Token, Token), // weak capture
 }
 
+// 名字刻意与 hir 里的 LambdaCapture 区分开, 避免两个类型在 glob 导入后重名
+impl LambdaCaptureItem {
+    pub fn ident(&self) -> Token {
+        match self {
+            LambdaCaptureItem::Ident(t) => return t;
+            LambdaCaptureItem::Move(_, t) => return t;
+            LambdaCaptureItem::Ref(_, t) => return t;
+            LambdaCaptureItem::RefMut(_, _, t) => return t;
+            LambdaCaptureItem::Weak(_, t) => return t;
+        }
+    }
+    pub fn is_ref(&self) -> Bool {
+        if self is LambdaCaptureItem::Ref(_, _) {
+            return true;
+        }
+        return false;
+    }
+    pub fn is_ref_mut(&self) -> Bool {
+        if self is LambdaCaptureItem::RefMut(_, _, _) {
+            return true;
+        }
+        return false;
+    }
+    pub fn is_weak(&self) -> Bool {
+        if self is LambdaCaptureItem::Weak(_, _) {
+            return true;
+        }
+        return false;
+    }
+}
+
 pub struct LambdaExpr {
     parent_node: *weak SyntaxNode, 
     lambda_start: Token,
     qualifier_list: QualifierList,
-    captures: Vec<LambdaCapture>,
+    captures: Vec<LambdaCaptureItem>,
     generic_params: Vec<*GenericTypeParamDecl>,
     params: Vec<*FnParamDecl>,
     return_type: Option<*TypeNode>,

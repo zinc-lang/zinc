@@ -726,7 +726,7 @@ impl FileParser {
                     .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
                     .lambda_start = lparen,
                     .qualifier_list = QualifierList::new(),
-                    .captures = (type Vec<LambdaCapture>)::new(),
+                    .captures = (type Vec<LambdaCaptureItem>)::new(),
                     .generic_params = (type Vec<*GenericTypeParamDecl>)::new(),
                     .params = move params,
                     .return_type = move return_type,
@@ -753,7 +753,7 @@ impl FileParser {
                         .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
                         .lambda_start = lparen,
                         .qualifier_list = QualifierList::new(),
-                        .captures = (type Vec<LambdaCapture>)::new(),
+                        .captures = (type Vec<LambdaCaptureItem>)::new(),
                         .generic_params = (type Vec<*GenericTypeParamDecl>)::new(),
                         .params = move params,
                         .return_type = move return_type,
@@ -982,7 +982,7 @@ impl FileParser {
         let has_header = self.lambda_header_present();
 
         let mut qs = QualifierList::new();
-        let mut captures = (type Vec<LambdaCapture>)::new();
+        let mut captures = (type Vec<LambdaCaptureItem>)::new();
         let mut generic_params: Vec<*GenericTypeParamDecl> = Vec::new();
         let mut params: Vec<*FnParamDecl> = Vec::new();
         let mut return_ty: Option<*TypeNode> = None;
@@ -1227,10 +1227,10 @@ impl FileParser {
         return params;
     }
 
-    fn parse_lambda_captures(&mut self) -> Vec<LambdaCapture> {
+    fn parse_lambda_captures(&mut self) -> Vec<LambdaCaptureItem> {
         self.expect_token(TokenKind::Punctuation(PunctuationKind::LBracket));
 
-        let mut captures: Vec<LambdaCapture> = Vec::new();
+        let mut captures: Vec<LambdaCaptureItem> = Vec::new();
         while true {
             let t = self.lexer.peek(0);
             if t.token_kind is TokenKind::Punctuation(PunctuationKind::RBracket) ||
@@ -1241,12 +1241,12 @@ impl FileParser {
             if t.token_kind is TokenKind::Keyword(KeywordKind::KW_MOVE) {
                 let kw_move = self.lexer.next();
                 let ident = self.expect_token(TokenKind::Identifier);
-                captures.push(LambdaCapture::Move(kw_move, ident));
+                captures.push(LambdaCaptureItem::Move(kw_move, ident));
             }
             else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_WEAK) {
                 let kw_weak = self.lexer.next();
                 let ident = self.expect_token(TokenKind::Identifier);
-                captures.push(LambdaCapture::Weak(kw_weak, ident));
+                captures.push(LambdaCaptureItem::Weak(kw_weak, ident));
             }
             else if t.token_kind is TokenKind::Keyword(KeywordKind::KW_REF) {
                 let kw_ref = self.lexer.next();
@@ -1254,15 +1254,15 @@ impl FileParser {
                 if t.token_kind is TokenKind::Keyword(KeywordKind::KW_MUT) {
                     let kw_mut = self.lexer.next();
                     let ident = self.expect_token(TokenKind::Identifier);
-                    captures.push(LambdaCapture::RefMut(kw_ref, kw_mut, ident));
+                    captures.push(LambdaCaptureItem::RefMut(kw_ref, kw_mut, ident));
                 } else {
                     let ident = self.expect_token(TokenKind::Identifier);
-                    captures.push(LambdaCapture::Ref(kw_ref, ident));
+                    captures.push(LambdaCaptureItem::Ref(kw_ref, ident));
                 }
             }
             else if t.token_kind is TokenKind::Identifier {
                 let ident = self.lexer.next();
-                captures.push(LambdaCapture::Ident(ident));
+                captures.push(LambdaCaptureItem::Ident(ident));
             }
             else {
                 DiagnosticEngine::get().emit_unknown_capture_pattern(t.source_span, t.raw_str());

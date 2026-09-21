@@ -23,6 +23,7 @@ use std::collections::hashset::HashSet;
 pub struct TypeCheckContext {
     visited: HashSet<UInt>,
     fsym: Option<*FuncSymbol>,
+    lambda_sym: Option<*LambdaSymbol>, // 正在检查的闭包体, return 的目标
     sema_model: *SemanticModel,
     cached_results: HashMap<UInt, *SType>,
 }
@@ -35,6 +36,7 @@ impl TypeCheckContext {
         return {
             .visited = (type HashSet<UInt>)::new(),
             .fsym = None,
+            .lambda_sym = None,
             .sema_model = move sm,
             .cached_results = (type HashMap<UInt, *SType>)::new(),
         }: TypeCheckContext;
@@ -132,7 +134,30 @@ impl TypeCheckContext {
             br_break: *BranchBreak => {}
             br_continue: *BranchContinue => {}
             br_ret: *BranchReturn => {
-                if self.fsym is Some(fsym) {
+                if self.lambda_sym is Some(lsym) {
+                    // return 的目标是当前闭包
+                    if br_ret.value is Some(ret_val) {
+                        let value_sty = self.infer(ret_val as *XValue);
+                        if lsym.return_sty is Some(ret_sty) {
+                            if value_sty.is_invalid() {
+                                self.check_value(ret_val, ret_sty);
+                            } else {
+                                let k = resolve_type_cast_kind(value_sty, ret_sty);
+                                let new_ret = add_implicit_cast(ret_val, k, ret_sty);
+                                br_ret.value = Some(move new_ret);
+                            }
+                        } else if !value_sty.is_invalid() {
+                            // 没有标注返回类型时, 用第一个 return 的值来推导
+                            lsym.return_sty = Some(value_sty);
+                        }
+                    } else {
+                        if lsym.return_sty is None {
+                            lsym.return_sty = Some(SType::sty_unit());
+                        } else if !lsym.return_sty.get_or_panic().is_unit() {
+                            DiagnosticEngine::get().emit_return_type_mismatch(br_ret.stmt.span());
+                        }
+                    }
+                } else if self.fsym is Some(fsym) {
                     let ret_sty = fsym.return_sty.get_or_panic();
 
                     if br_ret.value is Some(ret_val) {
@@ -471,7 +496,8 @@ impl TypeCheckContext {
                 }
             }
             lam: *LambdaValue => {
-                // todo 目前只返回闭包自身的类型, 还没有检查闭包体以及到 Fn/FnMut 的转换
+                // 闭包体在定义处就检查; 到 Fn/FnMut 的类型转换仍未实现
+                self.check_lambda_body(lam.lambda_sym);
                 return lam.lambda_sym.to_sty();
             }
             ctx_rv: *ContextValue => {
@@ -1799,8 +1825,96 @@ impl TypeCheckContext {
                 }
             }
         }
+        // callee 求值后得到闭包类型: LambdaSymbol 是可调用的
+        let callee_sty = self.infer(fn_call.callee as *XValue);
+        if callee_sty.type_symbol is lsym: *LambdaSymbol {
+            return self.check_lambda_call(move fn_call, move lsym);
+        }
         DiagnosticEngine::get().emit_expr_not_callable(fn_call.expr.span());
         return SType::sty_invalid(fn_call.expr.span());
+    }
+
+    // 闭包体在闭包字面量被推导时立即检查, 不拖到调用处。
+    // 形参类型没有标注完整时跳过 body 检查, 此时无法确定名字的类型。
+    fn check_lambda_body(&mut self, lsym: *LambdaSymbol) {
+        let key = lsym as *raw LambdaSymbol as UInt;
+        if self.visited.contains(&key) {
+            return;
+        }
+        self.visited.insert(key);
+
+        for p in lsym.params {
+            if p.stype.is_invalid() {
+                return;
+            }
+        }
+
+        // 捕获绑定的类型依赖外层变量, builder 阶段外层变量的类型常常还没推导出来,
+        // 到这里外层变量的类型已经确定, 重新算一遍。
+        for c in lsym.captures {
+            c.local_var.stype = c.local_sty();
+            if c.mode is LambdaCaptureKind::Weak {
+                let outer_sty = c.outer_var.stype;
+                if !outer_sty.is_invalid() && !(outer_sty.type_symbol is type *ArcPointerSymbol) {
+                    DiagnosticEngine::get().emit_unimplemented(c.token.span(), "weak capture of a non-Arc value");
+                }
+            }
+        }
+
+        // return 的目标切换为这个闭包; fsym 保持为外层函数, 用于解析 Self 和成员方法
+        let saved_lambda = self.lambda_sym;
+        self.lambda_sym = Some(lsym);
+
+        if lsym.body_expr is Some(expr) {
+            let sty = self.infer(expr as *XValue);
+            if lsym.return_sty is Some(ret_sty) {
+                if sty.is_invalid() {
+                    self.check_value(expr, ret_sty);
+                } else {
+                    let k = resolve_type_cast_kind(sty, ret_sty);
+                    let new_expr = add_implicit_cast(expr, k, ret_sty);
+                    lsym.body_expr = Some(move new_expr);
+                }
+            } else if !sty.is_invalid() {
+                // 没有标注返回类型时, 用 body 表达式的类型推导
+                lsym.return_sty = Some(sty);
+            }
+        }
+        else if lsym.body_block is Some(blk) {
+            self.check_block(blk);
+            if lsym.return_sty is None {
+                lsym.return_sty = Some(SType::sty_unit());
+            }
+        }
+
+        self.lambda_sym = saved_lambda;
+    }
+
+    // 检查对闭包的调用: 实参个数与形参个数一致, 实参类型能转换为形参类型。
+    // 返回闭包的返回类型。
+    fn check_lambda_call(&mut self, fn_call: *FnCallValue, lsym: *LambdaSymbol) -> *SType {
+        self.check_lambda_body(lsym);
+
+        let arg_len = fn_call.fn_args.len();
+        let param_len = lsym.params.len();
+        if arg_len != param_len {
+            DiagnosticEngine::get().emit_wrong_arg_count(param_len, arg_len, fn_call.expr.span());
+            return SType::sty_invalid(fn_call.expr.span());
+        }
+
+        // 参数类型没有标注出来的时候暂时跳过类型检查
+        let params_tys = lsym.params_tys();
+        let mut all_typed = true;
+        for t in params_tys {
+            if t.is_invalid() {
+                all_typed = false;
+            }
+        }
+        if all_typed {
+            fn_call.desugared_args = self.desugar_fn_args(&fn_call.fn_arg_values(), &params_tys);
+        }
+
+        return lsym.return_sty.get_or_else(SType::sty_unit());
     }
 
     fn check_fn_call(&mut self, fn_call: *FnCallValue, return_ty: *SType) {
@@ -1868,6 +1982,21 @@ impl TypeCheckContext {
                 DiagnosticEngine::get().emit_expr_not_callable(qpv.expr.span());
                 return;
             }
+        } else {
+            // callee 不是路径, 但它的类型可能是闭包
+            let callee_sty = self.infer(fn_call.callee as *XValue);
+            if callee_sty.type_symbol is lsym: *LambdaSymbol {
+                let ret = self.check_lambda_call(fn_call, lsym);
+                if !ret.is_invalid() {
+                    let k = resolve_type_cast_kind(ret, return_ty);
+                    if k is ResolvedCastKind::Err {
+                        DiagnosticEngine::get().emit_type_mismatch(ret.to_string(), return_ty.to_string(), fn_call.expr.span());
+                    }
+                }
+                return;
+            }
+            DiagnosticEngine::get().emit_expr_not_callable(fn_call.expr.span());
+            return;
         }
 
         let arg_len = fn_call.fn_args.len();
@@ -1985,7 +2114,7 @@ impl TypeCheckContext {
 
         let stripped_receiver_ty = receiver_ty.strip_pointer();
         // todo 如果是泛型参数类型, 寻找成员函数要从泛型约束中查找
-        let fsym = find_method(stripped_receiver_ty, method_call.method, arg_len + 1, self.fsym);
+        let fsym = find_method(stripped_receiver_ty, method_call.method, arg_len + 1, self.fsym, self.lambda_sym);
         if fsym is Some(method_sym) {
             method_call.resolved_method = Some(method_sym);
             if method_sym.func_node.qualifiers().has(QualifierKind::Unsafe) {

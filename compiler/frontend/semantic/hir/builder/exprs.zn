@@ -19,6 +19,8 @@ use super::stmts::StmtTransformer;
 struct ExprTransformer {
     current_block: *BlockSentence,
     func_sym: *FuncSymbol,
+    current_lambda: Option<*LambdaSymbol>, // 正在构建 body 的闭包, 用于隐式捕获
+    pending_move: Bool,                    // 当前表达式是否处于 `move` 之下
     expr_to_sentence: HashMap<UInt, *Sentence>, // 没什么用，就删了吧
     resolver: Resolver,
 }
@@ -199,6 +201,17 @@ impl ExprTransformer {
             return a;
         }
 
+        // 处理 move: 记录操作数需要按值捕获
+        if e.kind is UnaryExprKind::Move {
+            if e.operand is type *SegmentedNameExpr {
+                self.pending_move = true;
+            }
+            let op = self.visit_expr(e.operand);
+            self.pending_move = false;
+            let u = UnaryExprValue::new(move e, move op);
+            return u;
+        }
+
         let op = self.visit_expr(e.operand);
         let u = UnaryExprValue::new(move e, move op);
         return u;
@@ -344,6 +357,8 @@ impl ExprTransformer {
             let mut etrans = {
                 .current_block = move blk,
                 .func_sym = self.func_sym,
+                .current_lambda = Some(lsym),
+                .pending_move = false,
                 .expr_to_sentence = (type HashMap<UInt, *Sentence>)::new(),
                 .resolver = self.resolver,
             }: ExprTransformer;
@@ -366,22 +381,27 @@ impl ExprTransformer {
         }: ResolveContext;
 
         for cap in e.captures {
-            let mut ident: Token = Token::invalid(e.span());
+            let ident = cap.ident();
             let mut mode: LambdaCaptureKind = LambdaCaptureKind::Value;
-            match cap {
-                LambdaCapture::Ident(t) => { ident = move t; }
-                LambdaCapture::Move(_, t) => { ident = move t; }
-                LambdaCapture::Ref(_, t) => { ident = move t; mode = LambdaCaptureKind::Ref; }
-                LambdaCapture::RefMut(_, _, t) => { ident = move t; mode = LambdaCaptureKind::RefMut; }
-                LambdaCapture::Weak(_, t) => { ident = move t; mode = LambdaCaptureKind::Weak; }
+            if cap.is_ref() {
+                mode = LambdaCaptureKind::Ref;
+            } else if cap.is_ref_mut() {
+                mode = LambdaCaptureKind::RefMut;
+            } else if cap.is_weak() {
+                mode = LambdaCaptureKind::Weak;
             }
 
             let name = ident.raw_str();
             let found = self.resolver.lookup(outer_ctx, &name);
             if found is Some(outer_sym) {
                 if outer_sym is outer_var: *VarSymbol {
-                    let local = self.create_capture_var(ident, lsym, outer_var, mode);
-                    lsym.add_capture(move local);
+                    // static/const 是全局变量, 不需要作为捕获
+                    if outer_var.is_static() || outer_var.is_const() {
+                        continue;
+                    }
+                    let local = self.create_capture_var(ident, lsym);
+                    let capture = LambdaCapture::create(mode, true, ident, outer_var, local);
+                    lsym.add_capture(move capture);
                 } else {
                     DiagnosticEngine::get().emit_unimplemented(ident.span(), "capture a non-variable");
                 }
@@ -391,8 +411,9 @@ impl ExprTransformer {
         }
     }
 
-    // 捕获在闭包体内按名字可见, 所以用 IdentPatternNode 承载变量名
-    fn create_capture_var(&self, ident: Token, lsym: *LambdaSymbol, outer: *VarSymbol, mode: LambdaCaptureKind) -> *VarSymbol {
+    // 捕获在闭包体内按名字可见, 所以用 IdentPatternNode 承载变量名。
+    // 绑定类型由 LambdaCapture::create 根据外层变量类型补上。
+    fn create_capture_var(&self, ident: Token, lsym: *LambdaSymbol) -> *VarSymbol {
         let seg = SegmentedName::new_segmented_name();
         seg.names.push(box SegmentedPart::Ident(ident));
 
@@ -407,31 +428,44 @@ impl ExprTransformer {
         let var = VarSymbol::new(pat as *SyntaxNode);
         var.parent_sym = Some(lsym as *ScopeSymbol);
         var.set_parent_scope(lsym as *ScopeSymbol);
-        var.stype = self.capture_sty(mode, outer.stype, ident.span());
         return var;
     }
 
-    fn capture_sty(&self, mode: LambdaCaptureKind, outer_sty: *SType, span: SourceSpan) -> *SType {
-        if mode is LambdaCaptureKind::Value {
-            return outer_sty;
+    // 隐式捕获: 闭包体内引用了外层的局部变量时调用。
+    // 根据使用方式决定捕获方式: 读 -> 借用, 写 -> 可变借用, move -> 按值(copy)。
+    // 注意隐式捕获不加入闭包符号表, 因此不会改变 body 里原本的类型解析结果。
+    fn note_implicit_capture(&self, var: *VarSymbol, mode: LambdaCaptureKind) {
+        if self.current_lambda is None {
+            return;
         }
-        // 外层变量的类型可能还没推导出来, 留待类型检查阶段再确定捕获的类型
-        if outer_sty.is_invalid() {
-            return SType::sty_invalid(span);
+        let lsym = self.current_lambda.get_or_panic();
+
+        // 闭包自身作用域里的变量 (参数/显式捕获/内部局部变量) 不是捕获
+        if is_local_to_lambda(var, lsym) {
+            return;
         }
-        if mode is LambdaCaptureKind::Ref {
-            return BorrowImmutSymbol::new().to_sty(GenericArgs::from1(outer_sty));
+        // 全局的 static/const 变量可以直接访问, 不作为捕获
+        if var.is_static() || var.is_const() {
+            return;
         }
-        if mode is LambdaCaptureKind::RefMut {
-            return BorrowMutSymbol::new().to_sty(GenericArgs::from1(outer_sty));
+
+        // 同一个外层变量只登记一次, 按外层变量的地址去重。
+        // 已经登记过时: 只可能由「读」升级为「写」。
+        for c in lsym.captures {
+            if c.outer_var as *raw VarSymbol as UInt == var as *raw VarSymbol as UInt {
+                if mode is LambdaCaptureKind::RefMut && c.mode is LambdaCaptureKind::Ref {
+                    c.mode = mode;
+                    c.local_var.stype = c.local_sty();
+                }
+                return;
+            }
         }
-        // weak 捕获要求外层变量是 Arc
-        if outer_sty.type_symbol is type *ArcPointerSymbol {
-            let inner = outer_sty.args.ty_arg(0);
-            return WeakPointerSymbol::new().to_sty(GenericArgs::from1(inner));
-        }
-        DiagnosticEngine::get().emit_unimplemented(span, "weak capture of a non-Arc value");
-        return SType::sty_invalid(span);
+
+        let ident = make_ident_token(var.var_node.span());
+        let local = self.create_capture_var(ident, lsym);
+        let capture = LambdaCapture::create(mode, false, ident, var, local);
+        // 隐式捕获不加入闭包符号表, body 里的引用仍然直接指向外层变量
+        lsym.captures.push(move capture);
     }
 
     fn visit_struct_init_expr(&mut self, e: *StructInitExpr) -> *RValue {
@@ -549,6 +583,7 @@ impl ExprTransformer {
                     return StaticVar::new(move e, move vs);
                 }
                 else{
+                    self.note_implicit_capture(vs, LambdaCaptureKind::RefMut);
                     return LocalVar::new(move e, move vs);
                 }
             }
@@ -575,6 +610,11 @@ impl ExprTransformer {
                         }
                     } else {
                         // todo 如果找到的是 non-static 成员变量应该报错
+                        let mut mode: LambdaCaptureKind = LambdaCaptureKind::Ref;
+                        if self.pending_move {
+                            mode = LambdaCaptureKind::Value;
+                        }
+                        self.note_implicit_capture(vs, mode);
                         return ReadValue::new(move e as *ExpressionNode, move vs);
                     }
                 }
@@ -618,7 +658,23 @@ impl ExprTransformer {
     }
 }
 
-// 闭包捕获的模式
-enum LambdaCaptureKind {
-    Value, Ref, RefMut, Weak,
+// 变量是否声明在当前闭包内部 (参数/捕获/内部局部变量)
+fn is_local_to_lambda(var: *VarSymbol, lsym: *LambdaSymbol) -> Bool {
+    let mut cur = var.parent_scope();
+    while cur is Some(ss) {
+        if ss as *raw ScopeSymbol as UInt == lsym as *ScopeSymbol as *raw ScopeSymbol as UInt {
+            return true;
+        }
+        cur = ss.parent_scope();
+    }
+    return false;
+}
+
+// 用变量声明处的 span 构造标识符 token, 给隐式捕获命名。
+// raw_str() 会从源码里取出该 span 的文本, 因此名字与外层变量一致。
+fn make_ident_token(span: SourceSpan) -> Token {
+    return {
+        .source_span = span,
+        .token_kind = TokenKind::Identifier,
+    }: Token;
 }

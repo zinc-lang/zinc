@@ -19,6 +19,7 @@ struct StmtTransformer {
     block_chain: Vec<*BlockSentence>,
     func_sym: *FuncSymbol,
     owner: *ScopeSymbol, // 正在构建 body 的函数或者闭包
+    owner_lambda: Option<*LambdaSymbol>, // 正在构建 body 的闭包 (用于隐式捕获分析)
 }
 
 impl StmtTransformer {
@@ -29,6 +30,7 @@ impl StmtTransformer {
             .resolver = move r,
             .func_sym = move fs,
             .owner = move owner,
+            .owner_lambda = None,
             .stmt_to_sentence = (type HashMap<UInt, *Sentence>)::new(),
             .block_chain = (type Vec<*BlockSentence>)::new(),
         }: StmtTransformer;
@@ -40,6 +42,7 @@ impl StmtTransformer {
             .resolver = move r,
             .func_sym = move fs,
             .owner = lsym as *ScopeSymbol,
+            .owner_lambda = Some(move lsym),
             .stmt_to_sentence = (type HashMap<UInt, *Sentence>)::new(),
             .block_chain = (type Vec<*BlockSentence>)::new(),
         }: StmtTransformer;
@@ -128,6 +131,8 @@ impl StmtTransformer {
         return {
             .current_block = self.nearest_block(),
             .func_sym = self.func_sym,
+            .current_lambda = self.owner_lambda,
+            .pending_move = false,
             .expr_to_sentence = (type HashMap<UInt, *Sentence>)::new(),
             .resolver = self.resolver,
         }: ExprTransformer;

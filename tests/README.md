@@ -2,6 +2,12 @@
 
 Run `python x.py build` then `python x.py test`. The harness uses `./out/stage1/bin/zinc`.
 
+测试执行器是 `tests/run_tests.py` (`x.py test` 只是调用它), 也可以单独运行:
+
+```
+python tests/run_tests.py
+```
+
 | Directory | Expectation |
 |-----------|-------------|
 | `compile-pass/` | `zinc --check-only` succeeds |

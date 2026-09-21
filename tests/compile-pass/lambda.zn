@@ -1,0 +1,19 @@
+// 闭包语法: 箭头简写 / 块体 / qualifier / 捕获 / 泛型 / 返回类型
+use std::primitives::string::{ToString, String};
+
+fn main() {
+    // 参数没标类型, body 暂不检查
+    let f1 = (x) => x + x;
+    // 返回类型由 body 推导
+    let f2 = (x: UInt) => x * 2;
+    let f3 = .{
+        return 2;
+    };
+    let f4 = .{
+        async (x) => return x;
+    };
+    let x = 1_i;
+    let f5 = .{
+        const [move x]<T>(arg: T) -> String where T: ToString => arg.to_string();
+    };
+}

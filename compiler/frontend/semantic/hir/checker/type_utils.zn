@@ -343,14 +343,14 @@ fn find_field(sty: *SType, name: String) -> Option<*VarSymbol> {
     return None;
 }
 
-fn find_method(receiver_ty: *SType, method_token: Token, arg_count: UInt, cur_fsym: Option<*FuncSymbol>) -> Option<*FuncSymbol> {
+fn find_method(receiver_ty: *SType, method_token: Token, arg_count: UInt, cur_fsym: Option<*FuncSymbol>, cur_lambda: Option<*LambdaSymbol>) -> Option<*FuncSymbol> {
 
     if !ensure_type_valid(receiver_ty, method_token.source_span) {
         return None;
     }
 
     if receiver_ty.type_symbol is assoc: *AssociatedTypeSymbol {
-        return find_method(assoc.target_sty, move method_token, arg_count, move cur_fsym);
+        return find_method(assoc.target_sty, move method_token, arg_count, move cur_fsym, move cur_lambda);
     }
 
     let method = method_token.raw_str();
@@ -413,26 +413,30 @@ fn find_method(receiver_ty: *SType, method_token: Token, arg_count: UInt, cur_fs
 
     // 还要考虑泛型参数及其 constraints 的情况
     if receiver_ty.type_symbol is tps: *TypeParamSymbol {
-        if cur_fsym is Some(out_fsym) {
-            let key = tps as *raw TypeParamSymbol as UInt;
-            let mut unique = (type HashSet<UInt>)::new();
+        let key = tps as *raw TypeParamSymbol as UInt;
+        let mut unique = (type HashSet<UInt>)::new();
 
-            let mut constraints = GenericConstraints::new();
+        let mut constraints = GenericConstraints::new();
+        if cur_fsym is Some(out_fsym) {
             constraints.merge(&out_fsym.generics.constraints);
             if out_fsym.parent_sym is Some(isym: *ImplSymbol) {
                 constraints.merge(&isym.generics.constraints);
             }
+        }
+        // 闭包自己声明的泛型参数及其 where 约束
+        if cur_lambda is Some(lsym) {
+            constraints.merge(&lsym.generics.constraints);
+        }
 
-            let upper_bounds = constraints.upper_bounds(&key);
-            for ub in upper_bounds {
-                if ub.type_symbol is trait_sym: *TraitSymbol {
-                    let r = trait_sym.find_method(method_token, arg_count);
-                    for f in r {
-                        let fi = f as *raw FuncSymbol as UInt;
-                        if !unique.contains(&fi) {
-                            results.push(move f);
-                            unique.insert(fi);
-                        }
+        let upper_bounds = constraints.upper_bounds(&key);
+        for ub in upper_bounds {
+            if ub.type_symbol is trait_sym: *TraitSymbol {
+                let r = trait_sym.find_method(method_token, arg_count);
+                for f in r {
+                    let fi = f as *raw FuncSymbol as UInt;
+                    if !unique.contains(&fi) {
+                        results.push(move f);
+                        unique.insert(fi);
                     }
                 }
             }

@@ -329,12 +329,28 @@ pub struct FnUpperTypeSymbol {
     // todo
 }
 
+pub enum LambdaCaptureKind {
+    Value,  // 按值捕获 (copy/move)
+    Ref,    // 借用
+    RefMut, // 可变借用
+    Weak,   // weak 捕获
+}
+
+// 闭包的一个捕获项。它不实现 Symbol, 只是 LambdaSymbol 的组成部分。
+pub struct LambdaCapture {
+    mode: LambdaCaptureKind,  // 捕获方式
+    is_explicit: Bool,        // 来自显式捕获列表还是隐式捕获
+    token: Token,             // 捕获名
+    outer_var: *VarSymbol,    // 被捕获的外层变量
+    local_var: *VarSymbol,    // 闭包内部对应的绑定
+}
+
 pub struct LambdaSymbol {
     lambda_node: *LambdaExpr,
     parent_sym: Option<*ScopeSymbol>,
     generics: GenericParams,
     params: Vec<*VarSymbol>,
-    captures: Vec<*VarSymbol>,
+    captures: Vec<*LambdaCapture>,
     symbol_table: SymbolTable,
     return_sty: Option<*SType>,
     body_block: Option<*BlockSentence>,  // `.{ ... }` 形式的函数体

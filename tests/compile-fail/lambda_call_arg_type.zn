@@ -1,0 +1,5 @@
+// 闭包调用: 实参类型与形参类型不匹配, 应当报错
+fn main() {
+    let f = (x: UInt) -> UInt => x;
+    let y = f(true);
+}

@@ -1,0 +1,4 @@
+// 闭包体在定义处就检查: 即使闭包从未被调用, body 里的类型错误也要报出来
+fn main() {
+    let f = (x: UInt) -> UInt => x + true;
+}
