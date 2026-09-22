@@ -12,9 +12,10 @@
 // 注: 目前没有默认链接 mimalloc, 后续需要提供比较友好的使用 mimalloc 的方式
 
 static void ref_count_overflow_panic() {
-    fprintf(stderr, "⚠️ Panic: reference count of ARC pointer overflows.\n");
-    zinc_core_print_stacktrace();
-    exit(1);
+    // 交给 zinc_core_panic: 抬头和调用栈会在同一把锁里输出, 格式也统一。
+    // zinc_core_panic 内部会 exit, 不会返回。
+    const char msg[] = "reference count of ARC pointer overflows";
+    zinc_core_panic(__FILE__, __LINE__, msg, sizeof(msg) - 1);
 }
 
 // 如果使用 mimalloc 可以把 type meta 都分配到这个单独的 heap 里面

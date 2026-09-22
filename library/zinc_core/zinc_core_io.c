@@ -36,6 +36,9 @@ struct Slice zinc_core_get_main_args() {
 
 void zinc_core_print_str(const char * s, size_t len) {
     fwrite(s, 1, len, stdout);
+    // 和其他 print 函数保持一致: 崩溃时 (panic / 栈溢出) 没有机会 flush,
+    // 不能把内容留在 stdout 的缓冲区里。
+    fflush(stdout);
 }
 
 void zinc_core_println_int(long long x) {

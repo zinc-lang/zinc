@@ -290,6 +290,15 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    fn emit_capture_global(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不能捕获全局变量或者全局常量",
+            .msg_en = f"static variables and constants are not allowed to be captured",
+        }: DiagItem);
+    }
+
     fn emit_return_type_mismatch(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,

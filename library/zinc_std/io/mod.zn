@@ -13,13 +13,19 @@ extern fn zinc_core_stderr() -> *raw mut FILE;
 unsafe fn print_cstr(cstr: *raw UInt8) -> UInt {
     unsafe {
         let len = strlen(cstr);
-        return fwrite(cstr, 1, len, zinc_core_stdout());
+        let r = fwrite(cstr, 1, len, zinc_core_stdout());
+        // 立刻刷出去: 程序 panic / 栈溢出时不会有机会 flush, stdout 还是全缓冲
+        // (重定向到文件时) 的话, 崩溃前打印的内容就丢了。
+        fflush(zinc_core_stdout());
+        return r;
     }
 }
 
 pub fn print_str(str: Str) -> UInt {
     unsafe {
-        return fwrite(str.pointer as *raw UInt8, 1, str.length, zinc_core_stdout());
+        let r = fwrite(str.pointer as *raw UInt8, 1, str.length, zinc_core_stdout());
+        fflush(zinc_core_stdout());
+        return r;
     }
 }
 

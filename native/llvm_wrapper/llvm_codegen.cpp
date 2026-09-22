@@ -41,6 +41,7 @@ bool codegen_write_bc_file(LLVMDataStructures * llds) {
     dest.flush();
 
     llvm::outs() << "[CMD] write bitcode file at: " << file_name << "\n";
+    llvm::outs().flush();
     return true;
 }
 

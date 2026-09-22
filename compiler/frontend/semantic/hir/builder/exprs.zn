@@ -397,6 +397,7 @@ impl ExprTransformer {
                 if outer_sym is outer_var: *VarSymbol {
                     // static/const 是全局变量, 不需要作为捕获
                     if outer_var.is_static() || outer_var.is_const() {
+                        DiagnosticEngine::get().emit_capture_global(ident.source_span);
                         continue;
                     }
                     let local = self.create_capture_var(ident, lsym);
