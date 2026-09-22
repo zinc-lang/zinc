@@ -1,0 +1,20 @@
+// BackTrace::capture + ToString: 采集当前调用栈, 再渲染成文本。
+use std::assert;
+use std::io::println;
+use std::primitives::backtrace::BackTrace;
+
+fn capture_here() -> BackTrace {
+    return BackTrace::capture();
+}
+
+fn main() {
+    let bt = capture_here();
+    assert(!bt.is_empty());
+
+    let text = bt.to_string();
+    assert(!text.is_empty());
+    // 每一帧的渲染格式是 "├ #N    函数名", 第一帧从调用 capture 的地方开始
+    assert(text.starts_with("├ #1"));
+
+    println(text);
+}

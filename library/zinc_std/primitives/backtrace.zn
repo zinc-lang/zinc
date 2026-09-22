@@ -1,24 +1,94 @@
 
-pub struct BackTrace {
+// 调用栈回溯。
+//
+// 采集 (capture) 只记录返回地址, 代价很小; 符号化 (函数名 / file:line) 推迟到
+// ToString::to_string 时才做, 因为第一次符号化要解析 DWARF, 比较贵。
+// 真正的实现在 zinc_core (见 library/zinc_core/zinc_core_backtrace.{h,c})。
 
+use ::self::primitives::string::ToString;
+
+// zinc_core 里 ZINC_CORE_MAX_FRAMES 的值, 两边要一起改
+// (struct BackTrace 的布局必须和 C 的 ZincCoreBacktrace 一致)。
+// C 结构:
+//     void * frames[64];
+//     int    frame_count;
+//     int    skip;
+extern fn zinc_core_capture_backtrace(bt: *raw mut ());
+extern fn zinc_core_backtrace_text(bt: *raw (), dst: *raw mut UInt8, cap: UInt) -> UInt;
+
+// 渲染用的临时缓冲区: 和 alloc 模块里的一样, 是不带引用计数头的裸分配
+extern fn zinc_core_alloc_meta(size: UInt) -> *raw mut ();
+extern fn zinc_core_free_meta(p: *raw mut ());
+
+pub struct BackTrace {
+    frames: [*raw mut (); 64],
+    frame_count: Int32,
+    skip: Int32,
 }
 
 impl BackTrace {
+    // 采集当前调用栈。
     pub fn capture() -> Self {
+        // 直接用 intrinsic::zeroed 起一块 BackTrace 的内存: 里面 64 个地址槽由
+        // zinc_core_capture_backtrace 填, 不需要在 Zinc 侧写一个空指针字面量。
+        let mut bt: BackTrace = unsafe(std::intrinsic::zeroed(<BackTrace>));
+        unsafe {
+            zinc_core_capture_backtrace(&raw mut bt as *raw mut ());
+        }
+        // 跳过 zinc_core_capture_backtrace 和 capture 自己这两帧, 从调用 capture 的
+        // 位置开始。capture 不会被内联 (整个项目都用 -O0), 所以帧数是固定的。
+        bt.skip = 2;
+        return bt;
+    }
 
+    // 采集到的帧数 (不含被跳过的采集辅助帧)
+    pub fn len(&self) -> UInt {
+        let n = self.frame_count - self.skip;
+        if n <= 0 {
+            return 0_u;
+        }
+        return n as UInt;
+    }
+
+    pub fn is_empty(&self) -> Bool {
+        return self.len() == 0_u;
     }
 }
 
-struct BackTraced<E> {
-    error: E,
-    backtrace: BackTrace,
-}
+impl ToString for BackTrace {
+    fn to_string_inplace(&self, buf: &mut String) {
+        let bt = self as &BackTrace as *raw BackTrace as *raw ();
 
-impl<E> Error for BackTraced<E> where E: Error {}
+        // 渲染本身要符号化, 比较贵, 所以先用一块足够大的缓冲区一次渲染;
+        // 万一装不下 (帧的名字特别长), 返回的 got 是真实长度, 再按它重来一次。
+        let mut cap: UInt = 16384_u;
+        let mut mem = unsafe(zinc_core_alloc_meta(cap));
+        if unsafe(mem as UInt) == 0_u {
+            return;
+        }
 
-fn with_backtrace<E>(error: E) -> BackTraced<E> {
-    return BackTraced {
-        .error = error,
-        .backtrace = BackTrace::capture(),
-    };
+        let mut got = unsafe(zinc_core_backtrace_text(bt, mem as *raw mut UInt8, cap));
+        if got > cap {
+            unsafe(zinc_core_free_meta(mem));
+            cap = got;
+            mem = unsafe(zinc_core_alloc_meta(cap));
+            if unsafe(mem as UInt) == 0_u {
+                return;
+            }
+            got = unsafe(zinc_core_backtrace_text(bt, mem as *raw mut UInt8, cap));
+        }
+
+        if got > 0_u {
+            let text: Str = unsafe({ .pointer = mem as *raw UInt8 as &UInt8, .length = got }: Str);
+            buf.push_str(text);
+        }
+
+        unsafe(zinc_core_free_meta(mem));
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
 }

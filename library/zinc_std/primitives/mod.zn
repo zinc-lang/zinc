@@ -4,6 +4,7 @@
 
 pub mod range;
 
+pub mod backtrace;
 pub mod bool;
 pub mod char;
 pub mod str;

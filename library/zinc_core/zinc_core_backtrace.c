@@ -20,6 +20,7 @@
 //       libbacktrace state + 不调用 dladdr, 见头文件里的说明。
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +33,13 @@
 // 信号处理函数里用 trylock: 拿不到锁就直接打印 (输出可能交错, 但不会死锁)。
 static pthread_mutex_t zinc_core_bt_output_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// zinc_std 的 BackTrace (library/zinc_std/primitives/backtrace.zn) 是按这个布局
+// 在 Zinc 侧直接构造 ZincCoreBacktrace 的, 加字段/改顺序会静默读错。
+_Static_assert(offsetof(ZincCoreBacktrace, frame_count) == ZINC_CORE_MAX_FRAMES * sizeof(void *),
+               "ZincCoreBacktrace layout changed: update zinc_std BackTrace");
+_Static_assert(offsetof(ZincCoreBacktrace, skip) == ZINC_CORE_MAX_FRAMES * sizeof(void *) + sizeof(int),
+               "ZincCoreBacktrace layout changed: update zinc_std BackTrace");
+
 // 输出一行需要的最大长度: 前缀 "├ #NN    " (9) + 最长的 file/函数名
 // (ZINC_CORE_SYMBOL_NAME_MAX 含结尾 0) + ":行号" 之类。放不下就截断。
 #define ZINC_CORE_BT_LINE_MAX (ZINC_CORE_SYMBOL_NAME_MAX + 256)
@@ -43,10 +51,30 @@ static pthread_mutex_t zinc_core_bt_output_lock = PTHREAD_MUTEX_INITIALIZER;
 struct zinc_core_bt_out {
     char buf[ZINC_CORE_BT_LINE_MAX];
     size_t len;
+    // 输出目标:
+    //   to_memory == 0 -> 写到 stderr (崩溃 / panic 用)
+    //   to_memory == 1 -> 追加到 sink (容量 sink_cap), 用于把调用栈渲染成字符串。
+    //                     超过容量的部分只计数不写入, sink_len 始终是"逻辑总长度",
+    //                     这样调用者可以先传 cap=0 问出长度, 再按长度分配缓冲区。
+    int to_memory;
+    char * sink;
+    size_t sink_cap;
+    size_t sink_len;
 };
 
 static void zinc_core_bt_out_init(struct zinc_core_bt_out * out) {
     out->len = 0;
+    out->to_memory = 0;
+    out->sink = NULL;
+    out->sink_cap = 0;
+    out->sink_len = 0;
+}
+
+static void zinc_core_bt_out_init_sink(struct zinc_core_bt_out * out, char * sink, size_t cap) {
+    zinc_core_bt_out_init(out);
+    out->to_memory = 1;
+    out->sink = sink;
+    out->sink_cap = cap;
 }
 
 // 追加一段字节, 放不下就截断 (宁可少打几个字符, 也不能写越界)
@@ -110,6 +138,17 @@ static void zinc_core_bt_out_index(struct zinc_core_bt_out * out, int index) {
 }
 
 static void zinc_core_bt_out_flush(struct zinc_core_bt_out * out) {
+    if (out->to_memory) {
+        size_t room = out->sink_len < out->sink_cap ? out->sink_cap - out->sink_len : 0;
+        size_t n = out->len < room ? out->len : room;
+        if (n > 0 && out->sink != NULL) {
+            memcpy(out->sink + out->sink_len, out->buf, n);
+        }
+        out->sink_len += out->len;
+        out->len = 0;
+        return;
+    }
+
     size_t written = 0;
     while (written < out->len) {
         ssize_t n = write(STDERR_FILENO, out->buf + written, out->len - written);
@@ -119,6 +158,13 @@ static void zinc_core_bt_out_flush(struct zinc_core_bt_out * out) {
         written += (size_t) n;
     }
     out->len = 0;
+}
+
+// 收尾: 打印到 stderr 时补一个空行, 把调用栈和后面的输出隔开。
+// 渲染成字符串时不要调它 (字符串就是帧文本本身)。
+static void zinc_core_bt_out_finish(struct zinc_core_bt_out * out) {
+    zinc_core_bt_out_char(out, '\n');
+    zinc_core_bt_out_flush(out);
 }
 
 // ---------------------------------------------------------------------------
@@ -138,86 +184,80 @@ static void zinc_core_bt_out_location_prefix(struct zinc_core_bt_out * out) {
 }
 
 // 打印一个已经符号化好的帧: 函数名在前, file:line 在后
-static void zinc_core_bt_print_symbol_frame(int index, const ZincCoreSymbol * symbol) {
-    struct zinc_core_bt_out out;
-    zinc_core_bt_out_init(&out);
-
+static void zinc_core_bt_print_symbol_frame(struct zinc_core_bt_out * out, int index, const ZincCoreSymbol * symbol) {
     if (symbol->function[0] != '\0') {
-        zinc_core_bt_out_frame_prefix(&out, index);
-        zinc_core_bt_out_str(&out, symbol->function);
-        zinc_core_bt_out_char(&out, '\n');
+        zinc_core_bt_out_frame_prefix(out, index);
+        zinc_core_bt_out_str(out, symbol->function);
+        zinc_core_bt_out_char(out, '\n');
         if (symbol->file[0] != '\0') {
-            zinc_core_bt_out_location_prefix(&out);
-            zinc_core_bt_out_str(&out, symbol->file);
-            zinc_core_bt_out_char(&out, ':');
+            zinc_core_bt_out_location_prefix(out);
+            zinc_core_bt_out_str(out, symbol->file);
+            zinc_core_bt_out_char(out, ':');
             // line == 0 表示 DWARF 里没有这一行的行号 (例如内联展开之后),
             // 打 "?": 打 0 会被误读成 "第 0 行"。
             if (symbol->line == 0) {
-                zinc_core_bt_out_char(&out, '?');
+                zinc_core_bt_out_char(out, '?');
             } else {
-                zinc_core_bt_out_u64(&out, symbol->line);
+                zinc_core_bt_out_u64(out, symbol->line);
             }
-            zinc_core_bt_out_char(&out, '\n');
+            zinc_core_bt_out_char(out, '\n');
         }
-        zinc_core_bt_out_flush(&out);
+        zinc_core_bt_out_flush(out);
         return;
     }
 
     if (symbol->file[0] != '\0') {
-        zinc_core_bt_out_frame_prefix(&out, index);
-        zinc_core_bt_out_str(&out, symbol->file);
-        zinc_core_bt_out_char(&out, ':');
+        zinc_core_bt_out_frame_prefix(out, index);
+        zinc_core_bt_out_str(out, symbol->file);
+        zinc_core_bt_out_char(out, ':');
         if (symbol->line == 0) {
-            zinc_core_bt_out_char(&out, '?');
+            zinc_core_bt_out_char(out, '?');
         } else {
-            zinc_core_bt_out_u64(&out, symbol->line);
+            zinc_core_bt_out_u64(out, symbol->line);
         }
-        zinc_core_bt_out_char(&out, '\n');
+        zinc_core_bt_out_char(out, '\n');
     }
-    zinc_core_bt_out_flush(&out);
+    zinc_core_bt_out_flush(out);
 }
 
 // 兜底: dladdr 得到的 函数名+偏移 [地址]。
 // lookup 用来查符号, addr 是原始地址 (只用于显示)。
 // signal_safe=1 时不调用 dladdr (它会拿动态库的锁), 只打印地址。
-static void zinc_core_bt_print_raw_frame(int index, void * lookup, void * addr, int signal_safe) {
-    struct zinc_core_bt_out out;
-    zinc_core_bt_out_init(&out);
-
+static void zinc_core_bt_print_raw_frame(struct zinc_core_bt_out * out, int index, void * lookup, void * addr, int signal_safe) {
     Dl_info info;
     if (!signal_safe && dladdr(lookup, &info) != 0 && info.dli_sname != NULL) {
         unsigned long offset = (unsigned long) ((const char *) lookup - (const char *) info.dli_saddr);
-        zinc_core_bt_out_frame_prefix(&out, index);
-        zinc_core_bt_out_str(&out, info.dli_sname);
-        zinc_core_bt_out_str(&out, "+0x");
-        zinc_core_bt_out_hex(&out, offset);
-        zinc_core_bt_out_str(&out, " [");
-        zinc_core_bt_out_ptr(&out, addr);
-        zinc_core_bt_out_str(&out, "]\n");
-        zinc_core_bt_out_flush(&out);
+        zinc_core_bt_out_frame_prefix(out, index);
+        zinc_core_bt_out_str(out, info.dli_sname);
+        zinc_core_bt_out_str(out, "+0x");
+        zinc_core_bt_out_hex(out, offset);
+        zinc_core_bt_out_str(out, " [");
+        zinc_core_bt_out_ptr(out, addr);
+        zinc_core_bt_out_str(out, "]\n");
+        zinc_core_bt_out_flush(out);
         return;
     }
     if (!signal_safe && dladdr(lookup, &info) != 0 && info.dli_fname != NULL) {
         unsigned long offset = (unsigned long) ((const char *) lookup - (const char *) info.dli_fbase);
-        zinc_core_bt_out_frame_prefix(&out, index);
-        zinc_core_bt_out_str(&out, info.dli_fname);
-        zinc_core_bt_out_str(&out, "+0x");
-        zinc_core_bt_out_hex(&out, offset);
-        zinc_core_bt_out_str(&out, " [");
-        zinc_core_bt_out_ptr(&out, addr);
-        zinc_core_bt_out_str(&out, "]\n");
-        zinc_core_bt_out_flush(&out);
+        zinc_core_bt_out_frame_prefix(out, index);
+        zinc_core_bt_out_str(out, info.dli_fname);
+        zinc_core_bt_out_str(out, "+0x");
+        zinc_core_bt_out_hex(out, offset);
+        zinc_core_bt_out_str(out, " [");
+        zinc_core_bt_out_ptr(out, addr);
+        zinc_core_bt_out_str(out, "]\n");
+        zinc_core_bt_out_flush(out);
         return;
     }
 
-    zinc_core_bt_out_frame_prefix(&out, index);
-    zinc_core_bt_out_ptr(&out, addr);
-    zinc_core_bt_out_char(&out, '\n');
-    zinc_core_bt_out_flush(&out);
+    zinc_core_bt_out_frame_prefix(out, index);
+    zinc_core_bt_out_ptr(out, addr);
+    zinc_core_bt_out_char(out, '\n');
+    zinc_core_bt_out_flush(out);
 }
 
 // libbacktrace 符号化 (最优先的一级)
-static bool zinc_core_bt_print_frame_by_libbacktrace(int index, void * lookup, int signal_safe) {
+static bool zinc_core_bt_print_frame_by_libbacktrace(struct zinc_core_bt_out * out, int index, void * lookup, int signal_safe) {
     ZincCoreSymbol symbol;
     int ok = signal_safe
         ? zinc_core_libbacktrace_symbolize_signal_safe((unsigned long) lookup, &symbol)
@@ -225,7 +265,7 @@ static bool zinc_core_bt_print_frame_by_libbacktrace(int index, void * lookup, i
     if (!ok || !symbol.valid) {
         return false;
     }
-    zinc_core_bt_print_symbol_frame(index, &symbol);
+    zinc_core_bt_print_symbol_frame(out, index, &symbol);
     return true;
 }
 
@@ -233,7 +273,7 @@ static bool zinc_core_bt_print_frame_by_libbacktrace(int index, void * lookup, i
 // frame0_exact: frames[0] 是精确 PC (信号现场的出错指令), 查符号时不做 -1;
 //              其余帧都是返回地址, 一律用 addr-1 落到 call 指令上再查。
 // signal_safe:  在信号处理函数里, 只走不阻塞、不分配的符号化路径。
-static void zinc_core_bt_print_frames(void * const * frames, int count, int frame0_exact, int signal_safe) {
+static void zinc_core_bt_print_frames(struct zinc_core_bt_out * out, void * const * frames, int count, int frame0_exact, int signal_safe) {
     if (count > ZINC_CORE_MAX_FRAMES) {
         count = ZINC_CORE_MAX_FRAMES;
     }
@@ -254,16 +294,11 @@ static void zinc_core_bt_print_frames(void * const * frames, int count, int fram
             lookup = (void *) ((const char *) addr - 1);
         }
 
-        if (zinc_core_bt_print_frame_by_libbacktrace(i + 1, lookup, signal_safe)) {
+        if (zinc_core_bt_print_frame_by_libbacktrace(out, i + 1, lookup, signal_safe)) {
             continue;
         }
-        zinc_core_bt_print_raw_frame(i + 1, lookup, addr, signal_safe);
+        zinc_core_bt_print_raw_frame(out, i + 1, lookup, addr, signal_safe);
     }
-
-    struct zinc_core_bt_out out;
-    zinc_core_bt_out_init(&out);
-    zinc_core_bt_out_char(&out, '\n');
-    zinc_core_bt_out_flush(&out);
 }
 
 // ---------------------------------------------------------------------------
@@ -296,31 +331,62 @@ void zinc_core_backtrace_warm_up(void) {
     (void) backtrace(frames, 2);
 }
 
+// 把 skip / frame_count 夹到合法范围。
+// ZincCoreBacktrace 是公开结构 (而且 Zinc 侧会直接按同样布局构造它), 防止外部
+// 填了超过数组长度的 frame_count; backtrace() 也允许返回 -1, 所以下界也要夹住。
+static void zinc_core_bt_clamp(const ZincCoreBacktrace * bt, int * start, int * count) {
+    int s = bt->skip;
+    if (s < 0) {
+        s = 0;
+    }
+    int c = bt->frame_count;
+    if (c > ZINC_CORE_MAX_FRAMES) {
+        c = ZINC_CORE_MAX_FRAMES;
+    }
+    if (c < 0) {
+        c = 0;
+    }
+    if (s > c) {
+        s = c;
+    }
+    *start = s;
+    *count = c;
+}
+
 void zinc_core_print_backtrace(const ZincCoreBacktrace * bt) {
     if (bt == NULL) {
         return;
     }
 
-    int start = bt->skip;
-    if (start < 0) {
-        start = 0;
-    }
-    // ZincCoreBacktrace 是公开结构, 防止外部填了超过数组长度的 frame_count;
-    // backtrace() 也允许返回 -1, 所以下界也要夹住。
-    int count = bt->frame_count;
-    if (count > ZINC_CORE_MAX_FRAMES) {
-        count = ZINC_CORE_MAX_FRAMES;
-    }
-    if (count < 0) {
-        count = 0;
-    }
-    if (start > count) {
-        start = count;
-    }
+    int start;
+    int count;
+    zinc_core_bt_clamp(bt, &start, &count);
 
     pthread_mutex_lock(&zinc_core_bt_output_lock);
-    zinc_core_bt_print_frames(bt->frames + start, count - start, 0, 0);
+    struct zinc_core_bt_out out;
+    zinc_core_bt_out_init(&out);
+    zinc_core_bt_print_frames(&out, bt->frames + start, count - start, 0, 0);
+    zinc_core_bt_out_finish(&out);
     pthread_mutex_unlock(&zinc_core_bt_output_lock);
+}
+
+// 把已经采集好的调用栈渲染成文本 (和 panic 时打印的帧格式完全一致, 只是不带
+// 最末尾那个空行)。返回文本的总字节数; out/cap 有效时写入前 min(总长, cap) 字节。
+// 调用者可以先传 out=NULL, cap=0 问出长度, 再按长度分配缓冲区调第二次。
+// 注意: 会做符号化 (第一次可能解析 DWARF), 不要在信号处理函数里调用。
+unsigned long zinc_core_backtrace_text(const ZincCoreBacktrace * bt, char * out, unsigned long cap) {
+    if (bt == NULL) {
+        return 0;
+    }
+
+    int start;
+    int count;
+    zinc_core_bt_clamp(bt, &start, &count);
+
+    struct zinc_core_bt_out sink;
+    zinc_core_bt_out_init_sink(&sink, out, (size_t) cap);
+    zinc_core_bt_print_frames(&sink, bt->frames + start, count - start, 0, 0);
+    return (unsigned long) sink.sink_len;
 }
 
 void zinc_core_print_stacktrace(void) {
@@ -375,7 +441,10 @@ void zinc_core_print_signal_backtrace(unsigned long fault_pc) {
 
     // 信号处理里不能阻塞在锁上: 拿不到锁就直接打印 (输出可能和其他线程交错, 但不会死锁)
     int locked = (pthread_mutex_trylock(&zinc_core_bt_output_lock) == 0);
-    zinc_core_bt_print_frames(frames, total, fault_pc != 0, 1);
+    struct zinc_core_bt_out out;
+    zinc_core_bt_out_init(&out);
+    zinc_core_bt_print_frames(&out, frames, total, fault_pc != 0, 1);
+    zinc_core_bt_out_finish(&out);
     if (locked) {
         pthread_mutex_unlock(&zinc_core_bt_output_lock);
     }
@@ -415,18 +484,11 @@ void zinc_core_panic(const char * file, unsigned long line, const char * msg, un
     zinc_core_capture_backtrace(&bt);
     bt.skip = 2;
 
-    int start = bt.skip < 0 ? 0 : bt.skip;
-    int count = bt.frame_count;
-    if (count > ZINC_CORE_MAX_FRAMES) {
-        count = ZINC_CORE_MAX_FRAMES;
-    }
-    if (count < 0) {
-        count = 0;
-    }
-    if (start > count) {
-        start = count;
-    }
-    zinc_core_bt_print_frames(bt.frames + start, count - start, 0, 0);
+    int start;
+    int count;
+    zinc_core_bt_clamp(&bt, &start, &count);
+    zinc_core_bt_print_frames(&out, bt.frames + start, count - start, 0, 0);
+    zinc_core_bt_out_finish(&out);
 
     pthread_mutex_unlock(&zinc_core_bt_output_lock);
 
