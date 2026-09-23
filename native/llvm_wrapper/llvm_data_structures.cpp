@@ -5,14 +5,12 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/TargetSelect.h"
-#include "llvm/Target/TargetOptions.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/TargetParser/Host.h"
 
 #include <string>
@@ -135,29 +133,17 @@ void LLVMDataStructures::init_typemeta_structs() {
 LLVMDataStructures * llds_create(const char * name, unsigned long len) {
 
     std::string n{name, (size_t)len};
-    llvm::InitializeAllTargetInfos();
-    llvm::InitializeAllTargets();
-    llvm::InitializeAllTargetMCs();
-    // llvm::InitializeAllAsmParsers();
-    llvm::InitializeAllAsmPrinters();
-
     auto* llds = new LLVMDataStructures(n);
 
     std::string target_triple = llvm::sys::getDefaultTargetTriple();
     llvm::Triple triple {target_triple};
     llds->module->setTargetTriple(triple);
-
-    std::string err_msg;
-    auto Target = llvm::TargetRegistry::lookupTarget(triple, err_msg);
-    if (!Target) {
-        llvm::errs() << err_msg;
-        return nullptr;
-    }
-    auto CPU = "generic";
-    auto Features = "";
-    llvm::TargetOptions opt;
-    llds->target_machine = Target->createTargetMachine(triple, CPU, Features, opt, llvm::Reloc::Model::PIC_);
-    llds->module->setDataLayout(llds->target_machine->createDataLayout());
+    // 只为了拿 DataLayout 才需要 target: Triple::computeDataLayout() 就是
+    // TargetMachine::createDataLayout() 内部用的那个实现 (X86TargetMachine 的构造函数
+    // 也是拿 TT.computeDataLayout() 去初始化基类), 这里直接算即可。
+    // 好处: 不用实例化原生 TargetMachine, 也就不用把 X86/CodeGen/SelectionDAG 等
+    // 一大堆库链进来。
+    llds->module->setDataLayout(llvm::DataLayout(triple.computeDataLayout()));
 
     llds->init_typemeta_structs();
 

@@ -7,7 +7,6 @@
 #include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Target/TargetMachine.h"
 
 #include <cstdint>
 #include <string>
@@ -22,7 +21,6 @@ struct LLVMDataStructures {
     llvm::IRBuilder<> * builder;
     llvm::DIBuilder * di_builder;
     llvm::DICompileUnit * di_compile_unit = nullptr;
-    llvm::TargetMachine* target_machine = nullptr;
 
     std::string entry_source_file;
     std::string out_dir;

@@ -53,60 +53,27 @@ LLVM_CMAKE_OUTPUT_DIR = os.path.join(CMAKE_OUTPUT_DIR, "llvm") # out/llvm
 # git submodule add https://github.com/llvm/llvm-project.git third_party/llvm-project
 # git submodule update --init --recursive
 
-
-# 这个列表是通过观察 c++ 版本的链接过程打印出来的, 再靠 AI 排序, 它们对链接顺序敏感
-# todo: 真的需要这么多的 lib 吗, 能不能剔除一部分?
 LLVM_LIBS = [
-    './out/llvm/lib/libLLVMX86CodeGen.a',
-    './out/llvm/lib/libLLVMX86AsmParser.a',
-    './out/llvm/lib/libLLVMX86Desc.a',
-    './out/llvm/lib/libLLVMX86Disassembler.a',
-    './out/llvm/lib/libLLVMX86Info.a', 
-    './out/llvm/lib/libLLVMGlobalISel.a', 
-    './out/llvm/lib/libLLVMSelectionDAG.a', 
-    './out/llvm/lib/libLLVMAsmPrinter.a', 
-    './out/llvm/lib/libLLVMCFGuard.a', 
-    './out/llvm/lib/libLLVMCGData.a', 
-    './out/llvm/lib/libLLVMTarget.a', 
-    './out/llvm/lib/libLLVMCodeGenTypes.a', 
-    './out/llvm/lib/libLLVMCodeGen.a', 
-    './out/llvm/lib/libLLVMIRPrinter.a', 
-    './out/llvm/lib/libLLVMObjCARCOpts.a', 
-    './out/llvm/lib/libLLVMScalarOpts.a', 
-    './out/llvm/lib/libLLVMAggressiveInstCombine.a', 
-    './out/llvm/lib/libLLVMInstCombine.a', 
-    './out/llvm/lib/libLLVMInstrumentation.a', 
-    './out/llvm/lib/libLLVMTransformUtils.a', 
-    './out/llvm/lib/libLLVMAnalysis.a', 
-    './out/llvm/lib/libLLVMProfileData.a', 
-    './out/llvm/lib/libLLVMDebugInfoDWARF.a',
-    './out/llvm/lib/libLLVMDebugInfoDWARFLowLevel.a',
-    './out/llvm/lib/libLLVMDebugInfoPDB.a', 
-    './out/llvm/lib/libLLVMDebugInfoCodeView.a', 
-    './out/llvm/lib/libLLVMDebugInfoMSF.a', 
-    './out/llvm/lib/libLLVMDebugInfoBTF.a', 
-    './out/llvm/lib/libLLVMSymbolize.a', 
-    './out/llvm/lib/libLLVMObject.a', 
-    './out/llvm/lib/libLLVMBitWriter.a', 
-    './out/llvm/lib/libLLVMBitReader.a', 
-    './out/llvm/lib/libLLVMRemarks.a', 
-    './out/llvm/lib/libLLVMBitstreamReader.a', 
-    './out/llvm/lib/libLLVMTextAPI.a', 
-    './out/llvm/lib/libLLVMIRReader.a', 
-    './out/llvm/lib/libLLVMAsmParser.a', 
-    './out/llvm/lib/libLLVMCore.a', 
-    './out/llvm/lib/libLLVMSupport.a', 
-    './out/llvm/lib/libLLVMDemangle.a', 
-    './out/llvm/lib/libLLVMMCParser.a', 
-    './out/llvm/lib/libLLVMMCDisassembler.a', 
-    './out/llvm/lib/libLLVMMC.a', 
-    './out/llvm/lib/libLLVMBinaryFormat.a', 
-    './out/llvm/lib/libLLVMTargetParser.a'
+    './out/llvm/lib/libLLVMCore.a',
+    './out/llvm/lib/libLLVMSupport.a',
+    './out/llvm/lib/libLLVMDemangle.a',
+    './out/llvm/lib/libLLVMTargetParser.a',
+    './out/llvm/lib/libLLVMBinaryFormat.a',
+    './out/llvm/lib/libLLVMRemarks.a',
+    './out/llvm/lib/libLLVMBitWriter.a',
+    './out/llvm/lib/libLLVMBitstreamReader.a',
+    './out/llvm/lib/libLLVMBitReader.a',
+    './out/llvm/lib/libLLVMAnalysis.a',
+    './out/llvm/lib/libLLVMProfileData.a',
+    './out/llvm/lib/libLLVMObject.a',
+    './out/llvm/lib/libLLVMMC.a',
+    './out/llvm/lib/libLLVMMCParser.a',
+    './out/llvm/lib/libLLVMDebugInfoDWARFLowLevel.a'
     ]
 
 STAGE0_URL = os.environ.get(
     "ZINC_STAGE0_URL",
-    "https://github.com/zinc-lang/zinc/releases/download/v0.0.1/stage0.zip",
+    "https://github.com/zinc-lang/zinc/releases/download/v0.0.2/stage0.zip",
 )
 
 # Zinc's codegen shells out to these binaries at out/llvm/bin/{opt,llc}.

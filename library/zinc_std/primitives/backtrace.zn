@@ -1,10 +1,4 @@
 
-// 调用栈回溯。
-//
-// 采集 (capture) 只记录返回地址, 代价很小; 符号化 (函数名 / file:line) 推迟到
-// ToString::to_string 时才做, 因为第一次符号化要解析 DWARF, 比较贵。
-// 真正的实现在 zinc_core (见 library/zinc_core/zinc_core_backtrace.{h,c})。
-
 use ::self::primitives::string::ToString;
 
 // zinc_core 里 ZINC_CORE_MAX_FRAMES 的值, 两边要一起改
