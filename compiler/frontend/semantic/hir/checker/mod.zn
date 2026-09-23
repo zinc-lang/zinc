@@ -215,10 +215,12 @@ impl TypeCheckContext {
         let mut sty = self.do_infer(v);
         sty = sty.canonical();
 
-        // 把 Self 类型替换为当前上下文中的 Self 类型
+        // 把当前 impl 的 Self 替换成它的实际类型。
+        // 只替换 impl 自己的那个 self_ty 符号: 别的 Self (例如通过 T: TR 调方法时
+        // trait 签名里的 Self) 由调用点负责绑定, 不能在这里被换成当前 impl 的类型。
         if self.fsym is Some(func_sym) {
             if func_sym.parent_sym is Some(isym: *ImplSymbol) {
-                sty = subst_self_ty(sty, isym.self_ty.target_sty);
+                sty = subst_self_ty(sty, isym.self_ty, isym.self_ty.target_sty);
             }
         }
 
@@ -1649,7 +1651,13 @@ impl TypeCheckContext {
                         caller_site_params = caller_fsym.type_params_in_ctx();
                     }
                     let callee_site_params = callee_fsym.type_params_except(&caller_site_params);
-                    if callee_site_params.is_empty() {
+                    // trait 的方法签名里可能有 Self / trait 自己的泛型参数, 必须走下面带
+                    // mapping 的路径才能按接收者绑定, 不能直接从 return_sty 返回
+                    let mut parent_is_trait = false;
+                    if callee_fsym.parent_sym is Some(maybe_trait: *TraitSymbol) {
+                        parent_is_trait = true;
+                    }
+                    if callee_site_params.is_empty() && !parent_is_trait {
                         // 没有泛型参数需要推导, 直接检查所有的参数
                         let params_tys = callee_fsym.params_tys();
                         fn_call.desugared_args = self.desugar_fn_args(&fn_call.fn_arg_values(), &params_tys);
@@ -1676,11 +1684,16 @@ impl TypeCheckContext {
                             mappings.unify_all(&callee_fsym.generics.ty_params, &fn_call.generic_args.ty_args, fn_call.expr.span());
                         }
                         let mut i: UInt = 0;
+                        let mut receiver_ty = (type Option<*SType>)::None;
                         while i < fn_call.fn_args.len() {
                             let fnarg = fn_call.fn_args.at(i).get_or_panic();
                             let arg: *RValue = fnarg.value;
                             let arg_ty: *SType = self.infer(arg as *XValue);
                             if !arg_ty.is_invalid() {
+                                if i == 0_u {
+                                    // 限定路径 TR::method(recv, ...) 里第一个实参就是接收者
+                                    receiver_ty = Some(arg_ty.strip_pointer());
+                                }
                                 let param = callee_fsym.params.at(i).get_or_panic();
                                 let param_ty: *SType = param.stype;
                                 let r = mappings.unify(param_ty, arg_ty);
@@ -1689,6 +1702,31 @@ impl TypeCheckContext {
                                 }
                             }
                             i += 1;
+                        }
+
+                        // trait 方法: 把 trait 的 Self / 泛型参数按接收者绑定
+                        if callee_fsym.parent_sym is Some(trsym: *TraitSymbol) {
+                            if receiver_ty is Some(rt) {
+                                // 指向 trait 的指针 (trait 对象) 只能调用 virtual 成员函数
+                                if rt.type_symbol is type *TraitSymbol &&
+                                    !callee_fsym.qualifiers().has(QualifierKind::Virtual) {
+                                    let name = callee_fsym.short_name();
+                                    DiagnosticEngine::get().emit_call_non_virtual_trait_method(
+                                        name.as_str().deref(), fn_call.expr.span());
+                                    return SType::sty_invalid(fn_call.expr.span());
+                                }
+                                bind_trait_method_generics(&mut mappings, trsym, rt, self.fsym, self.lambda_sym);
+
+                                // 接收者是具体类型时, 要解析到该类型对这个 trait 的 impl 方法;
+                                // 该类型没实现这个 trait 的话在这里报编译错误。
+                                // (泛型参数 / trait 对象走 vtable, 由上面的分支处理)
+                                let argc = fn_call.fn_args.len();
+                                if resolve_trait_method_call(callee_fsym, rt, argc, fn_call.expr.span()) is Some(target) {
+                                    qpv.symbol = target as *Symbol;
+                                } else {
+                                    return SType::sty_invalid(fn_call.expr.span());
+                                }
+                            }
                         }
 
                         // 确保泛型参数都推理出来了
@@ -2121,6 +2159,14 @@ impl TypeCheckContext {
                 self.requires_unsafe_context(method_call.expr as *SyntaxNode);
             }
 
+            if stripped_receiver_ty.type_symbol is type *TraitSymbol &&
+                !method_sym.qualifiers().has(QualifierKind::Virtual) {
+                let name = method_sym.short_name();
+                DiagnosticEngine::get().emit_call_non_virtual_trait_method(
+                    name.as_str().deref(), method_call.method.source_span);
+                return SType::sty_invalid(method_call.expr.span());
+            }
+
             let mut mappings = TypeMapping::new();
 
             if method_sym.parent_sym is Some(isym: *ImplSymbol) {
@@ -2129,7 +2175,9 @@ impl TypeCheckContext {
                 mappings.unify(isym.target_sty, stripped_receiver_ty);
             }
             if method_sym.parent_sym is Some(trsym: *TraitSymbol) {
-                mappings.unify(trsym.to_sty(), stripped_receiver_ty);
+                // 方法是通过 trait 约束 (T: TR) 找到的: trait 签名里的 Self 和 trait
+                // 自己的泛型参数都要绑到接收者/约束上
+                bind_trait_method_generics(&mut mappings, trsym, stripped_receiver_ty, self.fsym, self.lambda_sym);
             }
 
             if return_ty is Some(rsty) {

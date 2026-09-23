@@ -2,9 +2,15 @@ use ::self::frontend::semantic::hir::ir::*;
 use ::self::frontend::source_code::*;
 use ::self::frontend::diagnostic::*;
 
+struct SelfBinding {
+    self_sym: *AssociatedTypeSymbol,
+    self_ty: *SType,
+}
+
 struct TypeMapping {
     ty_mapping: HashMap<UInt, *SType>,   // key 是 *TypeParamSymbol
     lt_mapping: HashMap<UInt, Lifetime>, // key 是 *LifetimeSymbol
+    self_binding: Option<SelfBinding>,
 }
 
 impl TypeMapping {
@@ -12,6 +18,7 @@ impl TypeMapping {
         return {
             .ty_mapping = (type HashMap<UInt, *SType>)::new(),
             .lt_mapping = (type HashMap<UInt, Lifetime>)::new(),
+            .self_binding = (type Option<SelfBinding>)::None,
         }: TypeMapping;
     }
 
@@ -29,6 +36,25 @@ impl TypeMapping {
             aty = assoc.target_sty;
         }
         let mut fty = formal.canonical();
+
+        // 形参是 trait 的 Self: 记下 Self -> 实参, 供 subst 使用。
+        // 必须在下面把 assoc 折叠成 target_sty 之前判断; 而且只处理 trait 的 Self,
+        // impl 的 Self 仍然折叠成 target_sty (否则 unify(Self, 任意类型) 都会成立,
+        // 会把 Self 和具体类型不匹配的错误吞掉)。
+        if fty.type_symbol is fassoc: *AssociatedTypeSymbol
+            && fassoc.is_self_ty()
+            && fassoc.target_sty.type_symbol is type *TraitSymbol {
+            if self.self_binding is Some(binding) {
+                // 已经绑定过 (先绑的优先, 通常是接收者): 只做一致性检查, 不要覆盖
+                return stype_eq_regardless_lifetime(binding.self_ty, move aty);
+            }
+            self.self_binding = Some({
+                .self_sym = fassoc,
+                .self_ty = move aty,
+            }: SelfBinding);
+            return true;
+        }
+
         if fty.type_symbol is assoc: *AssociatedTypeSymbol {
             fty = assoc.target_sty;
         }
@@ -112,6 +138,20 @@ impl TypeMapping {
         }
 
         if sty.type_symbol is assoc: *AssociatedTypeSymbol {
+            // 调用点绑定过 (trait 约束的 Self -> 接收者) 就用绑定。
+            // 要比对符号: 同一个类型里可能还有 impl 的 Self 或别的 trait 的 Self,
+            // 它们不能套用这个绑定 (否则 subst 会自我递归)。
+            if self.self_binding is Some(binding) {
+                if assoc as *raw AssociatedTypeSymbol as UInt == binding.self_sym as *raw AssociatedTypeSymbol as UInt {
+                    // 不允许把 Self 实例化成 trait 类型本身: 那是 unsized 类型, 例如
+                    // trait 对象接收者 (*TR) 调 -> Option<Self> 时不能变成 Option<TR>。
+                    // 这种情况保持抽象 Self (即维持原来的行为)。
+                    if binding.self_ty.type_symbol is type *TraitSymbol {
+                        return sty;
+                    }
+                    return self.subst(binding.self_ty);
+                }
+            }
             if assoc.is_self_ty() && assoc.target_sty.type_symbol is type *TraitSymbol {
                 return sty; // 在 trait 上下文中的 Self 类型, 不要做替换
             }

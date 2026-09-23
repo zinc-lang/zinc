@@ -1866,6 +1866,27 @@ impl CodeGenerator {
                     return self.cg_intrinsic(mangle_name, fn_call, ctx);
                 }
 
+                // 用限定路径调用带接收者的方法, 即 Type::method(recv, ...):
+                // 这时 desugared_args 的第一个就是 receiver, 要走和 x.method(...) 一样的
+                // 派发 (T: TR 的 trait 方法要经 vtable, trait 对象要走胖指针里的 vtable),
+                // 不能当成普通函数直接调。
+                if fsym.has_receiver() {
+                    if !fn_call.desugared_args.is_empty() {
+                        let receiver = *fn_call.desugared_args.index(0_u).deref();
+                        return self.cg_dispatch_method_call(
+                            fsym,
+                            receiver,
+                            receiver.get_stype(),
+                            &fn_call.desugared_args,
+                            0_u,
+                            &fn_call.generic_args,
+                            fn_call.sty,
+                            fn_call.expr.span().start,
+                            ctx,
+                        );
+                    }
+                }
+
                 let callee = self.cg_func_decl(fsym);
                 let mut args: Vec<CgValue> = Vec::new();
                 let signature = self.signature_of_fsym(fsym);
@@ -2026,16 +2047,71 @@ impl CodeGenerator {
         panic; // todo 其他情况暂未实现
     }
 
-    fn cg_method_call(&mut self, method_call: *MethodCallValue, ctx: *CgContext) -> CgValue {
+    // 找 base_sty 这个类型对 trait_sym 的 impl 里, 跟 fsym 同名、参数个数相同的方法。
+    // 用于"限定路径写的是 trait 名字"且接收者是具体类型的情况。
+    // 查不到说明该类型没有实现这个 trait —— checker 目前只按签名匹配, 没有检查这一点
+    // (以后应该在 checker 里报错), 这里给一个带消息的 ICE, 而不是生成对"没有函数体的
+    // trait 声明"的调用 (CgFunc::null() -> LLVM 层空指针 -> 段错误)。
+    fn impl_method_of_trait(&self, base_sty: *SType, trait_sym: *TraitSymbol, fsym: *FuncSymbol) -> *FuncSymbol {
+        let name = fsym.short_name();
+        let arg_count = fsym.params.len();
+        for isym in base_sty.type_symbol.related_impls() {
+            if isym.trait_sty is Some(itrait_sty) {
+                if itrait_sty.type_symbol as *raw TypeSymbol as UInt == trait_sym as *raw TraitSymbol as UInt {
+                    for m in isym.methods {
+                        if m.short_name().eq(&name) && m.accept_params(arg_count) {
+                            return m;
+                        }
+                    }
+                }
+            }
+        }
+        let base_name = base_sty.to_string();
+        let msg = f"BUG: type $(base_name) does not implement the trait declaring $(name)";
+        panic msg.as_str().deref();
+    }
 
+    // x.method(...) 的代码生成: 取出 receiver / args, 交给共用的派发函数。
+    fn cg_method_call(&mut self, method_call: *MethodCallValue, ctx: *CgContext) -> CgValue {
         let fsym = method_call.resolved_method.get_or_panic();
         let receiver = method_call.desugared_receiver.get_or_panic();
+        // 方法调用的 desugared_args 里不含 receiver, 所以形参下标要减 1 才落到实参上
+        return self.cg_dispatch_method_call(
+            fsym,
+            receiver,
+            method_call.receiver.get_stype(),
+            &method_call.desugared_args,
+            1_u,
+            &method_call.generic_args,
+            method_call.sty,
+            method_call.expr.span().start,
+            ctx,
+        );
+    }
+
+    // 方法调用的派发 + 参数拼装, 两种写法共用:
+    //   - x.method(...)            (MethodCallValue): desugared_args 不含 receiver, arg_base = 1
+    //   - Type::method(recv, ...)  (FnCallValue)    : desugared_args 第 0 个就是 receiver, arg_base = 0
+    // receiver 是已经 desugar 好的接收者; receiver_src_sty 是接收者表达式本来的类型
+    // (只有 trait 对象 / 胖指针那个判断用它, 和方法调用那条路保持一致)。
+    fn cg_dispatch_method_call(
+        &mut self,
+        fsym: *FuncSymbol,
+        receiver: *RValue,
+        receiver_src_sty: *SType,
+        args_rv: &Vec<*RValue>,
+        arg_base: UInt,
+        generic_args: &GenericArgs,
+        result_sty: *SType,
+        loc: SourceLoc,
+        ctx: *CgContext,
+    ) -> CgValue {
         let base_sty = receiver.get_stype().strip_pointer();
 
         let signature = self.signature_of_fsym(fsym);
         let fnty = self.functype_of_sig(signature);
 
-        let di_loc = self.debug_loc(ctx.ll_func, method_call.expr.span().start);
+        let di_loc = self.debug_loc(ctx.ll_func, loc);
         let cg_receiver = self.cg_xvalue(receiver, ctx);
 
         // 场景一： 在 trait 里面实现的默认方法, 用 self 调用成员函数的时候是间接调用
@@ -2056,12 +2132,12 @@ impl CodeGenerator {
                     args.push(obj);
                     // sret
                     if signature.index_of_sret() is Some(_) {
-                        if self.cgtype_of(method_call.sty) is Some(ret_ty) {
+                        if self.cgtype_of(result_sty) is Some(ret_ty) {
                             let ret_ptr = self.llds.create_alloca_sized(ret_ty);
                             args.push(ret_ptr);
                             sret_ptr = Some(ret_ptr);
                         } else {
-                            let size_val = self.size_of_stype(method_call.sty, ctx);
+                            let size_val = self.size_of_stype(result_sty, ctx);
                             let ret_ptr = self.llds.create_alloca_unsized(size_val);
                             args.push(ret_ptr);
                             sret_ptr = Some(ret_ptr);
@@ -2071,7 +2147,7 @@ impl CodeGenerator {
                     let tm = self.rt_typemeta_of(move base_sty, ctx);
                     args.push(tm);
 
-                    self.cg_method_call_args(method_call, &mut args, ctx);
+                    self.cg_method_call_args(fsym, args_rv, generic_args, arg_base, &mut args, ctx);
 
                     self.llds.set_di_loc(di_loc);
                     let call = self.llds.create_call(fnty, method, args.as_slice().deref());
@@ -2103,12 +2179,12 @@ impl CodeGenerator {
                 args.push(obj);
                 // sret
                 if signature.index_of_sret() is Some(_) {
-                    if self.cgtype_of(method_call.sty) is Some(ret_ty) {
+                    if self.cgtype_of(result_sty) is Some(ret_ty) {
                         let ret_ptr = self.llds.create_alloca_sized(ret_ty);
                         args.push(ret_ptr);
                         sret_ptr = Some(ret_ptr);
                     } else {
-                        let size_val = self.size_of_stype(method_call.sty, ctx);
+                        let size_val = self.size_of_stype(result_sty, ctx);
                         let ret_ptr = self.llds.create_alloca_unsized(size_val);
                         args.push(ret_ptr);
                         sret_ptr = Some(ret_ptr);
@@ -2118,7 +2194,7 @@ impl CodeGenerator {
                 let tm = self.rt_typemeta_of(move base_sty, ctx);
                 args.push(tm);
 
-                self.cg_method_call_args(method_call, &mut args, ctx);
+                self.cg_method_call_args(fsym, args_rv, generic_args, arg_base, &mut args, ctx);
 
                 self.llds.set_di_loc(di_loc);
                 let call = self.llds.create_call(fnty, method, args.as_slice().deref());
@@ -2134,7 +2210,7 @@ impl CodeGenerator {
             }
         }
         // 场景三： FatPtr 调用 virtual 函数, 是虚函数调用
-        if method_call.receiver.get_stype().is_fat_pointer() {
+        if receiver_src_sty.is_fat_pointer() {
             let obj = self.access_fatptr_field(cg_receiver, 0);
             let obj_typemeta = self.access_fatptr_field(cg_receiver, 1);
             let vtable = self.access_fatptr_field(cg_receiver, 2);
@@ -2148,12 +2224,12 @@ impl CodeGenerator {
                 args.push(obj);
                 // sret
                 if signature.index_of_sret() is Some(_) {
-                    if self.cgtype_of(method_call.sty) is Some(ret_ty) {
+                    if self.cgtype_of(result_sty) is Some(ret_ty) {
                         let ret_ptr = self.llds.create_alloca_sized(ret_ty);
                         args.push(ret_ptr);
                         sret_ptr = Some(ret_ptr);
                     } else {
-                        let size_val = self.size_of_stype(method_call.sty, ctx);
+                        let size_val = self.size_of_stype(result_sty, ctx);
                         let ret_ptr = self.llds.create_alloca_unsized(size_val);
                         args.push(ret_ptr);
                         sret_ptr = Some(ret_ptr);
@@ -2162,7 +2238,7 @@ impl CodeGenerator {
                 // typemeta
                 args.push(obj_typemeta);
 
-                self.cg_method_call_args(method_call, &mut args, ctx);
+                self.cg_method_call_args(fsym, args_rv, generic_args, arg_base, &mut args, ctx);
 
                 self.llds.set_di_loc(di_loc);
                 let call = self.llds.create_call(fnty, method, args.as_slice().deref());
@@ -2179,7 +2255,15 @@ impl CodeGenerator {
         }
 
         // 场景四： 下面是 non-virtual method call 场景
-        let callee = self.cg_func_decl(fsym);
+        // 限定路径里写的是 trait 名字时 (TR::method(recv)), callee 是 trait 里的声明
+        // (没有函数体, cg_func_decl 会返回 null)。具体类型的情况 checker 已经把它换成
+        // impl 里的方法了, 这里只做兜底: trait 里没函数体才去找 impl 方法; 有默认实现的
+        // 直接调 trait 里那个函数。
+        let mut callee_fsym = fsym;
+        if fsym.parent_sym is Some(trait_sym: *TraitSymbol) && fsym.body is None {
+            callee_fsym = self.impl_method_of_trait(base_sty, trait_sym, fsym);
+        }
+        let callee = self.cg_func_decl(callee_fsym);
         let obj = self.adjust_to_direct(receiver.get_stype(), cg_receiver);
         let mut sret_ptr: Option<CgValue> = None;
         let mut args: Vec<CgValue> = Vec::new();
@@ -2187,12 +2271,12 @@ impl CodeGenerator {
         args.push(obj); 
         // sret
         if signature.index_of_sret() is Some(_) {
-            if self.cgtype_of(method_call.sty) is Some(ret_ty) {
+            if self.cgtype_of(result_sty) is Some(ret_ty) {
                 let ret_ptr = self.llds.create_alloca_sized(ret_ty);
                 args.push(ret_ptr);
                 sret_ptr = Some(ret_ptr);
             } else {
-                let size_val = self.size_of_stype(method_call.sty, ctx);
+                let size_val = self.size_of_stype(result_sty, ctx);
                 let ret_ptr = self.llds.create_alloca_unsized(size_val);
                 args.push(ret_ptr);
                 sret_ptr = Some(ret_ptr);
@@ -2202,7 +2286,7 @@ impl CodeGenerator {
         let tm = self.rt_typemeta_of(move base_sty, ctx);
         args.push(tm);
 
-        self.cg_method_call_args(method_call, &mut args, ctx);
+        self.cg_method_call_args(fsym, args_rv, generic_args, arg_base, &mut args, ctx);
 
         self.llds.set_di_loc(di_loc);
         let call = self.llds.create_call(callee, args.as_slice().deref());
@@ -2215,13 +2299,21 @@ impl CodeGenerator {
         }
     }
 
-    fn cg_method_call_args(&mut self, method_call: *MethodCallValue, args: &mut Vec<CgValue>, ctx: *CgContext) {
-        let signature = self.signature_of_fsym(method_call.resolved_method.get_or_panic());
+    fn cg_method_call_args(
+        &mut self,
+        fsym: *FuncSymbol,
+        args_rv: &Vec<*RValue>,
+        generic_args: &GenericArgs,
+        arg_base: UInt,
+        args: &mut Vec<CgValue>,
+        ctx: *CgContext,
+    ) {
+        let signature = self.signature_of_fsym(fsym);
 
         for ref param in signature.params {
             match param {
                 CgParam::Receiver(_) => {
-                    continue; // receiver 参数已经在 cg_method_call 中处理了, 这里不需要再处理
+                    continue; // receiver 参数已经在 cg_dispatch_method_call 中处理了, 这里不需要再处理
                 }
                 CgParam::SRet => {
                     continue;
@@ -2230,20 +2322,20 @@ impl CodeGenerator {
                     continue;
                 }
                 CgParam::GenericArg(_, ga_idx) => {
-                    let ga_sty = *method_call.generic_args.ty_args.index(ga_idx).deref();
+                    let ga_sty = *generic_args.ty_args.index(ga_idx).deref();
                     let tm = self.rt_typemeta_of(move ga_sty, ctx);
                     args.push(tm);
                 }
                 CgParam::FnArgVal(arg_idx1, _, _) => {
-                    // method 的 desugared_args 没有保存 receiver
-                    let arg = *method_call.desugared_args.index(arg_idx1-1).deref();
+                    // 形参下标里 self 占 0, 减掉 arg_base 才落到 desugared_args 上
+                    // (方法调用的 desugared_args 不存 receiver, arg_base = 1)
+                    let arg = *args_rv.index(arg_idx1-arg_base).deref();
                     let mut cg_val = self.cg_xvalue(arg, ctx);
                     cg_val = self.adjust_to_direct(arg.get_stype(), cg_val);
                     args.push(cg_val);
                 }
                 CgParam::FnArgRef(arg_idx2, _, _) => {
-                    // method 的 desugared_args 没有保存 receiver
-                    let arg = *method_call.desugared_args.index(arg_idx2-1).deref();
+                    let arg = *args_rv.index(arg_idx2-arg_base).deref();
                     let mut cg_val = self.cg_xvalue(arg, ctx);
                     if !cg_val.indirect {
                         if self.cgtype_of(arg.get_stype()) is Some(cgty) {

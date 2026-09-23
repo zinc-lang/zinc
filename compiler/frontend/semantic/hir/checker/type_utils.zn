@@ -462,6 +462,108 @@ struct DerefMethodInfo {
     method_sym: *FuncSymbol,
 }
 
+// 由 trait 的约束 (T: TR<...>) 找到方法时, 把 trait 签名里的 Self 和 trait 自己的
+// 泛型参数绑定到 receiver / 约束上:
+//   - Self -> receiver_ty  (即 T)
+//   - trait 的形参 -> 约束里写的实参 (trait TR<A> + T: TR<Int> => A = Int)
+//
+// 只有"泛型参数 + 该 trait 的约束"这一种接收者才做绑定:
+//   - 具体类型的方法会先在 related_impls 里找到 impl 里的方法, 走不到这里;
+//   - trait 对象接收者 (*TR) 不绑定: 把 Self 绑成 TR 会得到 unsized 的 trait 类型,
+//     所以保持原来的"抽象 Self"行为。
+// 只能在"调用点"用 (receiver 已知); 检查 trait 自己的方法体时不要调。
+fn bind_trait_method_generics(
+    mappings: &mut TypeMapping,
+    trsym: *TraitSymbol,
+    receiver_ty: *SType,
+    cur_fsym: Option<*FuncSymbol>,
+    cur_lambda: Option<*LambdaSymbol>,
+) {
+    if receiver_ty.type_symbol is tps: *TypeParamSymbol {
+        mappings.unify(trsym.self_ty.to_sty(), receiver_ty);
+
+        let key = tps as *raw TypeParamSymbol as UInt;
+
+        let mut constraints = GenericConstraints::new();
+        if cur_fsym is Some(out_fsym) {
+            constraints.merge(&out_fsym.generics.constraints);
+            if out_fsym.parent_sym is Some(isym: *ImplSymbol) {
+                constraints.merge(&isym.generics.constraints);
+            }
+        }
+        if cur_lambda is Some(lsym) {
+            constraints.merge(&lsym.generics.constraints);
+        }
+
+        for ub in constraints.upper_bounds(&key) {
+            if ub.type_symbol is bound_trait: *TraitSymbol
+                && bound_trait as *raw TraitSymbol as UInt == trsym as *raw TraitSymbol as UInt {
+                // 注: 泛型 trait (trait TR<A>) 目前前端还没实现
+                // (会报 "未实现特性: trait declaration with generics"),
+                // 所以下面这段现在跑不到; 等泛型 trait 支持之后它就会生效。
+                let formal_count = trsym.generics.ty_params.len();
+                let actual_count = ub.args.ty_args.len();
+                let mut i: UInt = 0;
+                while i < formal_count && i < actual_count {
+                    mappings.unify(trsym.generics.ty_param(i).to_sty(), ub.args.ty_arg(i));
+                    i += 1;
+                }
+            }
+        }
+    }
+}
+
+// 限定路径 Type::method(recv, ...) 的解析与检查。
+//
+// callee 是 trait 里的方法 (parent 是 trait) 而接收者是**具体类型**时, 实际要调用的是
+// 该类型对这个 trait 的 impl 里的方法; 如果这个类型根本没有实现该 trait, 就在这里报
+// 编译错误 (以前会一路走到 codegen, 变成空函数指针/断言失败)。
+// impl 里没覆盖但 trait 里给了默认实现时, 用默认实现。
+//
+// 接收者是泛型参数 (T: TR) 或 trait 对象 (*TR) 时走运行期 vtable 派发, 不做编译期解析,
+// 原样返回 callee。
+// 返回 None 表示已经报错 (调用方应该返回 invalid)。
+fn resolve_trait_method_call(
+    callee_fsym: *FuncSymbol,
+    receiver_ty: *SType,
+    arg_count: UInt,
+    span: SourceSpan,
+) -> Option<*FuncSymbol> {
+    if callee_fsym.parent_sym is Some(trait_sym: *TraitSymbol) {
+        // 泛型参数 / trait 对象: 运行期按 vtable 派发
+        if receiver_ty.type_symbol is type *TypeParamSymbol ||
+            receiver_ty.type_symbol is type *TraitSymbol {
+            return Some(callee_fsym);
+        }
+
+        let method_name = callee_fsym.short_name();
+        for isym in receiver_ty.type_symbol.related_impls() {
+            if isym.trait_sty is Some(itrait_sty) {
+                if itrait_sty.type_symbol as *raw TypeSymbol as UInt == trait_sym as *raw TraitSymbol as UInt {
+                    for m in isym.methods {
+                        if m.short_name().eq(&method_name) && m.accept_params(arg_count) {
+                            return Some(m);
+                        }
+                    }
+                    if callee_fsym.body is Some(_) {
+                        // impl 里没有覆盖, 用 trait 里的默认实现
+                        return Some(callee_fsym);
+                    }
+                    DiagnosticEngine::get().emit_missing_method(method_name, isym.impl_node.kw_impl.source_span);
+                    return None;
+                }
+            }
+        }
+
+        let type_name = receiver_ty.to_string();
+        let trait_name = trait_sym.short_name();
+        DiagnosticEngine::get().emit_type_not_impl_trait(type_name, trait_name, span);
+        return None;
+    }
+
+    return Some(callee_fsym);
+}
+
 fn implemented_deref_trait(sty: *SType) -> Option<DerefMethodInfo> {
     for i in sty.type_symbol.related_impls() {
         if i.trait_sty is Some(trait_sty) {
@@ -851,15 +953,20 @@ fn is_subtype(sub: *SType, base: *SType) -> Bool {
     }
 }
 
-fn subst_self_ty(sty: *SType, self_ty: *SType) -> *SType {
-    if sty.type_symbol is assoc: *AssociatedTypeSymbol && assoc.is_self_ty() {
+// 把 sty 里"指定的那个 Self"替换成 self_ty。
+// 注意: 必须按符号 identity 判断, 只替换 self_sym 这一个 Self 类型 ——
+// 以前是所有 is_self_ty() 一律替换, 会把别的 trait 的 Self (例如通过 T: TR
+// 调用方法时拿到的 trait Self) 也换成当前 impl 的 Self。
+fn subst_self_ty(sty: *SType, self_sym: *AssociatedTypeSymbol, self_ty: *SType) -> *SType {
+    if sty.type_symbol is assoc: *AssociatedTypeSymbol
+        && assoc as *raw AssociatedTypeSymbol as UInt == self_sym as *raw AssociatedTypeSymbol as UInt {
         return self_ty;
     }
 
     let mut args = GenericArgs::new();
     args.lt_args = sty.args.lt_args;
     for a in sty.args.ty_args {
-        let na = subst_self_ty(a, self_ty);
+        let na = subst_self_ty(a, self_sym, self_ty);
         args.ty_args.push(move na);
     }
 

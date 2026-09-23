@@ -542,6 +542,15 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    fn emit_call_non_virtual_trait_method(&mut self, name: Str, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不能通过指向 trait 的指针调用非 virtual 的成员函数 $(name), 请给它加上 virtual",
+            .msg_en = f"non-virtual trait method $(name) can not be called through a pointer to the trait; add `virtual` to it",
+        }: DiagItem);
+    }
+
     fn emit_func_missing_return(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,
@@ -629,6 +638,16 @@ impl DiagnosticEngine {
             .severity = Severity::Error,
             .msg_zn = f"在 impl 中缺少了成员方法 $(name)",
             .msg_en = f"the method $(name) is missing in impl",
+        }: DiagItem);
+    }
+
+    // 用限定路径写 trait 名字调方法 (TR::method(recv)) 时, 接收者的类型必须实现了这个 trait
+    fn emit_type_not_impl_trait(&mut self, type_name: String, trait_name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型 $(type_name) 没有实现 trait $(trait_name), 不能这样调用它的成员函数",
+            .msg_en = f"type $(type_name) does not implement trait $(trait_name), can not call its method this way",
         }: DiagItem);
     }
 
