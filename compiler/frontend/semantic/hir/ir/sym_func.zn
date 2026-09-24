@@ -127,6 +127,19 @@ impl FuncSymbol {
         }
     }
 
+    // 导出时判断这个符号是否可见. 它不是 Symbol 接口的一部分,
+    // 所以放在固有 impl 里 (不要写进 impl Symbol for FuncSymbol).
+    pub fn should_export(&self) -> Bool {
+        if self.parent_sym is Some(trait_sym: *TraitSymbol) {
+            return trait_sym.visibility() is Some(_);
+        }
+        if self.parent_sym is Some(isym: *ImplSymbol) {
+            if isym.trait_sty is Some(trait_sty) {
+                return trait_sty.type_symbol.visibility() is Some(_);
+            }
+        }
+        return self.visibility() is Some(_);
+    }
 }
 
 impl Symbol for FuncSymbol {
@@ -204,18 +217,6 @@ impl Symbol for FuncSymbol {
 
     fn visibility(&self) -> Option<Qualifier> {
         return self.func_node.qualifiers().get(QualifierKind::Pub);
-    }
-
-    fn should_export(&self) -> Bool {
-        if self.parent_sym is Some(trait_sym: *TraitSymbol) {
-            return trait_sym.visibility() is Some(_);
-        }
-        if self.parent_sym is Some(isym: *ImplSymbol) {
-            if isym.trait_sty is Some(trait_sty) {
-                return trait_sty.type_symbol.visibility() is Some(_);
-            }
-        }
-        return self.visibility() is Some(_);
     }
 }
 

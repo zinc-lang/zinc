@@ -1,19 +1,11 @@
 #pragma once
 
 // 这个 hashmap 是有特殊性的，可以不使用通用实现，利用这些特点针对性优化
-// 1. key/value 都是非空指针
+// 1. key/value 都是非空指针 (是8的整数倍)
 // 2. 每个 hashmap 的容量都很小
 // 3. 只支持插入, 不支持删除
 // 4. 查询操作远多于插入操作
 // 5. 需要线程安全
-//
-// 线程安全模型 (实现细节和正确性说明见 zinc_core_map.c 顶部注释):
-//   - 桶数组(Table)是一份不可变快照: capacity 和数组在同一块内存里、一起发布,
-//     发布之后结构不再改变; map->table 只在扩容时被整体替换;
-//   - get / iter / calc_count 不加锁: 先用一个原子计数登记自己, 再取快照,
-//     之后只用这张快照自己的 capacity (不会越界, 也不会用到已释放的表);
-//   - put / get_or_insert 由每个 map 自己的 mutex 串行化;
-//   - 旧表在没有读者时由写操作释放 (见 .c 的 "旧表回收" 一节)。
 
 #include "zinc_core_alloc.h"
 #include "zinc_core_mutex.h"

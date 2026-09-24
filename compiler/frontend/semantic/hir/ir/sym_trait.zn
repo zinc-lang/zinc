@@ -61,6 +61,18 @@ impl TraitSymbol {
         return results;
     }
 
+    // 判断 trait (含父 trait) 里有没有这个名字 + 形参个数的方法.
+    // 用于反向检查 impl 块里有没有混进 trait 中不存在的方法 (比如方法名写错了).
+    pub fn has_method(&self, method: String, arg_count: UInt) -> Bool {
+        for m in self.methods_of_total() {
+            if m.short_name().eq(&method) &&
+                m.accept_params(arg_count) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     pub fn is_inherited_from(&self, tr: *TraitSymbol) -> Bool {
         if tr.mangle_name().as_str().deref().eq(&"::std::primitives::Any") {
             return true;

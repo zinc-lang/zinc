@@ -197,6 +197,101 @@ impl TopLevelAstVisitor2 {
         DiagnosticEngine::get().emit_invalid_lifetime_ellision(span);
     }
 
+    fn create_const_expr(&mut self, init: *ExpressionNode, ctx: ResolveContext) -> Option<*RValue> {
+        if init is e: *LiteralExpr {
+            if e.token.token_kind is TokenKind::Literal(LiteralKind::LIT_STR_INTERPOLATION) {
+                DiagnosticEngine::get().emit_not_const_expr(e.token.source_span);
+            } else {
+                return Some(LiteralValue::new(move e) as *RValue);
+            }
+        } else if init is e_asc: *TypeAscriptionExpr {
+            return self.create_const_expr(e_asc.expr, ctx);
+        }
+         else if init is e_agg: *StructInitExpr {
+            let agg = AggregateValue::new(e_agg);
+            for f in e_agg.fields_init {
+                match f {
+                    FieldInitializer::Named(_, name, _, e1) => {
+                        let field_value = self.create_const_expr(move e1, ctx);
+                        if field_value is Some(value) {
+                            let field_name = name.raw_str();
+                            agg.named_init.insert(field_name, move value);
+                            agg.field_token.insert(move field_name, move name);
+                        } else {
+                            return None;
+                        }
+                    }
+                    FieldInitializer::Default(_, e2) => {
+                        if e2 is Some(de) {
+                            let default_value = self.create_const_expr(move de, ctx);
+                            if default_value is Some(dv) {
+                                agg.default_value = Some(move dv);
+                            } else {
+                                return None;
+                            }
+                        }
+                    }
+                }
+            }
+            return Some(move agg as *RValue);
+        } else if init is e_tup: *TupleLiteralExpr {
+            let tup = TupleValue::new(e_tup);
+            for elem in e_tup.elements {
+                let v = self.create_const_expr(elem, ctx);
+                if v is Some(elem) {
+                    tup.elements.push(move elem);
+                } else {
+                    return None;
+                }
+            }
+            return Some(move tup as *RValue);
+        } else if init is e_arr: *ArrayLiteralExpr {
+            let arr = ArrayLiteralValue::new(e_arr);
+            for elem in e_arr.elements {
+                let v = self.create_const_expr(elem, ctx);
+                if v is Some(elem) {
+                    arr.elements.push(move elem);
+                } else {
+                    return None;
+                }
+            }
+            return Some(move arr as *RValue);
+        } else if init is e_repeat: *ArrayRepeatLiteralExpr {
+            let elem_opt = self.create_const_expr(e_repeat.element, ctx);
+            if elem_opt is Some(elem) {
+                let len_opt = self.create_const_expr(e_repeat.repeat, ctx);
+                if len_opt is Some(len) {
+                    let arr = RepeatValue::new(e_repeat, move elem, move len);
+                    return Some(move arr as *RValue);
+                }
+            }
+            return None;
+        } else if init is n: *SegmentedNameExpr {
+            let res = self.resolver().resolve_segmented_name(ctx, n.name);
+            if res is Some(r) {
+                if r is SymOrType::Sym(s) {
+                    if s is evsym: *EnumVariantSymbol {
+                        return Some(QualifiedPathValue::create(move init, move evsym as *Symbol) as *RValue);
+                    }
+                }
+            }
+        } else if init is qpe: *QualifiedPathExpr {
+            let res = self.resolver().resolve_qualified_path(ctx, qpe);
+            if res is Some(r) {
+                if r is SymOrType::Sym(s) {
+                    if s is evsym: *EnumVariantSymbol {
+                        let qualified_ty = self.resolver().resolve_type_node(ctx, qpe.ty);
+                        let mut qualified_trait = (type Option<*SType>)::None;
+                        if qpe.trait_ty is Some(trait_ty) {
+                            qualified_trait = self.resolver().resolve_type_node(ctx, trait_ty);
+                        }
+                        return Some(QualifiedPathValue::new(qpe, move qualified_ty, move qualified_trait, move evsym as *Symbol) as *RValue);
+                    }
+                }
+            }
+        }
+        return None;
+    }
 }
 
 impl SyntaxVisitor for TopLevelAstVisitor2 {
@@ -752,103 +847,6 @@ impl SyntaxVisitor for TopLevelAstVisitor2 {
     fn visit_block(&mut self, node: *BlockStmt) -> VisitResult {
         return VisitResult::Continue;
     }
-
-    fn create_const_expr(&mut self, init: *ExpressionNode, ctx: ResolveContext) -> Option<*RValue> {
-        if init is e: *LiteralExpr {
-            if e.token.token_kind is TokenKind::Literal(LiteralKind::LIT_STR_INTERPOLATION) {
-                DiagnosticEngine::get().emit_not_const_expr(e.token.source_span);
-            } else {
-                return Some(LiteralValue::new(move e) as *RValue);
-            }
-        } else if init is e_asc: *TypeAscriptionExpr {
-            return self.create_const_expr(e_asc.expr, ctx);
-        }
-         else if init is e_agg: *StructInitExpr {
-            let agg = AggregateValue::new(e_agg);
-            for f in e_agg.fields_init {
-                match f {
-                    FieldInitializer::Named(_, name, _, e1) => {
-                        let field_value = self.create_const_expr(move e1, ctx);
-                        if field_value is Some(value) {
-                            let field_name = name.raw_str();
-                            agg.named_init.insert(field_name, move value);
-                            agg.field_token.insert(move field_name, move name);
-                        } else {
-                            return None;
-                        }
-                    }
-                    FieldInitializer::Default(_, e2) => {
-                        if e2 is Some(de) {
-                            let default_value = self.create_const_expr(move de, ctx);
-                            if default_value is Some(dv) {
-                                agg.default_value = Some(move dv);
-                            } else {
-                                return None;
-                            }
-                        }
-                    }
-                }
-            }
-            return Some(move agg as *RValue);
-        } else if init is e_tup: *TupleLiteralExpr {
-            let tup = TupleValue::new(e_tup);
-            for elem in e_tup.elements {
-                let v = self.create_const_expr(elem, ctx);
-                if v is Some(elem) {
-                    tup.elements.push(move elem);
-                } else {
-                    return None;
-                }
-            }
-            return Some(move tup as *RValue);
-        } else if init is e_arr: *ArrayLiteralExpr {
-            let arr = ArrayLiteralValue::new(e_arr);
-            for elem in e_arr.elements {
-                let v = self.create_const_expr(elem, ctx);
-                if v is Some(elem) {
-                    arr.elements.push(move elem);
-                } else {
-                    return None;
-                }
-            }
-            return Some(move arr as *RValue);
-        } else if init is e_repeat: *ArrayRepeatLiteralExpr {
-            let elem_opt = self.create_const_expr(e_repeat.element, ctx);
-            if elem_opt is Some(elem) {
-                let len_opt = self.create_const_expr(e_repeat.repeat, ctx);
-                if len_opt is Some(len) {
-                    let arr = RepeatValue::new(e_repeat, move elem, move len);
-                    return Some(move arr as *RValue);
-                }
-            }
-            return None;
-        } else if init is n: *SegmentedNameExpr {
-            let res = self.resolver().resolve_segmented_name(ctx, n.name);
-            if res is Some(r) {
-                if r is SymOrType::Sym(s) {
-                    if s is evsym: *EnumVariantSymbol {
-                        return Some(QualifiedPathValue::create(move init, move evsym as *Symbol) as *RValue);
-                    }
-                }
-            }
-        } else if init is qpe: *QualifiedPathExpr {
-            let res = self.resolver().resolve_qualified_path(ctx, qpe);
-            if res is Some(r) {
-                if r is SymOrType::Sym(s) {
-                    if s is evsym: *EnumVariantSymbol {
-                        let qualified_ty = self.resolver().resolve_type_node(ctx, qpe.ty);
-                        let mut qualified_trait = (type Option<*SType>)::None;
-                        if qpe.trait_ty is Some(trait_ty) {
-                            qualified_trait = self.resolver().resolve_type_node(ctx, trait_ty);
-                        }
-                        return Some(QualifiedPathValue::new(qpe, move qualified_ty, move qualified_trait, move evsym as *Symbol) as *RValue);
-                    }
-                }
-            }
-        }
-        return None;
-    }
-
 }
 
 // 解析 where 子句, 供顶层声明和闭包共用

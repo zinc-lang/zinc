@@ -1308,9 +1308,8 @@ impl TypeCheckContext {
 
     }
 
-    // todo 还应该反过来查一下, 是不是有不属于这个 trait 的方法写在了这个 impl 里面, 这么乱写代码不好维护
-    // 比如 impl 里面有一个方法名写错了跟 trait 里面的名字没对应上, 如果恰好 trait 里面的方法有默认实现, 编译器不报错
-    // 但用户会误以为方法的版本是 impl 里面那个而不是 trait 里面那个
+    // 检查 impl 是否实现了 trait 里面所有的 assoc type & methods,
+    // 以及 impl 里有没有混进 trait 中不存在的方法
     fn check_impl_trait_completeness(&mut self, impl_sym: *ImplSymbol) {
         if impl_sym.trait_sty is Some(trait_sty) {
             if trait_sty.type_symbol is trait_sym: *TraitSymbol {
@@ -1345,6 +1344,22 @@ impl TypeCheckContext {
                         DiagnosticEngine::get().emit_missing_method(fn_name, impl_sym.impl_node.kw_impl.source_span);
                     }
 
+                }
+
+                // 反向检查: impl 里不允许出现 trait (含父 trait) 中不存在的方法.
+                // 典型场景是方法名写错了, 而 trait 里的那个方法恰好有默认实现:
+                // 正向检查不会报错, 但用户会误以为生效的是 impl 里写的那个版本.
+                // 注意: 只要求能在 trait 里找到同名、同形参个数的方法, 不区分它有没有
+                // 默认实现 —— 覆盖 trait 的默认实现是允许的.
+                for fn_in_impl in impl_sym.methods {
+                    let arg_count = fn_in_impl.params.len();
+                    if !trait_sym.has_method(fn_in_impl.short_name(), arg_count) {
+                        DiagnosticEngine::get().emit_method_not_in_trait(
+                            fn_in_impl.short_name(),
+                            trait_sym.short_name(),
+                            fn_in_impl.func_node.span(),
+                        );
+                    }
                 }
 
                 // 未实现功能: 被实现的类型不允许带有复杂泛型参数 impl<T> MyType<Option<T>> {}

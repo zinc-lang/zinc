@@ -641,6 +641,16 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    // impl 块里出现了 trait (及其父 trait) 中不存在的成员方法, 通常是方法名写错了
+    fn emit_method_not_in_trait(&mut self, method_name: String, trait_name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"方法 $(method_name) 不属于 trait $(trait_name)",
+            .msg_en = f"the method $(method_name) is not a member of trait $(trait_name)",
+        }: DiagItem);
+    }
+
     // 用限定路径写 trait 名字调方法 (TR::method(recv)) 时, 接收者的类型必须实现了这个 trait
     fn emit_type_not_impl_trait(&mut self, type_name: String, trait_name: String, span: SourceSpan) {
         self.emit({
