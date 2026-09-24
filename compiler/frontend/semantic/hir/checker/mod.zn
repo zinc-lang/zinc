@@ -1735,12 +1735,26 @@ impl TypeCheckContext {
         }
     }
 
+    // 值类型 (struct/enum/union) 不能通过字段递归包含自己:
+    // 值类型的布局是内联的, 递归包含会让大小无法确定 (struct S { s: S })。
+    // 指针/引用/ARC 等间接层会打断递归; 泛型实参代入字段类型后再判断,
+    // 互相递归 (A 里有 B, B 里有 A) 也能查到。
     fn check_recursive_member_field(&mut self, sty1: *SType, sty2: *SType, span: SourceSpan) {
-        // FIXME
+        let target = sty1.type_symbol as *raw TypeSymbol as UInt;
+        let mut on_stack = (type HashSet<UInt>)::new();
+        if type_contains_by_value(sty2, target, &mut on_stack) {
+            DiagnosticEngine::get().emit_recursive_value_type(sty1.to_string(), span);
+        }
     }
 
+    // 字段 / 全局变量 / 函数参数的位置不允许 unsized 类型 (大小无法确定):
+    //   裸 trait 类型、extern type、显式实现了 std::marker::UnSized 的类型。
+    // 这些类型只能通过指针或引用使用 (*raw mut FILE / &TR)。返回位置不做限制
+    // (返回借用或 box 都是有用的), 所以 check_fn 只对参数调用这里。
     fn disallow_unsized_type(&mut self, sty: *SType, span: SourceSpan) {
-        // FIXME
+        if is_unsized_type(sty) {
+            DiagnosticEngine::get().emit_unsized_type_not_allowed(sty.to_string(), span);
+        }
     }
 
     fn check_name_collision_in_trait(&mut self, trait_sym: *TraitSymbol, base_sym: *TraitSymbol) {

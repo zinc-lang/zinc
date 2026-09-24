@@ -38,6 +38,97 @@ fn bind_generic_args(
     }
 }
 
+fn type_contains_by_value(sty: *SType, target: UInt, on_stack: &mut HashSet<UInt>) -> Bool {
+    let ts = sty.type_symbol;
+    let ts_key = ts as *raw TypeSymbol as UInt;
+    if ts_key == target {
+        return true;
+    }
+
+    // 间接层: 不会造成无限大小
+    if ts is type *PointerLikeSymbol {
+        return false;
+    }
+
+    // 类型别名: 展开后继续 (递归别名已经被 check_typealias 拒绝, 这里再防一手死循环)
+    if ts is alias: *TypeAliasSymbol {
+        if on_stack.contains(&ts_key) {
+            return false;
+        }
+        on_stack.insert(ts_key);
+        let res = type_contains_by_value(sty.canonical(), target, on_stack);
+        on_stack.remove(&ts_key);
+        return res;
+    }
+
+    let mut is_composite = false;
+    if ts is type *StructSymbol {
+        is_composite = true;
+    }
+    if ts is type *EnumSymbol {
+        is_composite = true;
+    }
+    if ts is type *UnionSymbol {
+        is_composite = true;
+    }
+    if is_composite {
+        if on_stack.contains(&ts_key) {
+            return false;
+        }
+        on_stack.insert(ts_key);
+
+        if ts is s: *StructSymbol {
+            let mut mappings = TypeMapping::new();
+            bind_generic_args(&mut mappings, &s.generics.ty_params, &s.generics.lt_params, &sty.args);
+            for f in s.fields {
+                if type_contains_by_value(mappings.subst(f.stype), target, on_stack) {
+                    return true;
+                }
+            }
+        }
+        if ts is e: *EnumSymbol {
+            let mut mappings = TypeMapping::new();
+            bind_generic_args(&mut mappings, &e.generics.ty_params, &e.generics.lt_params, &sty.args);
+            for v in e.variants {
+                for fty in v.fields {
+                    if type_contains_by_value(mappings.subst(fty), target, on_stack) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if ts is u: *UnionSymbol {
+            // union 不支持泛型参数, 不需要代入实参
+            for f in u.fields {
+                if type_contains_by_value(f.stype, target, on_stack) {
+                    return true;
+                }
+            }
+        }
+
+        on_stack.remove(&ts_key);
+        return false;
+    }
+
+    // 元组/数组: 元素内联
+    let mut is_seq = false;
+    if ts is type *TupleSymbol {
+        is_seq = true;
+    }
+    if ts is type *ArraySymbol {
+        is_seq = true;
+    }
+    if is_seq {
+        for a in sty.args.ty_args {
+            if type_contains_by_value(a, target, on_stack) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 impl SType {
 
     // 去掉 type alias
@@ -1013,6 +1104,57 @@ fn has_impl_drop(ts: *TypeSymbol) -> Bool {
         if i.trait_sty is Some(trait_sty) {
             let key = trait_sty.type_symbol.export_key();
             if key.as_str().deref().eq(&"::std::ops::drop::Drop") {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// 是否实现了 std::marker::UnSized: std 里 File / Atomic* 这类"大小不可知、只能通过指针
+// 使用"的类型就是靠实现这个标记 trait 来声明的 (见 library/zinc_std/marker.zn)。
+fn has_impl_unsized(ts: *TypeSymbol) -> Bool {
+    for i in ts.related_impls() {
+        if i.trait_sty is Some(trait_sty) {
+            let key = trait_sty.type_symbol.export_key();
+            if key.as_str().deref().eq(&"::std::marker::UnSized") {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// 这个类型的大小是否无法确定 (unsized):
+//   - 裸 trait 类型 (trait 对象只能通过指针/引用使用);
+//   - extern type (C 侧的不完整类型);
+//   - 显式实现了 std::marker::UnSized 的类型。
+// 类型别名先展开; 元组/数组的元素是内联的, 元素 unsized 时整体也 unsized。
+// 注意: 泛型参数 (TypeParamSymbol) 不做判断 —— Zinc 目前不要求泛型参数满足 Sized,
+// struct Wrap<T> { v: T } / fn f<T>(x: T) 都是合法的。
+fn is_unsized_type(sty: *SType) -> Bool {
+    let t = sty.canonical();
+    let ts = t.type_symbol;
+    if ts is type *TraitSymbol {
+        return true;
+    }
+    if ts is type *ExternTypeSymbol {
+        return true;
+    }
+    if has_impl_unsized(ts) {
+        return true;
+    }
+
+    let mut is_seq = false;
+    if ts is type *TupleSymbol {
+        is_seq = true;
+    }
+    if ts is type *ArraySymbol {
+        is_seq = true;
+    }
+    if is_seq {
+        for a in t.args.ty_args {
+            if is_unsized_type(a) {
                 return true;
             }
         }

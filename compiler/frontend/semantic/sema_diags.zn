@@ -682,6 +682,26 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    // 值类型 (struct/enum/union) 通过字段递归包含了自己, 大小无法确定
+    fn emit_recursive_value_type(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型 $(name) 递归包含了自己, 大小无法确定",
+            .msg_en = f"recursive type $(name) has infinite size",
+        }: DiagItem);
+    }
+
+    // unsized 类型 (大小无法确定) 不能直接作为字段/参数/全局变量, 只能通过指针或引用使用
+    fn emit_unsized_type_not_allowed(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"unsized 类型 $(name) 不能直接使用, 请通过指针或引用使用",
+            .msg_en = f"unsized type $(name) cannot be used directly, use a pointer or reference",
+        }: DiagItem);
+    }
+
     // 用限定路径写 trait 名字调方法 (TR::method(recv)) 时, 接收者的类型必须实现了这个 trait
     fn emit_type_not_impl_trait(&mut self, type_name: String, trait_name: String, span: SourceSpan) {
         self.emit({
