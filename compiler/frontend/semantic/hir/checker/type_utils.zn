@@ -6,6 +6,38 @@ use ::self::frontend::syntax::token::*;
 use super::type_mapping::*;
 use std::collections::hashset::HashSet;
 
+fn bind_generic_args(
+    mappings: &mut TypeMapping,
+    formal_ty_params: &Vec<*TypeParamSymbol>,
+    formal_lt_params: &Vec<*LifetimeSymbol>,
+    actual: &GenericArgs,
+) {
+    let mut ty_len = formal_ty_params.len();
+    if actual.ty_args.len() < ty_len {
+        ty_len = actual.ty_args.len();
+    }
+    let mut i: UInt = 0;
+    while i < ty_len {
+        let formal: *TypeParamSymbol = *formal_ty_params.index(i).deref();
+        let actual_ty: *SType = actual.ty_arg(i);
+        mappings.unify(formal.to_sty(), move actual_ty);
+        i += 1;
+    }
+
+    let mut lt_len = formal_lt_params.len();
+    if actual.lt_args.len() < lt_len {
+        lt_len = actual.lt_args.len();
+    }
+    let mut j: UInt = 0;
+    while j < lt_len {
+        let formal_lt_ptr: *LifetimeSymbol = *formal_lt_params.index(j).deref();
+        let formal_lt: Lifetime = formal_lt_ptr.to_lifetime();
+        let actual_lt: Lifetime = actual.lt_arg(j);
+        mappings.unify_lt(move formal_lt, move actual_lt);
+        j += 1;
+    }
+}
+
 impl SType {
 
     // 去掉 type alias
@@ -15,28 +47,7 @@ impl SType {
                 return alias.target_sty;
             } else {
                 let mut mappings = TypeMapping::new();
-
-                {
-                    let len_formal = alias.generics.ty_params.len();
-                    let len_actual = self.args.ty_args.len();
-                    let mut i: UInt = 0;
-                    while i < len_formal && i < len_actual {
-                        let formal = alias.generics.ty_param(i).to_sty();
-                        let actual = self.args.ty_arg(i);
-                        mappings.unify(formal, actual);
-                    }
-                }
-                {
-                    let len_formal = alias.generics.lt_params.len();
-                    let len_actual = self.args.lt_args.len();
-                    let mut i: UInt = 0;
-                    while i < len_formal && i < len_actual {
-                        let formal = alias.generics.lt_param(i).to_lifetime();
-                        let actual = self.args.lt_arg(i);
-                        mappings.unify_lt(formal, actual);
-                        i += 1;
-                    }
-                }
+                bind_generic_args(&mut mappings, &alias.generics.ty_params, &alias.generics.lt_params, &self.args);
                 return mappings.subst(alias.target_sty);
             }
         }
@@ -45,27 +56,7 @@ impl SType {
                 return self; // 在 trait 上下文中的 Self 类型, 不要做替换
             }
             let mut mappings = TypeMapping::new();
-            {
-                let len_formal = assoc.generics.ty_params.len();
-                let len_actual = self.args.ty_args.len();
-                let mut i: UInt = 0;
-                while i < len_formal && i < len_actual {
-                    let formal = assoc.generics.ty_param(i).to_sty();
-                    let actual = self.args.ty_arg(i);
-                    mappings.unify(formal, actual);
-                }
-            }
-            {
-                let len_formal = assoc.generics.lt_params.len();
-                let len_actual = self.args.lt_args.len();
-                let mut i: UInt = 0;
-                while i < len_formal && i < len_actual {
-                    let formal = assoc.generics.lt_param(i).to_lifetime();
-                    let actual = self.args.lt_arg(i);
-                    mappings.unify_lt(formal, actual);
-                    i += 1;
-                }
-            }
+            bind_generic_args(&mut mappings, &assoc.generics.ty_params, &assoc.generics.lt_params, &self.args);
             return mappings.subst(assoc.target_sty);
         }
 
@@ -1029,6 +1020,28 @@ fn has_impl_drop(ts: *TypeSymbol) -> Bool {
     return false;
 }
 
+fn type_alias_contains(sty: *SType, target: *TypeAliasSymbol, visited: &mut HashSet<UInt>) -> Bool {
+    if sty.type_symbol is alias: *TypeAliasSymbol {
+        let key = alias as *raw TypeAliasSymbol as UInt;
+        if key == target as *raw TypeAliasSymbol as UInt {
+            return true;
+        }
+        if !visited.contains(&key) {
+            visited.insert(key);
+            if type_alias_contains(alias.target_sty, target, visited) {
+                return true;
+            }
+        }
+    }
+
+    for a in sty.args.ty_args {
+        if type_alias_contains(a, target, visited) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // copy 和 dtor 都不需要做任何额外事情的类型, 叫做 trivial type
 fn is_trivial_type(sty: *SType) -> Bool {
     match sty.type_symbol {
@@ -1053,28 +1066,14 @@ fn is_trivial_type(sty: *SType) -> Bool {
 
         alias: *TypeAliasSymbol => {
             let mut mappings = TypeMapping::new();
-            let len_formal = alias.generics.ty_params.len();
-            let len_actual = sty.args.ty_args.len();
-            let mut i: UInt = 0;
-            while i < len_formal && i < len_actual {
-                let formal = alias.generics.ty_param(i).to_sty();
-                let actual = sty.args.ty_arg(i);
-                mappings.unify(formal, actual);
-            }
+            bind_generic_args(&mut mappings, &alias.generics.ty_params, &alias.generics.lt_params, &sty.args);
 
             let target = mappings.subst(alias.target_sty);
             return is_trivial_type(move target);
         }
         assoc: *AssociatedTypeSymbol => {
             let mut mappings = TypeMapping::new();
-            let len_formal = assoc.generics.ty_params.len();
-            let len_actual = sty.args.ty_args.len();
-            let mut i: UInt = 0;
-            while i < len_formal && i < len_actual {
-                let formal = assoc.generics.ty_param(i).to_sty();
-                let actual = sty.args.ty_arg(i);
-                mappings.unify(formal, actual);
-            }
+            bind_generic_args(&mut mappings, &assoc.generics.ty_params, &assoc.generics.lt_params, &sty.args);
 
             let target = mappings.subst(assoc.target_sty);
             return is_trivial_type(move target);

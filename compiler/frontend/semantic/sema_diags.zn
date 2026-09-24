@@ -101,6 +101,16 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    // 类型别名直接/间接引用了自己: 展开时会无限递归
+    fn emit_recursive_type_alias(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"类型别名 $(name) 不允许递归定义",
+            .msg_en = f"recursive type alias $(name) is not allowed",
+        }: DiagItem);
+    }
+
     fn emit_duplicate_trait_inherit(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,
