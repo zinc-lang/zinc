@@ -1757,8 +1757,45 @@ impl TypeCheckContext {
         }
     }
 
+    // 检查 trait 继承时成员名字冲突:
+    //   trait Base { fn f(&self); type Item; }
+    //   trait Derived: Base { fn f(&self); type Item; }   // 方法和关联类型都冲突
+    // 同一个名字在父 trait 和子 trait 里各声明一份, 会让 find_method 返回两个符号,
+    // methods_of_total 出现重复项, vtable 的下标也会产生歧义, 所以直接报错。
+    // 父 trait 从它自己的父 trait 继承来的成员也算冲突 (用 methods_of_total /
+    // super_traits_symbols 展开); 形参个数不同的同名方法是合法重载, 不算冲突。
     fn check_name_collision_in_trait(&mut self, trait_sym: *TraitSymbol, base_sym: *TraitSymbol) {
-        // FIXME
+        // 1) 方法: 名字相同 + 形参个数相同
+        for m in trait_sym.methods {
+            let name = m.short_name();
+            let mut collided = false;
+            for bm in base_sym.methods_of_total() {
+                if !collided && bm.short_name().eq(&name) &&
+                    bm.accept_params(m.params.len()) {
+                    collided = true;
+                }
+            }
+            if collided {
+                DiagnosticEngine::get().emit_conflict_symbol_name(name, m.func_node.span());
+            }
+        }
+
+        // 2) 关联类型: 名字相同 (父 trait 及其所有祖先的关联类型都算)
+        let mut base_assoc_names = (type HashSet<String>)::new();
+        for bat in base_sym.associated_types {
+            base_assoc_names.insert(bat.short_name());
+        }
+        for sup in base_sym.super_traits_symbols() {
+            for bat in sup.associated_types {
+                base_assoc_names.insert(bat.short_name());
+            }
+        }
+        for at in trait_sym.associated_types {
+            let name = at.short_name();
+            if base_assoc_names.contains(&name) {
+                DiagnosticEngine::get().emit_conflict_symbol_name(name, at.syntax_node().span());
+            }
+        }
     }
 
     fn check_requires_constraint(&self, ty: *SType, upper: *SType, span: SourceSpan) {
