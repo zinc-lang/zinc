@@ -1331,19 +1331,19 @@ impl TypeCheckContext {
 
                 // associated func 要考虑重载、要考虑 generics & associated-type & Self-type & GAT, 要考虑默认实现
                 for fn_in_trait in trait_sym.methods {
-                    if fn_in_trait.body is Some(_) {
-                        continue; // 有默认实现就不查了
-                    }
-
                     let fn_name = fn_in_trait.short_name();
-                    let mut found: Option<*FuncSymbol> = impl_sym.find_method(fn_name, fn_in_trait.params.len());
+
+                    // 必须用 find_own_method: impl 没实现时不能回退到 trait 里那个声明,
+                    // 否则它会被当成"已经在 impl 里实现了", 既然漏报缺失, 又会拿 trait 的
+                    // 声明跟它自己比签名.
+                    let mut found: Option<*FuncSymbol> = impl_sym.find_own_method(fn_name, fn_in_trait.params.len());
                     if found is Some(fn_in_impl) {
-                        // 检查方法签名的匹配情况
+                        // 实现了 (或覆盖了 trait 的默认实现): 检查签名是否一致
                         self.compare_method_signature(fn_in_trait, fn_in_impl);
-                    } else {
+                    } else if fn_in_trait.body is None {
+                        // 没有默认实现, impl 里也没写 -> 缺少实现
                         DiagnosticEngine::get().emit_missing_method(fn_name, impl_sym.impl_node.kw_impl.source_span);
                     }
-
                 }
 
                 // 反向检查: impl 里不允许出现 trait (含父 trait) 中不存在的方法.
@@ -1376,8 +1376,71 @@ impl TypeCheckContext {
         }
     }
 
+    // todo 目前还没有比较 where 约束 (fn_in_trait.generics.constraints).
     fn compare_method_signature(&mut self, fn_in_trait: *FuncSymbol, fn_in_impl: *FuncSymbol) {
-        // TODO
+        let name = fn_in_impl.short_name();
+        let span = fn_in_impl.func_node.span();
+        let mut matched = true;
+
+        // 1) 方法级类型参数个数 (生命周期个数不比, 见上)
+        if fn_in_trait.generics.ty_params.len() != fn_in_impl.generics.ty_params.len() {
+            matched = false;
+        }
+
+        // 2) 建立 trait -> impl 的替换关系. 个数不一致时按短的来即可, 上面已经记下不匹配.
+        let mut mapping = TypeMapping::new();
+        if fn_in_trait.parent_sym is Some(trsym: *TraitSymbol) {
+            if fn_in_impl.parent_sym is Some(isym: *ImplSymbol) {
+                mapping.unify(trsym.self_ty.to_sty(), isym.target_sty);
+            }
+        }
+        {
+            let mut i: UInt = 0;
+            while i < fn_in_trait.generics.ty_params.len() && i < fn_in_impl.generics.ty_params.len() {
+                let formal = fn_in_trait.generics.ty_param(i).to_sty();
+                let actual = fn_in_impl.generics.ty_param(i).to_sty();
+                mapping.unify(formal, actual);
+                i += 1;
+            }
+        }
+
+        // 3) 接收者和形参类型 (形参个数由 find_own_method 保证一致, 这里只做防御)
+        if fn_in_trait.params.len() != fn_in_impl.params.len() {
+            matched = false;
+        } else {
+            let mut i: UInt = 0;
+            while i < fn_in_trait.params.len() {
+                let formal_param = *fn_in_trait.params.index(i).deref();
+                let actual_param = *fn_in_impl.params.index(i).deref();
+                let formal_ty = normalize_trait_method_ty(formal_param.stype, fn_in_trait, fn_in_impl, &mapping);
+                let actual_ty = mapping.subst(actual_param.stype);
+                if !contains_invalid(formal_ty) && !contains_invalid(actual_ty) &&
+                    !stype_eq_regardless_lifetime(formal_ty, actual_ty) {
+                    matched = false;
+                }
+                i += 1;
+            }
+        }
+
+        // 4) 返回类型 (缺省 = unit)
+        let mut formal_ret: *SType = SType::sty_unit();
+        if fn_in_trait.return_sty is Some(r) {
+            formal_ret = move r;
+        }
+        let mut actual_ret: *SType = SType::sty_unit();
+        if fn_in_impl.return_sty is Some(r) {
+            actual_ret = move r;
+        }
+        let formal_ret_ty = normalize_trait_method_ty(formal_ret, fn_in_trait, fn_in_impl, &mapping);
+        let actual_ret_ty = mapping.subst(actual_ret);
+        if !contains_invalid(formal_ret_ty) && !contains_invalid(actual_ret_ty) &&
+            !stype_eq_regardless_lifetime(formal_ret_ty, actual_ret_ty) {
+            matched = false;
+        }
+
+        if !matched {
+            DiagnosticEngine::get().emit_method_signature_mismatch(name, span);
+        }
     }
 
     fn check_trait_impl_conflict(&self, tsym: *TypeSymbol) {

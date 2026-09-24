@@ -43,6 +43,19 @@ impl ImplSymbol {
         return None;
     }
 
+    // 只在 impl 自己写的方法里查找, 不会回退到 trait 里的声明.
+    // 检查"impl 有没有真的实现 trait 的方法"时必须用它: find_method 会回退到
+    // trait 的方法 (这是为了拿到默认实现), 于是分不清"实现了"和"根本没写".
+    pub fn find_own_method(&self, method: String, arg_count: UInt) -> Option<*FuncSymbol> {
+        for m in self.methods {
+            if m.short_name().eq(&method) &&
+                m.accept_params(arg_count) {
+                return Some(move m);
+            }
+        }
+        return None;
+    }
+
     pub fn collect_methods_table(&self) -> Vec<*FuncSymbol> {
 
         let mut res: Vec<*FuncSymbol> = (type Vec<*FuncSymbol>)::new();

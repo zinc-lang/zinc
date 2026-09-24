@@ -651,6 +651,16 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    // impl 里写的方法签名 (形参类型/返回类型/方法级泛型参数) 跟 trait 中声明的不一致
+    fn emit_method_signature_mismatch(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"方法 $(name) 的签名与 trait 中的声明不一致",
+            .msg_en = f"the signature of method $(name) does not match the one declared in trait",
+        }: DiagItem);
+    }
+
     // 用限定路径写 trait 名字调方法 (TR::method(recv)) 时, 接收者的类型必须实现了这个 trait
     fn emit_type_not_impl_trait(&mut self, type_name: String, trait_name: String, span: SourceSpan) {
         self.emit({

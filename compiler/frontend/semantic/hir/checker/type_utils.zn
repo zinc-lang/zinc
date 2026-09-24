@@ -973,6 +973,50 @@ fn subst_self_ty(sty: *SType, self_sym: *AssociatedTypeSymbol, self_ty: *SType) 
     return sty.type_symbol.to_sty(move args);
 }
 
+fn resolve_trait_assoc_types(sty: *SType, trait_sym: *TraitSymbol, impl_sym: *ImplSymbol) -> *SType {
+    let mut args = GenericArgs::new();
+    args.lt_args = sty.args.lt_args;
+    for a in sty.args.ty_args {
+        let na = resolve_trait_assoc_types(a, trait_sym, impl_sym);
+        args.ty_args.push(move na);
+    }
+
+    if sty.type_symbol is assoc: *AssociatedTypeSymbol {
+        let mut is_trait_assoc = false;
+        for at in trait_sym.associated_types {
+            if at as *raw AssociatedTypeSymbol as UInt == assoc as *raw AssociatedTypeSymbol as UInt {
+                is_trait_assoc = true;
+            }
+        }
+        if is_trait_assoc {
+            let name = assoc.short_name();
+            if impl_sym.associated_types.at(&name) is Some(alias) {
+                return SType::from(alias as *TypeSymbol, move args);
+            }
+        }
+    }
+
+    return sty.type_symbol.to_sty(move args);
+}
+
+// 把 trait 侧的方法签名类型规范化到 impl 侧, 供 compare_method_signature 使用:
+//   1) 关联类型投影 Self::Assoc<...> -> impl 里的 type 别名 (见上)
+//   2) Self -> impl 的目标类型, 方法级类型参数按位置对应 (由 TypeMapping 完成)
+fn normalize_trait_method_ty(
+    sty: *SType,
+    fn_in_trait: *FuncSymbol,
+    fn_in_impl: *FuncSymbol,
+    mapping: &TypeMapping,
+) -> *SType {
+    let mut ty = sty;
+    if fn_in_trait.parent_sym is Some(trsym: *TraitSymbol) {
+        if fn_in_impl.parent_sym is Some(isym: *ImplSymbol) {
+            ty = resolve_trait_assoc_types(ty, trsym, isym);
+        }
+    }
+    return mapping.subst(ty);
+}
+
 fn has_impl_drop(ts: *TypeSymbol) -> Bool {
     for i in ts.related_impls() {
         if i.trait_sty is Some(trait_sty) {
