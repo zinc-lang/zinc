@@ -38,10 +38,20 @@ typedef union RefCountValue {
     AtomicRefCounts seperate;
 } RefCountValue;
 
-void* zinc_core_alloc(zinc_uint size) {
+// 分配失败时直接 panic。之前是分配完立刻 memset, malloc 返回 NULL 时会在
+// memset 里空指针崩溃, 拿不到有用的信息。
+static void* alloc_zeroed(zinc_uint size) {
     void* p = malloc(size);
+    if (p == NULL) {
+        const char msg[] = "out of memory";
+        zinc_core_panic(__FILE__, __LINE__, msg, sizeof(msg) - 1);
+    }
     memset(p, 0, size);
     return p;
+}
+
+void* zinc_core_alloc(zinc_uint size) {
+    return alloc_zeroed(size);
 }
 
 void zinc_core_free(void *p) {
@@ -50,9 +60,7 @@ void zinc_core_free(void *p) {
 
 // 不带引用计数头的分配
 void* zinc_core_alloc_meta(zinc_uint size) {
-    void * p = malloc(size);
-    memset(p, 0, size);
-    return p;
+    return alloc_zeroed(size);
 }
 
 void zinc_core_free_meta(void * p) {
@@ -62,9 +70,7 @@ void zinc_core_free_meta(void * p) {
 // 在 default heap 中分配, 带引用计数头
 void* zinc_core_alloc_boxed(zinc_uint size) {
     size = size + sizeof(void*);
-    void* p = NULL;
-    p = malloc(size);
-    memset(p, 0, size);
+    void* p = alloc_zeroed(size);
 
     RefCounts * head = (RefCounts*) p;
     head->strong = 1; // 强引用计数值设置成 1
