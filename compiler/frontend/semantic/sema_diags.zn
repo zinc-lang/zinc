@@ -671,6 +671,17 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    // 同一个 component 内多处声明了同名的 extern fn, 但签名不一致。
+    // extern fn 的链接名就是函数名, 签名不一致会导致调用方按错误的 ABI 调用同一个符号。
+    fn emit_extern_fn_signature_mismatch(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"extern fn $(name) 的签名与同一 component 内的另一处声明不一致",
+            .msg_en = f"the signature of extern fn $(name) is inconsistent with another declaration in this component",
+        }: DiagItem);
+    }
+
     // 用限定路径写 trait 名字调方法 (TR::method(recv)) 时, 接收者的类型必须实现了这个 trait
     fn emit_type_not_impl_trait(&mut self, type_name: String, trait_name: String, span: SourceSpan) {
         self.emit({

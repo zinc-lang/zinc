@@ -1643,7 +1643,6 @@ impl TypeCheckContext {
 
     fn check_fn(&mut self, f: *FuncSymbol) {
         self.sema_model.all_fn.push(f);
-        // TODO 如果是 extern fn 那么需要全局查找同名 extern fn, 它们的签名必须相同
 
         if self.sema_model.syntax_tree.kind is LibOrExe::Exe(main_fn) {
             if f.func_node as *raw FuncDecl as UInt == main_fn as *raw FuncDecl as UInt {
@@ -1671,6 +1670,69 @@ impl TypeCheckContext {
 
     fn check_extern(&mut self, t: *ExternTypeSymbol) {
         self.sema_model.all_extern_type.push(move t);
+    }
+
+    // extern fn 的可变参数 (printf 的 ...) 在 HIR 里 stype 是 invalid, 只能从语法节点上认
+    fn is_ellipsis_param(&self, v: *VarSymbol) -> Bool {
+        if v.var_node is p: *FnParamDecl {
+            return p.decl_kind is FnParamDeclKind::Ellipsis(_);
+        }
+        return false;
+    }
+
+    fn extern_fn_signature_eq(&self, a: *FuncSymbol, b: *FuncSymbol) -> Bool {
+        if a.params.len() != b.params.len() {
+            return false;
+        }
+
+        let mut i: UInt = 0;
+        while i < a.params.len() {
+            let pa = *a.params.index(i).deref();
+            let pb = *b.params.index(i).deref();
+            let ea = self.is_ellipsis_param(pa);
+            let eb = self.is_ellipsis_param(pb);
+            if ea != eb {
+                return false;
+            }
+            if !ea && !contains_invalid(pa.stype) && !contains_invalid(pb.stype) &&
+                !stype_eq_regardless_lifetime(pa.stype, pb.stype) {
+                return false;
+            }
+            i += 1;
+        }
+
+        let mut ra: *SType = SType::sty_unit();
+        if a.return_sty is Some(r) {
+            ra = move r;
+        }
+        let mut rb: *SType = SType::sty_unit();
+        if b.return_sty is Some(r) {
+            rb = move r;
+        }
+        if contains_invalid(ra) || contains_invalid(rb) {
+            return true;
+        }
+        return stype_eq_regardless_lifetime(ra, rb);
+    }
+
+    // 同一个 component 内, 同名的 extern fn 必须声明成完全相同的签名:
+    // extern fn 的链接名就是函数名, 签名不一致会导致不同调用点按不同的 ABI 去调同一个符号.
+    // 同名且签名相同是允许的 (不同模块各声明一份很常见).
+    fn check_extern_fn_signatures(&mut self) {
+        let mut seen: HashMap<String, *FuncSymbol> = (type HashMap<String, *FuncSymbol>)::new();
+        for f in self.sema_model.all_fn {
+            if !f.func_node.qualifiers().has(QualifierKind::Extern) {
+                continue;
+            }
+            let name = f.short_name();
+            if seen.at(&name) is Some(prev) {
+                if !self.extern_fn_signature_eq(prev, f) {
+                    DiagnosticEngine::get().emit_extern_fn_signature_mismatch(f.short_name(), f.func_node.span());
+                }
+            } else {
+                seen.insert(move name, move f);
+            }
+        }
     }
 
     fn check_recursive_member_field(&mut self, sty1: *SType, sty2: *SType, span: SourceSpan) {

@@ -18,7 +18,7 @@ use ::self::collections::vec::Shared;
 // let f2: File = *f1; // error, File 是 unsized type，变量不能是 unsized 类型
 
 pub struct File {
-    f: *raw mut UInt8, // 对应 C 语言的 FILE* f; 此处应该引入 extern type 更好
+    f: *raw mut UInt8, // 对应 C 语言的 FILE* f; extern type 目前还不能出现在导出的结构体字段里
 }
 
 // 注意：UnSized 类型不能直接作为全局变量、局部变量使用。只能通过指针指向它来使用。
@@ -33,6 +33,7 @@ extern fn fopen(filename: *raw UInt8, mode: *raw UInt8) -> *raw mut UInt8;
 extern fn fclose(stream: *raw mut UInt8) -> Int32;
 extern fn fread(buffer: *raw mut UInt8, size: UInt, count: UInt, stream: *raw mut UInt8) -> UInt;
 extern fn fwrite(buffer: *raw UInt8, size: UInt, count: UInt, stream: *raw mut UInt8) -> UInt;
+// C 的 fflush 返回 int; io 里同名声明必须和这里完全一致
 extern fn fflush(stream: *raw mut UInt8) -> Int32;
 extern fn zinc_core_errno() -> Int32;
 extern fn zinc_core_path_exists(path: *raw UInt8, len: UInt) -> Bool;

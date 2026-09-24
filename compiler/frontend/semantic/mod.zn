@@ -72,6 +72,8 @@ impl SemanticModel {
     pub fn type_check(*self) {
         let mut ctx = TypeCheckContext::new(self);
         ctx.check_mod(self.root_mod_sym);
+
+        ctx.check_extern_fn_signatures();
     }
 
     pub fn cfg_build(*self) {

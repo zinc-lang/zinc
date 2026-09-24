@@ -2,13 +2,16 @@
 use ::self::primitives::string::ToString;
 // write 函数应该分为 write_all write_partial
 
-extern type FILE;
-extern fn fwrite(buffer: *raw UInt8, size: UInt, count: UInt, stream: *raw mut FILE) -> UInt;
-extern fn fflush(stream: *raw mut FILE) -> UInt;
+// libc 的 FILE* 统一用 *raw mut UInt8 表示, 和 fs 保持一致:
+// extern type 出现在导出的结构体字段里时, zno 的导入方还解析不了 (见 fs::File),
+// 所以这里不用 extern type, 两个模块声明同一批 libc 函数时类型必须写成一样的.
+extern fn fwrite(buffer: *raw UInt8, size: UInt, count: UInt, stream: *raw mut UInt8) -> UInt;
+// C 的 fflush 返回 int, 用 Int32 (原来写 UInt 会读到未定义的高 32 位)
+extern fn fflush(stream: *raw mut UInt8) -> Int32;
 extern fn strlen(s: *raw UInt8) -> UInt;
-extern fn zinc_core_stdin() -> *raw mut FILE;
-extern fn zinc_core_stdout() -> *raw mut FILE;
-extern fn zinc_core_stderr() -> *raw mut FILE;
+extern fn zinc_core_stdin() -> *raw mut UInt8;
+extern fn zinc_core_stdout() -> *raw mut UInt8;
+extern fn zinc_core_stderr() -> *raw mut UInt8;
 
 unsafe fn print_cstr(cstr: *raw UInt8) -> UInt {
     unsafe {
