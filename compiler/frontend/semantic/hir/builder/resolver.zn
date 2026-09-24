@@ -615,8 +615,30 @@ impl Resolver {
             return Some(TupleSymbol::new().to_sty(ga));
         }
         else if ty is fn_ty: *FnType {
-            // unimplemented
-            panic "FnType is not implemented yet";
+            // fn(A, B) -> C: 解析成一个函数指针类型 (FnLower)
+            let mut params = (type Vec<*SType>)::new();
+            let mut ok = true;
+            for pn in fn_ty.param_types {
+                let arg = self.resolve_type_node(ctx, pn);
+                if arg is Some(a) {
+                    params.push(move a);
+                } else {
+                    ok = false;
+                }
+            }
+            let mut ret_sty: *SType = SType::sty_unit();
+            if fn_ty.return_type is Some(rt) {
+                let r = self.resolve_type_node(ctx, rt);
+                if r is Some(rty) {
+                    ret_sty = move rty;
+                } else {
+                    ok = false;
+                }
+            }
+            if !ok {
+                return Some(InvalidSymbol::new(ty.span()).to_sty(GenericArgs::new()));
+            }
+            return Some(FnLowerTypeSymbol::new().to_sty_of_sig(move params, move ret_sty));
         }
         else if ty is named_ty: *NamedType {
             if named_ty.name.is_wildcard() {

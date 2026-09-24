@@ -358,8 +358,10 @@ fn ensure_type_valid(sty: *SType, span: SourceSpan) -> Bool {
         return false;
     } else {
         // 检查泛型实参个数是不是等于泛型形参个数
-        if !(sty.type_symbol is type *TupleSymbol) && // 这两个是变长泛型参数列表
-            !(sty.type_symbol is type *ArraySymbol) {
+        // (Tuple / Array / fn 类型的 args 不是泛型实参: 分别是元素列表、元素+长度、签名)
+        if !(sty.type_symbol is type *TupleSymbol) &&
+            !(sty.type_symbol is type *ArraySymbol) &&
+            !sty.is_fn_type() {
 
             let formal_params = sty.type_symbol.to_sty().args.ty_args.len();
             let actual_args = sty.args.ty_args.len();

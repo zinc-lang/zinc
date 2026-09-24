@@ -450,15 +450,18 @@ impl TypeCheckContext {
                 return SType::sty_unit();
             }
             qp: *QualifiedPathValue => {
-                if qp.symbol is fsym: *FuncSymbol { // 把函数作为一等公民使用
-                    DiagnosticEngine::get().emit_unimplemented(qp.expr.span(), "first class function");
-                    return SType::sty_invalid(qp.expr.span());
+                if qp.symbol is fsym: *FuncSymbol { // 把函数/方法作为一等公民使用
+                    // 类型是 fn(参数...) -> 返回值 (带泛型的函数会在这里报错)
+                    qp.sty = self.fn_item_sty(fsym, qp.expr.span());
+                    return qp.sty;
                 }
                 else if qp.symbol is evsym: *EnumVariantSymbol {
-                    if evsym.fields.len() != 0 { // 只有 None 这种不带参数的允许直接使用
-                        DiagnosticEngine::get().emit_unimplemented(qp.expr.span(), "first class enum variant");
-                        return SType::sty_invalid(qp.expr.span());
+                    if evsym.fields.len() != 0 {
+                        // 带参数的 variant 作为一等公民: 构造函数 fn(字段...) -> Enum
+                        qp.sty = self.enum_ctor_sty(evsym, qp.expr.span());
+                        return qp.sty;
                     }
+                    // 只有 None 这种不带参数的允许直接作为枚举值使用
 
                     let esym = evsym.parent_enum.get_or_panic();
                     let enum_formal_ty = esym.to_sty();
@@ -1668,6 +1671,37 @@ impl TypeCheckContext {
         self.fsym = None;
     }
 
+    // 函数项 (含方法) 作为一等公民时的类型: fn(参数...) -> 返回类型 (FnLower).
+    // 带泛型的函数/方法不存在单个可调用地址, 直接报错。
+    fn fn_item_sty(&mut self, fsym: *FuncSymbol, span: SourceSpan) -> *SType {
+        if fn_item_is_generic(fsym) {
+            DiagnosticEngine::get().emit_generic_fn_to_fn_type(fsym.short_name(), span);
+            return SType::sty_invalid(span);
+        }
+        let mut params = (type Vec<*SType>)::new();
+        let mut i: UInt = 0;
+        while i < fsym.params.len() {
+            params.push(fn_item_param_sty(fsym, i));
+            i += 1;
+        }
+        return FnLowerTypeSymbol::new().to_sty_of_sig(move params, fn_item_ret_sty(fsym));
+    }
+
+    // 带参数的 enum variant 作为一等公民时的类型: fn(字段类型...) -> Enum
+    // (泛型 enum 的构造函数推理比较复杂, 先不支持)
+    fn enum_ctor_sty(&mut self, evsym: *EnumVariantSymbol, span: SourceSpan) -> *SType {
+        let esym = evsym.parent_enum.get_or_panic();
+        if !esym.generics.ty_params.is_empty() {
+            DiagnosticEngine::get().emit_unimplemented(span, "first class generic enum variant constructor");
+            return SType::sty_invalid(span);
+        }
+        let mut params = (type Vec<*SType>)::new();
+        for f in evsym.fields {
+            params.push(move f);
+        }
+        return FnLowerTypeSymbol::new().to_sty_of_sig(move params, esym.to_sty());
+    }
+
     fn check_extern(&mut self, t: *ExternTypeSymbol) {
         self.sema_model.all_extern_type.push(move t);
     }
@@ -2095,8 +2129,33 @@ impl TypeCheckContext {
         if callee_sty.type_symbol is lsym: *LambdaSymbol {
             return self.check_lambda_call(move fn_call, move lsym);
         }
+        // callee 是 fn 指针类型的值: 通过它间接调用, 返回签名里的返回类型
+        if callee_sty.type_symbol is type *FnLowerTypeSymbol {
+            return self.check_fn_ptr_call(move fn_call, move callee_sty);
+        }
         DiagnosticEngine::get().emit_expr_not_callable(fn_call.expr.span());
         return SType::sty_invalid(fn_call.expr.span());
+    }
+
+    // 通过 fn 指针类型的值间接调用: fn(A, B) -> C
+    // 只检查实参个数, 并把实参 desugar 好 (实参类型检查在 check_fn_call 里做)
+    fn check_fn_ptr_call(&mut self, fn_call: *FnCallValue, fn_sty: *SType) -> *SType {
+        let param_len = fn_sty.fn_param_count();
+        if fn_call.fn_args.len() != param_len {
+            DiagnosticEngine::get().emit_wrong_arg_count(param_len, fn_call.fn_args.len(), fn_call.expr.span());
+            return SType::sty_invalid(fn_call.expr.span());
+        }
+        let mut params_tys = (type Vec<*SType>)::new();
+        let mut args_values = (type Vec<*RValue>)::new();
+        let mut i: UInt = 0;
+        while i < param_len {
+            params_tys.push(fn_sty.fn_param_sty(i));
+            let arg = fn_call.fn_args.at(i).get_or_panic();
+            args_values.push(arg.value);
+            i += 1;
+        }
+        fn_call.desugared_args = self.desugar_fn_args(&args_values, &params_tys);
+        return fn_sty.fn_return_sty();
     }
 
     // 闭包体在闭包字面量被推导时立即检查, 不拖到调用处。
@@ -2260,8 +2319,24 @@ impl TypeCheckContext {
                 }
                 return;
             }
-            DiagnosticEngine::get().emit_expr_not_callable(fn_call.expr.span());
-            return;
+            // callee 是 fn 指针类型的值: 参数/返回类型都从签名里取,
+            // 后面的公共代码会按签名检查实参并插入隐式转换。
+            if callee_sty.type_symbol is type *FnLowerTypeSymbol {
+                let param_len = callee_sty.fn_param_count();
+                if fn_call.fn_args.len() != param_len {
+                    DiagnosticEngine::get().emit_wrong_arg_count(param_len, fn_call.fn_args.len(), fn_call.expr.span());
+                    return;
+                }
+                let mut i: UInt = 0;
+                while i < param_len {
+                    params_ty.push(callee_sty.fn_param_sty(i));
+                    i += 1;
+                }
+                formal_return_ty = callee_sty.fn_return_sty();
+            } else {
+                DiagnosticEngine::get().emit_expr_not_callable(fn_call.expr.span());
+                return;
+            }
         }
 
         let arg_len = fn_call.fn_args.len();

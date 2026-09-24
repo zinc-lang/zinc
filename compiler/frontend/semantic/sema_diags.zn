@@ -702,6 +702,26 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    // 带泛型的函数/方法不能转换成 fn 类型: 签名里有类型参数, 不存在单个可调用的地址
+    fn emit_generic_fn_to_fn_type(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"带泛型的函数 $(name) 不能转换成 fn 类型",
+            .msg_en = f"generic function $(name) cannot be converted to a fn type",
+        }: DiagItem);
+    }
+
+    // 捕获了外部变量的闭包不能转换成 fn 类型 (它需要携带捕获环境, 要用 Fn/FnMut)
+    fn emit_capture_lambda_to_fn_type(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"捕获了外部变量的闭包不能转换成 fn 类型",
+            .msg_en = f"a closure that captures outer variables cannot be converted to a fn type",
+        }: DiagItem);
+    }
+
     // 用限定路径写 trait 名字调方法 (TR::method(recv)) 时, 接收者的类型必须实现了这个 trait
     fn emit_type_not_impl_trait(&mut self, type_name: String, trait_name: String, span: SourceSpan) {
         self.emit({

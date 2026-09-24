@@ -1,0 +1,369 @@
+use super::*;
+use ::self::frontend::syntax::ast::*;
+use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::source_code::*;
+
+// ============================================================================
+// 函数类型 fn(A, B) -> C / Fn(A, B) -> C / FnMut(A, B) -> C
+//
+// 三个符号都是单例 (和内建的 Tuple/Array/Bool 一样), 签名不放在符号上, 而是放在
+// SType.args 里:
+//     args.ty_args = [参数类型..., 返回类型]   最后一个一定是返回类型
+//     args.lt_args = 预留 (将来放签名里的生命周期)
+// 这样两处写出的同一个 fn 类型会落到同一个符号上, 类型相等 (按符号 identity 比较)
+// 才有意义。下面这几个工具函数是这套约定的唯一实现, 别处不要再自己拆 args。
+//
+//   - FnLowerTypeSymbol: 函数项/函数指针类型。普通函数 (FuncSymbol)、enum 变体、
+//     闭包都可以转换成它 (见 type_cast 里的 ResolvedCastKind::FunctionToFnLower)。
+//   - FnUpperTypeSymbol / FnUpperMutTypeSymbol: 对应 Fn / FnMut 上界, 用于泛型约束
+//     (T: Fn(A) -> B / T: FnMut(A) -> B)。它们按 trait 处理, 见 type_utils 里的
+//     contains_trait_symbol / is_fat_pointer / is_thin_pointer。
+// ============================================================================
+
+// ---------------------------- 签名约定的工具 ----------------------------
+
+// 参数个数: ty_args 的最后一个元素是返回类型, 不算参数
+fn fn_sig_param_count(args: &GenericArgs) -> UInt {
+    if args.ty_args.is_empty() {
+        return 0;
+    }
+    return args.ty_args.len() - 1;
+}
+
+fn fn_sig_param_sty(args: &GenericArgs, i: UInt) -> *SType {
+    return args.ty_arg(i);
+}
+
+// 返回类型: ty_args 的最后一个元素; args 为空时按 unit 处理
+fn fn_sig_return_sty(args: &GenericArgs) -> *SType {
+    if args.ty_args.is_empty() {
+        return SType::sty_unit();
+    }
+    return args.ty_arg(args.ty_args.len() - 1);
+}
+
+// 打印成 "prefix(参数...) -> 返回类型"
+fn fn_sig_to_string(prefix: Str, args: &GenericArgs) -> String {
+    let mut res = String::new();
+    res.push_str(prefix);
+    res.push_str("(");
+    let count = fn_sig_param_count(args);
+    let mut i: UInt = 0;
+    while i < count {
+        if i > 0 {
+            res.push_str(", ");
+        }
+        res.push_str(fn_sig_param_sty(args, i).to_string().as_str().deref());
+        i += 1;
+    }
+    res.push_str(") -> ");
+    res.push_str(fn_sig_return_sty(args).to_string().as_str().deref());
+    return res;
+}
+
+// 由签名拼出 GenericArgs: [参数类型..., 返回类型]
+fn fn_sig_args(params: Vec<*SType>, ret_sty: *SType) -> GenericArgs {
+    let mut args = GenericArgs::new();
+    for p in params {
+        args.ty_args.push(move p);
+    }
+    args.ty_args.push(move ret_sty);
+    return args;
+}
+
+impl SType {
+    // 是否是函数类型 (fn / Fn / FnMut 三者之一)
+    pub fn is_fn_type(&self) -> Bool {
+        let ts = self.type_symbol;
+        if ts is type *FnLowerTypeSymbol {
+            return true;
+        }
+        if ts is type *FnUpperTypeSymbol {
+            return true;
+        }
+        if ts is type *FnUpperMutTypeSymbol {
+            return true;
+        }
+        return false;
+    }
+
+    // 下面三个只对函数类型 (is_fn_type 为真) 有意义
+    pub fn fn_param_count(&self) -> UInt {
+        return fn_sig_param_count(&self.args);
+    }
+
+    pub fn fn_param_sty(&self, i: UInt) -> *SType {
+        return fn_sig_param_sty(&self.args, i);
+    }
+
+    pub fn fn_return_sty(&self) -> *SType {
+        return fn_sig_return_sty(&self.args);
+    }
+}
+
+// ------------------------------ FnLower ------------------------------
+
+unsafe static mut G_FN_LOWER_SYMBOL: Option<*FnLowerTypeSymbol> = None;
+
+impl FnLowerTypeSymbol {
+    pub fn new() -> *Self {
+        unsafe {
+            if G_FN_LOWER_SYMBOL is Some(s) {
+                return s;
+            } else {
+                let sym = box {
+                    .cache = (type HashMap<GenericArgs, *SType>)::new(),
+                }: FnLowerTypeSymbol;
+                G_FN_LOWER_SYMBOL = Some(sym);
+                return sym;
+            }
+        }
+    }
+
+    // 由签名构造函数类型: params 是参数类型, ret_sty 是返回类型
+    pub fn to_sty_of_sig(*self, params: Vec<*SType>, ret_sty: *SType) -> *SType {
+        let args = fn_sig_args(move params, move ret_sty);
+        return self.to_sty(move args);
+    }
+}
+
+impl Symbol for FnLowerTypeSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = SourceSpan::empty()
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return f"fn";
+    }
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+    fn export_value(&self) -> String {
+        return self.short_name();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl TypeSymbol for FnLowerTypeSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        return fn_sig_to_string("fn", args);
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        // 函数指针类型本身没有 impl (impl Fn/FnMut 是挂在 FnUpper* 上的约束)
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn lifetime_count(&self) -> UInt {
+        return 0;
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(t) {
+            return t;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    // 没有签名信息时给出规范形式 fn() -> (), 避免出现 [] 和 [unit] 两种表示
+    fn to_sty(*self) -> *SType {
+        return self.to_sty_of_sig((type Vec<*SType>)::new(), SType::sty_unit());
+    }
+}
+
+// ------------------------------ FnMut ------------------------------
+
+unsafe static mut G_FN_UPPER_MUT_SYMBOL: Option<*FnUpperMutTypeSymbol> = None;
+
+impl FnUpperMutTypeSymbol {
+    pub fn new() -> *Self {
+        unsafe {
+            if G_FN_UPPER_MUT_SYMBOL is Some(s) {
+                return s;
+            } else {
+                let sym = box {
+                    .cache = (type HashMap<GenericArgs, *SType>)::new(),
+                }: FnUpperMutTypeSymbol;
+                G_FN_UPPER_MUT_SYMBOL = Some(sym);
+                return sym;
+            }
+        }
+    }
+
+    // 由签名构造: params 是参数类型, ret_sty 是返回类型
+    pub fn to_sty_of_sig(*self, params: Vec<*SType>, ret_sty: *SType) -> *SType {
+        let args = fn_sig_args(move params, move ret_sty);
+        return self.to_sty(move args);
+    }
+}
+
+impl Symbol for FnUpperMutTypeSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = SourceSpan::empty()
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return f"FnMut";
+    }
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+    fn export_value(&self) -> String {
+        return self.short_name();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl TypeSymbol for FnUpperMutTypeSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        return fn_sig_to_string("FnMut", args);
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        // todo 闭包/lambda 实现 FnMut 之后, 这里应该返回对应的 impls
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn lifetime_count(&self) -> UInt {
+        return 0;
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(t) {
+            return t;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    // 没有签名信息时给出规范形式 fn() -> (), 避免出现 [] 和 [unit] 两种表示
+    fn to_sty(*self) -> *SType {
+        return self.to_sty_of_sig((type Vec<*SType>)::new(), SType::sty_unit());
+    }
+}
+
+// ------------------------------- Fn -------------------------------
+
+unsafe static mut G_FN_UPPER_SYMBOL: Option<*FnUpperTypeSymbol> = None;
+
+impl FnUpperTypeSymbol {
+    pub fn new() -> *Self {
+        unsafe {
+            if G_FN_UPPER_SYMBOL is Some(s) {
+                return s;
+            } else {
+                let sym = box {
+                    .cache = (type HashMap<GenericArgs, *SType>)::new(),
+                }: FnUpperTypeSymbol;
+                G_FN_UPPER_SYMBOL = Some(sym);
+                return sym;
+            }
+        }
+    }
+
+    // 由签名构造: params 是参数类型, ret_sty 是返回类型
+    pub fn to_sty_of_sig(*self, params: Vec<*SType>, ret_sty: *SType) -> *SType {
+        let args = fn_sig_args(move params, move ret_sty);
+        return self.to_sty(move args);
+    }
+}
+
+impl Symbol for FnUpperTypeSymbol {
+    fn syntax_node(&self) -> *SyntaxNode {
+        let dummy = box {
+            .source_span = SourceSpan::empty()
+        }: DummySyntaxNode;
+        return dummy as *SyntaxNode;
+    }
+
+    fn short_name(&self) -> String {
+        return f"Fn";
+    }
+    fn mangle_name(&self) -> String {
+        return self.short_name();
+    }
+    fn export_key(&self) -> String {
+        return self.short_name();
+    }
+    fn export_value(&self) -> String {
+        return self.short_name();
+    }
+
+    fn parent_scope(&self) -> Option<*ScopeSymbol> {
+        return None;
+    }
+
+    fn set_parent_scope(&mut self, ss: *ScopeSymbol) {
+        return;
+    }
+
+    fn visibility(&self) -> Option<Qualifier> {
+        return None;
+    }
+}
+
+impl TypeSymbol for FnUpperTypeSymbol {
+    fn to_string_with_args(&self, args: &GenericArgs) -> String {
+        return fn_sig_to_string("Fn", args);
+    }
+    fn related_impls(&self) -> Vec<*ImplSymbol> {
+        // todo 闭包/lambda 实现 Fn 之后, 这里应该返回对应的 impls
+        return (type Vec<*ImplSymbol>)::new();
+    }
+    fn lifetime_count(&self) -> UInt {
+        return 0;
+    }
+    fn to_sty(*self, args: GenericArgs) -> *SType {
+        if self.cache.at(&args) is Some(t) {
+            return t;
+        } else {
+            let sty = box {
+                .type_symbol = self as *TypeSymbol,
+                .args = args,
+            }: SType;
+            self.cache.insert(move args, sty);
+            return sty;
+        }
+    }
+    // 没有签名信息时给出规范形式 fn() -> (), 避免出现 [] 和 [unit] 两种表示
+    fn to_sty(*self) -> *SType {
+        return self.to_sty_of_sig((type Vec<*SType>)::new(), SType::sty_unit());
+    }
+}

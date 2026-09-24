@@ -34,6 +34,8 @@ impl CodeGenerator {
             // 以下这些分支未实现或者是 UnSized
             type *TypeParamSymbol => return None;
             type *TraitSymbol => return None;
+            // fn(A, B) -> C: 值就是一个函数指针 (LLVM 不透明指针, 函数类型在调用处构造)
+            type *FnLowerTypeSymbol => return Some(self.llds.type_thin_ptr());
             type *FnUpperTypeSymbol => return None;
             type *FnUpperMutTypeSymbol => return None;
             type *ExternTypeSymbol => return None;

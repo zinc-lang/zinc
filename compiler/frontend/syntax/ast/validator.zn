@@ -819,7 +819,7 @@ impl SyntaxVisitor for SyntaxValidator {
         return VisitResult::Continue;
     }
     fn visit_fn_type(&mut self, node: *FnType) -> VisitResult {
-        DiagnosticEngine::get().emit_unimplemented(node.span(), "function type");
+        // fn(A, B) -> C 类型: 参数类型和返回类型由各自的 child 继续 visit
         return VisitResult::Continue;
     }
     fn visit_lifetime_type(&mut self, node: *LifetimeType) -> VisitResult {

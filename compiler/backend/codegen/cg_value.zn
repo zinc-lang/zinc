@@ -324,9 +324,17 @@ impl CodeGenerator {
             }
             qp_rv: *QualifiedPathValue => {
                 if qp_rv.symbol is fsym: *FuncSymbol {
+                    // 一等公民函数: 值的类型是 fn 指针, 取函数地址 (必要时生成 thunk)
+                    if qp_rv.sty.is_fn_type() {
+                        return self.cg_fn_pointer_of(qp_rv.symbol, qp_rv.sty, ctx);
+                    }
                     return self.cg_func_decl(fsym).as_const().as_value();
                 }
                 else if qp_rv.symbol is evsym: *EnumVariantSymbol {
+                    // 带参数的 variant 作为一等公民时类型是 fn 指针 (构造函数)
+                    if qp_rv.sty.is_fn_type() {
+                        return self.cg_fn_pointer_of(qp_rv.symbol, qp_rv.sty, ctx);
+                    }
                     // 这种场景下的 Enum Variant 都是不带参数的, 带参数的走 FnCallValue 去了
                     let tag = self.llds.get_const_int64(evsym.tag_num() as UInt64).as_value();
                     if self.cgtype_of(qp_rv.sty) is Some(cgty) {
@@ -979,10 +987,17 @@ impl CodeGenerator {
             ResolvedCastKind::DerefMutCast(deref_mut) => {
                 panic;
             }
-            ResolvedCastKind::FunctionToFnLower => panic;
+            ResolvedCastKind::FunctionToFnLower => {
+                if cast_rv.operand is qp_rv: *QualifiedPathValue {
+                    return self.cg_fn_pointer_of(qp_rv.symbol, dst_sty, ctx);
+                }
+                panic "BUG: FunctionToFnLower without a path operand";
+            }
             ResolvedCastKind::FunctionToFnUpperBorrow => panic;
             ResolvedCastKind::FnLowerToFnUpperBorrow => panic;
-            ResolvedCastKind::LambdaToFnLower => panic;
+            ResolvedCastKind::LambdaToFnLower => {
+                panic "BUG: 闭包到 fn 指针的转换还没实现 (checker 应该已经报错了)";
+            }
             ResolvedCastKind::LambdaToFnUpperPtr => panic;
             _ => {
                 let kind_int = cast_rv.resolved_kind as UInt;
@@ -1859,6 +1874,14 @@ impl CodeGenerator {
     }
 
     fn cg_func_call(&mut self, fn_call: *FnCallValue, ctx: *CgContext) -> CgValue {
+        // callee 不是路径, 而是 fn 指针类型的值: 间接调用
+        if !(fn_call.callee is type *QualifiedPathValue) {
+            let callee_sty = fn_call.callee.get_stype().canonical();
+            if callee_sty.type_symbol is type *FnLowerTypeSymbol {
+                return self.cg_fn_ptr_call(fn_call, callee_sty, ctx);
+            }
+        }
+
         if fn_call.callee is qp_rv: *QualifiedPathValue {
             if qp_rv.symbol is fsym: *FuncSymbol {
                 let mangle_name = fsym.mangle_name().as_str().deref();
@@ -2045,6 +2068,221 @@ impl CodeGenerator {
             }
         }
         panic; // todo 其他情况暂未实现
+    }
+
+    // 通过 fn 指针类型的值间接调用: fn(A, B) -> C
+    // 参数/返回的传递规则和普通函数一致, 所以这里照着 cg_func_call 的签名遍历来传参。
+    fn cg_fn_ptr_call(&mut self, fn_call: *FnCallValue, fn_sty: *SType, ctx: *CgContext) -> CgValue {
+        // callee 是局部变量/参数时 cg_xvalue 拿到的是它的槽位, 要先 load 出函数指针
+        let callee = self.adjust_to_direct(fn_sty, self.cg_xvalue(fn_call.callee, ctx));
+        let sig = self.signature_of_fn_sty(fn_sty);
+        let fnty = self.functype_of_sig(sig);
+        let mut args = (type Vec<CgValue>)::new();
+        let mut sret_ptr: Option<CgValue> = None;
+        for param in sig.params {
+            match param {
+                CgParam::SRet => {
+                    let ret_ty = self.cgtype_of(fn_sty.fn_return_sty()).get_or_panic();
+                    let ret_ptr = self.llds.create_alloca_sized(ret_ty);
+                    args.push(ret_ptr);
+                    sret_ptr = Some(ret_ptr);
+                }
+                CgParam::FnArgVal(arg_idx, _, _) => {
+                    let arg = *fn_call.desugared_args.index(arg_idx).deref();
+                    let cg_val = self.adjust_to_direct(arg.get_stype(), self.cg_xvalue(arg, ctx));
+                    args.push(cg_val);
+                }
+                CgParam::FnArgRef(arg_idx, _, _) => {
+                    let arg = *fn_call.desugared_args.index(arg_idx).deref();
+                    let mut cg_val = self.cg_xvalue(arg, ctx);
+                    if !cg_val.indirect {
+                        let cgty = self.cgtype_of(arg.get_stype()).get_or_panic();
+                        let alloca = self.llds.create_alloca_sized(cgty);
+                        self.llds.create_store(cg_val, alloca);
+                        cg_val = alloca;
+                    }
+                    args.push(cg_val);
+                }
+                _ => {
+                    panic "BUG: fn pointer call with unexpected param kind";
+                }
+            }
+        }
+        let call = self.llds.create_call(fnty, callee, args.as_slice().deref());
+        if sret_ptr is Some(r) {
+            return r;
+        }
+        return call;
+    }
+
+    // 取一个函数 / enum variant 构造函数的地址作为 fn 指针的值。
+    // ABI 一致时直接用函数地址; 否则生成一个 thunk (见 cg_fn_lower_thunk)。
+    fn cg_fn_pointer_of(&mut self, callee: *Symbol, fn_sty: *SType, ctx: *CgContext) -> CgValue {
+        let fn_sig = self.signature_of_fn_sty(fn_sty);
+        if callee is fsym: *FuncSymbol {
+            let callee_sig = self.signature_of_fsym(fsym);
+            if self.sig_same_abi(callee_sig, fn_sig) {
+                return self.cg_func_decl(fsym).as_const().as_value();
+            }
+        }
+        return self.cg_fn_lower_thunk(callee, fn_sty, ctx).as_const().as_value();
+    }
+
+    // 被调方 (方法/variant 构造函数) 对应的"Self 类型", 用来取隐藏的 TypeMeta 参数:
+    // 方法取 impl 的目标类型, variant 取 enum 类型。
+    fn callee_self_sty(&self, callee: *Symbol) -> *SType {
+        if callee is fsym: *FuncSymbol {
+            if fsym.parent_sym is Some(isym: *ImplSymbol) {
+                return isym.target_sty;
+            }
+        }
+        if callee is evsym: *EnumVariantSymbol {
+            return evsym.parent_enum.get_or_panic().to_sty();
+        }
+        return SType::sty_invalid(SourceSpan::empty());
+    }
+
+    // 生成"函数/enum variant -> fn 指针"的 thunk:
+    //   thunk 的签名就是纯 fn 签名 (调用方按 fn 类型传参),
+    //   函数体里再按被调方的真实 ABI 调用:
+    //     - 补上隐藏的 TypeMeta 参数 (方法的 Self 类型 / enum 类型)
+    //     - 大返回值用 SRet: 在 thunk 里 alloca, 调用后 load 出来按值返回
+    //     - 参数按被调方要求传值 / 传指针
+    // 同一个被调方只会有一个匹配的 fn 类型 (签名必须一致), 所以 thunk 名字用被调方即可。
+    fn cg_fn_lower_thunk(&mut self, callee: *Symbol, fn_sty: *SType, ctx: *CgContext) -> CgFunc {
+        let mut thunk_name = String::new();
+        thunk_name.push_str(callee.mangle_name().as_str().deref());
+        thunk_name.push_str("::fnptr");
+        if self.llds.get_function(thunk_name.as_str().deref()) is Some(f) {
+            return f;
+        }
+
+        let fn_sig = self.signature_of_fn_sty(fn_sty);
+        let fnty = self.functype_of_sig(fn_sig);
+        let thunk = self.llds.create_fn(fnty, thunk_name.as_str().deref());
+
+        // 记录 fn 签名里每个源参数对应的 LLVM 参数下标
+        let mut src_to_llvm = (type HashMap<UInt, UInt>)::new();
+        let mut receiver_llvm_idx = 0_u;
+        let mut receiver_is_ref = false;
+        let mut receiver_found = false;
+        let mut sret_llvm_idx = 0_u;
+        let mut has_sret = false;
+        let mut fn_llvm_idx: UInt = 0;
+        for p in fn_sig.params {
+            if p is CgParam::SRet {
+                sret_llvm_idx = fn_llvm_idx;
+                has_sret = true;
+            }
+            if p is CgParam::FnArgVal(i1, j1, _) {
+                src_to_llvm.insert(i1, j1);
+                if i1 == 0_u {
+                    receiver_llvm_idx = j1;
+                    receiver_found = true;
+                }
+            }
+            if p is CgParam::FnArgRef(i1, j1, _) {
+                src_to_llvm.insert(i1, j1);
+                if i1 == 0_u {
+                    receiver_llvm_idx = j1;
+                    receiver_is_ref = true;
+                    receiver_found = true;
+                }
+            }
+            fn_llvm_idx += 1;
+        }
+
+        let mut callee_fn = CgFunc::null();
+        let mut callee_sig: *CgSignature = box {
+            .sym = callee,
+            .params = (type Vec<CgParam>)::new(),
+            .ret = self.llds.type_void(),
+        }: CgSignature;
+        if callee is fsym: *FuncSymbol {
+            callee_fn = self.cg_func_decl(fsym);
+            callee_sig = self.signature_of_fsym(fsym);
+        } else if callee is evsym: *EnumVariantSymbol {
+            callee_fn = self.cg_ev_decl(evsym);
+            callee_sig = self.signature_of_evsym(evsym);
+        } else {
+            panic "BUG: unsupported callee for fn pointer thunk";
+        }
+
+        let entry_bb = self.llds.create_bb("entry", thunk);
+        let saved_ip = self.llds.save_ip();
+        self.llds.set_insert_point(entry_bb);
+        self.llds.create_do_nothing();
+
+        let mut args = (type Vec<CgValue>)::new();
+        let mut sret_ptr: Option<CgValue> = None;
+        for param in callee_sig.params {
+            match param {
+                CgParam::Receiver(r) => {
+                    if !receiver_found {
+                        // 0 大小的接收者在 fn 签名里被省略了, 没有对应的 LLVM 参数可以转发
+                        panic "BUG: fn pointer thunk for a zero-sized receiver";
+                    }
+                    let mut v = self.llds.get_arg(thunk, receiver_llvm_idx);
+                    // 被调方按值收 receiver, 但 fn 签名是按指针传的 (大结构体): load 出来
+                    if receiver_is_ref && !(r.stype.type_symbol is type *PointerLikeSymbol) {
+                        let cgty = self.cgtype_of(r.stype).get_or_panic();
+                        v = self.llds.create_load(cgty, v);
+                    } else {
+                        v = self.adjust_to_direct(r.stype, v);
+                    }
+                    args.push(v);
+                }
+                CgParam::SRet => {
+                    // 被调方也走 sret: 直接把调用方传进来的 sret 指针转交给它,
+                    // 返回值就写进了调用方的槽位, thunk 本身返回 void。
+                    let v = self.llds.get_arg(thunk, sret_llvm_idx);
+                    args.push(v);
+                    sret_ptr = Some(v);
+                }
+                CgParam::TypeMeta => {
+                    let self_sty = self.callee_self_sty(callee);
+                    let tm = self.rt_typemeta_of(self_sty, ctx);
+                    args.push(tm);
+                }
+                CgParam::GenericArg(_, _) => {
+                    panic "BUG: fn pointer thunk for a generic callee";
+                }
+                CgParam::FnArgVal(i1, _, _) => {
+                    let idx = src_to_llvm.at(&i1).get_or_panic();
+                    let v = self.llds.get_arg(thunk, idx);
+                    args.push(v);
+                }
+                CgParam::FnArgRef(i1, _, _) => {
+                    let idx = src_to_llvm.at(&i1).get_or_panic();
+                    let v = self.llds.get_arg(thunk, idx);
+                    args.push(v);
+                }
+            }
+        }
+
+        let call = self.llds.create_call(callee_fn, args.as_slice().deref());
+        if has_sret {
+            // fn 签名走 sret, thunk 只能返回 void。
+            // 被调方也走 sret 时它已经把结果写进调用方的槽位了; 万一被调方是按值返回
+            // (正常情况下 checker 会因返回类型不一致而拒绝这种转换), 这里补一次 store。
+            if sret_ptr is None {
+                let sret_arg = self.llds.get_arg(thunk, sret_llvm_idx);
+                self.llds.create_store(call, sret_arg);
+            }
+            self.llds.create_retvoid();
+        } else if self.cgtype_of(fn_sty.fn_return_sty()) is Some(ret_ty) {
+            let size = self.llds.storage_size_of(ret_ty);
+            if size == 0 {
+                self.llds.create_retvoid();
+            } else {
+                self.llds.create_ret(call);
+            }
+        } else {
+            self.llds.create_retvoid();
+        }
+
+        self.llds.restore_ip(saved_ip);
+        return thunk;
     }
 
     // 找 base_sty 这个类型对 trait_sym 的 impl 里, 跟 fsym 同名、参数个数相同的方法。

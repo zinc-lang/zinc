@@ -19,6 +19,7 @@ mod sym_assocty;
 mod sym_union;
 mod sym_tuple;
 mod sym_array;
+mod sym_fn_sty;
 mod sym_extern_type;
 mod sym_lambda;
 mod common;
@@ -317,16 +318,29 @@ pub struct ArraySymbol {
     cache: HashMap<GenericArgs, *SType>,
 }
 
+// 函数类型 fn(A, B) -> C / Fn(A, B) -> C / FnMut(A, B) -> C.
+//
+// 这三个都是"内建"单例类型 (和 Tuple/Array/Bool 一样, 见 is_builtin_type_symbol),
+// 签名不放在符号上, 而是放在 SType.args 里:
+//     args.ty_args = [参数类型..., 返回类型]   最后一个一定是返回类型
+//     args.lt_args = 预留 (将来放签名里的生命周期)
+// 这样两处写出的同一个 fn 类型会落到同一个符号上, 类型相等 (按符号 identity 比较) 才有意义。
+//
+//   - FnLowerTypeSymbol: 函数项/函数指针类型。普通函数 (FuncSymbol)、enum 变体、
+//     闭包都可以转换成它, 它表示"一个具体可调用的值"。
+//   - FnUpperTypeSymbol / FnUpperMutTypeSymbol: 对应 Fn / FnMut 上界, 用于泛型约束
+//     (T: Fn(A) -> B / T: FnMut(A) -> B)。它们按 trait 处理, 见 type_utils 里的
+//     contains_trait_symbol / is_fat_pointer / is_thin_pointer。
 pub struct FnLowerTypeSymbol {
-    // todo
+    cache: HashMap<GenericArgs, *SType>,
 }
 
 pub struct FnUpperMutTypeSymbol {
-    // todo
+    cache: HashMap<GenericArgs, *SType>,
 }
 
 pub struct FnUpperTypeSymbol {
-    // todo
+    cache: HashMap<GenericArgs, *SType>,
 }
 
 pub enum LambdaCaptureKind {

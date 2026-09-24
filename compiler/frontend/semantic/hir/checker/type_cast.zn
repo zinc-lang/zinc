@@ -22,6 +22,12 @@ enum ResolvedCastKind {
     UInt32ToChar,
     ArrayRefToSlice,
     FunctionToFnLower,
+    // 带泛型的函数/方法不能转换成 fn 类型
+    GenericFunctionToFnLower,
+    // 捕获了外部变量的闭包不能转换成 fn 类型
+    CaptureLambdaToFnLower,
+    // 没有捕获的闭包类型上可以转换, 但闭包的代码生成还没实现
+    LambdaToFnLowerUnsupported,
     FunctionToFnUpperBorrow,
     FnLowerToFnUpperBorrow,
     LambdaToFnLower,
@@ -124,14 +130,39 @@ fn resolve_type_cast_kind(from: *SType, to: *SType) -> ResolvedCastKind {
         return ResolvedCastKind::ArrayRefToSlice;
     }
 
-    // 函数类型相关的转换
-    // todo 需要补充 函数/enum variant/lambda 到 Fn / FnMut 等类型的转换
-    if src.type_symbol is type *FuncSymbol && dst.type_symbol is type *FnLowerTypeSymbol {
-        return ResolvedCastKind::FunctionToFnLower;
-    }
+    // 函数类型相关的转换: 函数项 / 方法 / enum variant 构造函数 / 没有捕获的闭包
+    // 都可以转换成 fn(A, B) -> C (FnLower); 签名必须一致。
+    // 带泛型的函数/方法不能转换 (签名不确定); 捕获了外部变量的闭包要等 Fn/FnMut 支持。
+    // (到 Fn/FnMut 的转换暂未实现)
+    if dst.type_symbol is type *FnLowerTypeSymbol {
+        if src.type_symbol is fsym: *FuncSymbol {
+            if fn_item_is_generic(fsym) {
+                return ResolvedCastKind::GenericFunctionToFnLower;
+            }
+            if fn_item_sig_matches(fsym, dst) {
+                return ResolvedCastKind::FunctionToFnLower;
+            }
+            return ResolvedCastKind::Err;
+        }
 
-    if src.type_symbol is type *EnumVariantSymbol && dst.type_symbol is type *FnLowerTypeSymbol {
-        return ResolvedCastKind::FunctionToFnLower;
+        if src.type_symbol is evsym: *EnumVariantSymbol {
+            if enum_ctor_sig_matches(evsym, dst) {
+                return ResolvedCastKind::FunctionToFnLower;
+            }
+            return ResolvedCastKind::Err;
+        }
+
+        if src.type_symbol is lsym: *LambdaSymbol {
+            if !lsym.captures.is_empty() {
+                return ResolvedCastKind::CaptureLambdaToFnLower;
+            }
+            // 没有捕获的闭包类型上可以转换 (签名要一致), 但闭包的代码生成还没做,
+            // 先明确报未实现, 避免生成错误的函数指针
+            if lambda_sig_matches(lsym, dst) {
+                return ResolvedCastKind::LambdaToFnLowerUnsupported;
+            }
+            return ResolvedCastKind::Err;
+        }
     }
 
     // 指针之间的转换
@@ -328,6 +359,21 @@ fn add_implicit_cast(v: *RValue, kind: ResolvedCastKind, dst_ty: *SType) -> *RVa
         DiagnosticEngine::get().emit_illegal_implicit_cast(v.get_stype().to_string(), dst_ty.to_string(), v.expr_node().span());
     }
 
+    if kind is ResolvedCastKind::GenericFunctionToFnLower {
+        DiagnosticEngine::get().emit_generic_fn_to_fn_type(v.get_stype().to_string(), v.expr_node().span());
+        return v;
+    }
+
+    if kind is ResolvedCastKind::CaptureLambdaToFnLower {
+        DiagnosticEngine::get().emit_capture_lambda_to_fn_type(v.expr_node().span());
+        return v;
+    }
+
+    if kind is ResolvedCastKind::LambdaToFnLowerUnsupported {
+        DiagnosticEngine::get().emit_unimplemented(v.expr_node().span(), "closure to fn pointer conversion");
+        return v;
+    }
+
     if kind is ResolvedCastKind::FatPtrToFatPtr {
         // 确保 v 的类型是 dst_ty 的子类型
         if !is_subtype(v.get_stype(), dst_ty) {
@@ -369,6 +415,9 @@ impl ToString for ResolvedCastKind {
             ResolvedCastKind::UInt32ToChar => buf.push_str("UInt32ToChar");
             ResolvedCastKind::ArrayRefToSlice => buf.push_str("ArrayRefToSlice");
             ResolvedCastKind::FunctionToFnLower => buf.push_str("FunctionToFnLower");
+            ResolvedCastKind::GenericFunctionToFnLower => buf.push_str("GenericFunctionToFnLower");
+            ResolvedCastKind::CaptureLambdaToFnLower => buf.push_str("CaptureLambdaToFnLower");
+            ResolvedCastKind::LambdaToFnLowerUnsupported => buf.push_str("LambdaToFnLowerUnsupported");
             ResolvedCastKind::FunctionToFnUpperBorrow => buf.push_str("FunctionToFnUpperBorrow");
             ResolvedCastKind::FnLowerToFnUpperBorrow => buf.push_str("FnLowerToFnUpperBorrow");
             ResolvedCastKind::LambdaToFnLower => buf.push_str("LambdaToFnLower");
@@ -453,4 +502,114 @@ fn resolve_type_test_kind(expr_ty: *SType, pat_ty: *SType) -> TypeTestKind {
             }
         }
     }
+}
+// 函数项 (含方法) 的签名工具 ---------------------------------------------------
+
+// impl 里的方法签名里会出现 impl 的 Self, 比较前先换成 impl 的目标类型
+fn fn_item_normalize(sty: *SType, fsym: *FuncSymbol) -> *SType {
+    if fsym.parent_sym is Some(isym: *ImplSymbol) {
+        return subst_self_ty(sty, isym.self_ty, isym.self_ty.target_sty);
+    }
+    return sty;
+}
+
+fn fn_item_param_sty(fsym: *FuncSymbol, i: UInt) -> *SType {
+    let p = *fsym.params.index(i).deref();
+    return fn_item_normalize(p.stype, fsym);
+}
+
+fn fn_item_ret_sty(fsym: *FuncSymbol) -> *SType {
+    let mut ret_sty: *SType = SType::sty_unit();
+    if fsym.return_sty is Some(r) {
+        ret_sty = fn_item_normalize(r, fsym);
+    }
+    return ret_sty;
+}
+
+// 函数/方法是否是"泛型"的: 它自己的类型参数、trait 方法 (Self 抽象)、
+// 泛型 impl 里的方法、或者签名里还残留类型参数/关联类型, 都不能变成 fn 类型
+fn fn_item_is_generic(fsym: *FuncSymbol) -> Bool {
+    if !fsym.generics.ty_params.is_empty() {
+        return true;
+    }
+    if fsym.parent_sym is Some(type *TraitSymbol) {
+        return true;
+    }
+    if fsym.parent_sym is Some(isym: *ImplSymbol) {
+        if !isym.generics.ty_params.is_empty() {
+            return true;
+        }
+    }
+
+    let mut i: UInt = 0;
+    while i < fsym.params.len() {
+        let p = fn_item_param_sty(fsym, i);
+        if contains_type_param(p) || contains_associated_type(p) {
+            return true;
+        }
+        i += 1;
+    }
+    let ret_sty = fn_item_ret_sty(fsym);
+    return contains_type_param(ret_sty) || contains_associated_type(ret_sty);
+}
+
+// 函数项的签名是否和 fn 类型一致
+fn fn_item_sig_matches(fsym: *FuncSymbol, dst: *SType) -> Bool {
+    if fsym.params.len() != dst.fn_param_count() {
+        return false;
+    }
+    let mut i: UInt = 0;
+    while i < fsym.params.len() {
+        if !stype_eq_regardless_lifetime(fn_item_param_sty(fsym, i), dst.fn_param_sty(i)) {
+            return false;
+        }
+        i += 1;
+    }
+    return stype_eq_regardless_lifetime(fn_item_ret_sty(fsym), dst.fn_return_sty());
+}
+
+// enum variant 构造函数: fn(字段类型...) -> Enum 类型; 泛型 enum 先不支持
+fn enum_ctor_sig_matches(evsym: *EnumVariantSymbol, dst: *SType) -> Bool {
+    let esym = evsym.parent_enum.get_or_panic();
+    if !esym.generics.ty_params.is_empty() {
+        return false;
+    }
+    if evsym.fields.len() != dst.fn_param_count() {
+        return false;
+    }
+    let mut i: UInt = 0;
+    while i < evsym.fields.len() {
+        let f = *evsym.fields.index(i).deref();
+        if !stype_eq_regardless_lifetime(f, dst.fn_param_sty(i)) {
+            return false;
+        }
+        i += 1;
+    }
+    return stype_eq_regardless_lifetime(esym.to_sty(), dst.fn_return_sty());
+}
+
+// 闭包的签名是否和 fn 类型一致; 参数类型没标注 (invalid) 或者还是抽象的, 都不算一致
+fn lambda_sig_matches(lsym: *LambdaSymbol, dst: *SType) -> Bool {
+    if lsym.params.len() != dst.fn_param_count() {
+        return false;
+    }
+    let mut i: UInt = 0;
+    while i < lsym.params.len() {
+        let p = *lsym.params.index(i).deref();
+        if p.stype.is_invalid() || contains_type_param(p.stype) || contains_associated_type(p.stype) {
+            return false;
+        }
+        if !stype_eq_regardless_lifetime(p.stype, dst.fn_param_sty(i)) {
+            return false;
+        }
+        i += 1;
+    }
+    let mut ret_sty: *SType = SType::sty_unit();
+    if lsym.return_sty is Some(r) {
+        ret_sty = move r;
+    }
+    if contains_type_param(ret_sty) || contains_associated_type(ret_sty) {
+        return false;
+    }
+    return stype_eq_regardless_lifetime(ret_sty, dst.fn_return_sty());
 }

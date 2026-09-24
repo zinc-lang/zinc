@@ -202,6 +202,96 @@ impl CodeGenerator {
         return self.llds.type_function(sig.ret, params_ty.as_slice().deref());
     }
 
+    // 为 fn 指针类型 (fn(A, B) -> C) 构造一个"纯函数"签名:
+    // 没有 receiver / TypeMeta / 泛型参数, 参数和返回的传递规则和普通函数一样
+    // (<=16 字节按值传, 否则传指针, 0 大小省略, 大返回值用 SRet)。
+    fn signature_of_fn_sty(&mut self, fn_sty: *SType) -> *CgSignature {
+        let key = fn_sty as *raw SType as UInt;
+        if self.cached_signatures.at(&key) is Some(sig) {
+            return sig;
+        }
+
+        let mut params = (type Vec<CgParam>)::new();
+        let mut ret_cgtype = self.llds.type_void();
+        let ret_sty = fn_sty.fn_return_sty();
+        if self.cgtype_of(ret_sty) is Some(ty) {
+            let size = self.llds.storage_size_of(ty);
+            if size == 0 {
+                // 保持 void
+            } else if size > 16 {
+                params.push(CgParam::SRet);
+            } else {
+                ret_cgtype = ty;
+            }
+        } else {
+            params.push(CgParam::SRet);
+        }
+
+        let additional = params.len();
+        let count = fn_sty.fn_param_count();
+        let mut i: UInt = 0;
+        while i < count {
+            let param_sty = fn_sty.fn_param_sty(i);
+            if self.cgtype_of(param_sty) is Some(ty) {
+                let size = self.llds.storage_size_of(ty);
+                if size == 0 {
+                    // 0 大小参数省略
+                } else if size <= 16 {
+                    params.push(CgParam::FnArgVal(i, i + additional, ty));
+                } else {
+                    params.push(CgParam::FnArgRef(i, i + additional, self.llds.type_thin_ptr()));
+                }
+            } else {
+                params.push(CgParam::FnArgRef(i, i + additional, self.llds.type_thin_ptr()));
+            }
+            i += 1;
+        }
+
+        let sig = box {
+            .sym = FnLowerTypeSymbol::new() as *Symbol,
+            .params = move params,
+            .ret = move ret_cgtype,
+        }: CgSignature;
+        self.cached_signatures.insert(key, sig);
+        return sig;
+    }
+
+    // 两个 LLVM 签名的参数种类是否完全一样 (用来判断能否直接把函数地址当 fn 指针用)
+    fn sig_same_abi(&self, a: *CgSignature, b: *CgSignature) -> Bool {
+        if a.params.len() != b.params.len() {
+            return false;
+        }
+        let mut i: UInt = 0;
+        while i < a.params.len() {
+            let pa = *a.params.index(i).deref();
+            let pb = *b.params.index(i).deref();
+            let mut same = false;
+            if pa is CgParam::SRet && pb is CgParam::SRet {
+                same = true;
+            }
+            if pa is CgParam::TypeMeta && pb is CgParam::TypeMeta {
+                same = true;
+            }
+            if pa is CgParam::Receiver(_) && pb is CgParam::Receiver(_) {
+                same = true;
+            }
+            if pa is CgParam::GenericArg(_, _) && pb is CgParam::GenericArg(_, _) {
+                same = true;
+            }
+            if pa is CgParam::FnArgVal(_, _, _) && pb is CgParam::FnArgVal(_, _, _) {
+                same = true;
+            }
+            if pa is CgParam::FnArgRef(_, _, _) && pb is CgParam::FnArgRef(_, _, _) {
+                same = true;
+            }
+            if !same {
+                return false;
+            }
+            i += 1;
+        }
+        return true;
+    }
+
     fn add_debuginfo(&mut self, func: CgFunc, loc: SourceLoc, short_name: String) {
         let mut name = move short_name;
         name.push(0_u8);
