@@ -1935,6 +1935,34 @@ impl CodeGenerator {
                 }
                 return self.cg_direct_fn_call(fn_call, fsym, ctx);
             }
+            // 指向可调用类型的指针 (&fn / *fn / &函数项 ...): 解引用之后再调用
+            if callee_sty.callable_pointee() is Some(pointee_sty) {
+                if pointee_sty.type_symbol is lsym: *LambdaSymbol {
+                    // 闭包的值本身不携带数据, 直接调用生成的函数
+                    return self.cg_lambda_call(fn_call, lsym, ctx);
+                }
+                if pointee_sty.type_symbol is fsym: *FuncSymbol {
+                    if fsym.has_receiver() && !fn_call.desugared_args.is_empty() {
+                        let receiver = *fn_call.desugared_args.index(0_u).deref();
+                        return self.cg_dispatch_method_call(
+                            fsym,
+                            receiver,
+                            receiver.get_stype(),
+                            &fn_call.desugared_args,
+                            0_u,
+                            &fn_call.generic_args,
+                            fn_call.sty,
+                            fn_call.expr.span().start,
+                            ctx,
+                        );
+                    }
+                    return self.cg_direct_fn_call(fn_call, fsym, ctx);
+                }
+                // 指向 fn 指针: 先取到指针的值, 再从它指向的槽位里 load 出函数指针
+                let addr = self.adjust_to_direct(callee_sty, self.cg_xvalue(fn_call.callee, ctx));
+                let fnptr = self.llds.create_load(self.llds.type_thin_ptr(), addr);
+                return self.cg_fn_ptr_call_with_value(fn_call, pointee_sty, fnptr, ctx);
+            }
         }
 
         if fn_call.callee is qp_rv: *QualifiedPathValue {
@@ -2074,6 +2102,11 @@ impl CodeGenerator {
     fn cg_fn_ptr_call(&mut self, fn_call: *FnCallValue, fn_sty: *SType, ctx: *CgContext) -> CgValue {
         // callee 是局部变量/参数时 cg_xvalue 拿到的是它的槽位, 要先 load 出函数指针
         let callee = self.adjust_to_direct(fn_sty, self.cg_xvalue(fn_call.callee, ctx));
+        return self.cg_fn_ptr_call_with_value(fn_call, fn_sty, callee, ctx);
+    }
+
+    // 同上, 但函数指针的值已经算好了 (例如通过指针解引用之后 load 出来的)
+    fn cg_fn_ptr_call_with_value(&mut self, fn_call: *FnCallValue, fn_sty: *SType, callee: CgValue, ctx: *CgContext) -> CgValue {
         let sig = self.signature_of_fn_sty(fn_sty);
         let fnty = self.functype_of_sig(sig);
         let mut args = (type Vec<CgValue>)::new();

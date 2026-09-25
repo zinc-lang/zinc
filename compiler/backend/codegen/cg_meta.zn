@@ -84,6 +84,10 @@ impl CodeGenerator {
             lsym: *LambdaSymbol => {
                 return self.cg_callable_typemeta(lsym as *TypeSymbol, 36_u8); // TM_Lambda
             }
+            fn_lower: *FnLowerTypeSymbol => {
+                // fn 指针: 值就是一个瘦指针
+                return self.cg_callable_typemeta(fn_lower as *TypeSymbol, 29_u8); // TM_FnLower
+            }
             _ => {
                 let meta = Type::of(&*sym as &TypeSymbol as &Any);
                 let name = meta.short_name();
@@ -178,6 +182,8 @@ impl CodeGenerator {
         self.cg_pointer_generic_typemeta(BorrowMutSymbol::new() as *PointerLikeSymbol);
         self.cg_pointer_generic_typemeta(RawPointerImmutSymbol::new() as *PointerLikeSymbol);
         self.cg_pointer_generic_typemeta(RawPointerMutSymbol::new() as *PointerLikeSymbol);
+        // fn 指针类型的 TypeMeta 由 std 定义 (它的 args 是签名, 其它组件只声明)
+        self.cg_callable_typemeta(FnLowerTypeSymbol::new() as *TypeSymbol, 29_u8);
         unsafe {
             codegen_tuple_generictypemeta(self.llds.ds);
             codegen_array_generictypemeta(self.llds.ds);

@@ -46,6 +46,30 @@ impl SType {
         return self.type_symbol is type *InvalidSymbol;
     }
 
+    // 通过裸指针 (*T / *mut T) 访问需要在 unsafe 上下文里
+    pub fn is_raw_pointer(&self) -> Bool {
+        return self.type_symbol is type *RawPointerImmutSymbol ||
+            self.type_symbol is type *RawPointerMutSymbol;
+    }
+
+    // 指向可调用类型 (fn 指针 / 函数项 / 闭包) 的指针本身也是可调用的
+    // (weak 指针不行: 它指向的对象可能已经释放)。返回被指向的类型。
+    pub fn callable_pointee(&self) -> Option<*SType> {
+        if self.type_symbol is type *WeakPointerSymbol {
+            return None;
+        }
+        if !(self.type_symbol is type *PointerLikeSymbol) {
+            return None;
+        }
+        let pointee = self.args.ty_arg(0);
+        if pointee.type_symbol is type *FnLowerTypeSymbol ||
+            pointee.type_symbol is type *FuncSymbol ||
+            pointee.type_symbol is type *LambdaSymbol {
+            return Some(move pointee);
+        }
+        return None;
+    }
+
 }
 
 impl ToString for SType {

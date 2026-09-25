@@ -305,6 +305,11 @@ impl CodeGenerator {
                     return result;
                 }
             }
+            // fn 指针类型: args 里存的是签名而不是泛型实参, 不能走 instantiated_typemeta,
+            // 直接按需生成一个具体类型的 TypeMeta
+            type *FnLowerTypeSymbol => {
+                return self.cg_typemeta(sty.type_symbol).as_value();
+            }
             _ => {
                 if sty.args.ty_args.is_empty() {
                     // 可调用类型 (函数项/闭包) 的 TypeMeta 是按需生成的,

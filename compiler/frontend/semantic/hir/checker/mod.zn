@@ -2138,6 +2138,20 @@ impl TypeCheckContext {
         if callee_sty.type_symbol is type *FnLowerTypeSymbol {
             return self.check_fn_ptr_call(move fn_call, move callee_sty);
         }
+        // callee 是指向可调用类型的指针 (&fn / *fn / &函数项 ...): 解引用之后再调用。
+        // 通过裸指针调用需要在 unsafe 上下文里 (weak 指针不可调用)。
+        if callee_sty.callable_pointee() is Some(pointee_sty) {
+            if callee_sty.is_raw_pointer() {
+                self.requires_unsafe_context(fn_call.callee.expr_node() as *SyntaxNode);
+            }
+            if pointee_sty.type_symbol is lsym: *LambdaSymbol {
+                return self.check_lambda_call(move fn_call, move lsym);
+            }
+            if pointee_sty.type_symbol is fsym: *FuncSymbol {
+                return self.check_fn_item_call(move fn_call, move fsym);
+            }
+            return self.check_fn_ptr_call(move fn_call, move pointee_sty);
+        }
         DiagnosticEngine::get().emit_expr_not_callable(fn_call.expr.span());
         return SType::sty_invalid(fn_call.expr.span());
     }
@@ -2349,7 +2363,15 @@ impl TypeCheckContext {
         } else {
             // callee 不是路径, 但它的类型可能是闭包
             let callee_sty = self.infer(fn_call.callee as *XValue);
-            if callee_sty.type_symbol is lsym: *LambdaSymbol {
+            // 指向可调用类型的指针: 先解引用 (裸指针需要 unsafe), 再按被指向的类型处理
+            let mut callable_sty = callee_sty;
+            if callee_sty.callable_pointee() is Some(pointee_sty) {
+                if callee_sty.is_raw_pointer() {
+                    self.requires_unsafe_context(fn_call.callee.expr_node() as *SyntaxNode);
+                }
+                callable_sty = move pointee_sty;
+            }
+            if callable_sty.type_symbol is lsym: *LambdaSymbol {
                 let ret = self.check_lambda_call(fn_call, lsym);
                 if !ret.is_invalid() {
                     let k = resolve_type_cast_kind(ret, return_ty);
@@ -2361,19 +2383,19 @@ impl TypeCheckContext {
             }
             // callee 是 fn 指针类型的值: 参数/返回类型都从签名里取,
             // 后面的公共代码会按签名检查实参并插入隐式转换。
-            if callee_sty.type_symbol is type *FnLowerTypeSymbol {
-                let param_len = callee_sty.fn_param_count();
+            if callable_sty.type_symbol is type *FnLowerTypeSymbol {
+                let param_len = callable_sty.fn_param_count();
                 if fn_call.fn_args.len() != param_len {
                     DiagnosticEngine::get().emit_wrong_arg_count(param_len, fn_call.fn_args.len(), fn_call.expr.span());
                     return;
                 }
                 let mut i: UInt = 0;
                 while i < param_len {
-                    params_ty.push(callee_sty.fn_param_sty(i));
+                    params_ty.push(callable_sty.fn_param_sty(i));
                     i += 1;
                 }
-                formal_return_ty = callee_sty.fn_return_sty();
-            } else if callee_sty.type_symbol is fsym: *FuncSymbol {
+                formal_return_ty = callable_sty.fn_return_sty();
+            } else if callable_sty.type_symbol is fsym: *FuncSymbol {
                 // callee 是存下来的函数项 (类型是 FuncSymbol): 直接按它自己的签名调用
                 if fn_item_is_generic(fsym) {
                     DiagnosticEngine::get().emit_generic_fn_to_fn_type(fsym.short_name(), fn_call.expr.span());
