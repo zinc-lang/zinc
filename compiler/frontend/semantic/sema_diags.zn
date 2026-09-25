@@ -309,6 +309,17 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    // 带字段的 enum variant 作为一等公民时只是一个"构造函数" (会被转换成 fn 类型),
+    // 它本身不是一个可以取地址或者装箱的值。
+    fn emit_enum_variant_ctor_no_value(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"enum variant 构造函数可以转换成 fn 类型, 但它本身不是一个值, 不能取借用或者装箱",
+            .msg_en = f"an enum variant constructor can be converted to a fn type, but it is not a value: it cannot be borrowed or boxed",
+        }: DiagItem);
+    }
+
     fn emit_return_type_mismatch(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,

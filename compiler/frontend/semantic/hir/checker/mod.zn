@@ -771,6 +771,11 @@ impl TypeCheckContext {
                         return SType::sty_invalid(unary_rv.expr.span());
                     }
                     UnaryValueKind::Box => {
+                        // 同上: enum variant 构造函数不能被装箱
+                        if is_enum_variant_ctor_value(unary_rv.operand) {
+                            DiagnosticEngine::get().emit_enum_variant_ctor_no_value(unary_rv.expr.span());
+                            return SType::sty_invalid(unary_rv.expr.span());
+                        }
                         let mut args = GenericArgs::new();
                         args.ty_args.push(move op_sty);
                         return ArcPointerSymbol::new().to_sty(move args);
@@ -783,6 +788,12 @@ impl TypeCheckContext {
                 return SType::sty_invalid(unary_rv.expr.span());
             }
             addr_rv: *AddressofValue => {
+                // 带字段的 enum variant 只是"构造函数" (会被转换成 fn 类型), 不是一个值,
+                // 不允许对它取借用: &Opt::One / &mut Opt::One / &raw Opt::One
+                if is_enum_variant_ctor_value(addr_rv.operand) {
+                    DiagnosticEngine::get().emit_enum_variant_ctor_no_value(addr_rv.expr.span());
+                    return SType::sty_invalid(addr_rv.expr.span());
+                }
                 let op_sty = self.infer(addr_rv.operand as *XValue);
                 if op_sty.is_invalid() {
                     return op_sty;
@@ -3013,4 +3024,19 @@ fn lvalue_to_rvalue(xval: *XValue) -> *RValue {
         }
         _ =>  panic;
     }
+}
+
+// 带字段的 enum variant 作为一等公民使用时会被转换成 fn 类型 (构造函数),
+// 它本身不是一个可以取地址/装箱的值 (见 emit_enum_variant_ctor_no_value)。
+fn is_enum_variant_ctor_value(v: *RValue) -> Bool {
+    if v is qp: *QualifiedPathValue {
+        if qp.symbol is evsym: *EnumVariantSymbol {
+            return !evsym.fields.is_empty();
+        }
+        return false;
+    }
+    if v is ctx: *ContextValue {
+        return is_enum_variant_ctor_value(ctx.inner);
+    }
+    return false;
 }
