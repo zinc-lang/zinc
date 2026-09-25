@@ -1,0 +1,15 @@
+// 不能转换成 fn 类型的情况:
+//   1. 带泛型的函数 (签名不确定, 无法确定 fn 指针的 ABI)
+//   2. 签名不一致
+//   3. 捕获了外部变量的闭包 (需要携带环境, 不能退化成裸函数指针, 等 Fn/FnMut 支持)
+// 没有捕获的闭包可以转换, 见 run-pass/lambda_fn_pointer.zn
+
+fn id<T>(x: T) -> T { return x; }
+fn add_one(x: Int) -> Int { return x + 1_i; }
+
+fn main() {
+    let bad1: fn(Int) -> Int = id;
+    let bad2: fn(Bool) -> Int = add_one;
+    let y = 1_i;
+    let bad3: fn(Int) -> Int = (x: Int) => x + y;
+}

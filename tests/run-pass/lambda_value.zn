@@ -1,0 +1,51 @@
+// 闭包作为值保存: 没有捕获的闭包相当于空结构体, 调用它就是直接调用生成的函数
+use std::assert;
+
+struct Pair {
+    a: Int,
+    b: Int,
+}
+
+fn main() {
+    // 保存后调用 (不再是"字面量直接转 fn 指针")
+    let f = (x: Int) => x + 1_i;
+    assert(f(1_i) == 2_i);
+    assert(f(41_i) == 42_i);
+
+    // 闭包值可以复制/继续传递
+    let g = f;
+    assert(g(9_i) == 10_i);
+    assert(f(9_i) == 10_i);
+
+    // 保存之后再转成 fn 指针
+    let h = (x: Int) => x * 2_i;
+    let hp: fn(Int) -> Int = h;
+    assert(hp(21_i) == 42_i);
+    assert(h(3_i) == 6_i);
+
+    // 多参数
+    let mul = (a: Int, b: Int) => a * b;
+    assert(mul(6_i, 7_i) == 42_i);
+
+    // 大参数 (按指针传) 和大返回值 (sret)
+    let sum = (p: Pair) => p.a + p.b;
+    assert(sum({ .a = 1_i, .b = 2_i }: Pair) == 3_i);
+    let mk = (x: Int) -> Pair => { .a = x, .b = x + 1_i }: Pair;
+    let p = mk(5_i);
+    assert(p.a == 5_i);
+    assert(p.b == 6_i);
+
+    // 块体闭包作为值
+    let cnt = .{
+        (n: Int) -> Int => {
+            let mut s = 0_i;
+            let mut i = 0_i;
+            while i < n {
+                s = s + i;
+                i = i + 1_i;
+            }
+            return s;
+        }
+    };
+    assert(cnt(5_i) == 10_i);
+}

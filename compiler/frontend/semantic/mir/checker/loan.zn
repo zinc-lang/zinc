@@ -63,7 +63,7 @@ impl LivenessChecker {
                 if !alive.contains(o) {
                     if !reported.contains(d) {
                         reported.insert(d);
-                        let mut span = self.cfg.func_sym.func_node.name.source_span;
+                        let mut span = self.cfg.name_span();
                         if vars.at(&d) is Some(v) {
                             span = v.var_node.span();
                         }
@@ -154,7 +154,7 @@ impl LivenessChecker {
             if bb.index == 0 {
                 // 入口: 借用参数的被引用对象在函数外部, 先记为 Unknown
                 // (P3 会结合函数签名里的生命周期实参, 把它映射为 Param('a))
-                for p in self.cfg.func_sym.params {
+                for p in self.cfg.params() {
                     if type_contains_pointer(p.stype) {
                         st.insert(p as *raw VarSymbol as UInt, OriginSet::unknown_set());
                     }
@@ -448,7 +448,7 @@ impl LivenessChecker {
     fn dump_origins(&self) {
         let names = collect_var_names(self.cfg);
         print("==== origins of ");
-        print(self.cfg.func_sym.mangle_name());
+        print(self.cfg.sym.mangle_name());
         println(" ====");
         for bb in self.cfg.basic_blocks {
             let bb_key = bb as *raw BasicBlock as UInt;
@@ -723,7 +723,7 @@ fn through_pointer(xv: *XValue) -> Bool {
 // 收集本函数里出现过的所有局部变量, 用来把 origin 里的 key 映射回 *VarSymbol
 fn collect_all_vars(cfg: *CFG) -> HashMap<UInt, *VarSymbol> {
     let mut vars = (type HashMap<UInt, *VarSymbol>)::new();
-    for p in cfg.func_sym.params {
+    for p in cfg.params() {
         vars.insert(p as *raw VarSymbol as UInt, p);
     }
     for bb in cfg.basic_blocks {

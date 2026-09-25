@@ -15,7 +15,12 @@ impl BlockSentence {
         }: BlockSentence;
     }
 
-    pub fn add_local(&mut self, var: *VarSymbol) {
+    pub fn add_local(*self, var: *VarSymbol) {
+        let blk: *BlockSentence = self;
+        // 记录声明它的作用域: 闭包捕获分析要靠 parent_scope 链判断一个变量
+        // 到底是闭包内部的局部变量还是外层变量 (见 is_local_to_lambda)。
+        var.set_parent_scope(blk as *ScopeSymbol);
+
         self.local_vars.push(var);
 
         self.symbol_table.add_child(move var);

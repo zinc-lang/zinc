@@ -353,6 +353,9 @@ impl ExprTransformer {
             let dummy = box { .source_span = e.span() }: DummySyntaxNode as *StatementNode;
             let blk = BlockSentence::new(dummy);
             blk.parent_stmt = Some(lsym as *ScopeSymbol);
+            // 表达式体也保留一个 block: MIR 里翻译出来的临时变量挂在它上面,
+            // 代码生成阶段靠它分配局部变量。
+            lsym.body_block = Some(blk);
 
             let mut etrans = {
                 .current_block = move blk,

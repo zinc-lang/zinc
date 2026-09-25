@@ -162,6 +162,10 @@ impl CodeGenerator {
 
     fn cg_rvalue(&mut self, rvalue: *RValue, ctx: *CgContext) -> CgValue {
         match rvalue {
+            lam: *LambdaValue => {
+                // 闭包值本身: 没有捕获时它不携带数据 (空结构体), 调用/取地址都只看它的符号
+                return self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>).as_value();
+            }
             cast_rv: *CastValue => {
                 return self.cg_cast_value(move cast_rv, move ctx);
             }
@@ -327,6 +331,10 @@ impl CodeGenerator {
                     // 一等公民函数: 值的类型是 fn 指针, 取函数地址 (必要时生成 thunk)
                     if qp_rv.sty.is_fn_type() {
                         return self.cg_fn_pointer_of(qp_rv.symbol, qp_rv.sty, ctx);
+                    }
+                    // 函数项自己的类型 (FuncSymbol): 它是零大小类型, 值里不携带数据
+                    if qp_rv.sty.type_symbol is type *FuncSymbol {
+                        return self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>).as_value();
                     }
                     return self.cg_func_decl(fsym).as_const().as_value();
                 }
@@ -765,6 +773,26 @@ impl CodeGenerator {
     }
 
     fn cg_cast_value(&mut self, cast_rv: *CastValue, ctx: *CgContext) -> CgValue {
+        // 闭包字面量没有运行时的值, 不能先对它求值 (其他的转换都从操作数的值出发)
+        if cast_rv.resolved_kind is ResolvedCastKind::LambdaToFnLower {
+            // 闭包相当于结构体: 没有捕获时是空结构体, 值本身不含数据,
+            // 所以无论是字面量还是存在变量里的闭包, 转换结果都是那个函数的地址。
+            let mut lsym_opt: Option<*LambdaSymbol> = None;
+            if cast_rv.operand is lam: *LambdaValue {
+                lsym_opt = Some(lam.lambda_sym);
+            } else {
+                let src_sty = cast_rv.operand.get_stype().canonical();
+                if src_sty.type_symbol is l: *LambdaSymbol {
+                    lsym_opt = Some(move l);
+                }
+            }
+            if lsym_opt is Some(lsym) {
+                let f = self.cg_lambda_body(lsym);
+                return f.as_const().as_value();
+            }
+            panic "BUG: LambdaToFnLower without a lambda type operand";
+        }
+
         let op = self.cg_xvalue(cast_rv.operand, ctx);
         let src_sty = cast_rv.operand.get_stype().canonical();
         let dst_sty = cast_rv.target_sty.canonical();
@@ -991,12 +1019,17 @@ impl CodeGenerator {
                 if cast_rv.operand is qp_rv: *QualifiedPathValue {
                     return self.cg_fn_pointer_of(qp_rv.symbol, dst_sty, ctx);
                 }
-                panic "BUG: FunctionToFnLower without a path operand";
+                // 存下来的函数项: 符号从它的类型上取 (函数项的值本身不携带数据)
+                let src_sty = cast_rv.operand.get_stype().canonical();
+                if src_sty.type_symbol is fsym: *FuncSymbol {
+                    return self.cg_fn_pointer_of(fsym as *Symbol, dst_sty, ctx);
+                }
+                panic "BUG: FunctionToFnLower without a function item operand";
             }
             ResolvedCastKind::FunctionToFnUpperBorrow => panic;
             ResolvedCastKind::FnLowerToFnUpperBorrow => panic;
             ResolvedCastKind::LambdaToFnLower => {
-                panic "BUG: 闭包到 fn 指针的转换还没实现 (checker 应该已经报错了)";
+                panic "BUG: LambdaToFnLower 应该在 cg_cast_value 的开头处理";
             }
             ResolvedCastKind::LambdaToFnUpperPtr => panic;
             _ => {
@@ -1874,11 +1907,33 @@ impl CodeGenerator {
     }
 
     fn cg_func_call(&mut self, fn_call: *FnCallValue, ctx: *CgContext) -> CgValue {
-        // callee 不是路径, 而是 fn 指针类型的值: 间接调用
+        // callee 不是路径, 而是 fn 指针 / 闭包类型的值
         if !(fn_call.callee is type *QualifiedPathValue) {
             let callee_sty = fn_call.callee.get_stype().canonical();
             if callee_sty.type_symbol is type *FnLowerTypeSymbol {
                 return self.cg_fn_ptr_call(fn_call, callee_sty, ctx);
+            }
+            if callee_sty.type_symbol is lsym: *LambdaSymbol {
+                // 没有捕获的闭包值: 调用就是直接调用生成的函数
+                return self.cg_lambda_call(fn_call, lsym, ctx);
+            }
+            if callee_sty.type_symbol is fsym: *FuncSymbol {
+                // 存下来的函数项: 参数里已经带了接收者, 直接调用
+                if fsym.has_receiver() && !fn_call.desugared_args.is_empty() {
+                    let receiver = *fn_call.desugared_args.index(0_u).deref();
+                    return self.cg_dispatch_method_call(
+                        fsym,
+                        receiver,
+                        receiver.get_stype(),
+                        &fn_call.desugared_args,
+                        0_u,
+                        &fn_call.generic_args,
+                        fn_call.sty,
+                        fn_call.expr.span().start,
+                        ctx,
+                    );
+                }
+                return self.cg_direct_fn_call(fn_call, fsym, ctx);
             }
         }
 
@@ -1910,74 +1965,7 @@ impl CodeGenerator {
                     }
                 }
 
-                let callee = self.cg_func_decl(fsym);
-                let mut args: Vec<CgValue> = Vec::new();
-                let signature = self.signature_of_fsym(fsym);
-                let mut sret_ptr: Option<CgValue> = None;
-                for ref param in signature.params {
-                    match param {
-                        CgParam::Receiver(var) => {
-                            panic; // 只有 MethodCall 才会有 Receiver
-                        }
-                        CgParam::SRet => {
-                            if self.cgtype_of(fn_call.sty) is Some(ret_ty) {
-                                let ret_ptr = self.llds.create_alloca_sized(ret_ty);
-                                args.push(ret_ptr);
-                                sret_ptr = Some(ret_ptr);
-                            } else {
-                                let size_val = self.size_of_stype(fn_call.sty, ctx);
-                                let ret_ptr = self.llds.create_alloca_unsized(size_val);
-                                args.push(ret_ptr);
-                                sret_ptr = Some(ret_ptr);
-                            }
-                        }
-                        CgParam::TypeMeta => {
-                            let ctx_func = ctx.sym.mangle_name();
-                            let msg = f"member_of is None for calling $(mangle_name) inside $(ctx_func)";
-                            let self_sty = fn_call.member_of.get_or_panic(msg.as_str().deref());
-                            let tm = self.rt_typemeta_of(move self_sty, ctx);
-                            args.push(tm);
-                        }
-                        CgParam::GenericArg(tp, _) => {
-                            let idx = fsym.generics.index_of_typaram(move tp).get_or_panic();
-                            let ga_sty = *fn_call.generic_args.ty_args.index(idx).deref();
-                            let tm = self.rt_typemeta_of(move ga_sty, ctx);
-                            args.push(tm);
-                        }
-                        CgParam::FnArgVal(arg_idx1, _, _) => {
-                            let arg = *fn_call.desugared_args.index(arg_idx1).deref();
-                            let mut cg_val = self.cg_xvalue(arg, ctx);
-                            cg_val = self.adjust_to_direct(arg.get_stype(), cg_val);
-                            args.push(cg_val);
-                        }
-                        CgParam::FnArgRef(arg_idx2, _, _) => {
-                            let arg = *fn_call.desugared_args.index(arg_idx2).deref();
-                            let mut cg_val = self.cg_xvalue(arg, ctx);
-                            if !cg_val.indirect {
-                                if self.cgtype_of(arg.get_stype()) is Some(cgty) {
-                                    let alloca = self.llds.create_alloca_sized(cgty);
-                                    self.llds.create_store(cg_val, alloca);
-                                    cg_val = alloca;
-                                } else {
-                                    panic;
-                                }
-                            }
-                            args.push(cg_val);
-                        }
-                    }
-                }
-
-                let di_loc = self.debug_loc(ctx.ll_func, fn_call.expr.span().start);
-
-                self.llds.set_di_loc(di_loc);
-                let call = self.llds.create_call(callee, args.as_slice().deref());
-                self.llds.reset_di_loc();
-
-                if sret_ptr is Some(r) {
-                    return r;
-                } else {
-                    return call;
-                }
+                return self.cg_direct_fn_call(fn_call, fsym, ctx);
             }
             if qp_rv.symbol is evsym: *EnumVariantSymbol {
                 let mangle_name = evsym.mangle_name().as_str().deref();
@@ -1997,7 +1985,18 @@ impl CodeGenerator {
                         let ret_val = self.llds.create_alloca_unsized(size_val);
                         let payload = *fn_call.desugared_args.index(0).deref();
                         let mut payload_val = self.cg_xvalue(payload, ctx);
-                        payload_val = self.load_to_single_ptr_level(payload.get_stype(), payload_val);
+                        // 零大小的 payload (比如函数项/无捕获闭包) 没有数据要拷贝, 传空指针
+                        let mut payload_is_zst = false;
+                        if self.cgtype_of(payload.get_stype()) is Some(t) {
+                            if self.llds.storage_size_of(t) == 0 {
+                                payload_is_zst = true;
+                            }
+                        }
+                        if payload_is_zst {
+                            payload_val = self.llds.get_const_null().as_value();
+                        } else {
+                            payload_val = self.load_to_single_ptr_level(payload.get_stype(), payload_val);
+                        }
 
                         self.llds.create_call(callee, &[ret_val, size_val, payload_val, option_typemeta] as Slice<CgValue>);
                         return ret_val;
@@ -2109,6 +2108,129 @@ impl CodeGenerator {
             }
         }
         let call = self.llds.create_call(fnty, callee, args.as_slice().deref());
+        if sret_ptr is Some(r) {
+            return r;
+        }
+        return call;
+    }
+
+    // 直接调用一个函数 (参数按源参数下标放在 fn_call.desugared_args 里)。
+    // 限定路径调用、以及调用存下来的函数项都走这里。
+    fn cg_direct_fn_call(&mut self, fn_call: *FnCallValue, fsym: *FuncSymbol, ctx: *CgContext) -> CgValue {
+        let mangle_name = fsym.mangle_name();
+        let callee = self.cg_func_decl(fsym);
+        let mut args: Vec<CgValue> = Vec::new();
+        let signature = self.signature_of_fsym(fsym);
+        let mut sret_ptr: Option<CgValue> = None;
+        for ref param in signature.params {
+            match param {
+                CgParam::Receiver(var) => {
+                    panic; // 只有 MethodCall 才会有 Receiver
+                }
+                CgParam::SRet => {
+                    if self.cgtype_of(fn_call.sty) is Some(ret_ty) {
+                        let ret_ptr = self.llds.create_alloca_sized(ret_ty);
+                        args.push(ret_ptr);
+                        sret_ptr = Some(ret_ptr);
+                    } else {
+                        let size_val = self.size_of_stype(fn_call.sty, ctx);
+                        let ret_ptr = self.llds.create_alloca_unsized(size_val);
+                        args.push(ret_ptr);
+                        sret_ptr = Some(ret_ptr);
+                    }
+                }
+                CgParam::TypeMeta => {
+                    let ctx_func = ctx.sym.mangle_name();
+                    let msg = f"member_of is None for calling $(mangle_name) inside $(ctx_func)";
+                    let self_sty = fn_call.member_of.get_or_panic(msg.as_str().deref());
+                    let tm = self.rt_typemeta_of(move self_sty, ctx);
+                    args.push(tm);
+                }
+                CgParam::GenericArg(tp, _) => {
+                    let idx = fsym.generics.index_of_typaram(move tp).get_or_panic();
+                    let ga_sty = *fn_call.generic_args.ty_args.index(idx).deref();
+                    let tm = self.rt_typemeta_of(move ga_sty, ctx);
+                    args.push(tm);
+                }
+                CgParam::FnArgVal(arg_idx1, _, _) => {
+                    let arg = *fn_call.desugared_args.index(arg_idx1).deref();
+                    let mut cg_val = self.cg_xvalue(arg, ctx);
+                    cg_val = self.adjust_to_direct(arg.get_stype(), cg_val);
+                    args.push(cg_val);
+                }
+                CgParam::FnArgRef(arg_idx2, _, _) => {
+                    let arg = *fn_call.desugared_args.index(arg_idx2).deref();
+                    let mut cg_val = self.cg_xvalue(arg, ctx);
+                    if !cg_val.indirect {
+                        if self.cgtype_of(arg.get_stype()) is Some(cgty) {
+                            let alloca = self.llds.create_alloca_sized(cgty);
+                            self.llds.create_store(cg_val, alloca);
+                            cg_val = alloca;
+                        } else {
+                            panic;
+                        }
+                    }
+                    args.push(cg_val);
+                }
+            }
+        }
+
+        let di_loc = self.debug_loc(ctx.ll_func, fn_call.expr.span().start);
+
+        self.llds.set_di_loc(di_loc);
+        let call = self.llds.create_call(callee, args.as_slice().deref());
+        self.llds.reset_di_loc();
+
+        if sret_ptr is Some(r) {
+            return r;
+        } else {
+            return call;
+        }
+    }
+
+    // 调用一个"没有捕获的闭包"的值。
+    // 这种闭包相当于空结构体, 不携带任何状态, 所以调用它就是直接调用为它生成的函数
+    // (函数签名正好是它自己的参数列表和返回类型, 没有 receiver)。
+    fn cg_lambda_call(&mut self, fn_call: *FnCallValue, lsym: *LambdaSymbol, ctx: *CgContext) -> CgValue {
+        let fn_sty = self.lambda_fn_sty(lsym);
+        let sig = self.signature_of_fn_sty(fn_sty);
+        let callee = self.cg_lambda_body(lsym);
+
+        let mut args = (type Vec<CgValue>)::new();
+        let mut sret_ptr: Option<CgValue> = None;
+        for param in sig.params {
+            match param {
+                CgParam::SRet => {
+                    let ret_ty = self.cgtype_of(fn_sty.fn_return_sty()).get_or_panic();
+                    let ret_ptr = self.llds.create_alloca_sized(ret_ty);
+                    args.push(ret_ptr);
+                    sret_ptr = Some(ret_ptr);
+                }
+                CgParam::FnArgVal(arg_idx, _, _) => {
+                    let arg = *fn_call.desugared_args.index(arg_idx).deref();
+                    let cg_val = self.adjust_to_direct(arg.get_stype(), self.cg_xvalue(arg, ctx));
+                    args.push(cg_val);
+                }
+                CgParam::FnArgRef(arg_idx, _, _) => {
+                    let arg = *fn_call.desugared_args.index(arg_idx).deref();
+                    let mut cg_val = self.cg_xvalue(arg, ctx);
+                    if !cg_val.indirect {
+                        let cgty = self.cgtype_of(arg.get_stype()).get_or_panic();
+                        let alloca = self.llds.create_alloca_sized(cgty);
+                        self.llds.create_store(cg_val, alloca);
+                        cg_val = alloca;
+                    }
+                    args.push(cg_val);
+                }
+                _ => {
+                    panic "BUG: lambda call with unexpected param kind";
+                }
+            }
+        }
+        let di_loc = self.debug_loc(ctx.ll_func, fn_call.expr.span().start);
+        self.llds.set_di_loc(di_loc);
+        let call = self.llds.create_call(callee, args.as_slice().deref());
+        self.llds.reset_di_loc();
         if sret_ptr is Some(r) {
             return r;
         }

@@ -175,6 +175,19 @@ impl CgContext {
         }: CgContext;
     }
 
+    fn new_with_lambda(lsym: *LambdaSymbol, sig: *CgSignature, f: CgFunc) -> *CgContext {
+        return box {
+            .sym = lsym as *Symbol,
+            .ll_func = f,
+            .signature = move sig,
+            .bb_map = (type HashMap<UInt, CgBasicBlock>)::new(),
+            .value_map = (type HashMap<UInt, CgValue>)::new(),
+            .arg_map = (type HashMap<UInt, CgValue>)::new(),
+            .local_map = (type HashMap<UInt, CgValue>)::new(),
+            .cached_instantiated = (type HashMap<UInt, CgValue>)::new(),
+        }: CgContext;
+    }
+
     fn self_sty(&self) -> Option<*SType> {
         if self.sym is fsym: *FuncSymbol {
             if fsym.parent_sym is Some(p) {
@@ -186,6 +199,7 @@ impl CgContext {
                 }
                 return None; // 不是成员函数
             }
+            return None;
         }
         if self.sym is evsym: *EnumVariantSymbol {
             if evsym.parent_enum is Some(e) {
@@ -193,6 +207,25 @@ impl CgContext {
             }
             panic "BUG: EnumVariantSymbol's parent_enum is None";
         }
-        panic "BUG: only FuncSymbol and EnumVariantSymbol need to generate func body.";
+        if self.sym is lsym: *LambdaSymbol {
+            // 闭包体里的 Self 跟定义它的外层函数一致
+            let mut cur: Option<*ScopeSymbol> = lsym.parent_sym;
+            while cur is Some(ss) {
+                if ss is fsym: *FuncSymbol {
+                    if fsym.parent_sym is Some(p) {
+                        if p is trait_sym: *TraitSymbol {
+                            return Some(trait_sym.self_ty.target_sty);
+                        }
+                        if p is impl_sym: *ImplSymbol {
+                            return Some(impl_sym.self_ty.target_sty);
+                        }
+                    }
+                    return None;
+                }
+                cur = ss.parent_scope();
+            }
+            return None;
+        }
+        panic "BUG: only FuncSymbol / EnumVariantSymbol / LambdaSymbol need to generate func body.";
     }
 }

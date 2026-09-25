@@ -78,6 +78,12 @@ impl CodeGenerator {
             trait_sym: *TraitSymbol => {
                 return self.cg_trait_typemeta(move trait_sym);
             }
+            fsym: *FuncSymbol => {
+                return self.cg_callable_typemeta(fsym as *TypeSymbol, 32_u8); // TM_Func
+            }
+            lsym: *LambdaSymbol => {
+                return self.cg_callable_typemeta(lsym as *TypeSymbol, 36_u8); // TM_Lambda
+            }
             _ => {
                 let meta = Type::of(&*sym as &TypeSymbol as &Any);
                 let name = meta.short_name();
@@ -264,6 +270,44 @@ impl CodeGenerator {
             self.llds.type_ZnTypeMeta(),
             &[
                 name, kind, ty_param_count, ty_argc, align, size, copyfn.as_const(), dtorfn.as_const(), ty_argv, instantiated_from, hashmap
+            ] as Slice<CgConst>
+        );
+        gv.set_initializer(agg);
+        return gv;
+    }
+
+    // 函数项 / 闭包这些"可调用类型"的 TypeMeta。
+    // 它们都是零大小类型, 没有字段, 也不需要 copy/dtor。
+    // kind 用 ZnTypeMetaKind::TM_Func / TM_Lambda。
+    fn cg_callable_typemeta(&mut self, sym: *TypeSymbol, kind: UInt8) -> CgGlobal {
+        let gv_name = self.typemeta_name_of(sym);
+        if self.is_imported(sym) {
+            return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTypeMeta());
+        }
+
+        let gv = self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTypeMeta());
+        if gv.has_initializer() {
+            return gv; // 已经生成了
+        }
+
+        let cg_ty = self.cgtype_of(sym.to_sty()).get_or_panic();
+
+        let name = self.llds.get_const_string(sym.export_key().as_str().deref());
+        let kind_c = self.llds.get_const_int8(kind);
+        let ty_param_count = self.llds.get_const_int8(0_u8);
+        let ty_argc = self.llds.get_const_int8(0_u8);
+        let align = self.llds.get_const_int8(self.llds.alignment_of(cg_ty) as UInt8);
+        let size = self.llds.get_const_int64(self.llds.storage_size_of(cg_ty) as UInt64);
+        let copyfn = self.cg_empty_copyfn();
+        let dtorfn = self.cg_empty_dtorfn();
+        let ty_argv = self.llds.get_const_null();
+        let instantiated_from = self.llds.get_const_null();
+        let hashmap = self.llds.get_null_value_of(self.llds.type_byte_array(56_u)); // sizeof(HashMap)
+
+        let agg = self.llds.get_const_struct(
+            self.llds.type_ZnTypeMeta(),
+            &[
+                name, kind_c, ty_param_count, ty_argc, align, size, copyfn.as_const(), dtorfn.as_const(), ty_argv, instantiated_from, hashmap
             ] as Slice<CgConst>
         );
         gv.set_initializer(agg);

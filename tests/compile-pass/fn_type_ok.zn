@@ -1,0 +1,26 @@
+// fn 类型: 解析、作为参数/变量的类型、以及函数项到 fn 指针的隐式转换
+// (方法 / enum variant 的转换见 run-pass/fn_pointer.zn;
+//  闭包和无捕获 lambda 到 fn 的转换还没实现, 见 compile-fail 用例)
+
+fn add_one(x: Int) -> Int { return x + 1_i; }
+fn no_args() -> Int { return 1_i; }
+fn no_ret(x: Int) {}
+
+fn takes_fn(f: fn(Int) -> Int) -> Int { return f(1_i); }
+
+struct Holder {
+    f: fn(Int) -> Int,
+}
+
+fn main() {
+    let f1: fn(Int) -> Int = add_one;
+    let f2 = add_one;                 // 类型可以从函数项推导出来
+    let f3: fn() -> Int = no_args;
+    let f4: fn(Int) = no_ret;         // 不写返回类型等价于 -> ()
+    let f5: fn(Int) -> Int = add_one;
+    let r = takes_fn(f1);
+    let r2 = takes_fn(f2);
+    let r3 = takes_fn(f5);
+    let h: Holder = { .f = add_one }: Holder;
+    let r4 = takes_fn(h.f);
+}

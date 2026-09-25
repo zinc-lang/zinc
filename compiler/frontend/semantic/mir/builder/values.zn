@@ -201,8 +201,9 @@ impl CfgBuilder {
                 return (move qp as *RValue, bb);
             }
             lam: *LambdaValue => {
-                // todo 还没有为闭包生成单独的 MIR 函数
-                bb.add_step(lam as *XValue);
+                // 闭包字面量本身不产生运行时代码 (它的函数体单独生成一个函数),
+                // 所以这里不添加 step; 使用它的地方 (比如转 fn 指针的 CastValue)
+                // 会直接处理这个操作数。
                 return (move lam as *RValue, bb);
             }
             ctx_rv: *ContextValue => {
@@ -482,7 +483,7 @@ impl CfgBuilder {
                                 );
                             let alloca_str = AllocaValue::create(const_str as *RValue);
                             let receiver = AddressofValue::create(span, AddressofKind::Ref, alloca_str as *RValue);
-                            let method = self.resolver.method_to_string_inplace(self.resolver.sty_str(), self.func_sym);
+                            let method = self.resolver.method_to_string_inplace(self.resolver.sty_str(), self.sym);
                             let method_call = MethodCallValue::create(
                                 receiver as *RValue, method, GenericArgs::new(), args, SType::sty_unit()
                             );
@@ -492,7 +493,7 @@ impl CfgBuilder {
                         }
                         InterpolationPart::Var(v) => {
                             // 调用 v 的类型的 to_string_inplace
-                            let method = self.resolver.method_to_string_inplace(v.stype, self.func_sym);
+                            let method = self.resolver.method_to_string_inplace(v.stype, self.sym);
                             let rd = ReadValue::new(interpolation.expr as *ExpressionNode, v);
                             rd.sty = v.stype;
                             bb.add_step(rd as *XValue);

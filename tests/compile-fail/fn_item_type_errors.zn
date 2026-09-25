@@ -1,0 +1,9 @@
+// 每个函数项都是独立的类型 (和闭包一样), 签名相同也不能互相赋值;
+// 需要互相赋值时先显式转成 fn 指针。
+fn add_one(x: Int) -> Int { return x + 1_i; }
+fn sub_one(x: Int) -> Int { return x - 1_i; }
+
+fn main() {
+    let mut f = add_one;
+    f = sub_one;
+}

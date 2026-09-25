@@ -1,0 +1,87 @@
+use std::assert;
+fn add_one(x: Int) -> Int { return x + 1_i; }
+fn mul(a: Int, b: Int) -> Int { return a * b; }
+
+fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
+
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+struct Big {
+    a: Int,
+    b: Int,
+    c: Int,
+}
+
+impl Point {
+    fn get_x(&self) -> Int { return self.x; }
+    fn add(&self, k: Int) -> Int { return self.x + k; }
+    fn add_mut(&mut self, k: Int) -> Int { self.x = self.x + k; return self.x; }
+    fn make(x: Int) -> Point { return { .x = x, .y = 0_i }: Point; }
+    // 大返回值 (走 sret) 和大参数 (>16 字节, 按指针传) 需要 thunk 适配 ABI
+    fn big(&self) -> Big { return { .a = self.x, .b = self.x, .c = self.x }: Big; }
+    fn take_big(&self, b: Big) -> Int { return b.a + b.b + b.c; }
+}
+
+enum Opt {
+    Nil,
+    One(Int),
+    Two(Int, Int),
+}
+
+fn main() {
+    // 函数项 -> fn 指针
+    let f1: fn(Int) -> Int = add_one;
+    let f2 = add_one;
+    let m: fn(Int, Int) -> Int = mul;
+    assert(f1(1_i) == 2_i);
+    assert(f2(41_i) == 42_i);
+    assert(m(6_i, 7_i) == 42_i);
+    assert(apply(add_one, 9_i) == 10_i);
+
+    // 方法 -> fn 指针: 接收者 + 隐藏的 TypeMeta 需要 thunk 转成 fn 的 ABI
+    let g1: fn(&Point) -> Int = Point::get_x;
+    let g2: fn(&Point, Int) -> Int = Point::add;
+    let p = { .x = 10_i, .y = 20_i }: Point;
+    assert(g1(&p) == 10_i);
+    assert(g2(&p, 5_i) == 15_i);
+
+    // &mut self 接收者
+    let mut q = { .x = 1_i, .y = 0_i }: Point;
+    let g3: fn(&mut Point, Int) -> Int = Point::add_mut;
+    assert(g3(&mut q, 2_i) == 3_i);
+    assert(q.x == 3_i);
+
+    // 关联函数 (没有 receiver, 但仍然是成员函数, 需要 TypeMeta)
+    let g4: fn(Int) -> Point = Point::make;
+    let r = g4(7_i);
+    assert(r.x == 7_i);
+    assert(r.y == 0_i);
+
+    // sret 返回值 / 大参数
+    let g5: fn(&Point) -> Big = Point::big;
+    let got = g5(&p);
+    assert(got.a == 10_i);
+    assert(got.b == 10_i);
+    assert(got.c == 10_i);
+    let g6: fn(&Point, Big) -> Int = Point::take_big;
+    assert(g6(&p, got) == 30_i);
+
+    // enum variant 构造函数 -> fn 指针 (sret + TypeMeta)
+    let c1: fn(Int) -> Opt = Opt::One;
+    let c2: fn(Int, Int) -> Opt = Opt::Two;
+    let o1 = c1(3_i);
+    if o1 is Opt::One(v) {
+        assert(v == 3_i);
+    } else {
+        assert(false);
+    }
+    let o2 = c2(4_i, 5_i);
+    if o2 is Opt::Two(a, b) {
+        assert(a + b == 9_i);
+    } else {
+        assert(false);
+    }
+}

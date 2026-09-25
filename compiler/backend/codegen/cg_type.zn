@@ -23,6 +23,12 @@ impl CodeGenerator {
             let s = self.llds.storage_size_of(cgtype);
             return self.llds.get_const_int64(s as UInt64).as_value();
         } else {
+            if sty.type_symbol is lsym: *LambdaSymbol {
+                // 没有捕获的闭包是空结构体 (有 CgType), 走到这里说明它带了捕获环境
+                let name = lsym.mangle_name();
+                let msg = f"BUG: 有捕获的闭包 ($(name)) 还不能作为值保存 (等 Fn/FnMut 支持)";
+                panic msg.as_str().deref();
+            }
             let tm = self.rt_typemeta_of(sty, ctx);
             return self.access_typemeta_size(tm);
         }
@@ -39,8 +45,16 @@ impl CodeGenerator {
             type *FnUpperTypeSymbol => return None;
             type *FnUpperMutTypeSymbol => return None;
             type *ExternTypeSymbol => return None;
-            type *LambdaSymbol => return None;
-            type *FuncSymbol => return None;
+            lambda_sym: *LambdaSymbol => {
+                // 闭包可以看成一个结构体, 没有捕获时它不携带任何数据, 相当于空结构体
+                if lambda_sym.captures.is_empty() {
+                    return Some(self.llds.type_empty_struct());
+                }
+                // 有捕获的闭包需要携带捕获环境 (等 Fn/FnMut 支持)
+                return None;
+            }
+            // 函数项也是独立的类型, 它不携带数据, 相当于空结构体 (和没有捕获的闭包一样)
+            type *FuncSymbol => return Some(self.llds.type_empty_struct());
 
             assoc: *AssociatedTypeSymbol => {
                 return self.cgtype_of(assoc.target_sty);
@@ -293,6 +307,11 @@ impl CodeGenerator {
             }
             _ => {
                 if sty.args.ty_args.is_empty() {
+                    // 可调用类型 (函数项/闭包) 的 TypeMeta 是按需生成的,
+                    // 不像 struct/enum 那样在 codegen_items 里预先全部生成
+                    if sty.type_symbol is type *FuncSymbol || sty.type_symbol is type *LambdaSymbol {
+                        return self.cg_typemeta(sty.type_symbol).as_value();
+                    }
                     return self.get_typemeta_global(sty.type_symbol).as_value();
                 } else {
                     return self.instantiated_typemeta(sty, ctx);

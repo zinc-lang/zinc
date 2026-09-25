@@ -1,0 +1,71 @@
+// 函数项作为一等公民: 每个函数项有自己的类型 (零大小类型), 调用它就是直接调用
+use std::assert;
+
+struct Big {
+    a: Int,
+    b: Int,
+    c: Int,
+}
+
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+impl Point {
+    fn get_x(&self) -> Int { return self.x; }
+    fn add(&self, k: Int) -> Int { return self.x + k; }
+    fn make(x: Int) -> Point { return { .x = x, .y = 0_i }: Point; }
+    fn big(&self) -> Big { return { .a = self.x, .b = self.x, .c = self.x }: Big; }
+    fn take_big(&self, b: Big) -> Int { return b.a + b.b + b.c; }
+}
+
+fn add_one(x: Int) -> Int { return x + 1_i; }
+fn mul(a: Int, b: Int) -> Int { return a * b; }
+fn make_big(n: Int) -> Big { return { .a = n, .b = n + 1_i, .c = n + 2_i }: Big; }
+fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
+
+fn main() {
+    // 存下来的函数项: 直接调用, 也可以拷贝
+    let f = add_one;
+    assert(f(1_i) == 2_i);
+    let g = f;
+    assert(g(41_i) == 42_i);
+
+    let m = mul;
+    assert(m(6_i, 7_i) == 42_i);
+
+    // 转成 fn 指针: 显式标注 / 作为实参隐式转换
+    let fp: fn(Int) -> Int = f;
+    assert(fp(9_i) == 10_i);
+    assert(apply(add_one, 9_i) == 10_i);
+
+    // 方法 (接收者是第一个参数) / 关联函数 (有隐藏的 TypeMeta)
+    let gx = Point::get_x;
+    let p = { .x = 10_i, .y = 20_i }: Point;
+    assert(gx(&p) == 10_i);
+    let add = Point::add;
+    assert(add(&p, 5_i) == 15_i);
+    let mk = Point::make;
+    let q = mk(7_i);
+    assert(q.x == 7_i);
+
+    // 大返回值 (sret) / 大参数 (按指针传)
+    let mb = make_big;
+    let b = mb(1_i);
+    assert(b.a == 1_i);
+    assert(b.c == 3_i);
+    let mbig = Point::big;
+    let bb = mbig(&p);
+    assert(bb.c == 10_i);
+    let mtake = Point::take_big;
+    assert(mtake(&p, bb) == 30_i);
+
+    // 函数项也可以放进 Option (它有对应的 TypeMeta)
+    let o = Some(add_one);
+    if o is Some(h) {
+        assert(h(1_i) == 2_i);
+    } else {
+        assert(false);
+    }
+}

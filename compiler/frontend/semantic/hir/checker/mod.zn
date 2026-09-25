@@ -451,8 +451,15 @@ impl TypeCheckContext {
             }
             qp: *QualifiedPathValue => {
                 if qp.symbol is fsym: *FuncSymbol { // 把函数/方法作为一等公民使用
-                    // 类型是 fn(参数...) -> 返回值 (带泛型的函数会在这里报错)
-                    qp.sty = self.fn_item_sty(fsym, qp.expr.span());
+                    // 每个函数项都是独立的类型 (FuncSymbol 本身实现 TypeSymbol), 和闭包一样;
+                    // 需要 fn 指针时由隐式转换 (FunctionToFnLower) 处理。
+                    // 带泛型的函数项不存在单个可调用地址, 直接报错。
+                    if fn_item_is_generic(fsym) {
+                        DiagnosticEngine::get().emit_generic_fn_to_fn_type(fsym.short_name(), qp.expr.span());
+                        qp.sty = SType::sty_invalid(qp.expr.span());
+                        return qp.sty;
+                    }
+                    qp.sty = fsym.to_sty();
                     return qp.sty;
                 }
                 else if qp.symbol is evsym: *EnumVariantSymbol {
@@ -1042,6 +1049,16 @@ impl TypeCheckContext {
                             DiagnosticEngine::get().emit_generic_param_infer_failed(p.short_name(), qp.expr.span());
                             return;
                         } 
+                    }
+                } else if qp.symbol is fsym: *FuncSymbol {
+                    // 函数项有它自己的类型; 期望类型是 fn 指针时可以隐式转换
+                    // (转换节点由调用方通过 add_implicit_cast 插入)
+                    let src_sty = self.infer(qp as *XValue);
+                    if !src_sty.is_invalid() {
+                        let k = resolve_type_cast_kind(src_sty, sty);
+                        if k is ResolvedCastKind::Err {
+                            DiagnosticEngine::get().emit_type_mismatch(src_sty.to_string(), sty.to_string(), qp.expr.span());
+                        }
                     }
                 } else {
                     expect_type_eq(sty, self.infer(qp as *XValue), qp.expr.span());
@@ -1671,22 +1688,6 @@ impl TypeCheckContext {
         self.fsym = None;
     }
 
-    // 函数项 (含方法) 作为一等公民时的类型: fn(参数...) -> 返回类型 (FnLower).
-    // 带泛型的函数/方法不存在单个可调用地址, 直接报错。
-    fn fn_item_sty(&mut self, fsym: *FuncSymbol, span: SourceSpan) -> *SType {
-        if fn_item_is_generic(fsym) {
-            DiagnosticEngine::get().emit_generic_fn_to_fn_type(fsym.short_name(), span);
-            return SType::sty_invalid(span);
-        }
-        let mut params = (type Vec<*SType>)::new();
-        let mut i: UInt = 0;
-        while i < fsym.params.len() {
-            params.push(fn_item_param_sty(fsym, i));
-            i += 1;
-        }
-        return FnLowerTypeSymbol::new().to_sty_of_sig(move params, fn_item_ret_sty(fsym));
-    }
-
     // 带参数的 enum variant 作为一等公民时的类型: fn(字段类型...) -> Enum
     // (泛型 enum 的构造函数推理比较复杂, 先不支持)
     fn enum_ctor_sty(&mut self, evsym: *EnumVariantSymbol, span: SourceSpan) -> *SType {
@@ -2129,12 +2130,45 @@ impl TypeCheckContext {
         if callee_sty.type_symbol is lsym: *LambdaSymbol {
             return self.check_lambda_call(move fn_call, move lsym);
         }
+        // callee 是存下来的函数项: 直接按它自己的签名调用
+        if callee_sty.type_symbol is fsym: *FuncSymbol {
+            return self.check_fn_item_call(move fn_call, move fsym);
+        }
         // callee 是 fn 指针类型的值: 通过它间接调用, 返回签名里的返回类型
         if callee_sty.type_symbol is type *FnLowerTypeSymbol {
             return self.check_fn_ptr_call(move fn_call, move callee_sty);
         }
         DiagnosticEngine::get().emit_expr_not_callable(fn_call.expr.span());
         return SType::sty_invalid(fn_call.expr.span());
+    }
+
+    // 调用一个存下来的函数项 (类型是 FuncSymbol 自己的类型)。
+    // 直接按它自己的签名检查实参, 返回它自己的返回类型。
+    fn check_fn_item_call(&mut self, fn_call: *FnCallValue, fsym: *FuncSymbol) -> *SType {
+        if fn_item_is_generic(fsym) {
+            DiagnosticEngine::get().emit_generic_fn_to_fn_type(fsym.short_name(), fn_call.expr.span());
+            return SType::sty_invalid(fn_call.expr.span());
+        }
+        // 方法/关联函数调用需要 Self 的具体类型 (代码生成时作为 TypeMeta 传入)
+        if fsym.parent_sym is Some(isym: *ImplSymbol) {
+            fn_call.member_of = Some(isym.target_sty);
+        }
+        let param_len = fsym.params.len();
+        if fn_call.fn_args.len() != param_len {
+            DiagnosticEngine::get().emit_wrong_arg_count(param_len, fn_call.fn_args.len(), fn_call.expr.span());
+            return SType::sty_invalid(fn_call.expr.span());
+        }
+        let mut params_tys = (type Vec<*SType>)::new();
+        let mut args_values = (type Vec<*RValue>)::new();
+        let mut i: UInt = 0;
+        while i < param_len {
+            params_tys.push(fn_item_param_sty(fsym, i));
+            let arg = fn_call.fn_args.at(i).get_or_panic();
+            args_values.push(arg.value);
+            i += 1;
+        }
+        fn_call.desugared_args = self.desugar_fn_args(&args_values, &params_tys);
+        return fn_item_ret_sty(fsym);
     }
 
     // 通过 fn 指针类型的值间接调用: fn(A, B) -> C
@@ -2171,6 +2205,12 @@ impl TypeCheckContext {
             if p.stype.is_invalid() {
                 return;
             }
+        }
+
+        // 没有捕获的闭包可以退化成普通函数, 登记下来让 MIR/代码生成阶段为它生成函数体。
+        // (有捕获的闭包要携带环境, 等 Fn/FnMut 支持之后再处理)
+        if lsym.captures.is_empty() {
+            self.sema_model.all_lambda.push(lsym);
         }
 
         // 捕获绑定的类型依赖外层变量, builder 阶段外层变量的类型常常还没推导出来,
@@ -2333,6 +2373,26 @@ impl TypeCheckContext {
                     i += 1;
                 }
                 formal_return_ty = callee_sty.fn_return_sty();
+            } else if callee_sty.type_symbol is fsym: *FuncSymbol {
+                // callee 是存下来的函数项 (类型是 FuncSymbol): 直接按它自己的签名调用
+                if fn_item_is_generic(fsym) {
+                    DiagnosticEngine::get().emit_generic_fn_to_fn_type(fsym.short_name(), fn_call.expr.span());
+                    return;
+                }
+                if fsym.parent_sym is Some(isym: *ImplSymbol) {
+                    fn_call.member_of = Some(isym.target_sty);
+                }
+                let param_len = fsym.params.len();
+                if fn_call.fn_args.len() != param_len {
+                    DiagnosticEngine::get().emit_wrong_arg_count(param_len, fn_call.fn_args.len(), fn_call.expr.span());
+                    return;
+                }
+                let mut i: UInt = 0;
+                while i < param_len {
+                    params_ty.push(fn_item_param_sty(fsym, i));
+                    i += 1;
+                }
+                formal_return_ty = fn_item_ret_sty(fsym);
             } else {
                 DiagnosticEngine::get().emit_expr_not_callable(fn_call.expr.span());
                 return;

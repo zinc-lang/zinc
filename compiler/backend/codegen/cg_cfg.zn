@@ -42,6 +42,20 @@ impl CodeGenerator {
         return f;
     }
 
+    // 闭包 (没有捕获时) 生成成一个普通函数: 它的 LLVM 签名就是对应的 fn 指针的签名,
+    // 所以可以直接把函数地址当作 fn 指针的值。
+    fn cg_lambda_decl(&mut self, lsym: *LambdaSymbol) -> CgFunc {
+        let mangle_name = lsym.mangle_name();
+        let name = mangle_name.as_str().deref();
+        // 如果已经生成了, 直接返回
+        if self.llds.get_function(name) is Some(cgf) {
+            return cgf;
+        }
+        let sig = self.signature_of_lambda(lsym);
+        let functy = self.functype_of_sig(sig);
+        return self.llds.create_fn(functy, name);
+    }
+
     fn cg_ev_decl(&mut self, evsym: *EnumVariantSymbol) -> CgFunc {
         if evsym.fields.is_empty() { // 没有参数的 enum variant 不需要生成函数
             return CgFunc::null();
@@ -256,6 +270,31 @@ impl CodeGenerator {
         return sig;
     }
 
+    // 闭包自己的"fn 类型": fn(参数类型...) -> 返回类型。
+    // 闭包函数的 LLVM 签名直接按这个 fn 类型算, 这样它和 fn 指针的 ABI 完全一致。
+    fn lambda_fn_sty(&mut self, lsym: *LambdaSymbol) -> *SType {
+        let mut params = (type Vec<*SType>)::new();
+        for p in lsym.params {
+            params.push(p.stype);
+        }
+        let mut ret_sty = SType::sty_unit();
+        if lsym.return_sty is Some(r) {
+            ret_sty = move r;
+        }
+        return FnLowerTypeSymbol::new().to_sty_of_sig(move params, move ret_sty);
+    }
+
+    fn signature_of_lambda(&mut self, lsym: *LambdaSymbol) -> *CgSignature {
+        let key = lsym as *raw LambdaSymbol as UInt;
+        if self.cached_signatures.at(&key) is Some(sig) {
+            return sig;
+        }
+        let fn_sty = self.lambda_fn_sty(lsym);
+        let sig = self.signature_of_fn_sty(fn_sty);
+        self.cached_signatures.insert(key, sig);
+        return sig;
+    }
+
     // 两个 LLVM 签名的参数种类是否完全一样 (用来判断能否直接把函数地址当 fn 指针用)
     fn sig_same_abi(&self, a: *CgSignature, b: *CgSignature) -> Bool {
         if a.params.len() != b.params.len() {
@@ -452,6 +491,120 @@ impl CodeGenerator {
             let msg = f"BUG: function ($(mangle_name))'s CFG is not found in semantic model ";
             panic msg.as_str().deref();
         }
+        return func;
+    }
+
+    // 生成闭包体的函数 (没有捕获的闭包)。按需生成: 只有闭包被转成 fn 指针时才需要。
+    // 签名里只有普通参数 (没有 receiver / TypeMeta / 泛型参数), 所以比 cg_func_body 简单。
+    fn cg_lambda_body(&mut self, lsym: *LambdaSymbol) -> CgFunc {
+        let mangle_name = lsym.mangle_name();
+        let func = self.cg_lambda_decl(lsym);
+        if !func.is_empty() {
+            return func; // 函数体已经生成了, 不要重复生成
+        }
+
+        let lsym_int = lsym as *raw LambdaSymbol as UInt;
+        if self.semantic_model.all_cfg.at(&lsym_int) is None {
+            let msg = f"BUG: lambda ($(mangle_name))'s CFG is not found in semantic model ";
+            panic msg.as_str().deref();
+        }
+        let cfg = self.semantic_model.all_cfg.at(&lsym_int).get_or_panic();
+        let signature = self.cached_signatures.at(&lsym_int).get_or_panic();
+        let ctx = CgContext::new_with_lambda(lsym, signature, func);
+
+        let span = lsym.lambda_node.span();
+        self.add_debuginfo(func, span.start, mangle_name);
+
+        let entry_bb = self.llds.create_bb("entry", func);
+        let saved_insert_point = self.llds.save_ip();
+        self.llds.set_insert_point(entry_bb);
+        self.llds.create_do_nothing();
+
+        let mut param_idx: UInt = 0;
+        for param in signature.params {
+            match param {
+                CgParam::SRet => {
+                    // 大返回值: 隐藏的返回槽位指针, 由 BrRet 的代码生成写入, 这里不用管
+                    self.llds.set_arg_name(func, param_idx, "$ret");
+                }
+                CgParam::FnArgVal(i1, j1, _) => {
+                    let param_sym = *lsym.params.index(i1).deref();
+                    let p_name = param_sym.short_name().as_str().deref();
+                    self.llds.set_arg_name(func, param_idx, p_name);
+
+                    let arg = self.llds.get_arg(func, j1);
+                    let cgtype = self.cgtype_of(param_sym.stype).get_or_panic();
+                    let alloca = self.llds.create_alloca_sized(cgtype);
+                    self.llds.create_store(arg, alloca);
+                    ctx.arg_map.insert(param_sym as *raw VarSymbol as UInt, alloca);
+                    self.alloc_drop_flag(param_sym, ctx);
+                }
+                CgParam::FnArgRef(i2, j2, _) => {
+                    let param_sym = *lsym.params.index(i2).deref();
+                    let p_name = param_sym.short_name().as_str().deref();
+                    self.llds.set_arg_name(func, param_idx, p_name);
+
+                    let arg = self.llds.get_arg(func, j2);
+                    let size = self.size_of_stype(param_sym.stype, ctx);
+                    if self.cgtype_of(param_sym.stype) is Some(cgtype) {
+                        let alloca = self.llds.create_alloca_sized(cgtype);
+                        self.llds.create_memcpy(alloca, arg, size);
+                        ctx.arg_map.insert(param_sym as *raw VarSymbol as UInt, alloca);
+                    } else {
+                        let alloca = self.llds.create_alloca_unsized(size);
+                        self.llds.create_memcpy(alloca, arg, size);
+                        ctx.arg_map.insert(param_sym as *raw VarSymbol as UInt, alloca);
+                    }
+                    self.alloc_drop_flag(param_sym, ctx);
+                }
+                _ => {
+                    panic "BUG: unexpected param kind in lambda signature";
+                }
+            }
+            param_idx += 1;
+        }
+
+        // 分配局部变量
+        let mut all_locals: Vec<*VarSymbol> = (type Vec<*VarSymbol>)::new();
+        lsym.body_block.get_or_panic().collect_all_locals(&mut all_locals);
+
+        for v in all_locals {
+            if self.cgtype_of(v.stype) is Some(cgty) {
+                let alloca = self.llds.create_alloca_sized(cgty);
+                ctx.local_map.insert(v as *raw VarSymbol as UInt, alloca);
+            } else {
+                let size = self.size_of_stype(v.stype, ctx);
+                let alloca = self.llds.create_alloca_unsized(size);
+                ctx.local_map.insert(v as *raw VarSymbol as UInt, alloca);
+            }
+            self.alloc_drop_flag(move v, ctx);
+        }
+        // 遍历 cfg, 先创建所有 BasicBlock
+        for bb in cfg.basic_blocks {
+            let cgbb = self.llds.create_bb("", func);
+            ctx.bb_map.insert(bb as *raw BasicBlock as UInt, cgbb);
+        }
+        // 生成 basic block 的指令
+        let mut is_first = true;
+        for bb in cfg.basic_blocks {
+            let bb_int = bb as *raw BasicBlock as UInt;
+            let llbb = ctx.bb_map.at(&bb_int).get_or_panic();
+            if is_first {
+                self.llds.set_insert_point(entry_bb);
+                self.llds.create_br(llbb);
+                is_first = false;
+            }
+            self.llds.set_insert_point(llbb);
+            for step in bb.steps {
+                self.cg_xvalue(step.value, ctx);
+            }
+            if bb.terminator is Some(term) {
+                self.cg_terminator(term, ctx);
+            }
+        }
+
+        self.llds.restore_ip(saved_insert_point);
+        self.llds.verify_function(func);
         return func;
     }
 

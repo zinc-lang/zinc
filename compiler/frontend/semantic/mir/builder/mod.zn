@@ -13,7 +13,7 @@ use std::collections::hashset::HashSet;
 struct CfgBuilder {
     semantic_model: *SemanticModel,
     resolver: Resolver,
-    func_sym: *FuncSymbol,
+    sym: *Symbol, // FuncSymbol 或者 LambdaSymbol
     basic_blocks: Vec<*BasicBlock>,
     block_stack: Vec<*BlockSentence>,
     temps: Vec<*VarSymbol>,
@@ -31,11 +31,11 @@ struct BasicBlockChunk {
 }
 
 impl CfgBuilder {
-    fn new(sm: *SemanticModel, func_sym: *FuncSymbol, r: Resolver) -> Self {
+    fn new(sm: *SemanticModel, sym: *Symbol, r: Resolver) -> Self {
         return {
             .semantic_model = move sm,
             .resolver = move r,
-            .func_sym = move func_sym,
+            .sym = move sym,
             .basic_blocks = (type Vec<*BasicBlock>)::new(),
             .block_stack = (type Vec<*BlockSentence>)::new(),
             .temps = (type Vec<*VarSymbol>)::new(),
@@ -46,21 +46,73 @@ impl CfgBuilder {
         }: CfgBuilder;
     }
 
-    fn build(&mut self) -> Option<*CFG> {
-        if self.func_sym.body is Some(body) {
+    fn params(&self) -> Vec<*VarSymbol> {
+        if self.sym is fsym: *FuncSymbol {
+            return fsym.params;
+        }
+        if self.sym is lsym: *LambdaSymbol {
+            return lsym.params;
+        }
+        panic "BUG: CfgBuilder::params with an unexpected symbol";
+    }
 
+    fn build(&mut self) -> Option<*CFG> {
+        if self.sym is fsym: *FuncSymbol {
+            if fsym.body is None {
+                return None;
+            }
+            let body = fsym.body.get_or_panic();
             let bb_pair = self.trans_block(body);
             // drop params
-            for p in self.func_sym.params {
+            for p in self.params() {
                 self.drop_var_sym(move p, bb_pair.end);
             }
             return Some(box {
-                .func_sym = self.func_sym,
+                .sym = self.sym,
                 .basic_blocks = bb_pair.topological_order(),
             }: CFG);
-        } else {
-            return None;
         }
+
+        if self.sym is lsym: *LambdaSymbol {
+            if lsym.body_block is None {
+                return None;
+            }
+            let body = lsym.body_block.get_or_panic();
+
+            if lsym.body_expr is Some(expr) {
+                // 表达式体: 翻译成"块的末尾隐式 return 这个表达式"。
+                // 仍然把 body_block 压栈, 这样产生的临时变量会挂在它上面,
+                // 供代码生成阶段分配局部变量。
+                self.block_stack.push(body);
+                let bb = self.new_bb();
+                let (rv, end_bb) = self.trans_rvalue(expr, bb);
+                end_bb.terminator = Some(box {
+                    .ret_val = Some(rv)
+                }: BrRet as *Terminator);
+                self.handle_temps_after_stmt(end_bb);
+                self.block_stack.pop();
+
+                let bb_pair = { .start = move bb, .end = move end_bb }: BasicBlockChunk;
+                for p in self.params() {
+                    self.drop_var_sym(move p, bb_pair.end);
+                }
+                return Some(box {
+                    .sym = self.sym,
+                    .basic_blocks = bb_pair.topological_order(),
+                }: CFG);
+            }
+
+            let bb_pair = self.trans_block(body);
+            for p in self.params() {
+                self.drop_var_sym(move p, bb_pair.end);
+            }
+            return Some(box {
+                .sym = self.sym,
+                .basic_blocks = bb_pair.topological_order(),
+            }: CFG);
+        }
+
+        return None;
     }
 
     fn new_bb(&mut self) -> *BasicBlock {
@@ -193,7 +245,7 @@ impl CfgBuilder {
             i -= 1;
         }
 
-        for p in self.func_sym.params {
+        for p in self.params() {
             if p as *raw VarSymbol as UInt != except_var_i {
                 self.drop_var_sym(move p, bb);
             }

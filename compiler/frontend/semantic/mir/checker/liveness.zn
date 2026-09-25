@@ -72,7 +72,7 @@ impl LivenessChecker {
 
         if bb.index == 0 {
             // 入口, 用参数初始化
-            for param in self.cfg.func_sym.params {
+            for param in self.cfg.params() {
                 let p = param as *raw VarSymbol as UInt;
                 alived.insert(p);
             }

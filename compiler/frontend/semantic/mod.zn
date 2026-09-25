@@ -30,6 +30,9 @@ pub struct SemanticModel {
     all_fn: Vec<*FuncSymbol>,
     all_extern_type: Vec<*ExternTypeSymbol>,
 
+    // 需要生成代码的闭包 (目前只有没有捕获的闭包: 它可以退化成一个普通函数)
+    all_lambda: Vec<*LambdaSymbol>,
+
     all_cfg: HashMap<UInt, *CFG>,
 }
 
@@ -54,6 +57,7 @@ impl SemanticModel {
                 .all_global = (type Vec<*VarSymbol>)::new(),
                 .all_fn = (type Vec<*FuncSymbol>)::new(),
                 .all_extern_type = (type Vec<*ExternTypeSymbol>)::new(),
+                .all_lambda = (type Vec<*LambdaSymbol>)::new(),
                 .all_cfg = (type HashMap<UInt, *CFG>)::new(),
             }: SemanticModel;
             return Some(move model);
@@ -79,9 +83,17 @@ impl SemanticModel {
     pub fn cfg_build(*self) {
         let resolver = Resolver::new(self.root_mod_sym);
         for f in self.all_fn {
-            let mut builder = CfgBuilder::new(self, f, resolver);
+            let mut builder = CfgBuilder::new(self, f as *Symbol, resolver);
             if builder.build() is Some(cfg) {
                 let key = f as *raw FuncSymbol as UInt;
+                cfg.check();
+                self.all_cfg.insert(key, move cfg);
+            }
+        }
+        for l in self.all_lambda {
+            let mut builder = CfgBuilder::new(self, l as *Symbol, resolver);
+            if builder.build() is Some(cfg) {
+                let key = l as *raw LambdaSymbol as UInt;
                 cfg.check();
                 self.all_cfg.insert(key, move cfg);
             }

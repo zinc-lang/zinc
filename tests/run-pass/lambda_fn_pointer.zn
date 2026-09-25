@@ -1,0 +1,81 @@
+// 没有捕获的闭包 -> fn 指针: 闭包会生成一个签名和 fn 指针一致的函数
+use std::assert;
+
+struct Big {
+    a: Int,
+    b: Int,
+    c: Int,
+}
+
+fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
+fn add3(a: Int, b: Int, c: Int) -> Int { return a + b + c; }
+
+// 闭包签名不依赖外层泛型参数时, 一样可以生成函数
+fn in_generic<T>(v: T) -> Int {
+    let g: fn(Int) -> Int = (y: Int) => y + 1_i;
+    return g(41_i);
+}
+
+fn main() {
+    // 基本转换 + 直接作为实参
+    let f1: fn(Int) -> Int = (x: Int) => x + 1_i;
+    assert(f1(1_i) == 2_i);
+    assert(apply((x: Int) => x * 2_i, 21_i) == 42_i);
+
+    // 多参数 / 无参数
+    let f2: fn(Int, Int) -> Int = (a: Int, b: Int) => a * b;
+    assert(f2(6_i, 7_i) == 42_i);
+    let f3: fn() -> Int = () => 7_i;
+    assert(f3() == 7_i);
+
+    // 大结构体参数 (>16 字节, 按指针传) 和大返回值 (sret)
+    let mk: fn(Int) -> Big = (x: Int) => { .a = x, .b = x, .c = x }: Big;
+    let got = mk(5_i);
+    assert(got.a == 5_i);
+    assert(got.b == 5_i);
+    assert(got.c == 5_i);
+    let sum: fn(Big) -> Int = (v: Big) => v.a + v.b + v.c;
+    assert(sum(got) == 15_i);
+
+    // 块体闭包: 闭包内部的局部变量不算捕获
+    let g: fn(Int) -> Int = .{
+        (n: Int) -> Int => {
+            let mut s = 0_i;
+            let mut i = 1_i;
+            while i <= n {
+                if i % 2_i == 0_i {
+                    s = s + i;
+                }
+                i = i + 1_i;
+            }
+            return s;
+        }
+    };
+    assert(g(6_i) == 12_i); // 2 + 4 + 6
+
+    // 闭包体里调用全局函数
+    let k: fn(Int, Int, Int) -> Int = (a: Int, b: Int, c: Int) => add3(a, b, c) * 2_i;
+    assert(k(1_i, 2_i, 3_i) == 12_i);
+
+    // 外层泛型参数不影响闭包签名
+    assert(in_generic(0_i) == 42_i);
+
+    // 嵌套闭包: 内层闭包在外层闭包体里转成 fn 指针
+    let outer: fn(Int) -> Int = .{
+        (n: Int) -> Int => {
+            let inner: fn(Int) -> Int = (x: Int) => x * 2_i;
+            return inner(n) + 1_i;
+        }
+    };
+    assert(outer(20_i) == 41_i);
+
+    // 同一个闭包字面量在循环里被多次取地址
+    let mut total = 0_i;
+    let mut i = 0_i;
+    while i < 3_i {
+        let h: fn(Int) -> Int = (x: Int) => x + 10_i;
+        total = total + h(i);
+        i = i + 1_i;
+    }
+    assert(total == 33_i); // 10 + 11 + 12
+}

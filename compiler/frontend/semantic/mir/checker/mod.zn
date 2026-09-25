@@ -20,7 +20,7 @@ impl CFG {
     // 检查哪个 bb 没有 terminator
     fn check_unterminated_bb(*self) {
         let mut return_unit = true;
-        if self.func_sym.return_sty is Some(t) {
+        if self.return_sty() is Some(t) {
             return_unit = t.is_unit();
         }
 
@@ -31,7 +31,7 @@ impl CFG {
                         .ret_val = None
                     }: BrRet as *Terminator);
                 } else {
-                    let mut span = self.func_sym.func_node.name.source_span;
+                    let mut span = self.name_span();
                     if !bb.steps.is_empty() {
                         let last = *bb.steps.index(bb.steps.len() - 1).deref();
                         span = last.value.expr_node().span();

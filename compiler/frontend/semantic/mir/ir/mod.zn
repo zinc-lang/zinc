@@ -56,7 +56,9 @@ struct BrPanic {
 }
 
 struct CFG {
-    func_sym: *FuncSymbol,
+    // 函数体或者闭包体 (FuncSymbol 或者 LambdaSymbol)。
+    // 两者的 params/body/return_sty 含义一致, 用下面的辅助函数统一访问。
+    sym: *Symbol,
     basic_blocks: Vec<*BasicBlock>,
 }
 
@@ -94,10 +96,40 @@ impl BasicBlock {
 
 impl CFG {
     fn dump(&self) {
-        print("CFG of "); println(self.func_sym.mangle_name());
+        print("CFG of "); println(self.sym.mangle_name());
         for bb in self.basic_blocks {
             bb.dump();
         }
+    }
+
+    // 下面几个辅助函数让 CFG 的消费者不用关心它属于函数还是闭包
+
+    fn params(&self) -> Vec<*VarSymbol> {
+        if self.sym is fsym: *FuncSymbol {
+            return fsym.params;
+        }
+        if self.sym is lsym: *LambdaSymbol {
+            return lsym.params;
+        }
+        panic "BUG: CFG::params with an unexpected symbol";
+    }
+
+    fn return_sty(&self) -> Option<*SType> {
+        if self.sym is fsym: *FuncSymbol {
+            return fsym.return_sty;
+        }
+        if self.sym is lsym: *LambdaSymbol {
+            return lsym.return_sty;
+        }
+        panic "BUG: CFG::return_sty with an unexpected symbol";
+    }
+
+    // 报告诊断时用的名字位置 (闭包没有名字, 用它字面量的位置)
+    fn name_span(&self) -> SourceSpan {
+        if self.sym is fsym: *FuncSymbol {
+            return fsym.func_node.name.source_span;
+        }
+        return self.sym.syntax_node().span();
     }
 }
 
