@@ -171,7 +171,9 @@ impl DtorValue {
         return box {
             .expr = move dummy as *ExpressionNode,
             .src = move src,
+            .is_trivial = false,
             .no_need = false,
+            .skipped = false,
         }: DtorValue;
     }
 }
@@ -198,8 +200,14 @@ impl XValue for DtorValue {
 
     fn dump(&self) {
         self.src.dump();
+        if self.is_trivial {
+            print(" [trivial] ");
+        }
         if self.no_need {
             print(" [no_need] ");
+        }
+        if self.skipped {
+            print(" [skipped] ");
         }
         if self.src is local: *LocalVar {
             if local.sym_var.drop_flag is Some(_) {

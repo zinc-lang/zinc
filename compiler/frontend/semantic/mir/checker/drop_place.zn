@@ -1,0 +1,52 @@
+use super::*;
+use super::liveness::*;
+use super::loan::*;
+
+impl LivenessChecker {
+    fn place_temp_drops(&mut self) {
+        self.mark_extended_temps();
+        self.cancel_extended_temp_drops();
+    }
+
+    // 标记生命周期需要延长的临时变量
+    fn mark_extended_temps(&self) {
+        for bb in self.cfg.basic_blocks {
+            let bb_key = bb as *raw BasicBlock as UInt;
+            // 在基本块内逐条指令重放 origin 状态 (临时变量的写和它的使用常常在同一个 bb 里,
+            // 用 bb 入口状态会漏)
+            let mut state = self.origin_in_states.at(&bb_key).get_or_panic();
+            for step in bb.steps {
+                if step.value is w: *WriteValue {
+                    if root_local(w.dst as *XValue) is Some(dst_vs) {
+                        let dst_key = dst_vs as *raw VarSymbol as UInt;
+                        if self.cfg.temp_map.at(&dst_key) is None {
+                            // 写进了一个生命周期超过当前语句的位置:
+                            // 源值可能指向的临时变量都要延长
+                            let origins = self.origin_of(w.src as *XValue, &state);
+                            for o in origins.locals {
+                                if self.cfg.temp_map.at(&o) is Some(t) {
+                                    t.extended = true;
+                                }
+                            }
+                        }
+                    }
+                    self.apply_write_origin(w, &mut state);
+                }
+            }
+        }
+    }
+
+    // 生命周期需要延长的临时变量: 把语句结束时插入的那条析构标记作废 (skipped),
+    // 只保留语句块退出时的析构。
+    // 这里不直接改 steps 列表, 而是给指令打标记: 后续的存活分析和代码生成都会忽略 skipped。
+    fn cancel_extended_temp_drops(&self) {
+        for t in self.cfg.temps {
+            if !t.extended {
+                continue;
+            }
+            if t.drop_step is Some(dtor) {
+                dtor.skipped = true;
+            }
+        }
+    }
+}

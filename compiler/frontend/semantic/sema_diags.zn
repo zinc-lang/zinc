@@ -309,6 +309,18 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    // 类型的成员都是位拷贝 (trivial copy, 不需要 copy fn), 但它实现了 Drop:
+    // 拷贝这类值时两个副本会共享同一份资源, 而析构会对两份各做一次, 可能重复释放。
+    // 警告打在 impl Drop 处 (与使用处无关)。
+    fn emit_warn_trivial_copy_with_drop(&mut self, ty_name: String, span: SourceSpan) {
+        self.emit({
+            .span = move span,
+            .severity = Severity::Warning,
+            .msg_zn = f"类型 $(ty_name) 的成员都是位拷贝 (trivial copy), 但它实现了 Drop; 拷贝时两个副本共享同一份资源, 析构却会各做一次, 可能重复释放",
+            .msg_en = f"type $(ty_name) is trivially copyable (needs no copy function), but it implements Drop; copies share the same resource while both are dropped, which may double free",
+        }: DiagItem);
+    }
+
     // 带字段的 enum variant 作为一等公民时只是一个"构造函数" (会被转换成 fn 类型),
     // 它本身不是一个可以取地址或者装箱的值。
     fn emit_enum_variant_ctor_no_value(&mut self, span: SourceSpan) {

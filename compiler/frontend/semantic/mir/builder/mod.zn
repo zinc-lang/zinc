@@ -16,7 +16,11 @@ struct CfgBuilder {
     sym: *Symbol, // FuncSymbol 或者 LambdaSymbol
     basic_blocks: Vec<*BasicBlock>,
     block_stack: Vec<*BlockSentence>,
-    temps: Vec<*VarSymbol>,
+    // 当前语句产生的临时变量 (语句结束时由 record_temps_drop_point 登记析构点后移出)
+    temps: Vec<*TempVar>,
+    // 本函数所有临时变量, 以及按符号查找的表
+    all_temps: Vec<*TempVar>,
+    temp_map: HashMap<UInt, *TempVar>,
     cached_lvalue: HashMap<UInt, *LValue>,
     cached_rvalue: HashMap<UInt, *RValue>,
 
@@ -38,7 +42,9 @@ impl CfgBuilder {
             .sym = move sym,
             .basic_blocks = (type Vec<*BasicBlock>)::new(),
             .block_stack = (type Vec<*BlockSentence>)::new(),
-            .temps = (type Vec<*VarSymbol>)::new(),
+            .temps = (type Vec<*TempVar>)::new(),
+            .all_temps = (type Vec<*TempVar>)::new(),
+            .temp_map = (type HashMap<UInt, *TempVar>)::new(),
             .cached_lvalue = (type HashMap<UInt, *LValue>)::new(),
             .cached_rvalue = (type HashMap<UInt, *RValue>)::new(),
             .loop_start = (type HashMap<UInt, *BasicBlock>)::new(),
@@ -63,6 +69,7 @@ impl CfgBuilder {
             }
             let body = fsym.body.get_or_panic();
             let bb_pair = self.trans_block(body);
+            self.flush_all_temps(bb_pair.end);
             // drop params
             for p in self.params() {
                 self.drop_var_sym(move p, bb_pair.end);
@@ -70,6 +77,8 @@ impl CfgBuilder {
             return Some(box {
                 .sym = self.sym,
                 .basic_blocks = bb_pair.topological_order(),
+                .temps = self.all_temps,
+                .temp_map = self.temp_map,
             }: CFG);
         }
 
@@ -89,7 +98,7 @@ impl CfgBuilder {
                 end_bb.terminator = Some(box {
                     .ret_val = Some(rv)
                 }: BrRet as *Terminator);
-                self.handle_temps_after_stmt(end_bb);
+                self.flush_all_temps(end_bb);
                 self.block_stack.pop();
 
                 let bb_pair = { .start = move bb, .end = move end_bb }: BasicBlockChunk;
@@ -99,16 +108,21 @@ impl CfgBuilder {
                 return Some(box {
                     .sym = self.sym,
                     .basic_blocks = bb_pair.topological_order(),
+                    .temps = self.all_temps,
+                    .temp_map = self.temp_map,
                 }: CFG);
             }
 
             let bb_pair = self.trans_block(body);
+            self.flush_all_temps(bb_pair.end);
             for p in self.params() {
                 self.drop_var_sym(move p, bb_pair.end);
             }
             return Some(box {
                 .sym = self.sym,
                 .basic_blocks = bb_pair.topological_order(),
+                .temps = self.all_temps,
+                .temp_map = self.temp_map,
             }: CFG);
         }
 
@@ -147,7 +161,16 @@ impl CfgBuilder {
         }
         let var_sym = VarSymbol::create(v.expr_node().span(), sty);
         self.nearest_block().add_local(var_sym);
-        self.temps.push(var_sym);
+
+        // 登记临时变量: 默认在语句结束时析构 (析构标记由 record_temps_drop_point 插入)
+        let temp = box {
+            .sym = var_sym,
+            .drop_step = (type Option<*DtorValue>)::None,
+            .extended = false,
+        }: TempVar;
+        self.temps.push(temp);
+        self.all_temps.push(temp);
+        self.temp_map.insert(var_sym as *raw VarSymbol as UInt, move temp);
 
         let local = LocalVar::create(v.expr_node().span(), var_sym);
         if has_copy_fn(sty) {
@@ -184,14 +207,9 @@ impl CfgBuilder {
     }
 
     fn drop_var_sym(&mut self, vs: *VarSymbol, bb: *BasicBlock) {
-        let local = LocalVar::create(vs.var_node.span(), vs);
-        let mut d = DtorValue::create(vs.var_node.span(), local as *LValue);
-        // 没有析构函数的类型不需要生成析构调用, 用 no_need 标记。
-        // 但这条指令依然承担"变量存储期到此结束"的语义, 存活分析依赖它判断变量的死亡点。
-        if !has_destructor(vs.stype) {
-            d.no_need = true;
-        }
-        bb.add_step(move d as *XValue);
+        // 没有析构函数的类型也会生成一条 is_trivial 的指令:
+        // 它依然承担"变量存储期到此结束"的语义, 存活分析依赖它判断变量的死亡点。
+        bb.add_step(make_dtor_value(vs) as *XValue);
     }
 
     fn drop_locals_when_exit_block(&mut self, blk: *BlockSentence, bb: *BasicBlock) {
@@ -341,143 +359,35 @@ impl CfgBuilder {
         }
     }
 
-    fn handle_temps_after_stmt(&mut self, bb: *BasicBlock) {
-        // for t in self.temps {
-        //     self.drop_var_sym(t.var_sym, move bb);
-        // }
-        self.temps.clear();
+    // 语句翻译完了: 给 watermark 之后新增的临时变量在 bb 上插入析构标记。
+    // 如果之后发现它的借用活得比语句长, checker 里的 place_temp_drops 会把它标成 skipped。
+    //
+    // 注意这里必须真的插入一条 step (而不是只记下 bb): 语句结束时所在的 bb 之后可能被
+    // connect_and_merge 合并掉, 记 bb 会失效; 插入 step 则可以跟着合并一起走。
+    fn record_temps_drop_point(&mut self, watermark: UInt, bb: *BasicBlock) {
+        let mut i = watermark;
+        while i < self.temps.len() {
+            let t = *self.temps.index(i).deref();
+            let dtor = make_dtor_value(t.sym);
+            bb.add_step(dtor as *XValue);
+            t.drop_step = Some(dtor);
+            i += 1;
+        }
+        while self.temps.len() > watermark {
+            self.temps.pop();
+        }
+    }
+
+    // 把当前所有还没登记的临时变量都登记到 bb (函数/闭包体翻译完之后的兜底)
+    fn flush_all_temps(&mut self, bb: *BasicBlock) {
+        self.record_temps_drop_point(0_u, bb);
     }
 
 }
 
 
-fn has_destructor(sty: *SType) -> Bool {
-    let ty = sty.canonical();
-    let ts = ty.type_symbol;
-    if ts is type *ArcPointerSymbol || ts is type *WeakPointerSymbol {
-        return true;
-    }
-    if ts is type *BorrowImmutSymbol || ts is type *BorrowMutSymbol ||
-        ts is type *RawPointerImmutSymbol || ts is type *RawPointerMutSymbol{
-        return false;
-    }
-    if ts is type *TypeParamSymbol {
-        return true;
-    }
-    if ts is type *UnionSymbol {
-        return false;
-    }
-    if ts is type *ArraySymbol {
-        if ty.args.ty_args.is_empty() {
-            return false;
-        } else {
-            return has_destructor(ty.args.ty_arg(0));
-        }
-    }
-    if ts is type *TupleSymbol {
-        for t in ty.args.ty_args {
-            if has_destructor(t) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if ts is struct_sym: *StructSymbol {
-        if has_impl_drop(struct_sym as *TypeSymbol) {
-            return true;
-        }
-        for f in struct_sym.fields {
-            if has_destructor(f.stype) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if ts is enum_sym: *EnumSymbol {
-        if has_impl_drop(enum_sym as *TypeSymbol) {
-            return true;
-        }
-        for v in enum_sym.variants {
-            for f in v.fields {
-                if has_destructor(move f) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-    if ts is type *TraitSymbol {
-        return false;
-    }
 
-    // 还有 lambda 等类型
-    return false;
-}
 
-fn has_copy_fn(sty: *SType) -> Bool {
-    let ty = sty.canonical();
-    let ts = ty.type_symbol;
-    if ts is type *ArcPointerSymbol || ts is type *WeakPointerSymbol {
-        return true;
-    }
-    if ts is type *BorrowImmutSymbol || ts is type *BorrowMutSymbol ||
-        ts is type *RawPointerImmutSymbol || ts is type *RawPointerMutSymbol{
-        return false;
-    }
-    if ts is type *TypeParamSymbol {
-        return true;
-    }
-    if ts is type *UnionSymbol {
-        return false;
-    }
-    if ts is type *ArraySymbol {
-        if ty.args.ty_args.is_empty() {
-            return false;
-        } else {
-            return has_copy_fn(ty.args.ty_arg(0));
-        }
-    }
-    if ts is type *TupleSymbol {
-        for t in ty.args.ty_args {
-            if has_copy_fn(t) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if ts is struct_sym: *StructSymbol {
-        for f in struct_sym.fields {
-            if has_copy_fn(f.stype) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if ts is enum_sym: *EnumSymbol {
-        for v in enum_sym.variants {
-            for f in v.fields {
-                if has_copy_fn(move f) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    return false;
-}
-
-fn has_impl_drop(ts: *TypeSymbol) -> Bool {
-    for i in ts.related_impls() {
-        if i.trait_sty is Some(trait_sty) {
-            let key = trait_sty.type_symbol.export_key();
-            if key.as_str().deref().eq(&"::std::ops::drop::Drop") {
-                return true;
-            }
-        }
-    }
-    return false;
-}
 
 impl BasicBlockChunk {
 

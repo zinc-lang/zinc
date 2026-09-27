@@ -13,14 +13,22 @@ use super::{BasicBlockChunk, CfgBuilder, extract_logical_and_chain};
 
 impl CfgBuilder {
 
+    // 语句入口: 临时变量按"语句作用域"管理。
+    // 只处理本语句新增的临时变量 (水位线), 嵌套语句不会把外层语句的临时变量提前析构。
     fn trans_sentence(&mut self, s: *Sentence) -> BasicBlockChunk {
+        let watermark = self.temps.len();
+        let chunk = self.trans_sentence_inner(s);
+        self.record_temps_drop_point(watermark, chunk.end);
+        return chunk;
+    }
+
+    fn trans_sentence_inner(&mut self, s: *Sentence) -> BasicBlockChunk {
        match s {
             _: *EmptySentence => {}
             es: *ExprSentence => {
                 let bb = self.new_bb();
                 let (val, end_bb) = self.trans_rvalue(es.expr, bb);
 
-                self.handle_temps_after_stmt(end_bb);
                 return { .start = move bb, .end = move end_bb }: BasicBlockChunk;
             }
             ls: *LetSentence => {
@@ -31,7 +39,6 @@ impl CfgBuilder {
                 let w = WriteValue::create(init, ls.local as *LValue);
                 end_bb.add_step(move w as *XValue);
 
-                self.handle_temps_after_stmt(end_bb);
                 return { .start = move bb, .end = move end_bb }: BasicBlockChunk;
             }
             bs: *BlockSentence => {
@@ -126,7 +133,6 @@ impl CfgBuilder {
                     );
                 }
 
-                self.handle_temps_after_stmt(bb_end);
                 return { .start = move bb_start, .end = move bb_end }: BasicBlockChunk;
             }
             ws: *WhileLoopSentence => {
@@ -171,7 +177,6 @@ impl CfgBuilder {
                         .target_false = bb_end,
                     }: BrBool as *Terminator
                 );
-                self.handle_temps_after_stmt(bb_end);
                 // 析构变量绑定
                 let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
                 collect_all_pmv_bindings(ws.cond, &mut all_pmv_bindings);
@@ -214,7 +219,6 @@ impl CfgBuilder {
                         .target_false = bb_end,
                     }: BrBool as *Terminator
                 );
-                self.handle_temps_after_stmt(bb_end);
                 return { .start = move bb_start, .end = move bb_end }: BasicBlockChunk;
             }
             br_break: *BranchBreak => {
@@ -226,7 +230,6 @@ impl CfgBuilder {
                             .target = move t
                         }: BrForward as *Terminator
                     );
-                    self.handle_temps_after_stmt(bb);
                     // 跳出 br_break.target 的 parent scope
                     if br_break.target.parent_scope() is Some(scope) {
                         let out_scope = scope as *raw ScopeSymbol as UInt;
@@ -246,7 +249,6 @@ impl CfgBuilder {
                             .target = move t
                         }: BrBackward as *Terminator
                     );
-                    self.handle_temps_after_stmt(bb);
                     // 跳出 br_continue.target 的 loop_body
                     let out_scope = br_continue.target.loop_body() as *raw BlockSentence as UInt;
                     self.drop_locals_until_exit_block(out_scope, bb);
@@ -267,11 +269,9 @@ impl CfgBuilder {
 
                     // return 出去的变量不析构
                     if self.returned_local(v) is Some(ex_var_sym) {
-                        self.handle_temps_after_stmt(rv_end);
                         self.drop_all_except(Some(move ex_var_sym), rv_end);
                     } else {
                         self.insert_copy_if_needed(rv, rv_end);
-                        self.handle_temps_after_stmt(rv_end);
                         self.drop_all_except((type Option<*VarSymbol>)::None, rv_end);
                     }
                     return { .start = move bb, .end = move rv_end}: BasicBlockChunk;
@@ -281,7 +281,6 @@ impl CfgBuilder {
                             .ret_val = None
                         }: BrRet as *Terminator
                     );
-                    self.handle_temps_after_stmt(bb);
                     // 所有的变量都析构
                     self.drop_all_except((type Option<*VarSymbol>)::None, bb);
                     return { .start = bb, .end = bb }: BasicBlockChunk;
@@ -354,7 +353,6 @@ impl CfgBuilder {
                             .target_false = else_sentence.start,
                         }: BrBool as *Terminator
                     );
-                    self.handle_temps_after_stmt(bb_end);
                     // 析构变量绑定
                     let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
                     collect_all_pmv_bindings(br_bool.cond, &mut all_pmv_bindings);
@@ -371,7 +369,6 @@ impl CfgBuilder {
                             .target_false = bb_end,
                         }: BrBool as *Terminator
                     );
-                    self.handle_temps_after_stmt(bb_end);
                     // 析构变量绑定
                     let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
                     collect_all_pmv_bindings(br_bool.cond, &mut all_pmv_bindings);
@@ -464,7 +461,6 @@ impl CfgBuilder {
                         .target = move next_arm
                     }: BrForward as *Terminator
                 );
-                self.handle_temps_after_stmt(bb_end);
                 return { .start = bb_start, .end = move bb_end }: BasicBlockChunk;
             }
             _ => {
@@ -495,7 +491,6 @@ impl CfgBuilder {
                 }
             }
         }
-        self.handle_temps_after_stmt(end);
         self.drop_locals_when_exit_block(move blk, end);
         self.block_stack.pop();
         return { .start = move bb, .end = move end }: BasicBlockChunk;

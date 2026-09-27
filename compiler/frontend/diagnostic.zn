@@ -126,6 +126,13 @@ impl DiagnosticEngine {
         return len;
     }
 
+    // 清空诊断并返回是否存在错误 (Warning / Note 不算错误)
+    pub fn take_has_error(&mut self) -> Bool {
+        let n = self.error_count();
+        self.all_diags.clear();
+        return n > 0;
+    }
+
     pub fn emit_unimplemented(&mut self, span: SourceSpan, feature: Str) {
         self.emit({
             .span = span,

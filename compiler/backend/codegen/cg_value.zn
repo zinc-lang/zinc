@@ -582,7 +582,11 @@ impl CodeGenerator {
                 return self.cg_const_value(ct_rv.value, ct_rv.stype).as_value();
             }
             dtor_rv: *DtorValue => {
-                if dtor_rv.no_need {
+                // 这三种情况都不需要真正调用析构函数:
+                //   skipped    - 语句末析构被放置 pass 取消了 (存储期也一并忽略)
+                //   is_trivial - 类型本身没有析构函数
+                //   no_need    - 存活分析判定这条析构多余
+                if dtor_rv.skipped || dtor_rv.is_trivial || dtor_rv.no_need {
                     let empty_struct = self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>);
                     return empty_struct.as_value();
                 }

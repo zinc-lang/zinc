@@ -15,6 +15,24 @@ impl BlockSentence {
         }: BlockSentence;
     }
 
+    // 只把它登记为"需要析构的局部变量", 不加入符号表。
+    // 名字已经在别的块里登记过时 (例如 for 的循环变量) 用它, 避免同名冲突。
+    pub fn add_local_for_drop(*self, var: *VarSymbol) {
+        self.local_vars.push(var);
+    }
+
+    // 把它从"需要析构的局部变量"列表里去掉 (符号表里的登记保留)
+    pub fn remove_local(*self, var: *VarSymbol) {
+        let var_int = var as *raw VarSymbol as UInt;
+        let mut kept = (type Vec<*VarSymbol>)::new();
+        for v in self.local_vars {
+            if v as *raw VarSymbol as UInt != var_int {
+                kept.push(move v);
+            }
+        }
+        self.local_vars = move kept;
+    }
+
     pub fn add_local(*self, var: *VarSymbol) {
         let blk: *BlockSentence = self;
         // 记录声明它的作用域: 闭包捕获分析要靠 parent_scope 链判断一个变量

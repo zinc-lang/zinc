@@ -103,16 +103,27 @@ impl LivenessChecker {
                     }
                 }
                 d: *DtorValue => {
-                    if extract_local(d.src as *XValue) is Some(vsym) {
+                    // 被放置 pass 取消的"语句末析构"完全失效: 既不算存储期结束, 也不调用析构
+                    if d.skipped {
+                        // do nothing
+                    }
+                    else if extract_local(d.src as *XValue) is Some(vsym) {
                         let j = vsym as *raw VarSymbol as UInt;
-                        // 无论是有析构函数的真正析构, 还是无析构函数(no_need)的存储期结束标记,
+                        // 这个点上变量是否还活着 (在同一个 bb 里刚写过也算活着)
+                        let was_alive = alived.contains(j);
+                        // 无论是有析构函数的真正析构, 还是无析构函数(is_trivial)的存储期结束标记,
                         // 该变量在此刻都不再存活
                         alived.remove(j);
-                        if d.no_need {
-                            // 没有析构函数: 只需要结束存储期, 不需要做 drop flag 分析
+                        if d.is_trivial {
+                            // 类型没有析构函数: 只需要结束存储期, 不需要做 drop flag 分析
                             dead.insert(j);
                         } else {
-                            if vsym.drop_flag is None {
+                            // 只有"该点上变量已经不活着"时才需要判断这条析构是不是不可达的:
+                            //   - 没有任何前驱 (入口 bb), 或者所有前驱都不活着 -> 这条析构是多余的
+                            //   - 前驱里有的活有的不活 -> 需要 drop flag
+                            // 如果该点上变量还活着 (包括在同一个 bb 里刚初始化), 直接析构即可。
+                            // (以前没看 was_alive, 会把入口 bb 里的析构全部标成 no_need, 析构被跳过)
+                            if !was_alive && vsym.drop_flag is None {
                                 // 这个变量现在本来就不是 alived 状态, 有两种可能:
                                 // 1. 变量已经析构
                                 // 2. 变量来自多个分支，其中某些分支中已经析构

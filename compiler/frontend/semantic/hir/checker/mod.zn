@@ -1340,10 +1340,18 @@ impl TypeCheckContext {
         if i.trait_sty is Some(trait_sty) {
             self.check_impl_trait_completeness(i);
 
+            let is_drop_impl = trait_sty.type_symbol.export_key().as_str().deref().eq(&"::std::ops::drop::Drop");
+
             // union 不能实现 Drop
-            if i.target_sty.type_symbol is type *UnionSymbol &&
-                trait_sty.type_symbol.export_key().as_str().deref().eq(&"::std::ops::drop::Drop") {
+            if i.target_sty.type_symbol is type *UnionSymbol && is_drop_impl {
                 DiagnosticEngine::get().emit_union_can_not_impl_drop(i.impl_node.span());
+            }
+
+            if is_drop_impl &&
+                !(i.target_sty.type_symbol is type *UnionSymbol) &&
+                !has_impl_unsized(i.target_sty.type_symbol) &&
+                !has_copy_fn(i.target_sty) {
+                DiagnosticEngine::get().emit_warn_trivial_copy_with_drop(i.target_sty.to_string(), i.impl_node.span());
             }
         }
 

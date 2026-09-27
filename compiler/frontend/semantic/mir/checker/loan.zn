@@ -206,6 +206,37 @@ impl LivenessChecker {
         return state;
     }
 
+
+    fn dump_origins(&self) {
+        let names = collect_var_names(self.cfg);
+        print("==== origins of ");
+        print(self.cfg.sym.mangle_name());
+        println(" ====");
+        for bb in self.cfg.basic_blocks {
+            let bb_key = bb as *raw BasicBlock as UInt;
+            print("bb");
+            print(bb.index);
+            println(" origin-in:");
+            if self.origin_in_states.at(&bb_key) is Some(st) {
+                for ref kv in st {
+                    let key = kv.0;
+                    let orig = kv.1;
+                    if orig.is_empty() {
+                        continue;
+                    }
+                    print("    ");
+                    print_var_name(&names, key);
+                    print(" -> ");
+                    dump_origin_set(&orig, &names);
+                    println("");
+                }
+            }
+        }
+    }
+}
+
+// 以下 4 个是 origin 相关的辅助函数, checker 和析构点放置 pass (drop_place.zn) 共用。
+impl LivenessChecker {
     fn apply_write_origin(&self, w: *WriteValue, state: &mut HashMap<UInt, OriginSet>) {
         if !type_contains_pointer(w.dst.get_stype()) {
             // 非指针变量不记录来源。变量类型是固定的, 指针类型的变量不会走到这里,
@@ -439,37 +470,17 @@ impl LivenessChecker {
     fn call_arg_origin(&self, arg: *RValue, state: &HashMap<UInt, OriginSet>) -> OriginSet {
         if arg is addr: *AddressofValue {
             if type_contains_pointer(addr.operand.get_stype()) {
+                // 如果被借用的是一个临时变量, 要保证活着的就是它自己:
+                // 它内部包裹的数据 (堆对象等) 也归它所有, 例如 make().method() 返回的借用。
+                if root_local(addr.operand as *XValue) is Some(vs) {
+                    if self.cfg.temp_map.at(&(vs as *raw VarSymbol as UInt)) is Some(_) {
+                        return OriginSet::from_local(vs);
+                    }
+                }
                 return self.origin_of(addr.operand as *XValue, state);
             }
         }
         return self.origin_of(arg as *XValue, state);
-    }
-
-    fn dump_origins(&self) {
-        let names = collect_var_names(self.cfg);
-        print("==== origins of ");
-        print(self.cfg.sym.mangle_name());
-        println(" ====");
-        for bb in self.cfg.basic_blocks {
-            let bb_key = bb as *raw BasicBlock as UInt;
-            print("bb");
-            print(bb.index);
-            println(" origin-in:");
-            if self.origin_in_states.at(&bb_key) is Some(st) {
-                for ref kv in st {
-                    let key = kv.0;
-                    let orig = kv.1;
-                    if orig.is_empty() {
-                        continue;
-                    }
-                    print("    ");
-                    print_var_name(&names, key);
-                    print(" -> ");
-                    dump_origin_set(&orig, &names);
-                    println("");
-                }
-            }
-        }
     }
 }
 

@@ -961,3 +961,134 @@ pub struct EnumVariantPattern {
 
 // syntax 中的 TypeNode 对应 hir 中的 SType
 
+
+// ------------------------ 类型的析构 / 拷贝性质 ------------------------
+
+fn has_destructor(sty: *SType) -> Bool {
+    let ty = sty.canonical();
+    let ts = ty.type_symbol;
+    if ts is type *ArcPointerSymbol || ts is type *WeakPointerSymbol {
+        return true;
+    }
+    if ts is type *BorrowImmutSymbol || ts is type *BorrowMutSymbol ||
+        ts is type *RawPointerImmutSymbol || ts is type *RawPointerMutSymbol{
+        return false;
+    }
+    if ts is type *TypeParamSymbol {
+        return true;
+    }
+    if ts is type *UnionSymbol {
+        return false;
+    }
+    if ts is type *ArraySymbol {
+        if ty.args.ty_args.is_empty() {
+            return false;
+        } else {
+            return has_destructor(ty.args.ty_arg(0));
+        }
+    }
+    if ts is type *TupleSymbol {
+        for t in ty.args.ty_args {
+            if has_destructor(t) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if ts is struct_sym: *StructSymbol {
+        if has_impl_drop(struct_sym as *TypeSymbol) {
+            return true;
+        }
+        for f in struct_sym.fields {
+            if has_destructor(f.stype) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if ts is enum_sym: *EnumSymbol {
+        if has_impl_drop(enum_sym as *TypeSymbol) {
+            return true;
+        }
+        for v in enum_sym.variants {
+            for f in v.fields {
+                if has_destructor(move f) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    if ts is type *TraitSymbol {
+        return false;
+    }
+
+    // 还有 lambda 等类型
+    return false;
+}
+
+fn has_impl_drop(ts: *TypeSymbol) -> Bool {
+    for i in ts.related_impls() {
+        if i.trait_sty is Some(trait_sty) {
+            let key = trait_sty.type_symbol.export_key();
+            if key.as_str().deref().eq(&"::std::ops::drop::Drop") {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+
+fn has_copy_fn(sty: *SType) -> Bool {
+    let ty = sty.canonical();
+    let ts = ty.type_symbol;
+    if ts is type *ArcPointerSymbol || ts is type *WeakPointerSymbol {
+        return true;
+    }
+    if ts is type *BorrowImmutSymbol || ts is type *BorrowMutSymbol ||
+        ts is type *RawPointerImmutSymbol || ts is type *RawPointerMutSymbol{
+        return false;
+    }
+    if ts is type *TypeParamSymbol {
+        return true;
+    }
+    if ts is type *UnionSymbol {
+        return false;
+    }
+    if ts is type *ArraySymbol {
+        if ty.args.ty_args.is_empty() {
+            return false;
+        } else {
+            return has_copy_fn(ty.args.ty_arg(0));
+        }
+    }
+    if ts is type *TupleSymbol {
+        for t in ty.args.ty_args {
+            if has_copy_fn(t) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if ts is struct_sym: *StructSymbol {
+        for f in struct_sym.fields {
+            if has_copy_fn(f.stype) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if ts is enum_sym: *EnumSymbol {
+        for v in enum_sym.variants {
+            for f in v.fields {
+                if has_copy_fn(move f) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    return false;
+}

@@ -166,10 +166,20 @@ impl StmtTransformer {
     }
 
     fn visit_block(&mut self, block: *BlockStmt) -> *BlockSentence{
+        return self.visit_block_with_locals(block, (type Vec<*VarSymbol>)::new());
+    }
+
+    // 与 visit_block 相同, 但把 extra_locals 登记进这个块的"待析构局部变量"列表。
+    // for 循环的循环变量用它挂到"循环体块"上: 名字仍然登记在 for 自己的块里 (作用域不变,
+    // 也不会和循环体里的同名 let 冲突), 但析构发生在每轮迭代结束时。
+    fn visit_block_with_locals(&mut self, block: *BlockStmt, extra_locals: Vec<*VarSymbol>) -> *BlockSentence {
         let bs = self.create_block(block);
 
         // todo resolve internal decls inside block
 
+        for v in extra_locals {
+            bs.add_local_for_drop(v);
+        }
         for s in block.stmts {
             self.visit_stmt(s);
         }
@@ -364,12 +374,17 @@ impl StmtTransformer {
             DiagnosticEngine::get().emit_irrefutable_pattern_only(for_stmt.pattern.span());
         }
 
-        // 记录局部变量
-        // for_blk.add_local(for_loop.iterator_local);
+        // 循环变量: 名字登记在 for 自己的块里 (作用域和以前一样, 循环体里可以同名遮蔽),
+        // 但析构点挂到循环体块上 —— 这样每轮迭代结束 (含 continue/break) 就析构,
+        // 而不是整个 for 语句结束后才析构一次 (那会漏掉前几轮的值)。
+        // (for_blk.add_local(for_loop.iterator_local); 迭代器本身仍然属于 for_blk, 循环结束后析构)
         for local in for_loop.pattern.collect_all_bindings() {
             for_blk.add_local(move local);
         }
-        let body = self.visit_block(for_stmt.body);
+        for local in for_loop.pattern.collect_all_bindings() {
+            for_blk.remove_local(move local);
+        }
+        let body = self.visit_block_with_locals(for_stmt.body, for_loop.pattern.collect_all_bindings());
         for_loop.body = move body;
 
         for_blk.add_sentence(move for_loop);

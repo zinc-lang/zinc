@@ -60,6 +60,33 @@ struct CFG {
     // 两者的 params/body/return_sty 含义一致, 用下面的辅助函数统一访问。
     sym: *Symbol,
     basic_blocks: Vec<*BasicBlock>,
+    // 语句里物化出来的临时变量 (见 TempVar)。它们同时注册在所在语句块的 local_vars 里
+    // (代码生成要按块分配栈槽), 但析构点由这里决定。
+    temps: Vec<*TempVar>,
+    temp_map: HashMap<UInt, *TempVar>,
+}
+
+// 一条语句翻译过程中产生的临时变量。
+// 默认在语句结束时析构; 如果它的借用被存进了生命周期更长的位置, extended 会被置位,
+// 就只在语句块退出时析构 (见 checker 里的 place_temp_drops)。
+struct TempVar {
+    sym: *VarSymbol,
+    // 语句结束时插入的析构标记 (DtorValue)。如果它的借用活得比语句长,
+    // 放置 pass 会把它标成 skipped, 只留语句块退出时的析构。
+    drop_step: Option<*DtorValue>,
+    // 借用活得比语句长, 不在语句末析构
+    extended: Bool,
+}
+
+// 变量存储期结束 / 析构的标记指令。
+// 没有析构函数的类型也生成一条 (is_trivial = true), 存活分析用它判断存储期终点。
+fn make_dtor_value(vs: *VarSymbol) -> *DtorValue {
+    let local = LocalVar::create(vs.var_node.span(), vs);
+    let mut d = DtorValue::create(vs.var_node.span(), local as *LValue);
+    if !has_destructor(vs.stype) {
+        d.is_trivial = true;
+    }
+    return move d;
 }
 
 impl BasicBlock {
@@ -166,8 +193,16 @@ struct CompileTimeValue {
 struct DtorValue {
     expr: *ExpressionNode,
     src: *LValue,
-    // 有些时候需要在后面的阶段删掉多余的 DtorValue，但直接删比较麻烦，加一个标记位比较简单
+    // 类型本身没有析构函数 (has_destructor 为 false): 这条指令只表示"存储期到此结束"。
+    // 代码生成不需要调用析构函数, 存活分析也不需要对它做 drop flag 分析。
+    is_trivial: Bool,
+    // 存活分析判定这条析构是多余的 (变量已经析构过 / 不可达), 不需要真正调用析构函数
+    // (有些时候需要在后面的阶段删掉多余的 DtorValue，但直接删比较麻烦，加一个标记位比较简单)
     no_need: Bool,
+    // 被析构点放置 pass 取消的"语句末析构": 整条指令失效,
+    // 既不算存储期结束 (存活分析会忽略), 也不调用析构函数。
+    // 用它来表示"临时变量的借用活得比语句长, 析构推迟到语句块退出"。
+    skipped: Bool,
 }
 
 struct CopyValue {
@@ -192,3 +227,5 @@ struct AllocaValue {
 struct LoadValue {
     src: *RValue,
 }
+
+// 类型是否有析构 (需要调用析构函数)。闭包/函数项都是零大小类型, 没有析构。

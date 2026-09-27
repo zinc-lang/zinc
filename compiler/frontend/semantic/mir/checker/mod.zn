@@ -3,6 +3,7 @@ use ::self::frontend::source_code::*;
 use ::self::frontend::diagnostic::*;
 use ::self::frontend::semantic::hir::ir::*;
 
+mod drop_place;
 mod liveness;
 mod loan;
 mod uint_set;
@@ -44,10 +45,10 @@ impl CFG {
 
     fn check_liveness(*self) {
         let mut liveness_checker = LivenessChecker::new(self);
-        liveness_checker.determine_local_liveness();
         liveness_checker.determine_origins();
+        liveness_checker.place_temp_drops();
+        liveness_checker.determine_local_liveness();
         liveness_checker.check_lifetime();
-
     }
 }
 
