@@ -759,6 +759,24 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    fn emit_owned_fn_lifetime_erased(&mut self, type_name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不能把含借用的闭包 ($(type_name)) 装箱成拥有所有权的 *Fn / *FnMut / *weak Fn: 闭包环境里的借用不会被记录到 Fn 类型里, 装箱后生命周期信息就丢了",
+            .msg_en = f"can not box a closure that captures borrows ($(type_name)) into an owned *Fn / *FnMut / *weak Fn: the borrows inside its environment are not part of the Fn type, so the lifetime information would be lost",
+        }: DiagItem);
+    }
+
+    fn emit_owned_trait_object_lifetime_erased(&mut self, type_name: String, target_name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"不能把带生命周期的类型 ($(type_name)) 装箱成拥有所有权的 trait 对象指针 $(target_name): 生命周期信息不会保留在 trait 对象里",
+            .msg_en = f"can not box a type with lifetimes ($(type_name)) into an owned trait object pointer $(target_name): the lifetime information would not be kept in the trait object",
+        }: DiagItem);
+    }
+
     fn emit_mismatch_associated_type(&mut self, name: String, span: SourceSpan) {
         self.emit({
             .span = span,

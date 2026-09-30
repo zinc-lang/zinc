@@ -32,6 +32,10 @@ enum ResolvedCastKind {
     LambdaToFnUpperPtr,
     // 捕获了 &mut 的闭包只能用 &mut FnMut 调用, 不能转换成 &Fn
     MutCaptureLambdaToFn,
+    // 借用捕获的闭包装箱成 *Fn / *FnMut / *weak Fn: 环境里的借用会丢生命周期
+    OwnedFnUpperErasesLifetime,
+    // 带生命周期参数的类型装箱成拥有所有权的 trait 对象指针 (*TR)
+    OwnedTraitObjectErasesLifetime,
     ArcToWeak, // 指针转换注意分 Fat/Thin 两种不同情况做代码生成
     MutBorrowToImmut,
     PointerSafeToUnsafe,
@@ -192,6 +196,13 @@ fn resolve_type_cast_kind(from: *SType, to: *SType) -> ResolvedCastKind {
                 if is_fn_upper_mut(pointee) && src_kind is PointerKind::BorrowImmut {
                     return ResolvedCastKind::Err;
                 }
+                // Arc<闭包> / Weak<闭包> -> *Fn / *weak Fn: 闭包环境里的借用
+                // (按引用捕获, 或者按值捕获了含借用的类型) 不会出现在 Fn 类型里,
+                // 装箱之后生命周期信息就丢了 —— 必须报错。
+                if (src_kind is PointerKind::Arc || src_kind is PointerKind::Weak) &&
+                    lambda_captures_mention_lifetime(lsym2) {
+                    return ResolvedCastKind::OwnedFnUpperErasesLifetime;
+                }
                 return resolve_lambda_to_fn_upper(move lsym2, move pointee, true);
             }
             // &fn 指针 / &mut fn 指针 / Arc<fn 指针> -> &Fn / &mut FnMut / *Fn。
@@ -265,6 +276,16 @@ fn resolve_type_cast_kind(from: *SType, to: *SType) -> ResolvedCastKind {
     // 8. 瘦指针转胖指针
     if src.is_thin_pointer() && dst.is_fat_pointer() &&
         src.type_symbol as *raw TypeSymbol as UInt == dst.type_symbol as *raw TypeSymbol as UInt {
+        // 拥有所有权的指针 (Arc/Weak) 转到胖指针时, 被指向类型会被"擦除"成 trait 对象
+        // (第二个字是 typemeta, 第三个字是 vtable), 类型自己的生命周期实参不会保留:
+        //   Arc<S<'a>> -> Arc<TR>  之后 'a 就丢了, 这个 Arc 可能活得比 S 借用的对象更长。
+        // 所以只允许生命周期无关的类型这么转 (借用 &S<'a> -> &TR 不受影响: 借用本身
+        // 还连着 S, 而且 origin 分析会继续盯着 S 里借用的对象)。
+        if src.type_symbol is type *ArcPointerSymbol || src.type_symbol is type *WeakPointerSymbol {
+            if mentions_lifetime(src.args.ty_arg(0)) {
+                return ResolvedCastKind::OwnedTraitObjectErasesLifetime;
+            }
+        }
         return ResolvedCastKind::ThinPtrUpToFatPtr;
     }
     // 9. 胖指针转瘦指针
@@ -429,6 +450,17 @@ fn add_implicit_cast(v: *RValue, kind: ResolvedCastKind, dst_ty: *SType) -> *RVa
         return v;
     }
 
+    if kind is ResolvedCastKind::OwnedFnUpperErasesLifetime {
+        DiagnosticEngine::get().emit_owned_fn_lifetime_erased(v.get_stype().to_string(), v.expr_node().span());
+        return v;
+    }
+
+    if kind is ResolvedCastKind::OwnedTraitObjectErasesLifetime {
+        DiagnosticEngine::get().emit_owned_trait_object_lifetime_erased(
+            v.get_stype().to_string(), dst_ty.to_string(), v.expr_node().span());
+        return v;
+    }
+
     if kind is ResolvedCastKind::FatPtrToFatPtr {
         // 确保 v 的类型是 dst_ty 的子类型
         if !is_subtype(v.get_stype(), dst_ty) {
@@ -477,6 +509,8 @@ impl ToString for ResolvedCastKind {
             ResolvedCastKind::LambdaToFnLower => buf.push_str("LambdaToFnLower");
             ResolvedCastKind::LambdaToFnUpperPtr => buf.push_str("LambdaToFnUpperPtr");
             ResolvedCastKind::MutCaptureLambdaToFn => buf.push_str("MutCaptureLambdaToFn");
+            ResolvedCastKind::OwnedFnUpperErasesLifetime => buf.push_str("OwnedFnUpperErasesLifetime");
+            ResolvedCastKind::OwnedTraitObjectErasesLifetime => buf.push_str("OwnedTraitObjectErasesLifetime");
             ResolvedCastKind::ArcToWeak => buf.push_str("ArcToWeak");
             ResolvedCastKind::MutBorrowToImmut => buf.push_str("MutBorrowToImmut");
             ResolvedCastKind::PointerSafeToUnsafe => buf.push_str("PointerSafeToUnsafe");
