@@ -557,7 +557,9 @@ impl CodeGenerator {
                         self.llds.create_store(cgv, alloca);
                         return alloca;
                     }
-                    panic;
+                    let dbg_sty = alloca_rv.get_stype().to_string();
+                    let dbg_msg = f"BUG: alloca of a type without cgtype: $(dbg_sty)";
+                    panic dbg_msg.as_str().deref();
                 }
             }
             load_rv: *LoadValue => {
@@ -577,7 +579,13 @@ impl CodeGenerator {
                     if ctx.bb_map.at(&bb_int) is Some(cgbb) {
                         self.llds.phi_add_incoming(phi, cgv, cgbb);
                     } else {
-                        panic;
+                        // phi 的前驱块必须出现在 cfg.basic_blocks 里 (bb_map 是按它建的)。
+                        // 找不到说明 MIR 里有一个被合并/丢弃的块还被 phi 引用着。
+                        let mut msg = String::new();
+                        msg.push_str("BUG: a phi's incoming block bb");
+                        msg.push_str(item.1.index.to_string().as_str().deref());
+                        msg.push_str(" is not in the CFG (was it merged away?)");
+                        panic msg.as_str().deref();
                     }
                 }
                 return phi;

@@ -362,8 +362,8 @@ impl CfgBuilder {
     // 语句翻译完了: 给 watermark 之后新增的临时变量在 bb 上插入析构标记。
     // 如果之后发现它的借用活得比语句长, checker 里的 place_temp_drops 会把它标成 skipped。
     //
-    // 注意这里必须真的插入一条 step (而不是只记下 bb): 语句结束时所在的 bb 之后可能被
-    // connect_and_merge 合并掉, 记 bb 会失效; 插入 step 则可以跟着合并一起走。
+    // 注意这里插入的是一条 step (而不是只记下 bb): 记 bb 等于要求"语句结束时所在的块
+    // 以后一直是同一个块对象", 而语句的块之后还可能被拆分/合并; 插入 step 则跟着块一起走。
     fn record_temps_drop_point(&mut self, watermark: UInt, bb: *BasicBlock) {
         let mut i = watermark;
         while i < self.temps.len() {

@@ -1065,6 +1065,12 @@ fn pointer_kinds_compatible(src: PointerKind, dst: PointerKind) -> Bool {
 }
 
 // 形参是不是"指向 Fn/FnMut 的借用" (&Fn / &mut FnMut)
+//
+// 注意: 这里特意用一个函数, 而不是在调用处写 `let x = A && B;` ——
+// 当前 bootstrap 用的 stage0 (发布的 v0.0.2) 里, 把短路运算的结果存进局部变量
+// 会在代码生成阶段崩 (phi 的前驱块被 connect_and_merge 合并掉, 见 values.zn /
+// sentences.zn 的 connect_and_merge)。本仓库自己的编译器已经修好了, 但 stage0
+// 是下载来的旧二进制, 所以源码要继续避开这种写法, 直到 stage0 被替换成新的。
 fn is_borrow_of_fn_upper(sty: *SType) -> Bool {
     if !sty.is_fat_pointer() {
         return false;

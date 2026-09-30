@@ -588,21 +588,25 @@ impl CfgBuilder {
     }
 }
 
+// 把一条语句的块接到上一个块后面。
+//
+// 以前的做法是把语句起始块 bbp.start 的步骤直接拷进 bb, 然后把它丢掉。
+// 但 bbp.start 这个块对象可能还被别人引用着 —— 最典型的是逻辑与/或 (以及别的
+// 值位置的短路/选择表达式) 生成的 phi: 它的 incoming 记录的是"左操作数求值所在的块",
+// 而左操作数往往就求值在语句起始块里。块被丢掉之后, 代码生成阶段按 cfg.basic_blocks
+// 建的 bb_map 里就找不到这个前驱块了 (ICE)。
+//
+// 所以这里改成加一条 BrForward, 让起始块作为独立的基本块保留下来:
+// 之后拓扑排序/存活分析/代码生成看到的都是同一批块对象, 不会再出现悬空引用。
 fn connect_and_merge(bb: *BasicBlock, bbp: &BasicBlockChunk)  -> *BasicBlock {
     if bb.terminator is Some(_) {
-        return bb; // 后继 bb 可以全部扔掉
+        return bb; // 前一条语句已经终止: 这条语句不可达, 整个 chunk 丢掉
     }
 
-    for step in bbp.start.steps {
-        bb.steps.push(move step);
-    }
-    bb.terminator = bbp.start.terminator;
-
-    if bbp.start as *raw BasicBlock as UInt != bbp.end as *raw BasicBlock as UInt {
-        return bbp.end;
-    } else {
-        return bb;
-    }
+    bb.terminator = Some(box {
+        .target = bbp.start
+    }: BrForward as *Terminator);
+    return bbp.end;
 }
 
 fn collect_all_pmv_bindings(rvalue: *RValue, res: &mut Vec<*VarSymbol>) {
