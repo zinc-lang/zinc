@@ -1086,8 +1086,34 @@ fn is_borrow_of_fn_upper(sty: *SType) -> Bool {
 // Fn/FnMut 和 trait 对象这两种"胖指针"不携带被指向类型自己的生命周期实参:
 // Arc<S<'a>> -> Arc<TR> 之后, 'a 就丢了, 于是这个 Arc 可能活得比 S 里借用的
 // 对象更长。所以拥有所有权的指针 (Arc / Weak) 向这类胖指针转换时要先查一下。
+//
+// 结果按类型指针缓存: SType 是 interning 过的 (TypeSymbol::to_sty 对同一组泛型
+// 实参返回同一个指针), 所以指针可以当 key。缓存是必须的 —— 编译器源码里有 1400+
+// 处 `x as *Trait` 转型, 每一处都会走一次这里的字段递归 (而且 infer 没有缓存,
+// 同一个转型会被反复推导), 不缓存的话整个前端检查会慢 5 倍以上。
+unsafe static mut MentionsLifetimeCache: Option<HashMap<UInt, Bool>> = None;
+
 fn mentions_lifetime(sty: *SType) -> Bool {
-    return mentions_lifetime_at(sty, 0_u);
+    let key = sty as *raw SType as UInt;
+    unsafe {
+        match MentionsLifetimeCache {
+            Some(ref mut m) => {
+                if m.at(&key) is Some(cached) {
+                    return cached;
+                }
+            }
+            None => {
+                MentionsLifetimeCache = Some((type HashMap<UInt, Bool>)::new());
+            }
+        }
+    }
+    let res = mentions_lifetime_at(sty, 0_u);
+    unsafe {
+        if MentionsLifetimeCache is Some(ref mut m) {
+            m.insert(key, res);
+        }
+    }
+    return res;
 }
 
 fn mentions_lifetime_at(sty: *SType, depth: UInt) -> Bool {

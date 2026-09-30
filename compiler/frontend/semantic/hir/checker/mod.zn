@@ -2553,7 +2553,12 @@ impl TypeCheckContext {
                 //   - 函数项:                f(add_one)           => f(&(add_one as fn(..)))
                 // 这样有捕获的闭包 / fn 指针都有一块存储 (临时变量, 语句结束就析构)。
                 // 拥有所有权的 *Fn (Arc) 形参不能自动取借用: 临时量的地址不能当 Arc 用。
+                // 只有真的包了一层 (上面的自动取借用) 才需要重新推导实参类型。
+                // 注意: 不能无条件地再 infer 一次 —— infer 没有缓存 (见上面的
+                // cached_results), 每个实参多推一次会让嵌套调用的代价成倍放大
+                // (2^嵌套深度), 整个编译器的检查会从一分钟变成几十分钟。
                 let mut arg = arg;
+                let mut real_arg_ty: *SType = arg_ty;
                 if is_borrow_of_fn_upper(param_ty) {
                     let mut kind = AddressofKind::Ref;
                     if param_ty.type_symbol is type *BorrowMutSymbol {
@@ -2561,18 +2566,20 @@ impl TypeCheckContext {
                     }
                     if arg is type *LambdaValue {
                         arg = AddressofValue::create(arg.expr_node().span(), move kind, arg) as *RValue;
+                        real_arg_ty = self.infer(arg as *XValue);
                     } else if arg_ty.is_fn_type() {
                         arg = AddressofValue::create(arg.expr_node().span(), move kind, arg) as *RValue;
+                        real_arg_ty = self.infer(arg as *XValue);
                     } else if arg_ty.type_symbol is fsym: *FuncSymbol {
                         let fn_lower_sty = to_fn_lower_sty(param_ty.args.ty_arg(0));
                         let k = resolve_type_cast_kind(arg_ty, fn_lower_sty);
                         if !(k is ResolvedCastKind::Err) {
                             let fnptr = add_implicit_cast(arg, k, fn_lower_sty);
                             arg = AddressofValue::create(fnptr.expr_node().span(), move kind, fnptr) as *RValue;
+                            real_arg_ty = self.infer(arg as *XValue);
                         }
                     }
                 }
-                let real_arg_ty: *SType = self.infer(arg as *XValue);
                 let k = resolve_type_cast_kind(real_arg_ty, param_ty);
                 let cast = add_implicit_cast(arg, k, param_ty);
                 desugared_args.push(cast);
