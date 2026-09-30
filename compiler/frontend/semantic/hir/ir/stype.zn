@@ -67,6 +67,18 @@ impl SType {
             pointee.type_symbol is type *LambdaSymbol {
             return Some(move pointee);
         }
+        // Fn / FnMut (trait 对象): 调用时 receiver 分别是 &self / &mut self,
+        // 所以 FnMut 只能通过可变指针调用 (&FnMut / Arc<FnMut> 都不行)。
+        if pointee.type_symbol is type *FnUpperTypeSymbol {
+            return Some(move pointee);
+        }
+        if pointee.type_symbol is type *FnUpperMutTypeSymbol {
+            if self.type_symbol is type *BorrowMutSymbol ||
+                self.type_symbol is type *RawPointerMutSymbol {
+                return Some(move pointee);
+            }
+            return None;
+        }
         return None;
     }
 

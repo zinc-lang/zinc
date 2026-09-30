@@ -986,6 +986,165 @@ fn unnamed_lifetime_count(sty: *SType) -> UInt {
 }
 
 // FIXME: 还需要考虑泛型参数 及其 泛型约束 之间的关系
+// Fn / FnMut (FnUpper / FnUpperMut) 有 trait 语义: 闭包类型相当于给它们做 impl。
+// 和 trait 不同的是, 闭包是唯一的 "实现者", 并且按捕获方式区分 Fn 和 FnMut:
+//   - 没有捕获 / 只有 Ref, Value 捕获的闭包 -> Fn   (可以只拿共享借用调用)
+//   - 有 RefMut 捕获的闭包                 -> FnMut (调用时需要一个可变借用)
+fn is_fn_upper(sty: *SType) -> Bool {
+    let c = sty.canonical();
+    if c.type_symbol is type *FnUpperTypeSymbol {
+        return true;
+    }
+    if c.type_symbol is type *FnUpperMutTypeSymbol {
+        return true;
+    }
+    return false;
+}
+
+fn is_fn_upper_mut(sty: *SType) -> Bool {
+    return sty.canonical().type_symbol is type *FnUpperMutTypeSymbol;
+}
+
+// 闭包能不能以 Fn (共享借用) 的形式被调用: 有 RefMut 捕获的闭包需要 &mut, 只能转成 FnMut
+fn lambda_can_impl_fn(lsym: *LambdaSymbol) -> Bool {
+    for c in lsym.captures {
+        if c.mode is LambdaCaptureKind::RefMut {
+            return false;
+        }
+    }
+    return true;
+}
+
+// 指针的"所有权种类": 借用 / Arc / Weak / 裸指针。
+// Fn/FnMut 的胖指针第一个字是环境指针, 只有同种类的指针之间才能互转 ——
+// 借用变成拥有所有权的 Arc 之后, Arc 归零会把栈上的环境指针当引用计数块, 直接崩。
+enum PointerKind {
+    BorrowImmut,
+    BorrowMut,
+    Arc,
+    Weak,
+    RawImmut,
+    RawMut,
+    Other,
+}
+
+fn pointer_kind_of(sty: *SType) -> PointerKind {
+    let c = sty.canonical();
+    if c.type_symbol is type *BorrowImmutSymbol { return PointerKind::BorrowImmut; }
+    if c.type_symbol is type *BorrowMutSymbol { return PointerKind::BorrowMut; }
+    if c.type_symbol is type *ArcPointerSymbol { return PointerKind::Arc; }
+    if c.type_symbol is type *WeakPointerSymbol { return PointerKind::Weak; }
+    if c.type_symbol is type *RawPointerImmutSymbol { return PointerKind::RawImmut; }
+    if c.type_symbol is type *RawPointerMutSymbol { return PointerKind::RawMut; }
+    return PointerKind::Other;
+}
+
+fn pointer_kinds_compatible(src: PointerKind, dst: PointerKind) -> Bool {
+    if src is PointerKind::BorrowImmut {
+        // 共享借用可以借出更弱的权限 (共享/裸), 但不能凭空得到可变或所有权
+        return dst is PointerKind::BorrowImmut ||
+            dst is PointerKind::RawImmut || dst is PointerKind::RawMut;
+    }
+    if src is PointerKind::BorrowMut {
+        return dst is PointerKind::BorrowImmut || dst is PointerKind::BorrowMut ||
+            dst is PointerKind::RawImmut || dst is PointerKind::RawMut;
+    }
+    if src is PointerKind::Arc {
+        return dst is PointerKind::Arc || dst is PointerKind::Weak;
+    }
+    if src is PointerKind::Weak {
+        return dst is PointerKind::Weak;
+    }
+    if src is PointerKind::RawImmut {
+        return dst is PointerKind::RawImmut || dst is PointerKind::RawMut;
+    }
+    if src is PointerKind::RawMut {
+        return dst is PointerKind::RawMut;
+    }
+    return false;
+}
+
+// 形参是不是"指向 Fn/FnMut 的借用" (&Fn / &mut FnMut)
+fn is_borrow_of_fn_upper(sty: *SType) -> Bool {
+    if !sty.is_fat_pointer() {
+        return false;
+    }
+    if !is_fn_upper(sty.args.ty_arg(0)) {
+        return false;
+    }
+    if sty.type_symbol is type *BorrowImmutSymbol {
+        return true;
+    }
+    if sty.type_symbol is type *BorrowMutSymbol {
+        return true;
+    }
+    return false;
+}
+
+// 两个函数类型 (fn / Fn / FnMut) 的签名是否一致
+fn fn_sig_matches(a: *SType, b: *SType) -> Bool {
+    if a.fn_param_count() != b.fn_param_count() {
+        return false;
+    }
+    let mut i: UInt = 0;
+    while i < a.fn_param_count() {
+        if !stype_eq_regardless_lifetime(a.fn_param_sty(i), b.fn_param_sty(i)) {
+            return false;
+        }
+        i += 1;
+    }
+    return stype_eq_regardless_lifetime(a.fn_return_sty(), b.fn_return_sty());
+}
+
+// 把 Fn / FnMut 类型换成签名相同的 fn 指针类型 (fn 指针是 Fn/FnMut 的"薄"版本)
+fn to_fn_lower_sty(fn_sty: *SType) -> *SType {
+    if !fn_sty.is_fn_type() || fn_sty.type_symbol is type *FnLowerTypeSymbol {
+        return fn_sty;
+    }
+    let mut args = GenericArgs::new();
+    for a in fn_sty.args.ty_args {
+        args.ty_args.push(move a);
+    }
+    return FnLowerTypeSymbol::new().to_sty(move args);
+}
+
+// 闭包 -> Fn/FnMut 的一致性判断 (签名 + 捕获方式)
+fn lambda_impls_fn_upper(lsym: *LambdaSymbol, fn_upper_sty: *SType) -> Bool {
+    if !lambda_sig_matches(lsym, fn_upper_sty) {
+        return false;
+    }
+    if is_fn_upper_mut(fn_upper_sty) {
+        return true;
+    }
+    return lambda_can_impl_fn(lsym);
+}
+
+// 闭包的签名是否和 fn 类型一致; 参数类型没标注 (invalid) 或者还是抽象的, 都不算一致
+fn lambda_sig_matches(lsym: *LambdaSymbol, dst: *SType) -> Bool {
+    if lsym.params.len() != dst.fn_param_count() {
+        return false;
+    }
+    let mut i: UInt = 0;
+    while i < lsym.params.len() {
+        let p = *lsym.params.index(i).deref();
+        if p.stype.is_invalid() || contains_type_param(p.stype) || contains_associated_type(p.stype) {
+            return false;
+        }
+        if !stype_eq_regardless_lifetime(p.stype, dst.fn_param_sty(i)) {
+            return false;
+        }
+        i += 1;
+    }
+    let mut ret_sty: *SType = SType::sty_unit();
+    if lsym.return_sty is Some(r) {
+        ret_sty = move r;
+    }
+    if contains_type_param(ret_sty) || contains_associated_type(ret_sty) {
+        return false;
+    }
+    return stype_eq_regardless_lifetime(ret_sty, dst.fn_return_sty());
+}
+
 fn is_subtype(sub: *SType, base: *SType) -> Bool {
     let c_sub = sub.canonical();
     let c_base = base.canonical();
@@ -1002,6 +1161,23 @@ fn is_subtype(sub: *SType, base: *SType) -> Bool {
         let sub_arg = c_sub.args.ty_arg(0);
         let base_arg = c_base.args.ty_arg(0);
         return is_subtype(move sub_arg, move base_arg);
+    }
+
+    // Fn / FnMut 也有 trait 语义: 闭包类型和 fn 指针都相当于给它们做 impl
+    if is_fn_upper(c_base) {
+        // FnMut 不能当 Fn 用 (FnMut 少了"共享借用也能调用"的保证); 反过来可以
+        if !is_fn_upper_mut(c_base) && is_fn_upper_mut(c_sub) {
+            return false;
+        }
+        if c_sub.type_symbol is lsym: *LambdaSymbol {
+            return lambda_impls_fn_upper(move lsym, move c_base);
+        }
+        // fn 指针 (FnLower) 的签名一致时也能当 Fn/FnMut 用
+        // (调用入口会额外包一个 thunk: fn 的调用不带环境指针)
+        if c_sub.is_fn_type() {
+            return fn_sig_matches(move c_sub, move c_base);
+        }
+        return false;
     }
 
     if c_base.type_symbol is base_trait: *TraitSymbol {
@@ -1129,6 +1305,7 @@ fn has_impl_unsized(ts: *TypeSymbol) -> Bool {
 
 // 这个类型的大小是否无法确定 (unsized):
 //   - 裸 trait 类型 (trait 对象只能通过指针/引用使用);
+//   - Fn / FnMut (同样只能通过指针/引用使用);
 //   - extern type (C 侧的不完整类型);
 //   - 显式实现了 std::marker::UnSized 的类型。
 // 类型别名先展开; 元组/数组的元素是内联的, 元素 unsized 时整体也 unsized。
@@ -1138,6 +1315,10 @@ fn is_unsized_type(sty: *SType) -> Bool {
     let t = sty.canonical();
     let ts = t.type_symbol;
     if ts is type *TraitSymbol {
+        return true;
+    }
+    // Fn / FnMut 和裸 trait 类型一样: 大小不确定, 只能通过指针使用
+    if ts is type *FnUpperTypeSymbol || ts is type *FnUpperMutTypeSymbol {
         return true;
     }
     if ts is type *ExternTypeSymbol {

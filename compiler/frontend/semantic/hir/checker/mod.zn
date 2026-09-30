@@ -81,6 +81,8 @@ impl TypeCheckContext {
                     ls.local.sym_var.stype = move rhs;
                 } else {
                     let lhs_ty = ls.local.sym_var.stype;
+                    // 局部变量 (和字段/参数一样) 不允许 unsized 类型: 裸 trait / Fn / FnMut / extern type
+                    self.disallow_unsized_type(lhs_ty, ls.local.sym_var.var_node.span());
                     if ensure_type_valid(lhs_ty, ls.local.sym_var.var_node.span()) {
                         let rhs = self.infer(init as *XValue);
                         if rhs.is_invalid() {
@@ -2240,9 +2242,10 @@ impl TypeCheckContext {
             }
         }
 
-        // 没有捕获的闭包可以退化成普通函数, 登记下来让 MIR/代码生成阶段为它生成函数体。
-        // (有捕获的闭包要携带环境, 等 Fn/FnMut 支持之后再处理)
-        if lsym.captures.is_empty() {
+        // 闭包都要让 MIR/代码生成阶段为它生成函数体:
+        // 没有捕获的闭包退化成普通函数, 有捕获的闭包第一个参数是环境指针。
+        // 带泛型参数的闭包没法生成具体函数 (要等单态化), 不登记。
+        if lsym.captures.is_empty() || lsym.generics.ty_params.is_empty() {
             self.sema_model.all_lambda.push(lsym);
         }
 
@@ -2255,6 +2258,13 @@ impl TypeCheckContext {
                 if !outer_sty.is_invalid() && !(outer_sty.type_symbol is type *ArcPointerSymbol) {
                     DiagnosticEngine::get().emit_unimplemented(c.token.span(), "weak capture of a non-Arc value");
                 }
+            }
+            // 按值捕获一个类型还是类型参数的变量: 环境字段的大小还不知道
+            // (泛型闭包需要单态化), 明确报未实现, 而不是在代码生成阶段崩溃
+            if c.mode is LambdaCaptureKind::Value && !c.local_var.stype.is_invalid() &&
+                (contains_type_param(c.local_var.stype) || contains_associated_type(c.local_var.stype)) {
+                DiagnosticEngine::get().emit_unimplemented(
+                    c.token.span(), "在泛型函数里按值捕获类型依赖于类型参数的变量");
             }
         }
 
@@ -2400,9 +2410,9 @@ impl TypeCheckContext {
                 }
                 return;
             }
-            // callee 是 fn 指针类型的值: 参数/返回类型都从签名里取,
-            // 后面的公共代码会按签名检查实参并插入隐式转换。
-            if callable_sty.type_symbol is type *FnLowerTypeSymbol {
+            // callee 是 fn 指针 (或者指向 Fn/FnMut 的胖指针) 类型的值:
+            // 参数/返回类型都从签名里取, 后面的公共代码会按签名检查实参并插入隐式转换。
+            if callable_sty.is_fn_type() {
                 let param_len = callable_sty.fn_param_count();
                 if fn_call.fn_args.len() != param_len {
                     DiagnosticEngine::get().emit_wrong_arg_count(param_len, fn_call.fn_args.len(), fn_call.expr.span());
@@ -2537,7 +2547,33 @@ impl TypeCheckContext {
                 self.check_value(arg, param_ty);
                 desugared_args.push(arg);
             } else {
-                let k = resolve_type_cast_kind(arg_ty, param_ty);
+                // 形参是指向 Fn/FnMut 的"借用"时自动取借用 (实参那里不用写 &):
+                //   - 闭包字面量:            f((x: Int) => x + 1) => f(&((x: Int) => x + 1))
+                //   - fn 指针:               f(fp)                => f(&fp)
+                //   - 函数项:                f(add_one)           => f(&(add_one as fn(..)))
+                // 这样有捕获的闭包 / fn 指针都有一块存储 (临时变量, 语句结束就析构)。
+                // 拥有所有权的 *Fn (Arc) 形参不能自动取借用: 临时量的地址不能当 Arc 用。
+                let mut arg = arg;
+                if is_borrow_of_fn_upper(param_ty) {
+                    let mut kind = AddressofKind::Ref;
+                    if param_ty.type_symbol is type *BorrowMutSymbol {
+                        kind = AddressofKind::RefMut;
+                    }
+                    if arg is type *LambdaValue {
+                        arg = AddressofValue::create(arg.expr_node().span(), move kind, arg) as *RValue;
+                    } else if arg_ty.is_fn_type() {
+                        arg = AddressofValue::create(arg.expr_node().span(), move kind, arg) as *RValue;
+                    } else if arg_ty.type_symbol is fsym: *FuncSymbol {
+                        let fn_lower_sty = to_fn_lower_sty(param_ty.args.ty_arg(0));
+                        let k = resolve_type_cast_kind(arg_ty, fn_lower_sty);
+                        if !(k is ResolvedCastKind::Err) {
+                            let fnptr = add_implicit_cast(arg, k, fn_lower_sty);
+                            arg = AddressofValue::create(fnptr.expr_node().span(), move kind, fnptr) as *RValue;
+                        }
+                    }
+                }
+                let real_arg_ty: *SType = self.infer(arg as *XValue);
+                let k = resolve_type_cast_kind(real_arg_ty, param_ty);
                 let cast = add_implicit_cast(arg, k, param_ty);
                 desugared_args.push(cast);
             }

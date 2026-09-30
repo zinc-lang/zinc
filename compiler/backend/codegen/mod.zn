@@ -53,6 +53,10 @@ pub struct CgContext {
     local_map: HashMap<UInt, CgValue>, // *VarSymbol 到 CgValue 的映射
 
     cached_instantiated: HashMap<UInt, CgValue>, // *SType 到 *type_meta 的映射
+
+    // 闭包函数的第一个参数是环境指针时, 真实 LLVM 参数下标 = 签名里的下标 + 1。
+    // (BrRet 通过 sret 返回时要按这个偏移取隐藏的返回槽位)
+    env_shift: UInt,
 }
 
 impl CodeGenerator {
@@ -159,6 +163,7 @@ impl CgContext {
             .arg_map = (type HashMap<UInt, CgValue>)::new(),
             .local_map = (type HashMap<UInt, CgValue>)::new(),
             .cached_instantiated = (type HashMap<UInt, CgValue>)::new(),
+            .env_shift = 0_u,
         }: CgContext;
     }
 
@@ -172,6 +177,7 @@ impl CgContext {
             .arg_map = (type HashMap<UInt, CgValue>)::new(),
             .local_map = (type HashMap<UInt, CgValue>)::new(),
             .cached_instantiated = (type HashMap<UInt, CgValue>)::new(),
+            .env_shift = 0_u,
         }: CgContext;
     }
 
@@ -185,6 +191,7 @@ impl CgContext {
             .arg_map = (type HashMap<UInt, CgValue>)::new(),
             .local_map = (type HashMap<UInt, CgValue>)::new(),
             .cached_instantiated = (type HashMap<UInt, CgValue>)::new(),
+            .env_shift = 0_u,
         }: CgContext;
     }
 

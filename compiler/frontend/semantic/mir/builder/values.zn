@@ -202,8 +202,20 @@ impl CfgBuilder {
             }
             lam: *LambdaValue => {
                 // 闭包字面量本身不产生运行时代码 (它的函数体单独生成一个函数),
-                // 所以这里不添加 step; 使用它的地方 (比如转 fn 指针的 CastValue)
-                // 会直接处理这个操作数。
+                // 但构造环境时会用到捕获的变量, 所以这里要为每个捕获加一条 step:
+                //   - 按值捕获: MovedValue —— 外层变量的所有权搬进了闭包环境,
+                //     之后对它的使用/借用都是 use after move
+                //   - 借用/弱引用捕获: ReadValue —— 至少要求捕获时变量还活着
+                for c in lam.lambda_sym.captures {
+                    if c.mode is LambdaCaptureKind::Value {
+                        let rd = ReadValue::new(lam.expr_node(), c.outer_var);
+                        let mv = MovedValue::create(lam.expr_node(), rd as *RValue);
+                        bb.add_step(mv as *XValue);
+                    } else {
+                        let rd = ReadValue::new(lam.expr_node(), c.outer_var);
+                        bb.add_step(rd as *XValue);
+                    }
+                }
                 return (move lam as *RValue, bb);
             }
             ctx_rv: *ContextValue => {

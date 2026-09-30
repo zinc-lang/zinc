@@ -309,9 +309,15 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
-    // 类型的成员都是位拷贝 (trivial copy, 不需要 copy fn), 但它实现了 Drop:
-    // 拷贝这类值时两个副本会共享同一份资源, 而析构会对两份各做一次, 可能重复释放。
-    // 警告打在 impl Drop 处 (与使用处无关)。
+    fn emit_conflict_explicit_capture(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = move span,
+            .severity = Severity::Error,
+            .msg_zn = f"显式捕获列表里 $(name) 是引用捕获, 但闭包体按值移动了它 (move); 请改成按值捕获",
+            .msg_en = f"`$(name)` is captured by reference in the explicit capture list, but the closure body moves it; capture it by value instead",
+        }: DiagItem);
+    }
+
     fn emit_warn_trivial_copy_with_drop(&mut self, ty_name: String, span: SourceSpan) {
         self.emit({
             .span = move span,
@@ -321,8 +327,6 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
-    // 带字段的 enum variant 作为一等公民时只是一个"构造函数" (会被转换成 fn 类型),
-    // 它本身不是一个可以取地址或者装箱的值。
     fn emit_enum_variant_ctor_no_value(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,
@@ -674,7 +678,6 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
-    // impl 块里出现了 trait (及其父 trait) 中不存在的成员方法, 通常是方法名写错了
     fn emit_method_not_in_trait(&mut self, method_name: String, trait_name: String, span: SourceSpan) {
         self.emit({
             .span = span,
@@ -684,7 +687,6 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
-    // impl 里写的方法签名 (形参类型/返回类型/方法级泛型参数) 跟 trait 中声明的不一致
     fn emit_method_signature_mismatch(&mut self, name: String, span: SourceSpan) {
         self.emit({
             .span = span,
@@ -694,8 +696,6 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
-    // 同一个 component 内多处声明了同名的 extern fn, 但签名不一致。
-    // extern fn 的链接名就是函数名, 签名不一致会导致调用方按错误的 ABI 调用同一个符号。
     fn emit_extern_fn_signature_mismatch(&mut self, name: String, span: SourceSpan) {
         self.emit({
             .span = span,
@@ -705,7 +705,6 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
-    // 值类型 (struct/enum/union) 通过字段递归包含了自己, 大小无法确定
     fn emit_recursive_value_type(&mut self, name: String, span: SourceSpan) {
         self.emit({
             .span = span,
@@ -715,7 +714,6 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
-    // unsized 类型 (大小无法确定) 不能直接作为字段/参数/全局变量, 只能通过指针或引用使用
     fn emit_unsized_type_not_allowed(&mut self, name: String, span: SourceSpan) {
         self.emit({
             .span = span,
@@ -725,7 +723,6 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
-    // 带泛型的函数/方法不能转换成 fn 类型: 签名里有类型参数, 不存在单个可调用的地址
     fn emit_generic_fn_to_fn_type(&mut self, name: String, span: SourceSpan) {
         self.emit({
             .span = span,
@@ -735,7 +732,6 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
-    // 捕获了外部变量的闭包不能转换成 fn 类型 (它需要携带捕获环境, 要用 Fn/FnMut)
     fn emit_capture_lambda_to_fn_type(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,
@@ -745,7 +741,15 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
-    // 用限定路径写 trait 名字调方法 (TR::method(recv)) 时, 接收者的类型必须实现了这个 trait
+    fn emit_capture_lambda_needs_fnmut(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"该闭包捕获了可变借用, 需要 &mut 才能调用, 不能转换成 &Fn (应该用 &mut FnMut)",
+            .msg_en = f"this closure captures a mutable borrow, calling it needs &mut, so it can not be converted to &Fn",
+        }: DiagItem);
+    }
+
     fn emit_type_not_impl_trait(&mut self, type_name: String, trait_name: String, span: SourceSpan) {
         self.emit({
             .span = span,

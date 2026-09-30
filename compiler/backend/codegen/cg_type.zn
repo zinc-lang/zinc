@@ -46,12 +46,11 @@ impl CodeGenerator {
             type *FnUpperMutTypeSymbol => return None;
             type *ExternTypeSymbol => return None;
             lambda_sym: *LambdaSymbol => {
-                // 闭包可以看成一个结构体, 没有捕获时它不携带任何数据, 相当于空结构体
+                // 闭包可以看成一个结构体: 有捕获时字段就是捕获进来的变量
                 if lambda_sym.captures.is_empty() {
                     return Some(self.llds.type_empty_struct());
                 }
-                // 有捕获的闭包需要携带捕获环境 (等 Fn/FnMut 支持)
-                return None;
+                return Some(self.lambda_env_cgtype(move lambda_sym));
             }
             // 函数项也是独立的类型, 它不携带数据, 相当于空结构体 (和没有捕获的闭包一样)
             type *FuncSymbol => return Some(self.llds.type_empty_struct());
@@ -308,6 +307,13 @@ impl CodeGenerator {
             // fn 指针类型: args 里存的是签名而不是泛型实参, 不能走 instantiated_typemeta,
             // 直接按需生成一个具体类型的 TypeMeta
             type *FnLowerTypeSymbol => {
+                return self.cg_typemeta(sty.type_symbol).as_value();
+            }
+            // Fn / FnMut 同理: args 里是签名
+            type *FnUpperTypeSymbol => {
+                return self.cg_typemeta(sty.type_symbol).as_value();
+            }
+            type *FnUpperMutTypeSymbol => {
                 return self.cg_typemeta(sty.type_symbol).as_value();
             }
             _ => {

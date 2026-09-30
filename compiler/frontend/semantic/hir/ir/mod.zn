@@ -343,11 +343,13 @@ pub struct FnUpperTypeSymbol {
     cache: HashMap<GenericArgs, *SType>,
 }
 
+// 注意: 顺序就是"要求强弱"的顺序 (可以用 `as UInt` 比大小)。
+// 同一个变量被多次捕获时取更大的那个; Weak 只能在显式捕获列表里写, 放最前面 (最弱)。
 pub enum LambdaCaptureKind {
-    Value,  // 按值捕获 (copy/move)
+    Weak,   // weak 捕获 (显式专用)
     Ref,    // 借用
     RefMut, // 可变借用
-    Weak,   // weak 捕获
+    Value,  // 按值捕获 (copy/move), 要求最强
 }
 
 // 闭包的一个捕获项。它不实现 Symbol, 只是 LambdaSymbol 的组成部分。
@@ -1023,7 +1025,18 @@ fn has_destructor(sty: *SType) -> Bool {
         return false;
     }
 
-    // 还有 lambda 等类型
+    if ts is lsym: *LambdaSymbol {
+        // 闭包值携带捕获环境: 环境里可能存了需要析构的东西
+        // (按值捕获的变量、按值捕获的 Arc、weak 引用; &/&mut 捕获是平凡的)
+        for c in lsym.captures {
+            if has_destructor(c.local_var.stype) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 还有函数项等类型
     return false;
 }
 

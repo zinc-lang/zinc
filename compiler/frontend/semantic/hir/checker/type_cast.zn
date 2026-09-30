@@ -30,6 +30,8 @@ enum ResolvedCastKind {
     FnLowerToFnUpperBorrow,
     LambdaToFnLower,
     LambdaToFnUpperPtr,
+    // 捕获了 &mut 的闭包只能用 &mut FnMut 调用, 不能转换成 &Fn
+    MutCaptureLambdaToFn,
     ArcToWeak, // 指针转换注意分 Fat/Thin 两种不同情况做代码生成
     MutBorrowToImmut,
     PointerSafeToUnsafe,
@@ -158,6 +160,62 @@ fn resolve_type_cast_kind(from: *SType, to: *SType) -> ResolvedCastKind {
             if lambda_sig_matches(lsym, dst) {
                 return ResolvedCastKind::LambdaToFnLower;
             }
+            return ResolvedCastKind::Err;
+        }
+    }
+
+    // 闭包 / 指向闭包的指针 转换成 &Fn / &mut FnMut (胖指针)。
+    // Fn/FnMut 有 trait 语义: 闭包类型相当于给它们做 impl, 这里做一致性判断。
+    // 这一条必须放在通用的指针转换之前 —— 这两种胖指针的第二个字不是 typemeta,
+    // 不能按 "瘦指针转胖指针" 的通用规则来生成。
+    if dst.is_fat_pointer() && is_fn_upper(dst.args.ty_arg(0)) {
+        let pointee = dst.args.ty_arg(0);
+        // 目标指针的所有权种类必须和来源匹配 (借用 ↔ 借用, Arc ↔ Arc/Weak, ...)
+        let dst_kind = pointer_kind_of(dst);
+        if src.type_symbol is lsym: *LambdaSymbol {
+            // 闭包值本身: 只有没有捕获的闭包能直接当借用用 (它不携带数据);
+            // 有捕获的闭包值要先绑定到变量再取地址 (resolve_lambda_to_fn_upper 里判断)
+            if dst_kind is PointerKind::BorrowImmut || dst_kind is PointerKind::BorrowMut {
+                return resolve_lambda_to_fn_upper(move lsym, move pointee, false);
+            }
+            return ResolvedCastKind::Err;
+        }
+        if src.type_symbol is type *PointerLikeSymbol {
+            let src_kind = pointer_kind_of(src);
+            if !pointer_kinds_compatible(src_kind, dst_kind) {
+                return ResolvedCastKind::Err;
+            }
+            let inner = src.args.ty_arg(0);
+            if inner.type_symbol is lsym2: *LambdaSymbol {
+                // &闭包 / &mut 闭包 -> &Fn / &mut FnMut。
+                // 从共享借用里拿不到可变借用, 所以 &闭包 不能转成 &mut FnMut。
+                if is_fn_upper_mut(pointee) && src_kind is PointerKind::BorrowImmut {
+                    return ResolvedCastKind::Err;
+                }
+                return resolve_lambda_to_fn_upper(move lsym2, move pointee, true);
+            }
+            // &fn 指针 / &mut fn 指针 / Arc<fn 指针> -> &Fn / &mut FnMut / *Fn。
+            // fn 指针的调用不带环境指针, 所以代码生成阶段要包一个 thunk:
+            // 从指针里 load 出 fn 指针, 再按 fn 的签名调用它。
+            if inner.type_symbol is type *FnLowerTypeSymbol {
+                if !fn_sig_matches(inner, pointee) {
+                    return ResolvedCastKind::Err;
+                }
+                // &fn 指针 -> &mut FnMut 不行 (需要能替换被指向的 fn 指针的可变借用)
+                if is_fn_upper_mut(pointee) && src_kind is PointerKind::BorrowImmut {
+                    return ResolvedCastKind::Err;
+                }
+                return ResolvedCastKind::FnLowerToFnUpperBorrow;
+            }
+        }
+        // 指向同一个 Fn/FnMut 类型的指针之间的转换 (例如 *Fn -> *weak Fn) 布局相同,
+        // 交给后面的通用指针规则处理。其他来源一律拒绝: 通用的"瘦指针转胖指针"
+        // 构造出来的是 trait 对象的布局 (第二个字是 typemeta, 第三个字是 vtable),
+        // 和 Fn 的调用入口完全不同。
+        if src.type_symbol is type *PointerLikeSymbol &&
+            stype_eq_regardless_lifetime(src.args.ty_arg(0), pointee) {
+            // 落到后面的通用指针转换
+        } else {
             return ResolvedCastKind::Err;
         }
     }
@@ -366,6 +424,11 @@ fn add_implicit_cast(v: *RValue, kind: ResolvedCastKind, dst_ty: *SType) -> *RVa
         return v;
     }
 
+    if kind is ResolvedCastKind::MutCaptureLambdaToFn {
+        DiagnosticEngine::get().emit_capture_lambda_needs_fnmut(v.expr_node().span());
+        return v;
+    }
+
     if kind is ResolvedCastKind::FatPtrToFatPtr {
         // 确保 v 的类型是 dst_ty 的子类型
         if !is_subtype(v.get_stype(), dst_ty) {
@@ -413,6 +476,7 @@ impl ToString for ResolvedCastKind {
             ResolvedCastKind::FnLowerToFnUpperBorrow => buf.push_str("FnLowerToFnUpperBorrow");
             ResolvedCastKind::LambdaToFnLower => buf.push_str("LambdaToFnLower");
             ResolvedCastKind::LambdaToFnUpperPtr => buf.push_str("LambdaToFnUpperPtr");
+            ResolvedCastKind::MutCaptureLambdaToFn => buf.push_str("MutCaptureLambdaToFn");
             ResolvedCastKind::ArcToWeak => buf.push_str("ArcToWeak");
             ResolvedCastKind::MutBorrowToImmut => buf.push_str("MutBorrowToImmut");
             ResolvedCastKind::PointerSafeToUnsafe => buf.push_str("PointerSafeToUnsafe");
@@ -580,27 +644,31 @@ fn enum_ctor_sig_matches(evsym: *EnumVariantSymbol, dst: *SType) -> Bool {
 }
 
 // 闭包的签名是否和 fn 类型一致; 参数类型没标注 (invalid) 或者还是抽象的, 都不算一致
-fn lambda_sig_matches(lsym: *LambdaSymbol, dst: *SType) -> Bool {
-    if lsym.params.len() != dst.fn_param_count() {
-        return false;
-    }
-    let mut i: UInt = 0;
-    while i < lsym.params.len() {
-        let p = *lsym.params.index(i).deref();
-        if p.stype.is_invalid() || contains_type_param(p.stype) || contains_associated_type(p.stype) {
-            return false;
+// (实现在 type_utils.zn, 类型检查的其他地方也要用)
+
+// ---------------------------------------------------------------------------
+// Fn / FnMut (FnUpper / FnUpperMut) 有 trait 语义: 闭包类型相当于给它们做 impl。
+// 和 trait 不同的是, 闭包类型是唯一的 "实现者", 并且按捕获方式区分:
+//   - 没有捕获 / 只有 Ref, Value 捕获的闭包 -> Fn   (可以只拿共享借用调用)
+//   - 有 RefMut 捕获的闭包               -> FnMut (调用时需要一个可变借用)
+// (判断函数在 type_utils.zn 里, 类型检查的其他地方也要用)
+// ---------------------------------------------------------------------------
+
+// 闭包 -> &Fn / &mut FnMut。
+//   - 没有捕获的闭包可以直接转换 (它不携带任何数据)
+//   - 有捕获的闭包必须先把值绑定到变量, 再 &变量 转换 (闭包值需要一块存储放环境)
+// from_ptr 表示当前的源类型已经是指向闭包的指针 (&闭包 / &mut 闭包 / box 闭包)
+fn resolve_lambda_to_fn_upper(lsym: *LambdaSymbol, fn_upper_sty: *SType, from_ptr: Bool) -> ResolvedCastKind {
+    if !lambda_impls_fn_upper(lsym, fn_upper_sty) {
+        // 签名一致但没有捕获没有问题时, 只有 "需要 &mut" 这一种失败原因
+        if lambda_sig_matches(lsym, fn_upper_sty) && !lambda_can_impl_fn(lsym) {
+            return ResolvedCastKind::MutCaptureLambdaToFn;
         }
-        if !stype_eq_regardless_lifetime(p.stype, dst.fn_param_sty(i)) {
-            return false;
-        }
-        i += 1;
+        return ResolvedCastKind::Err;
     }
-    let mut ret_sty: *SType = SType::sty_unit();
-    if lsym.return_sty is Some(r) {
-        ret_sty = move r;
+    if !lsym.captures.is_empty() && !from_ptr {
+        // 携带环境的闭包没有地方存放: 类型不匹配 (&Fn(..) 只能指向一个已经存在的闭包值)
+        return ResolvedCastKind::Err;
     }
-    if contains_type_param(ret_sty) || contains_associated_type(ret_sty) {
-        return false;
-    }
-    return stype_eq_regardless_lifetime(ret_sty, dst.fn_return_sty());
+    return ResolvedCastKind::LambdaToFnUpperPtr;
 }

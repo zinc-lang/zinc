@@ -446,6 +446,8 @@ impl ExprTransformer {
 
         // 闭包自身作用域里的变量 (参数/显式捕获/内部局部变量) 不是捕获
         if is_local_to_lambda(var, lsym) {
+            // 它可能是某个"显式捕获"的绑定: 闭包体的用法可能和显式写下的捕获模式冲突
+            check_use_of_explicit_capture(lsym, var, mode);
             return;
         }
         // 全局的 static/const 变量可以直接访问, 不作为捕获
@@ -453,11 +455,30 @@ impl ExprTransformer {
             return;
         }
 
-        // 同一个外层变量只登记一次, 按外层变量的地址去重。
-        // 已经登记过时: 只可能由「读」升级为「写」。
+        self.add_implicit_capture(lsym, var, mode);
+
+        // 嵌套闭包: 内层闭包的环境是在外层闭包体里构造的, 所以外层闭包也必须能拿到
+        // 这个变量。给每一层外层闭包补一个借用捕获 (只借用, 不改变所有权)。
+        let mut scope = lsym.parent_sym;
+        while scope is Some(ss) {
+            if ss is outer: *LambdaSymbol {
+                self.add_implicit_capture(move outer, var, LambdaCaptureKind::Ref);
+            }
+            scope = ss.parent_scope();
+        }
+    }
+
+    // 给闭包登记一个隐式捕获: 同一个外层变量只登记一次 (按地址去重),
+    // 已经登记过时取"要求更强"的模式 (LambdaCaptureKind 的顺序就是强弱顺序)。
+    fn add_implicit_capture(&self, lsym: *LambdaSymbol, var: *VarSymbol, mode: LambdaCaptureKind) {
         for c in lsym.captures {
             if c.outer_var as *raw VarSymbol as UInt == var as *raw VarSymbol as UInt {
-                if mode is LambdaCaptureKind::RefMut && c.mode is LambdaCaptureKind::Ref {
+                if c.is_explicit {
+                    // 安全网: 正常不会走到这里 (闭包体里的引用会解析到显式捕获的绑定)
+                    check_explicit_capture_mode(c, mode);
+                    return;
+                }
+                if (mode as UInt) > (c.mode as UInt) {
                     c.mode = mode;
                     c.local_var.stype = c.local_sty();
                 }
@@ -659,6 +680,32 @@ impl ExprTransformer {
         DiagnosticEngine::get().emit_path_do_not_exist(path.to_string(), span);
 
         return InvalidValue::new(e as *ExpressionNode) as *RValue;
+    }
+}
+
+// 闭包体里用了某个"显式捕获"的绑定时, 检查用法是否和显式写下的捕获模式冲突。
+// 只处理真正的冲突: 显式写的是引用捕获 (ref / ref mut), 但闭包体按值移动了它。
+// (按值捕获的绑定被读是正常的; 写它属于可变性问题, 由借用检查报告)
+fn check_use_of_explicit_capture(lsym: *LambdaSymbol, var: *VarSymbol, mode: LambdaCaptureKind) {
+    if !(mode is LambdaCaptureKind::Value) {
+        return;
+    }
+    for c in lsym.captures {
+        if c.local_var as *raw VarSymbol as UInt == var as *raw VarSymbol as UInt {
+            check_explicit_capture_mode(c, mode);
+            return;
+        }
+    }
+}
+
+// 显式捕获列表里写下的模式能不能满足闭包体的要求
+fn check_explicit_capture_mode(c: *LambdaCapture, mode: LambdaCaptureKind) {
+    if !c.is_explicit {
+        return;
+    }
+    if mode is LambdaCaptureKind::Value &&
+        (c.mode is LambdaCaptureKind::Ref || c.mode is LambdaCaptureKind::RefMut) {
+        DiagnosticEngine::get().emit_conflict_explicit_capture(c.local_var.short_name(), c.token.span());
     }
 }
 

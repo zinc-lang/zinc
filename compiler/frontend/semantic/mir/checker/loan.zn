@@ -31,6 +31,12 @@ impl LivenessChecker {
                     if root_local(dl.operand as *XValue) is Some(vs) {
                         self.check_use_origin(vs, bb.index, step_idx, &state, &vars, &mut reported);
                     }
+                } else if step.value is fc: *FnCallValue {
+                    // 调用一个闭包值时, 闭包环境里按引用捕获的对象必须还活着
+                    // (直接 `f(...)` 的 callee 不会单独产生 ReadValue step)
+                    if root_local(fc.callee as *XValue) is Some(vs) {
+                        self.check_use_origin(vs, bb.index, step_idx, &state, &vars, &mut reported);
+                    }
                 }
 
                 if step.value is w: *WriteValue {
@@ -336,6 +342,18 @@ impl LivenessChecker {
                 }
                 return OriginSet::new();
             }
+            lam: *LambdaValue => {
+                // 闭包按引用捕获的变量: 环境里存的是指向它们的借用, 所以闭包值的
+                // origin 包含这些外层变量 —— 闭包不能活得比被它借用的变量更长。
+                // (按值捕获是搬走了所有权, 不在这里; 由 builder 插入的 MovedValue 处理)
+                let mut res = OriginSet::new();
+                for c in lam.lambda_sym.captures {
+                    if c.mode is LambdaCaptureKind::Ref || c.mode is LambdaCaptureKind::RefMut {
+                        res.union_with(&OriginSet::from_local(c.outer_var));
+                    }
+                }
+                return res;
+            }
             tup: *TupleAccessRValue => {
                 if type_contains_pointer(tup.get_stype()) {
                     return self.origin_of(tup.base as *XValue, state);
@@ -556,6 +574,13 @@ fn type_contains_borrow(sty: *SType) -> Bool {
                 }
             }
         }
+    } else if ts is lam: *LambdaSymbol {
+        // 闭包环境里按引用捕获的字段就是借用 (返回这种闭包值等于返回它的借用)
+        for c in lam.captures {
+            if type_contains_borrow(c.local_var.stype) {
+                return true;
+            }
+        }
     }
     return false;
 }
@@ -593,6 +618,13 @@ fn type_contains_pointer(sty: *SType) -> Bool {
                 }
             }
         }
+    } else if ts is lam: *LambdaSymbol {
+        // 闭包环境里的字段 (按值捕获的指针/借用捕获的引用) 也是指针来源
+        for c in lam.captures {
+            if type_contains_pointer(c.local_var.stype) {
+                return true;
+            }
+        }
     }
     return false;
 }
@@ -604,7 +636,10 @@ fn cast_keeps_pointer(kind: ResolvedCastKind) -> Bool {
         kind is ResolvedCastKind::ArrayRefToSlice ||
         kind is ResolvedCastKind::PointerSafeToUnsafe ||
         kind is ResolvedCastKind::PointerUnsafeToSafe ||
-        kind is ResolvedCastKind::UnsafePointerToUnsafePointer {
+        kind is ResolvedCastKind::UnsafePointerToUnsafePointer ||
+        // 闭包 / fn 指针 -> Fn/FnMut 的胖指针: 第一个字就是原来那个指针 (借用的来源不变)
+        kind is ResolvedCastKind::LambdaToFnUpperPtr ||
+        kind is ResolvedCastKind::FnLowerToFnUpperBorrow {
         return true;
     }
     return false;

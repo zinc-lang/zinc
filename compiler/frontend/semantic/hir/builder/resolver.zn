@@ -615,7 +615,9 @@ impl Resolver {
             return Some(TupleSymbol::new().to_sty(ga));
         }
         else if ty is fn_ty: *FnType {
-            // fn(A, B) -> C: 解析成一个函数指针类型 (FnLower)
+            // fn(A, B) -> C  : 函数指针类型 (FnLower)
+            // Fn(A, B) -> C  : Fn, 和 trait 一样是 fat pointer 的被指向类型
+            // FnMut(A, B) -> C: FnMut, 同上
             let mut params = (type Vec<*SType>)::new();
             let mut ok = true;
             for pn in fn_ty.param_types {
@@ -637,6 +639,14 @@ impl Resolver {
             }
             if !ok {
                 return Some(InvalidSymbol::new(ty.span()).to_sty(GenericArgs::new()));
+            }
+
+            let kw = fn_ty.kw_fn.token_kind;
+            if kw is TokenKind::Keyword(KeywordKind::KW_FN_UPPER) {
+                return Some(FnUpperTypeSymbol::new().to_sty_of_sig(move params, move ret_sty));
+            }
+            if kw is TokenKind::Keyword(KeywordKind::KW_FN_UPPER_MUT) {
+                return Some(FnUpperMutTypeSymbol::new().to_sty_of_sig(move params, move ret_sty));
             }
             return Some(FnLowerTypeSymbol::new().to_sty_of_sig(move params, move ret_sty));
         }

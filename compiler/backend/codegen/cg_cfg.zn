@@ -52,8 +52,31 @@ impl CodeGenerator {
             return cgf;
         }
         let sig = self.signature_of_lambda(lsym);
-        let functy = self.functype_of_sig(sig);
+        let mut functy = self.functype_of_sig(sig);
+        if lambda_has_env(lsym) {
+            // 有捕获的闭包第一个参数是指向环境结构体的指针 (相当于 &self / &mut self)
+            functy = self.functype_of_fn_upper_sig(self.lambda_fn_sty(lsym));
+        }
         return self.llds.create_fn(functy, name);
+    }
+
+    // 闭包的环境结构体类型: 每个捕获一个字段, 类型就是闭包内部绑定的类型
+    // (按值捕获 -> 变量本身的类型; &/&mut 捕获 -> 借用; weak 捕获 -> 弱引用)
+    fn lambda_env_cgtype(&mut self, lsym: *LambdaSymbol) -> CgType {
+        let mut fields = (type Vec<CgType>)::new();
+        for c in lsym.captures {
+            let field_sty = c.local_var.stype;
+            if self.cgtype_of(field_sty) is Some(cgty) {
+                fields.push(move cgty);
+            } else {
+                // Fn / FnMut 的值是胖指针, 但它作为字段/局部变量是有确定大小的,
+                // 所以捕获一个指向它的指针不会有问题; 走不到这里
+                let sty_name = field_sty.to_string();
+                let msg = f"BUG: captured variable of type $(sty_name) has no size";
+                panic msg.as_str().deref();
+            }
+        }
+        return self.llds.type_struct(&fields);
     }
 
     fn cg_ev_decl(&mut self, evsym: *EnumVariantSymbol) -> CgFunc {
@@ -213,6 +236,28 @@ impl CodeGenerator {
             }
         }
 
+        return self.llds.type_function(sig.ret, params_ty.as_slice().deref());
+    }
+
+    // 通过 &Fn / &mut FnMut 调用时的 LLVM 函数类型:
+    // 比 fn 指针的签名多一个第一个参数 —— 闭包环境指针 (没有捕获时用不到, 但签名要一致)。
+    fn functype_of_fn_upper_sig(&mut self, fn_sty: *SType) -> CgFuncType {
+        let sig = self.signature_of_fn_sty(fn_sty);
+        let mut params_ty = (type Vec<CgType>)::new();
+        params_ty.push(self.llds.type_thin_ptr());
+        for param in sig.params {
+            match param {
+                // fn 指针的签名里不会出现 receiver / 泛型参数
+                CgParam::SRet => params_ty.push(self.llds.type_thin_ptr());
+                CgParam::TypeMeta => params_ty.push(self.llds.type_thin_ptr());
+                CgParam::GenericArg(_, _) => params_ty.push(self.llds.type_thin_ptr());
+                CgParam::FnArgVal(_, _, t1) => params_ty.push(t1);
+                CgParam::FnArgRef(_, _, t2) => params_ty.push(t2);
+                CgParam::Receiver(_) => {
+                    panic "BUG: receiver in the signature of a Fn/FnMut call";
+                }
+            }
+        }
         return self.llds.type_function(sig.ret, params_ty.as_slice().deref());
     }
 
@@ -494,8 +539,8 @@ impl CodeGenerator {
         return func;
     }
 
-    // 生成闭包体的函数 (没有捕获的闭包)。按需生成: 只有闭包被转成 fn 指针时才需要。
-    // 签名里只有普通参数 (没有 receiver / TypeMeta / 泛型参数), 所以比 cg_func_body 简单。
+    // 生成闭包体的函数。按需生成: 闭包被调用/被转成函数指针/被转成 Fn/FnMut 时都需要。
+    // 没有捕获的闭包签名里只有普通参数; 有捕获的闭包第一个参数是指向环境结构体的指针。
     fn cg_lambda_body(&mut self, lsym: *LambdaSymbol) -> CgFunc {
         let mangle_name = lsym.mangle_name();
         let func = self.cg_lambda_decl(lsym);
@@ -521,18 +566,25 @@ impl CodeGenerator {
         self.llds.create_do_nothing();
 
         let mut param_idx: UInt = 0;
+        // 有捕获的闭包第一个参数是指向环境的指针, 参数表里没有它, 所有的下标要加 1
+        let mut env_shift: UInt = 0_u;
+        if lambda_has_env(lsym) {
+            env_shift = 1_u;
+            ctx.env_shift = 1_u; // BrRet 取 sret 槽位时也要带上这个偏移
+            self.llds.set_arg_name(func, 0_u, "$env");
+        }
         for param in signature.params {
             match param {
                 CgParam::SRet => {
                     // 大返回值: 隐藏的返回槽位指针, 由 BrRet 的代码生成写入, 这里不用管
-                    self.llds.set_arg_name(func, param_idx, "$ret");
+                    self.llds.set_arg_name(func, env_shift, "$ret");
                 }
                 CgParam::FnArgVal(i1, j1, _) => {
                     let param_sym = *lsym.params.index(i1).deref();
                     let p_name = param_sym.short_name().as_str().deref();
-                    self.llds.set_arg_name(func, param_idx, p_name);
+                    self.llds.set_arg_name(func, j1 + env_shift, p_name);
 
-                    let arg = self.llds.get_arg(func, j1);
+                    let arg = self.llds.get_arg(func, j1 + env_shift);
                     let cgtype = self.cgtype_of(param_sym.stype).get_or_panic();
                     let alloca = self.llds.create_alloca_sized(cgtype);
                     self.llds.create_store(arg, alloca);
@@ -542,9 +594,9 @@ impl CodeGenerator {
                 CgParam::FnArgRef(i2, j2, _) => {
                     let param_sym = *lsym.params.index(i2).deref();
                     let p_name = param_sym.short_name().as_str().deref();
-                    self.llds.set_arg_name(func, param_idx, p_name);
+                    self.llds.set_arg_name(func, j2 + env_shift, p_name);
 
-                    let arg = self.llds.get_arg(func, j2);
+                    let arg = self.llds.get_arg(func, j2 + env_shift);
                     let size = self.size_of_stype(param_sym.stype, ctx);
                     if self.cgtype_of(param_sym.stype) is Some(cgtype) {
                         let alloca = self.llds.create_alloca_sized(cgtype);
@@ -578,6 +630,28 @@ impl CodeGenerator {
                 ctx.local_map.insert(v as *raw VarSymbol as UInt, alloca);
             }
             self.alloc_drop_flag(move v, ctx);
+        }
+
+        // 有捕获的闭包: 把每个捕获绑定到环境里的字段 (相当于 self.x)。
+        //   - 按值捕获: 字段本身就是变量的存储
+        //   - &/&mut 捕获: 字段里存的是指向外层变量的指针, 要先 load 出来,
+        //     这样闭包体里对它的读写都会落到外层变量上
+        // 显式捕获的名字解析到捕获项自己的绑定, 隐式捕获的引用直接指向外层变量, 两者都绑上。
+        if lambda_has_env(lsym) {
+            let env_cgty = self.lambda_env_cgtype(lsym);
+            let env_ptr = self.llds.get_arg(func, 0_u);
+            let mut field_idx: UInt = 0;
+            for c in lsym.captures {
+                let field_ptr = self.llds.create_struct_gep(env_cgty, env_ptr, field_idx);
+                let mut addr = field_ptr;
+                if c.mode is LambdaCaptureKind::Ref || c.mode is LambdaCaptureKind::RefMut {
+                    addr = self.llds.create_load(self.llds.type_thin_ptr(), field_ptr);
+                    addr.indirect = true; // load 出来的是外层变量的地址, 是一个存储位置
+                }
+                ctx.local_map.insert(c.outer_var as *raw VarSymbol as UInt, addr);
+                ctx.local_map.insert(c.local_var as *raw VarSymbol as UInt, addr);
+                field_idx += 1;
+            }
         }
         // 遍历 cfg, 先创建所有 BasicBlock
         for bb in cfg.basic_blocks {
@@ -729,7 +803,8 @@ impl CodeGenerator {
                         let mut ret_val = self.cg_xvalue(v, ctx);
                         // 判断是不是 通过参数返回
                         if ctx.signature.index_of_sret() is Some(sret_idx) {
-                            let arg_sret = self.llds.get_arg(ctx.ll_func, sret_idx);
+                            // 有环境参数时隐藏的返回槽位下标要往后挪一位
+                            let arg_sret = self.llds.get_arg(ctx.ll_func, sret_idx + ctx.env_shift);
                             if ret_val.indirect {
                                 let size = self.size_of_stype(v.get_stype(), ctx);
                                 self.llds.create_memcpy(arg_sret, ret_val,size);
@@ -768,6 +843,11 @@ impl CodeGenerator {
             }
         }
     }
+}
+
+// 闭包的调用是否需要环境指针: 有捕获时第一个参数是指向环境结构体的指针
+fn lambda_has_env(lsym: *LambdaSymbol) -> Bool {
+    return !lsym.captures.is_empty();
 }
 
 impl CgSignature {

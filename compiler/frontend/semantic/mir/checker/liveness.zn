@@ -76,6 +76,15 @@ impl LivenessChecker {
                 let p = param as *raw VarSymbol as UInt;
                 alived.insert(p);
             }
+            // 闭包体里引用的外层变量既不是这个 CFG 的参数也不是它的局部变量,
+            // 它们的存储期属于外层函数, 这里当作一开始就活着。
+            // (否则闭包体里读一个捕获变量会被误报成 use after move)
+            if self.cfg.sym is lsym: *LambdaSymbol {
+                for c in lsym.captures {
+                    alived.insert(c.outer_var as *raw VarSymbol as UInt);
+                    alived.insert(c.local_var as *raw VarSymbol as UInt);
+                }
+            }
         } else {
             // 用 incoming 初始化
             let mut is_first = true;

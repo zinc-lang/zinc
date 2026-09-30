@@ -82,11 +82,18 @@ impl CodeGenerator {
                 return self.cg_callable_typemeta(fsym as *TypeSymbol, 32_u8); // TM_Func
             }
             lsym: *LambdaSymbol => {
-                return self.cg_callable_typemeta(lsym as *TypeSymbol, 36_u8); // TM_Lambda
+                return self.cg_lambda_typemeta(move lsym);
             }
             fn_lower: *FnLowerTypeSymbol => {
                 // fn 指针: 值就是一个瘦指针
                 return self.cg_callable_typemeta(fn_lower as *TypeSymbol, 29_u8); // TM_FnLower
+            }
+            fn_upper: *FnUpperTypeSymbol => {
+                // Fn: 值是一个胖指针 (环境 + 调用入口)
+                return self.cg_fn_upper_typemeta(fn_upper as *TypeSymbol, 30_u8); // TM_FnUpper
+            }
+            fn_upper_mut: *FnUpperMutTypeSymbol => {
+                return self.cg_fn_upper_typemeta(fn_upper_mut as *TypeSymbol, 31_u8); // TM_FnMutUpper
             }
             _ => {
                 let meta = Type::of(&*sym as &TypeSymbol as &Any);
@@ -184,6 +191,9 @@ impl CodeGenerator {
         self.cg_pointer_generic_typemeta(RawPointerMutSymbol::new() as *PointerLikeSymbol);
         // fn 指针类型的 TypeMeta 由 std 定义 (它的 args 是签名, 其它组件只声明)
         self.cg_callable_typemeta(FnLowerTypeSymbol::new() as *TypeSymbol, 29_u8);
+        // Fn / FnMut: 值都是胖指针, 布局固定 (签名不同的 Fn 共用同一个 TypeMeta)
+        self.cg_fn_upper_typemeta(FnUpperTypeSymbol::new() as *TypeSymbol, 30_u8);
+        self.cg_fn_upper_typemeta(FnUpperMutTypeSymbol::new() as *TypeSymbol, 31_u8);
         unsafe {
             codegen_tuple_generictypemeta(self.llds.ds);
             codegen_array_generictypemeta(self.llds.ds);
@@ -286,6 +296,36 @@ impl CodeGenerator {
     // 它们都是零大小类型, 没有字段, 也不需要 copy/dtor。
     // kind 用 ZnTypeMetaKind::TM_Func / TM_Lambda。
     fn cg_callable_typemeta(&mut self, sym: *TypeSymbol, kind: UInt8) -> CgGlobal {
+        let cg_ty = self.cgtype_of(sym.to_sty()).get_or_panic();
+        return self.cg_callable_typemeta_of_type(sym, kind, move cg_ty);
+    }
+
+    // Fn / FnMut 本身是不定长类型 (值都是胖指针), 但它的 TypeMeta 需要一个确定的布局:
+    // 按胖指针算 (两个指针大小), 没有 copy/dtor 函数 (胖指针本身可以直接拷贝)。
+    fn cg_fn_upper_typemeta(&mut self, sym: *TypeSymbol, kind: UInt8) -> CgGlobal {
+        let cg_ty = self.llds.type_fat_ptr();
+        return self.cg_callable_typemeta_of_type(sym, kind, move cg_ty);
+    }
+
+    fn cg_callable_typemeta_of_type(&mut self, sym: *TypeSymbol, kind: UInt8, cg_ty: CgType) -> CgGlobal {
+        let copyfn = self.cg_empty_copyfn();
+        let dtorfn = self.cg_empty_dtorfn();
+        return self.cg_callable_typemeta_full(sym, kind, move cg_ty, copyfn, dtorfn);
+    }
+
+    // 闭包的类型元数据: 没有捕获时是零大小类型; 有捕获时值就是环境结构体,
+    // 拷贝/析构的时候要按字段处理 (copyfn / dtorfn 每个闭包都生成一份)。
+    fn cg_lambda_typemeta(&mut self, lsym: *LambdaSymbol) -> CgGlobal {
+        if lsym.captures.is_empty() {
+            return self.cg_callable_typemeta(lsym as *TypeSymbol, 36_u8); // TM_Lambda
+        }
+        let cg_ty = self.cgtype_of(lsym.to_sty()).get_or_panic();
+        let copyfn = self.cg_lambda_copyfn(lsym);
+        let dtorfn = self.cg_lambda_dtorfn(lsym);
+        return self.cg_callable_typemeta_full(lsym as *TypeSymbol, 36_u8, move cg_ty, copyfn, dtorfn);
+    }
+
+    fn cg_callable_typemeta_full(&mut self, sym: *TypeSymbol, kind: UInt8, cg_ty: CgType, copyfn: CgFunc, dtorfn: CgFunc) -> CgGlobal {
         let gv_name = self.typemeta_name_of(sym);
         if self.is_imported(sym) {
             return self.llds.get_or_insert_global(gv_name.as_str().deref(), self.llds.type_ZnTypeMeta());
@@ -296,16 +336,12 @@ impl CodeGenerator {
             return gv; // 已经生成了
         }
 
-        let cg_ty = self.cgtype_of(sym.to_sty()).get_or_panic();
-
         let name = self.llds.get_const_string(sym.export_key().as_str().deref());
         let kind_c = self.llds.get_const_int8(kind);
         let ty_param_count = self.llds.get_const_int8(0_u8);
         let ty_argc = self.llds.get_const_int8(0_u8);
         let align = self.llds.get_const_int8(self.llds.alignment_of(cg_ty) as UInt8);
         let size = self.llds.get_const_int64(self.llds.storage_size_of(cg_ty) as UInt64);
-        let copyfn = self.cg_empty_copyfn();
-        let dtorfn = self.cg_empty_dtorfn();
         let ty_argv = self.llds.get_const_null();
         let instantiated_from = self.llds.get_const_null();
         let hashmap = self.llds.get_null_value_of(self.llds.type_byte_array(56_u)); // sizeof(HashMap)
@@ -318,6 +354,108 @@ impl CodeGenerator {
         );
         gv.set_initializer(agg);
         return gv;
+    }
+
+    // 闭包环境结构体的析构函数: 对每个需要析构的按值捕获字段调用它的析构函数
+    fn cg_lambda_dtorfn(&mut self, lsym: *LambdaSymbol) -> CgFunc {
+        let sym_addr = lsym as *raw LambdaSymbol as UInt;
+        if self.cached_dtorfn.at(&sym_addr) is Some(f) {
+            return f;
+        }
+
+        let mut needs_drop = false;
+        for c in lsym.captures {
+            // 字段类型本身有析构函数就要析构: weak 引用要减计数,
+            // 按值捕获的 Arc 要减强引用计数; &/&mut 捕获是平凡的
+            if has_destructor(c.local_var.stype) {
+                needs_drop = true;
+            }
+        }
+        if !needs_drop {
+            let dtorfn = self.cg_empty_dtorfn();
+            self.cached_dtorfn.insert(sym_addr, dtorfn);
+            return dtorfn;
+        }
+
+        let mut name = lsym.mangle_name();
+        name.push_str(".dtorfn");
+        let dtorfn_ty = self.llds.type_function_dtorfn();
+        let func = self.llds.create_fn(dtorfn_ty, name.as_str().deref());
+
+        let saved_insert_point = self.llds.save_ip();
+        let llbb = self.llds.create_bb("entry", func);
+        self.llds.set_insert_point(llbb);
+
+        let env_cgty = self.lambda_env_cgtype(lsym);
+        let head = self.llds.get_arg(func, 0_u);
+        let no_generics = GenericParams::new();
+        let mut field_idx: UInt = 0;
+        for c in lsym.captures {
+            if has_destructor(c.local_var.stype) {
+                let field_sty = c.local_var.stype;
+                let field_addr = self.llds.create_struct_gep(env_cgty, head, field_idx);
+                let ty_meta = self.get_typemeta_from_typearg(field_sty, &no_generics, self.llds.get_const_null().as_value());
+                let field_dtorfn = self.cg_typemeta_dtorfn(field_sty.type_symbol);
+                self.llds.create_call(field_dtorfn, &[field_addr, ty_meta] as Slice<CgValue>);
+            }
+            field_idx += 1;
+        }
+        self.llds.create_retvoid();
+
+        self.llds.verify_function(func);
+        self.cached_dtorfn.insert(sym_addr, func);
+        self.llds.restore_ip(saved_insert_point);
+        return func;
+    }
+
+    // 闭包环境结构体的拷贝函数: 对每个捕获字段调用它的拷贝函数 (和结构体一样是浅拷贝)
+    fn cg_lambda_copyfn(&mut self, lsym: *LambdaSymbol) -> CgFunc {
+        let sym_addr = lsym as *raw LambdaSymbol as UInt;
+        if self.cached_copyfn.at(&sym_addr) is Some(f) {
+            return f;
+        }
+
+        let mut needs_copy = false;
+        for c in lsym.captures {
+            if !is_trivial_type(c.local_var.stype) {
+                needs_copy = true;
+            }
+        }
+        if !needs_copy {
+            let copyfn = self.cg_empty_copyfn();
+            self.cached_copyfn.insert(sym_addr, copyfn);
+            return copyfn;
+        }
+
+        let mut name = lsym.mangle_name();
+        name.push_str(".copyfn");
+        let copyfn_ty = self.llds.type_function_copyfn();
+        let func = self.llds.create_fn(copyfn_ty, name.as_str().deref());
+
+        let saved_insert_point = self.llds.save_ip();
+        let llbb = self.llds.create_bb("entry", func);
+        self.llds.set_insert_point(llbb);
+
+        let env_cgty = self.lambda_env_cgtype(lsym);
+        let head = self.llds.get_arg(func, 0_u);
+        let no_generics = GenericParams::new();
+        let mut field_idx: UInt = 0;
+        for c in lsym.captures {
+            if !is_trivial_type(c.local_var.stype) {
+                let field_sty = c.local_var.stype;
+                let field_addr = self.llds.create_struct_gep(env_cgty, head, field_idx);
+                let ty_meta = self.get_typemeta_from_typearg(field_sty, &no_generics, self.llds.get_const_null().as_value());
+                let field_copyfn = self.cg_typemeta_copyfn(field_sty.type_symbol);
+                self.llds.create_call(field_copyfn, &[field_addr, ty_meta] as Slice<CgValue>);
+            }
+            field_idx += 1;
+        }
+        self.llds.create_retvoid();
+
+        self.llds.verify_function(func);
+        self.cached_copyfn.insert(sym_addr, func);
+        self.llds.restore_ip(saved_insert_point);
+        return func;
     }
 
     fn cg_struct_generic_typemeta(&mut self, struct_sym: *StructSymbol) -> CgGlobal {
@@ -943,6 +1081,7 @@ impl CodeGenerator {
             }
             union_sym: *UnionSymbol => return self.cg_empty_copyfn();
             trait_sym: *TraitSymbol => return self.cg_empty_copyfn();
+            lambda_sym: *LambdaSymbol => return self.cg_lambda_copyfn(lambda_sym);
             _ => return self.cg_empty_copyfn();
         }
     }
@@ -1168,6 +1307,7 @@ impl CodeGenerator {
             }
             union_sym: *UnionSymbol => return self.cg_empty_dtorfn();
             trait_sym: *TraitSymbol => return self.cg_empty_dtorfn();
+            lambda_sym: *LambdaSymbol => return self.cg_lambda_dtorfn(lambda_sym);
             _ => return self.cg_empty_dtorfn();
         }
     }

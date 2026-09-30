@@ -164,7 +164,11 @@ impl CodeGenerator {
         match rvalue {
             lam: *LambdaValue => {
                 // 闭包值本身: 没有捕获时它不携带数据 (空结构体), 调用/取地址都只看它的符号
-                return self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>).as_value();
+                if lam.lambda_sym.captures.is_empty() {
+                    return self.llds.get_const_struct(self.llds.type_empty_struct(), &[] as Slice<CgConst>).as_value();
+                }
+                // 有捕获时闭包值就是捕获环境结构体, 在这里把捕获的变量装进去
+                return self.cg_lambda_env_value(lam.lambda_sym, ctx);
             }
             cast_rv: *CastValue => {
                 return self.cg_cast_value(move cast_rv, move ctx);
@@ -797,6 +801,62 @@ impl CodeGenerator {
             panic "BUG: LambdaToFnLower without a lambda type operand";
         }
 
+        // 闭包 -> &Fn / &mut FnMut (胖指针)。胖指针的布局和 trait 对象一样是三个字:
+        //   [0] 闭包环境指针 (Option 的 niche 优化靠它区分 None, 所以不能是空指针)
+        //   [1] 闭包类型的 TypeMeta (Arc/Weak 引用计数归零时靠它找到析构函数)
+        //   [2] 调用入口函数指针, 签名是 fn(环境指针, 参数...) -> 返回值
+        if cast_rv.resolved_kind is ResolvedCastKind::LambdaToFnUpperPtr {
+            let mut lsym_opt: Option<*LambdaSymbol> = None;
+            let mut from_ptr = false;
+            if cast_rv.operand is lam: *LambdaValue {
+                lsym_opt = Some(lam.lambda_sym);
+            } else {
+                let src_sty = cast_rv.operand.get_stype().canonical();
+                if src_sty.type_symbol is l0: *LambdaSymbol {
+                    lsym_opt = Some(move l0);
+                } else if src_sty.type_symbol is type *PointerLikeSymbol &&
+                    src_sty.args.ty_arg(0).type_symbol is l1: *LambdaSymbol {
+                    lsym_opt = Some(move l1);
+                    from_ptr = true;
+                }
+            }
+            if lsym_opt is Some(lsym) {
+                // 第二个字是这个闭包类型的 TypeMeta: Arc<Fn> / Weak<Fn> 的引用计数归零时
+                // 运行时就是靠它找到闭包环境的析构函数的
+                let meta = self.cg_typemeta(lsym as *TypeSymbol).as_value();
+                if lsym.captures.is_empty() {
+                    // 环境为空: 调用入口是一个忽略环境指针的 thunk
+                    let thunk = self.cg_fn_upper_thunk(lsym);
+                    let entry = thunk.as_const().as_value();
+                    let mut data = entry;
+                    if from_ptr {
+                        let src_sty = cast_rv.operand.get_stype().canonical();
+                        if src_sty.type_symbol is type *ArcPointerSymbol ||
+                            src_sty.type_symbol is type *WeakPointerSymbol {
+                            // Arc/Weak 要真正的指针才能做引用计数
+                            // (从闭包值直接转换时没有存储, 第一个字用调用入口本身:
+                            //  非空指针, Option 的 niche 优化要靠它区分 None)
+                            let op = self.cg_xvalue(cast_rv.operand, ctx);
+                            data = self.adjust_to_direct(src_sty, op);
+                        }
+                    }
+                    return self.llds.create_fat_ptr(data, meta, entry);
+                }
+                // 有捕获: 第一个字是指向闭包值 (环境结构体) 的指针,
+                // 调用入口就是闭包函数本身 (它的第一个参数就是环境指针)
+                if !from_ptr {
+                    // checker 已经报类型不匹配了, 这里再拦一次
+                    panic "BUG: 有捕获的闭包转换成 Fn/FnMut 之前要先取地址";
+                }
+                let src_sty = cast_rv.operand.get_stype().canonical();
+                let op = self.cg_xvalue(cast_rv.operand, ctx);
+                let env = self.adjust_to_direct(src_sty, op);
+                let entry = self.cg_lambda_body(lsym).as_const().as_value();
+                return self.llds.create_fat_ptr(env, meta, entry);
+            }
+            panic "BUG: LambdaToFnUpperPtr without a lambda type operand";
+        }
+
         let op = self.cg_xvalue(cast_rv.operand, ctx);
         let src_sty = cast_rv.operand.get_stype().canonical();
         let dst_sty = cast_rv.target_sty.canonical();
@@ -979,6 +1039,16 @@ impl CodeGenerator {
                 let vtable = self.llds.create_load(self.llds.type_thin_ptr(), vtable_addr);
 
                 return self.llds.create_fat_ptr(ptr, src_meta, vtable);
+            }
+            ResolvedCastKind::FnLowerToFnUpperBorrow => {
+                // fn 指针 -> Fn/FnMut: 第一个字指向存 fn 指针的槽位 (环境指针),
+                // 第二个字是 fn 指针类型的 TypeMeta (析构/拷贝都是空操作),
+                // 第三个字是 thunk: 从槽位里 load 出 fn 指针再按 fn 签名调用。
+                let slot = self.adjust_to_direct(src_sty, op);
+                let fn_lower_sty = src_sty.strip_pointer();
+                let meta = self.rt_typemeta_of(fn_lower_sty, ctx);
+                let entry = self.cg_fn_ptr_to_fn_upper_thunk(fn_lower_sty).as_const().as_value();
+                return self.llds.create_fat_ptr(slot, meta, entry);
             }
             ResolvedCastKind::FatPtrDownToThinPtr => {
                 if op.indirect {
@@ -1962,6 +2032,12 @@ impl CodeGenerator {
                     }
                     return self.cg_direct_fn_call(fn_call, fsym, ctx);
                 }
+                if pointee_sty.type_symbol is type *FnUpperTypeSymbol ||
+                    pointee_sty.type_symbol is type *FnUpperMutTypeSymbol {
+                    // Fn / FnMut 的值是胖指针: 第一个字是闭包环境, 第三个字是调用入口。
+                    let fatptr = self.cg_xvalue(fn_call.callee, ctx);
+                    return self.cg_fn_upper_call(fn_call, pointee_sty, fatptr, ctx);
+                }
                 // 指向 fn 指针: 先取到指针的值, 再从它指向的槽位里 load 出函数指针
                 let addr = self.adjust_to_direct(callee_sty, self.cg_xvalue(fn_call.callee, ctx));
                 let fnptr = self.llds.create_load(self.llds.type_thin_ptr(), addr);
@@ -2101,6 +2177,53 @@ impl CodeGenerator {
         panic; // todo 其他情况暂未实现
     }
 
+    // 通过 Fn / FnMut 的胖指针调用: 第一个字是闭包环境指针, 第三个字是调用入口。
+    // 入口的签名是 fn(环境指针, 参数...) -> 返回值, 所以比 fn 指针调用多传一个环境指针。
+    fn cg_fn_upper_call(&mut self, fn_call: *FnCallValue, fn_sty: *SType, fatptr: CgValue, ctx: *CgContext) -> CgValue {
+        let data = self.access_fatptr_field(fatptr, 0);
+        let callee = self.access_fatptr_field(fatptr, 2);
+
+        let sig = self.signature_of_fn_sty(fn_sty);
+        let fnty = self.functype_of_fn_upper_sig(fn_sty);
+        let mut args = (type Vec<CgValue>)::new();
+        args.push(data);
+        let mut sret_ptr: Option<CgValue> = None;
+        for param in sig.params {
+            match param {
+                CgParam::SRet => {
+                    let ret_ty = self.cgtype_of(fn_sty.fn_return_sty()).get_or_panic();
+                    let ret_ptr = self.llds.create_alloca_sized(ret_ty);
+                    args.push(ret_ptr);
+                    sret_ptr = Some(ret_ptr);
+                }
+                CgParam::FnArgVal(arg_idx, _, _) => {
+                    let arg = *fn_call.desugared_args.index(arg_idx).deref();
+                    let cg_val = self.adjust_to_direct(arg.get_stype(), self.cg_xvalue(arg, ctx));
+                    args.push(cg_val);
+                }
+                CgParam::FnArgRef(arg_idx, _, _) => {
+                    let arg = *fn_call.desugared_args.index(arg_idx).deref();
+                    let mut cg_val = self.cg_xvalue(arg, ctx);
+                    if !cg_val.indirect {
+                        let cgty = self.cgtype_of(arg.get_stype()).get_or_panic();
+                        let alloca = self.llds.create_alloca_sized(cgty);
+                        self.llds.create_store(cg_val, alloca);
+                        cg_val = alloca;
+                    }
+                    args.push(cg_val);
+                }
+                _ => {
+                    panic "BUG: Fn/FnMut call with unexpected param kind";
+                }
+            }
+        }
+        let call = self.llds.create_call(fnty, callee, args.as_slice().deref());
+        if sret_ptr is Some(r) {
+            return r;
+        }
+        return call;
+    }
+
     // 通过 fn 指针类型的值间接调用: fn(A, B) -> C
     // 参数/返回的传递规则和普通函数一致, 所以这里照着 cg_func_call 的签名遍历来传参。
     fn cg_fn_ptr_call(&mut self, fn_call: *FnCallValue, fn_sty: *SType, ctx: *CgContext) -> CgValue {
@@ -2225,15 +2348,68 @@ impl CodeGenerator {
         }
     }
 
-    // 调用一个"没有捕获的闭包"的值。
-    // 这种闭包相当于空结构体, 不携带任何状态, 所以调用它就是直接调用为它生成的函数
-    // (函数签名正好是它自己的参数列表和返回类型, 没有 receiver)。
+    // 取一个变量 (外层函数的局部变量或参数) 的存储地址。捕获时用它初始化闭包环境。
+    fn cg_var_storage(&mut self, vsym: *VarSymbol, ctx: *CgContext) -> CgValue {
+        let key = vsym as *raw VarSymbol as UInt;
+        if ctx.local_map.at(&key) is Some(v) {
+            return v;
+        }
+        if ctx.arg_map.at(&key) is Some(v) {
+            return v;
+        }
+        let name = vsym.short_name();
+        let msg = f"BUG: captured variable $(name) is not found in the enclosing function";
+        panic msg.as_str().deref();
+    }
+
+    // 构造闭包的环境结构体的值: 每个捕获一个字段
+    //   - 按值捕获: 把外层变量读出来存进去 (Copy 类型是拷贝, 否则是移动)
+    //   - &/&mut 捕获: 存外层变量的地址
+    //   - weak 捕获: 把弱引用读出来存进去
+    fn cg_lambda_env_value(&mut self, lsym: *LambdaSymbol, ctx: *CgContext) -> CgValue {
+        let env_cgty = self.lambda_env_cgtype(lsym);
+        let mut env = self.llds.get_null_value_of(env_cgty).as_value();
+        let mut field_idx: UInt = 0;
+        for c in lsym.captures {
+            let storage = self.cg_var_storage(c.outer_var, ctx);
+            let mut field = storage;
+            if c.mode is LambdaCaptureKind::Value || c.mode is LambdaCaptureKind::Weak {
+                // 字段存的是值: 从外层变量的存储里读出来
+                field = self.adjust_to_direct(c.local_var.stype, storage);
+            }
+            env = self.llds.create_insert_value(env, field, field_idx);
+            field_idx += 1;
+        }
+        return env;
+    }
+
+    // 调用一个闭包的值。
+    // 没有捕获的闭包相当于空结构体, 调用它就是直接调用为它生成的函数;
+    // 有捕获的闭包值就是环境结构体, 调用时把它的地址当作第一个参数传进去。
     fn cg_lambda_call(&mut self, fn_call: *FnCallValue, lsym: *LambdaSymbol, ctx: *CgContext) -> CgValue {
         let fn_sty = self.lambda_fn_sty(lsym);
         let sig = self.signature_of_fn_sty(fn_sty);
         let callee = self.cg_lambda_body(lsym);
 
         let mut args = (type Vec<CgValue>)::new();
+        if lambda_has_env(lsym) {
+            // 环境指针:
+            //   - callee 的类型就是闭包值: 环境就是它的存储地址
+            //   - callee 的类型是指向闭包的指针 (&闭包 / &mut 闭包 / box 闭包):
+            //     先 load 出那个指针, 它才是指向环境的指针
+            let callee_sty = fn_call.callee.get_stype().canonical();
+            let mut env = self.cg_xvalue(fn_call.callee, ctx);
+            if callee_sty.type_symbol is type *PointerLikeSymbol {
+                env = self.adjust_to_direct(callee_sty, env);
+            } else if !env.indirect {
+                // 闭包值不在存储里 (理论上不会发生): 先存到一个槽位再取地址
+                let env_cgty = self.lambda_env_cgtype(lsym);
+                let alloca = self.llds.create_alloca_sized(env_cgty);
+                self.llds.create_store(env, alloca);
+                env = alloca;
+            }
+            args.push(env);
+        }
         let mut sret_ptr: Option<CgValue> = None;
         for param in sig.params {
             match param {
@@ -2299,6 +2475,137 @@ impl CodeGenerator {
             return evsym.parent_enum.get_or_panic().to_sty();
         }
         return SType::sty_invalid(SourceSpan::empty());
+    }
+
+    // 生成"闭包 -> Fn/FnMut"的调用入口 (thunk):
+    //   thunk 的签名比闭包的 fn 签名多一个第一个参数 —— 闭包环境指针,
+    //   没有捕获的闭包用不到它, 直接调用为闭包生成的函数。
+    // (有捕获的闭包需要环境结构体, 还没实现)
+    fn cg_fn_upper_thunk(&mut self, lsym: *LambdaSymbol) -> CgFunc {
+        let mut thunk_name = String::new();
+        thunk_name.push_str(lsym.mangle_name().as_str().deref());
+        thunk_name.push_str("::fnupper");
+        if self.llds.get_function(thunk_name.as_str().deref()) is Some(f) {
+            return f;
+        }
+
+        let fn_sty = self.lambda_fn_sty(lsym);
+        let fn_sig = self.signature_of_fn_sty(fn_sty);
+        let fnty = self.functype_of_fn_upper_sig(fn_sty);
+        let thunk = self.llds.create_fn(fnty, thunk_name.as_str().deref());
+
+        let entry_bb = self.llds.create_bb("entry", thunk);
+        let saved_ip = self.llds.save_ip();
+        self.llds.set_insert_point(entry_bb);
+        self.llds.create_do_nothing();
+
+        // 闭包 fn 签名里的第 j 个 LLVM 参数, 在 thunk 里下标是 j + 1 (前面多了环境指针)。
+        // 环境指针只是 thunk 的形参 (没有捕获的闭包不需要它), 不传给闭包函数。
+        let mut args = (type Vec<CgValue>)::new();
+        let mut has_sret = false;
+        for param in fn_sig.params {
+            match param {
+                CgParam::SRet => {
+                    has_sret = true;
+                    args.push(self.llds.get_arg(thunk, 1_u));
+                }
+                CgParam::FnArgVal(_, j1, _) => {
+                    args.push(self.llds.get_arg(thunk, j1 + 1));
+                }
+                CgParam::FnArgRef(_, j2, _) => {
+                    args.push(self.llds.get_arg(thunk, j2 + 1));
+                }
+                _ => {
+                    panic "BUG: unexpected param kind in a Fn/FnMut thunk";
+                }
+            }
+        }
+
+        let callee = self.cg_lambda_body(lsym);
+        let call = self.llds.create_call(callee, args.as_slice().deref());
+        if has_sret {
+            // 闭包函数也走 sret: 它已经把结果写进调用方的槽位了
+            self.llds.create_retvoid();
+        } else if self.cgtype_of(fn_sty.fn_return_sty()) is Some(ret_ty) {
+            let size = self.llds.storage_size_of(ret_ty);
+            if size == 0 {
+                self.llds.create_retvoid();
+            } else {
+                self.llds.create_ret(call);
+            }
+        } else {
+            self.llds.create_retvoid();
+        }
+
+        self.llds.restore_ip(saved_ip);
+        return thunk;
+    }
+
+    // 生成"fn 指针 -> Fn/FnMut"的调用入口 (thunk):
+    //   fn 指针的调用不带环境指针, 而 Fn/FnMut 的调用第一个参数是环境指针。
+    //   这里的约定是: 环境指针指向一个存 fn 指针的槽位
+    //   (&fn 指针就是那个槽位的地址; Arc<fn 指针> 的负载就是 fn 指针本身),
+    //   thunk 先 load 出 fn 指针, 再按 fn 的签名调用它 (把环境指针丢掉)。
+    //   thunk 只和签名有关, 所以按签名缓存。
+    fn cg_fn_ptr_to_fn_upper_thunk(&mut self, fn_sty: *SType) -> CgFunc {
+        let mut thunk_name = String::new();
+        thunk_name.push_str("fnptr::toupper::");
+        thunk_name.push_str(fn_sty.to_string().as_str().deref());
+        if self.llds.get_function(thunk_name.as_str().deref()) is Some(f) {
+            return f;
+        }
+
+        let fn_sig = self.signature_of_fn_sty(fn_sty);
+        let fnty = self.functype_of_fn_upper_sig(fn_sty);
+        let thunk = self.llds.create_fn(fnty, thunk_name.as_str().deref());
+
+        let entry_bb = self.llds.create_bb("entry", thunk);
+        let saved_ip = self.llds.save_ip();
+        self.llds.set_insert_point(entry_bb);
+        self.llds.create_do_nothing();
+
+        // 第一个参数是环境指针 (这里就是指向 fn 指针的槽位), 从中 load 出 fn 指针
+        let slot = self.llds.get_arg(thunk, 0_u);
+        let fnptr = self.llds.create_load(self.llds.type_thin_ptr(), slot);
+
+        // fn 签名里的第 j 个参数, 在 thunk 里下标是 j + 1
+        let mut args = (type Vec<CgValue>)::new();
+        let mut has_sret = false;
+        for param in fn_sig.params {
+            match param {
+                CgParam::SRet => {
+                    has_sret = true;
+                    args.push(self.llds.get_arg(thunk, 1_u));
+                }
+                CgParam::FnArgVal(_, j1, _) => {
+                    args.push(self.llds.get_arg(thunk, j1 + 1));
+                }
+                CgParam::FnArgRef(_, j2, _) => {
+                    args.push(self.llds.get_arg(thunk, j2 + 1));
+                }
+                _ => {
+                    panic "BUG: unexpected param kind in a fn-pointer -> Fn/FnMut thunk";
+                }
+            }
+        }
+
+        let fnptr_ty = self.functype_of_sig(fn_sig);
+        let call = self.llds.create_call(fnptr_ty, fnptr, args.as_slice().deref());
+        if has_sret {
+            self.llds.create_retvoid();
+        } else if self.cgtype_of(fn_sty.fn_return_sty()) is Some(ret_ty) {
+            let size = self.llds.storage_size_of(ret_ty);
+            if size == 0 {
+                self.llds.create_retvoid();
+            } else {
+                self.llds.create_ret(call);
+            }
+        } else {
+            self.llds.create_retvoid();
+        }
+
+        self.llds.restore_ip(saved_ip);
+        return thunk;
     }
 
     // 生成"函数/enum variant -> fn 指针"的 thunk:
