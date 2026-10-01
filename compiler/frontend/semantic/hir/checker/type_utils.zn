@@ -1081,7 +1081,10 @@ fn is_borrow_of_fn_upper(sty: *SType) -> Bool {
     return false;
 }
 
-// 类型里是否含生命周期信息 (借用类型, 或者带了生命周期实参的类型)。
+// 类型里是否含"会丢失的生命周期信息" (会悬垂的借用, 或者带了非 'static 生命周期实参的类型)。
+//
+// 注意: 显式写成 'static 的生命周期不算 —— S<'static> / &'static T 都不会悬垂,
+// 装箱成 *TR / *Fn 之后也不可能活得比被借用的对象更长, 所以照常允许。
 //
 // Fn/FnMut 和 trait 对象这两种"胖指针"不携带被指向类型自己的生命周期实参:
 // Arc<S<'a>> -> Arc<TR> 之后, 'a 就丢了, 于是这个 Arc 可能活得比 S 里借用的
@@ -1116,19 +1119,46 @@ fn mentions_lifetime(sty: *SType) -> Bool {
     return res;
 }
 
+// 单个生命周期是不是 'static。省略/没解析出来的生命周期按"非 static"处理 (保守)。
+fn lifetime_is_static(lt: Lifetime) -> Bool {
+    if lt.resolved is Some(lt_sym) {
+        return lt_sym.is_static();
+    }
+    return false;
+}
+
+// 这组生命周期实参里有没有非 'static 的
+fn has_non_static_lifetime(args: &GenericArgs) -> Bool {
+    let mut i: UInt = 0;
+    while i < args.lt_args.len() {
+        if !lifetime_is_static(args.lt_arg(i)) {
+            return true;
+        }
+        i += 1;
+    }
+    return false;
+}
+
 fn mentions_lifetime_at(sty: *SType, depth: UInt) -> Bool {
     // 类型可以是递归的 (例如 struct S { next: *raw S }), 限深避免无限展开
     if depth > 16_u {
         return false;
     }
     let c = sty.canonical();
-    // canonical 会保留生命周期实参 (见 SType::canonical 的注释)
-    if !c.args.lt_args.is_empty() {
+    // canonical 会保留生命周期实参 (见 SType::canonical 的注释)。
+    // 只有非 'static 的生命周期才算会丢失的信息: S<'static> 可以装箱。
+    if has_non_static_lifetime(&c.args) {
         return true;
     }
     let ts = c.type_symbol;
+    if ts is lt_sym: *LifetimeSymbol {
+        // 生命周期本身作为类型出现时同理: 只有非 'static 的才算信息
+        return !lt_sym.is_static();
+    }
     if ts is type *BorrowImmutSymbol || ts is type *BorrowMutSymbol {
-        return true;
+        // 借用: 上面的检查已经放过了显式 &'static T; 省略生命周期时 lt_args 是空的
+        // (&T, 由推断决定), 这种按"会悬垂"保守处理。
+        return c.args.lt_args.is_empty();
     }
     if ts is type *TypeParamSymbol {
         // 类型参数可能被实例化成带生命周期的类型 (泛型参数上没有生命周期约束),
@@ -1149,7 +1179,12 @@ fn mentions_lifetime_at(sty: *SType, depth: UInt) -> Bool {
         return false;
     }
     if ts is u: *UnionSymbol {
-        // union 不支持泛型
+        // union 不支持泛型, 字段类型直接看 (字段里可能有会悬垂的借用)
+        for f in u.fields {
+            if mentions_lifetime_at(f.stype, depth + 1_u) {
+                return true;
+            }
+        }
         return false;
     }
     if ts is e: *EnumSymbol {

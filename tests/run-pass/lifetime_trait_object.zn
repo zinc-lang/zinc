@@ -1,0 +1,80 @@
+// trait 对象与生命周期 (允许的方向):
+//   - 借用 &S<'a> -> &TR: 借用本身连着被借用对象, origin 分析继续盯着里面的借用
+//   - 不含生命周期的具体类型 -> *TR (拥有所有权)
+//   - S<'static> / 嵌套 Outer<'static> -> *TR: 'static 不会悬垂, 不算"会丢失的信息"
+//   - 闭包按值捕获 &'static / S<'static> 之后 -> *Fn
+// (非 'static 的生命周期一律拒绝, 见 compile-fail/lifetime_trait_object_erasure.zn
+//  和 compile-fail/lifetime_lambda_erasure.zn)
+use std::assert;
+
+trait Show {
+    virtual fn show(&self) -> Int;
+}
+
+struct S<'a> {
+    r: &'a Int,
+}
+
+impl<'a> Show for S<'a> {
+    fn show(&self) -> Int { return *self.r; }
+}
+
+struct Outer<'a> {
+    s: S<'a>,
+}
+
+impl<'a> Show for Outer<'a> {
+    fn show(&self) -> Int { return *self.s.r; }
+}
+
+struct Plain {
+    v: Int,
+}
+
+impl Show for Plain {
+    fn show(&self) -> Int { return self.v; }
+}
+
+static G: Int = 7_i;
+
+fn make_fn(x: &'static Int) -> *Fn() -> Int {
+    return box .{ [move x] () -> Int => return *x; };
+}
+
+fn make_fn_value(s: S<'static>) -> *Fn() -> Int {
+    return box .{ [move s] () -> Int => return *s.r; };
+}
+
+fn main() {
+    // 借用 trait 对象
+    let x = 1_i;
+    let s = { .r = &x }: S;
+    let b: &Show = &s;
+    assert(b.show() == 1_i);
+
+    // 不含生命周期的类型装箱
+    let p = { .v = 2_i }: Plain;
+    let c: *Show = box p;
+    assert(c.show() == 2_i);
+
+    // S<'static> 装箱
+    let s2: S<'static> = { .r = &G }: S;
+    let a: *Show = box s2;
+    assert(a.show() == 7_i);
+
+    // 嵌套的 'static
+    let s3: S<'static> = { .r = &G }: S;
+    let o: Outer<'static> = { .s = s3 }: Outer;
+    let d: *Show = box o;
+    assert(d.show() == 7_i);
+
+    // 闭包按值捕获 'static 数据 -> *Fn
+    let f = make_fn(&G);
+    assert(f() == 7_i);
+    let s4: S<'static> = { .r = &G }: S;
+    let g = make_fn_value(s4);
+    assert(g() == 7_i);
+
+    // 同一个 trait 对象类型之间的 Arc -> Weak 仍然允许
+    let w = a as *weak Show;
+}

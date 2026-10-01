@@ -1,0 +1,38 @@
+// 含借用的闭包不能装箱成拥有所有权的 Fn 指针: 借用不会被记录到 Fn 类型里,
+// 装箱后生命周期信息就丢了 (*Fn / *FnMut / *weak Fn 都不行)。
+// ('static 的借用不算, 见 run-pass/lifetime_trait_object.zn)
+struct Holder<'a> {
+    r: &'a Int,
+}
+
+// 1. 按引用捕获局部变量, 装箱成 *Fn
+fn box_ref_capturing_closure() {
+    let n = 1_i;
+    let f = .{ [ref n] () -> Int => return 0_i; };
+    let a: *Fn() -> Int = box f;
+}
+
+// 2. 直接对内联闭包装箱
+fn box_inline_ref_capturing_closure() {
+    let n = 1_i;
+    let a: *Fn() -> Int = box .{ [ref n] () -> Int => return 0_i; };
+}
+
+// 3. 弱引用 Fn 指针同理
+fn box_ref_capturing_closure_weak() {
+    let n = 1_i;
+    let w: *weak Fn() -> Int = box .{ [ref n] () -> Int => return 0_i; };
+}
+
+// 4. 按值捕获一个非 'static 的借用: 环境字段类型就是 &'a Int
+fn box_moved_borrow_capture<'a>(x: &'a Int) -> *Fn() -> Int {
+    return box .{ [move x] () -> Int => return *x; };
+}
+
+// 5. 按值捕获带生命周期的结构体
+fn box_value_capture_with_lifetime<'a>(x: &'a Int) -> *Fn() -> Int {
+    let h = { .r = x }: Holder;
+    return box .{ [move h] () -> Int => return *h.r; };
+}
+
+fn main() { }
