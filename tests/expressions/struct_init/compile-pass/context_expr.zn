@@ -1,0 +1,25 @@
+// 上下文表达式 unsafe(...) / const(...)
+// 注意: `.{ ... }` 不是"上下文表达式", 它在这个语言里是闭包(lambda)
+//       ContextExpr 只由 unsafe(...) 和 const(...) 产生, 并且表达式位置不能直接写语句块
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn main() {
+    // const(expr): 语法上接受, 但编译器目前不强制编译期求值
+    let a = const(1_i + 2_i);
+    let p = const({ .x = 1_i, .y = 2_i }: Point);
+    let arr = const([1_i, 2_i]);
+
+    // unsafe(expr): 允许在里面做裸指针操作
+    // 注意: unsafe({ ... }) 不能解析 (表达式位置没有语句块), 需要写成 unsafe { ... } 语句块
+    let x = 1_i;
+    let r: *raw Int = unsafe(&raw x);
+    let v: Int = unsafe(*r);
+
+    unsafe {
+        let r2: *raw Int = &raw x;
+        let w: Int = *r2;
+    }
+}

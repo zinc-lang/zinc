@@ -1,0 +1,27 @@
+// 字符串 / 原始字符串 / C 字符串 / 插值的运行期结果
+use std::{assert, assert_eq};
+use std::io::println;
+
+fn main() {
+    // 转义序列生效: "\n" 是一个字节而不是两个
+    assert_eq("\n".len(), 1_u);
+    assert_eq("\t".len(), 1_u);
+    assert_eq("\"".len(), 1_u);
+    assert_eq("\\".len(), 1_u);
+    assert_eq("a\nb".len(), 3_u);
+
+    // 原始字符串: 反斜杠保持原样, 长度是 4 而不是 3
+    assert_eq(r"a\nb".len(), 4_u);
+    assert_eq(r#"say "hi""#.len(), 8_u);
+
+    // C 字符串字面量末尾会带一个 NUL, 所以长度比可见字符多 1
+    assert_eq(c"abc".len(), 4_u);
+    assert_eq(c"abc".starts_with("abc"), true);
+
+    // 字符串插值: 文本段 + 内嵌表达式
+    let s = f"x=$(1_i + 1_i)";
+    assert_eq(s.len(), 3_u);
+    assert_eq(s, String::from_str("x=2"));
+
+    println(s);
+}

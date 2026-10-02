@@ -1,0 +1,4 @@
+// 模块路径不存在
+fn main() {
+    let x = no_such_module::no_such_fn(1_i);
+}

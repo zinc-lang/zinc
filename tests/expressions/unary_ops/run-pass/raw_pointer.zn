@@ -1,0 +1,13 @@
+// 裸指针: &raw / &raw mut 取地址, 读写都必须放在 unsafe 上下文里
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut x = 1_i;
+
+    let p: *raw Int = unsafe(&raw x);
+    assert_eq(unsafe(*p), 1_i);
+
+    let pm: *raw mut Int = unsafe(&raw mut x);
+    unsafe(*pm = 42_i);
+    assert_eq(x, 42_i);
+}

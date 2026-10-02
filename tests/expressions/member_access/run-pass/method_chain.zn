@@ -1,0 +1,60 @@
+// 方法调用链与 self 字段访问的运行期结果
+use std::{assert, assert_eq};
+
+struct Counter {
+    n: Int,
+}
+
+impl Counter {
+    fn new() -> Counter {
+        return { .n = 0_i }: Counter;
+    }
+    fn inc(&mut self) -> Int {
+        self.n = self.n + 1_i;
+        return self.n;
+    }
+    fn add(&self, k: Int) -> Counter {
+        return { .n = self.n + k }: Counter;
+    }
+    fn get(&self) -> Int {
+        return self.n;
+    }
+}
+
+struct Pair {
+    left: Counter,
+    right: Counter,
+}
+
+impl Pair {
+    fn total(&self) -> Int {
+        return self.left.get() + self.right.get();
+    }
+}
+
+fn main() {
+    let mut c = Counter::new();
+    assert_eq(c.inc(), 1_i);
+    assert_eq(c.inc(), 2_i);
+    assert_eq(c.get(), 2_i);
+
+    // 方法链: 每步都返回新的 Counter
+    let chained = Counter::new().add(3_i).add(4_i);
+    assert_eq(chained.get(), 7_i);
+    assert_eq(Counter::new().add(1_i).add(2_i).add(3_i).get(), 6_i);
+
+    // 嵌套结构体的字段 / 方法访问
+    let p = {
+        .left = Counter::new().add(10_i),
+        .right = Counter::new().add(20_i),
+    }: Pair;
+    assert_eq(p.left.get(), 10_i);
+    assert_eq(p.right.n, 20_i);
+    assert_eq(p.total(), 30_i);
+
+    // 编译期确定的值也要真实取出来
+    let mut arr = [Counter::new(), Counter::new()];
+    arr[0].inc();
+    assert_eq(arr[0].n, 1_i);
+    assert_eq(arr[1].n, 0_i);
+}

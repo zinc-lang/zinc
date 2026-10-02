@@ -69,35 +69,36 @@ CARET_RE = re.compile(r"^\s*\^+\s*$")
 ERROR_MARKER = "[错误]"
 
 
-def feature_dirs(tests_dir):
-    """tests 下的特性目录 (跳过 __pycache__、以 . / _ 开头的杂物)。"""
-    for name in sorted(os.listdir(tests_dir)):
-        if name.startswith(".") or name.startswith("_"):
+def iter_cases(tests_dir):
+    """递归收集所有用例, 返回 [(label, kind, path)]。
+
+    布局是 <特性>/.../<期望>/<用例>.zn —— 特性目录可以嵌套任意层
+    (例如 expressions/binary/compile-pass/add.zn), 只要用例的父目录是期望目录。
+    """
+    cases = []
+    for dirpath, dirnames, filenames in os.walk(tests_dir):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "__pycache__"]
+        kind = os.path.basename(dirpath)
+        if kind not in KINDS:
             continue
-        path = os.path.join(tests_dir, name)
-        if os.path.isdir(path):
-            yield name, path
-
-
-def case_files(kind_dir):
-    """某个期望目录下的 .zn 用例名 (排序)。"""
-    if not os.path.isdir(kind_dir):
-        return []
-    return [name for name in sorted(os.listdir(kind_dir)) if name.endswith(".zn")]
+        rel_dir = os.path.relpath(dirpath, tests_dir)
+        feature = os.path.dirname(rel_dir)
+        for name in sorted(filenames):
+            if name.endswith(".zn"):
+                cases.append((f"{feature}/{kind}/{name}", kind, os.path.join(dirpath, name)))
+    return sorted(cases)
 
 
 def stray_cases(tests_dir):
-    """收集 tests 下位置不合法 (不是 <特性>/<期望>/<用例>.zn) 的 .zn 用例。"""
+    """收集位置不合法 (父目录不是 compile-pass/compile-fail/run-pass) 的 .zn。"""
     strays = []
     for dirpath, dirnames, filenames in os.walk(tests_dir):
         dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        if os.path.basename(dirpath) in KINDS:
+            continue  # 期望目录里的 .zn 都是用例
         for name in filenames:
-            if not name.endswith(".zn"):
-                continue
-            rel = os.path.relpath(os.path.join(dirpath, name), tests_dir)
-            parts = rel.split(os.sep)
-            if len(parts) != 3 or parts[1] not in KINDS:
-                strays.append(rel)
+            if name.endswith(".zn"):
+                strays.append(os.path.relpath(os.path.join(dirpath, name), tests_dir))
     return sorted(strays)
 
 
@@ -195,14 +196,11 @@ def run_case(compiler, path, name, out_dir, verbose=True):
 def collect_results(compiler, tests_dir, run_build_dir, verbose=True):
     """收集所有用例的结果 (不打印结论)。"""
     results = []
-    for feature, feature_dir in feature_dirs(tests_dir):
-        for kind in KINDS:
-            kind_dir = os.path.join(feature_dir, kind)
-            for name in case_files(kind_dir):
-                path = os.path.join(kind_dir, name)
-                # 输出里带上完整相对路径, 便于定位 (同一个用例在两种期望下可能同名)
-                label = f"{feature}/{kind}/{name}"
-
+    for label, kind, path in iter_cases(tests_dir):
+        # 输出里带上完整相对路径, 便于定位 (同一个用例在两种期望下可能同名)
+        feature = os.path.dirname(os.path.dirname(label))
+        name = os.path.basename(path)
+        if True:
                 if kind == COMPILE_PASS:
                     code, output, timed_out = check_case(compiler, path, verbose)
                     if timed_out:
@@ -318,8 +316,9 @@ def self_test():
     failures = 0
     with tempfile.TemporaryDirectory() as td:
         tests_dir = os.path.join(td, "tests")
+        # 嵌套特性目录也要能被收集 (expressions/nested/<kind>/...)
         for kind, name in ((COMPILE_PASS, "ok_case"), (COMPILE_FAIL, "bad_case")):
-            kind_dir = os.path.join(tests_dir, "feat", kind)
+            kind_dir = os.path.join(tests_dir, "expressions", "nested", kind)
             os.makedirs(kind_dir, exist_ok=True)
             with open(os.path.join(kind_dir, name + ".zn"), "w") as f:
                 f.write("fn main() { }\n")
@@ -337,7 +336,8 @@ def self_test():
                 os.environ["FAKE_MODE"] = mode
                 results = collect_results(
                     fake, tests_dir, os.path.join(td, "out"), verbose=False)
-                got = {res.label.split("/")[1]: res.ok for res in results}
+                # label 形如 <特性>/.../<期望>/<用例>.zn: 期望目录永远是倒数第二段
+                got = {res.label.split("/")[-2]: res.ok for res in results}
                 ok = (got.get(COMPILE_PASS) == expect_pass) and (got.get(COMPILE_FAIL) == expect_fail)
                 print(f"{'ok  ' if ok else 'FAIL'} self-test mode={mode:16s} "
                       f"compile-pass={got.get(COMPILE_PASS)} compile-fail={got.get(COMPILE_FAIL)}"

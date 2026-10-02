@@ -1,0 +1,23 @@
+// 浮点字面量的运行期取值
+// 没有后缀的浮点字面量、以及整数转换过来的浮点值都是正确的
+use std::{assert, assert_eq};
+
+fn main() {
+    // 上下文类型给出 F64
+    let a: F64 = 1.5;
+    assert(a == 1.5);
+
+    let b: F32 = 2.5;
+    assert(b == 2.5);
+
+    // 整数字面量 -> 浮点
+    let c: F64 = 2_i as F64;
+    assert(c == 2.0);
+    assert(c > 1.5);
+    assert(c < 2.5);
+
+    // 无后缀 + 显式变量转换
+    let d: F32 = 0.5;
+    let e: F64 = d as F64;
+    assert(e == 0.5);
+}

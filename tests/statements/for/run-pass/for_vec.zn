@@ -1,0 +1,19 @@
+// for x in <Vec>: 遍历 Vec, 配合 continue / break
+// (数组暂时不支持迭代, 见 compile-fail/for_array_unimplemented.zn)
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut v = (type Vec<Int>)::new();
+    v.push(1_i);
+    v.push(2_i);
+    v.push(3_i);
+    v.push(4_i);
+
+    let mut sum = 0_i;
+    for x in v {
+        if x == 2_i { continue; } // 跳过 2
+        if x == 4_i { break; }    // 遇到 4 提前结束
+        sum += x;
+    }
+    assert_eq(sum, 4_i); // 1 + 3
+}

@@ -1,0 +1,5 @@
+// 访问整数类型上不存在的成员
+fn main() {
+    let x = 1_i;
+    let y = x.not_a_method();
+}

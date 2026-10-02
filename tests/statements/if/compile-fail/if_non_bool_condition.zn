@@ -1,0 +1,7 @@
+// if 的条件必须是 Bool; 用 Int 当条件是类型错误
+fn main() {
+    let x = 1_i;
+    if x {
+        println("x");
+    }
+}

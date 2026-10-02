@@ -1,0 +1,17 @@
+// 内建比较运算符只支持基础类型: 结构体要用 a.eq(&b) / .ne(&other) 方法,
+// 即使实现了 PartialEq, `a == b` 也还是报"类型不支持运算符"
+use std::cmp::PartialEq;
+
+struct S { v: Int }
+
+impl PartialEq for S {
+    fn eq(&self, other: &Self) -> Bool { return self.v == other.v; }
+    fn ne(&self, other: &Self) -> Bool { return self.v != other.v; }
+}
+
+fn main() {
+    let a = { .v = 1_i }: S;
+    let b = { .v = 1_i }: S;
+    let c = a == b;
+    println(c);
+}

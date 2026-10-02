@@ -1,0 +1,30 @@
+// 逻辑运算 && / ||: && 比 || 紧, 并且都是短路的 (右侧可能不被求值)
+use std::assert;
+
+// 如果短路失效, 右侧被求值, 这个函数就会 panic
+fn boom() -> Bool {
+    panic("短路失效: 右侧被求值了");
+}
+
+fn always_false() -> Bool {
+    return false;
+}
+
+fn main() {
+    // false && x 不需要求值右侧
+    assert(!(false && boom()));
+
+    // true || x 不需要求值右侧
+    assert(true || boom());
+
+    // 需要求值右侧的情形
+    assert(true && !always_false());
+    assert(false || !always_false());
+
+    // && 比 || 紧: a || b && c 等价 a || (b && c)
+    assert(true || false && false);
+    assert(!(false && false || false)); // (false && false) || false
+
+    // 逻辑运算只接受 Bool
+    assert(!false && !false);
+}

@@ -1,0 +1,17 @@
+// for 的模式位置支持解构: 遍历 Vec<(Int, Bool)> 并绑定元组里的两个元素
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut v = (type Vec<(Int, Bool)>)::new();
+    v.push((1_i, true));
+    v.push((2_i, false));
+    v.push((3_i, true));
+
+    let mut sum = 0_i;
+    for (a, ok) in v {
+        if ok {
+            sum += a;
+        }
+    }
+    assert_eq(sum, 4_i); // 1 + 3
+}

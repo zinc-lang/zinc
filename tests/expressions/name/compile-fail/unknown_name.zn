@@ -1,0 +1,4 @@
+// 引用一个不存在的名字
+fn main() {
+    let x = undefined_variable;
+}

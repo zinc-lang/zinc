@@ -1,0 +1,39 @@
+// 名字解析的运行期结果
+use std::{assert, assert_eq};
+
+mod math {
+    pub const BASE: Int = 100_i;
+
+    pub fn add(a: Int, b: Int) -> Int {
+        return a + b;
+    }
+
+    pub mod deep {
+        pub fn answer() -> Int {
+            return 42_i;
+        }
+    }
+}
+
+enum Direction {
+    North,
+    South,
+}
+
+fn main() {
+    // 模块里的公开函数
+    assert_eq(math::add(1_i, 2_i), 3_i);
+    // 嵌套模块
+    assert_eq(math::deep::answer(), 42_i);
+    // 模块里的常量
+    assert_eq(math::BASE, 100_i);
+
+    // 枚举变体
+    let d = Direction::North;
+    assert(d is Direction::North);
+    assert(!(d is Direction::South));
+
+    // 绝对路径
+    ::std::assert(true);
+    ::std::assert_eq(math::deep::answer(), 42_i);
+}

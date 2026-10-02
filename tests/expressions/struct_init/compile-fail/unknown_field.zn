@@ -1,0 +1,9 @@
+// 初始化不存在的字段
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn main() {
+    let p = { .x = 1_i, .z = 2_i }: Point;
+}

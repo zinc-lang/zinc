@@ -1,0 +1,28 @@
+// 块本身是语句: 可以直接写在函数体 / if / while 里, 内部是一条条语句
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut total = 0_i;
+
+    {
+        let a = 1_i;
+        total += a;
+        total += 2_i;
+    }
+
+    let mut i = 0_i;
+    while i < 2_i {
+        {
+            total += 10_i;
+        }
+        i += 1_i;
+    }
+
+    if total > 0_i {
+        {
+            total += 100_i;
+        }
+    }
+
+    assert_eq(total, 123_i); // 3 + 20 + 100
+}

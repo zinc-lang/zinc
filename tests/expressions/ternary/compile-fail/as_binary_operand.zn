@@ -1,0 +1,5 @@
+// if 只在"完整表达式"的位置解析, 不能直接当作二元运算的操作数 (需要括号)
+fn main() {
+    let x = 1_i + if true then 2_i else 3_i;
+    println(x);
+}

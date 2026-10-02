@@ -1,0 +1,6 @@
+// 有返回值的函数 (-> Int) 不能写裸 `return;`
+fn f() -> Int {
+    return;
+}
+
+fn main() { }

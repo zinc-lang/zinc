@@ -1,0 +1,11 @@
+// 其它能通过类型检查的转换: 整数<->浮点、浮点宽度之间、以及 as 链
+// (这里只覆盖类型检查; 浮点数的运行期行为不在本用例覆盖)
+fn main() {
+    let a = 1_i as F64;          // Int  -> F64
+    let b = 1.5_f64 as Int;      // F64  -> Int
+    let c = 1.0_f64 as F32;      // 浮点降宽度
+    let d = 1.0_f32 as F64;      // 浮点升宽度
+    let e = 1_i as F32;
+    let f = 'x' as UInt32 as Int;
+    let g = true as Int as UInt8;
+}

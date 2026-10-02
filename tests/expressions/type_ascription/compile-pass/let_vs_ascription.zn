@@ -1,0 +1,28 @@
+// `expr: Type` 与 `let x: Type` 的区别与配合
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn make() -> Point {
+    return { .x = 1_i, .y = 2_i }: Point;
+}
+
+fn main() {
+    // let 标注约束整个绑定, 右边可以是任意表达式
+    let a: Int = 1_i + 2_i;
+    let b: Point = make();
+    let c: [Int; 2] = [1_i, 2_i];
+
+    // ascription 标注的是紧邻的那个字面量 / 调用 / 初始化表达式
+    let d = 1_i: Int;
+    let e = make(): Point;
+
+    // 两者叠加: let 的类型与 ascription 的类型必须一致
+    let f: Int = (1_i: Int);
+    let g: Point = make(): Point;
+
+    // let 的标注可以为右值提供上下文类型
+    let h: F64 = 3.5;
+    let i: UInt = 4_u;
+}

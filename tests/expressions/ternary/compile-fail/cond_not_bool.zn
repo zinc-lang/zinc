@@ -1,0 +1,5 @@
+// 三元的条件必须是 Bool, 整数不行
+fn main() {
+    let x = if 1_i then 2_i else 3_i;
+    println(x);
+}

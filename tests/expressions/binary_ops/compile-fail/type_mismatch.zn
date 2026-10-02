@@ -1,0 +1,5 @@
+// 二元运算符两边类型必须完全一致: Int 和 UInt 不能直接比较
+fn main() {
+    let b = 1_i == 1_u;
+    println(b);
+}

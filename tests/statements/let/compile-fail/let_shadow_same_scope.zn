@@ -1,0 +1,7 @@
+// 同一作用域内不允许同名重绑定 (遮蔽): 编译器报 "符号名冲突"
+// 注意: 嵌套块里的同名绑定是允许的 (见 statements/block/run-pass/block_scope.zn)
+fn main() {
+    let x = 1_i;
+    let x = 2_i;
+    println(f"$(x)");
+}

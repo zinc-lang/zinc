@@ -1,0 +1,54 @@
+// 结构体初始化在运行期的字段值 / 嵌套访问 / 默认值
+use std::{assert, assert_eq};
+
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+struct Line {
+    start: Point,
+    end: Point,
+}
+
+struct Config {
+    retries: Int = 3,
+    verbose: Bool = false,
+}
+
+// 结构体初始化表达式可以直接当函数实参
+fn mid_x(l: Line) -> Int {
+    return (l.start.x + l.end.x) / 2_i;
+}
+
+fn scaled(p: Point, k: Int) -> Point {
+    return { .x = p.x * k, .y = p.y * k }: Point;
+}
+
+fn retries(c: Config) -> Int {
+    return c.retries;
+}
+
+fn main() {
+    let p = { .x = 3_i, .y = 4_i }: Point;
+    assert_eq(p.x, 3_i);
+    assert_eq(p.y, 4_i);
+
+    let line = {
+        .start = { .x = 0_i, .y = 0_i }: Point,
+        .end = { .x = 4_i, .y = 8_i }: Point,
+    }: Line;
+    assert_eq(line.start.x, 0_i);
+    assert_eq(line.end.y, 8_i);
+
+    // 当实参用
+    assert_eq(mid_x({ .start = p, .end = { .x = 5_i, .y = 0_i }: Point }: Line), 4_i);
+    let s = scaled({ .x = 1_i, .y = 2_i }: Point, 10_i);
+    assert_eq(s.y, 20_i);
+
+    // 字段默认值
+    let c: Config = { ... };
+    assert_eq(c.retries, 3_i);
+    assert(!c.verbose);
+    assert_eq(retries({ ... }: Config), 3_i);
+}

@@ -1,0 +1,18 @@
+// do-while 的循环体本身是一个块, 里面可以嵌套 while / do-while
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut outer = 0_i;
+    let mut hits = 0_i;
+
+    do {
+        outer += 1_i;
+        let mut inner = 0_i;
+        do {
+            inner += 1_i;
+            hits += 1_i;
+        } while inner < 2_i;
+    } while outer < 3_i;
+
+    assert_eq(hits, 6_i); // 外层 3 轮 * 内层 2 轮
+}

@@ -1,0 +1,19 @@
+// 三元的条件和分支都可以是完整表达式 (比较/算术/逻辑);
+// 但 if 不是 primary 表达式, 直接当二元运算的操作数要加括号
+use std::{assert, assert_eq};
+
+fn main() {
+    // 条件是完整表达式
+    assert_eq(if 1_i < 2_i then 10_i else 20_i, 10_i);
+    assert_eq(if 1_i > 2_i then 10_i else 20_i, 20_i);
+
+    // 分支是完整表达式
+    assert_eq(if true then 1_i + 2_i else 3_i * 4_i, 3_i);
+    assert_eq(if false then 1_i + 2_i else 3_i * 4_i, 12_i);
+
+    // 作为二元运算的操作数必须加括号
+    assert_eq((if true then 1_i else 2_i) + 10_i, 11_i);
+
+    // 条件里的逻辑运算
+    assert_eq(if true && !false then 1_i else 2_i, 1_i);
+}

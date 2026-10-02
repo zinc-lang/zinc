@@ -1,0 +1,20 @@
+// 括号分组: 改变优先级, 也可以把右结合的运算符"掰"成左结合
+use std::{assert, assert_eq};
+
+fn main() {
+    // 乘法默认比加法紧
+    assert_eq(1_i + 2_i * 3_i, 7_i);
+    assert_eq((1_i + 2_i) * 3_i, 9_i);
+
+    // 减法是右结合, 括号强制左结合
+    assert_eq(10_i - (3_i - 2_i), 9_i);
+    assert_eq((10_i - 3_i) - 2_i, 5_i);
+
+    // 嵌套括号
+    assert_eq((((42_i))), 42_i);
+    assert_eq(1_i + (2_i * (3_i + 4_i)), 15_i);
+
+    // 逻辑运算分组
+    assert(!(true && false));
+    assert(!true || true);
+}

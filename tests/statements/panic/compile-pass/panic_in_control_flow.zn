@@ -1,0 +1,18 @@
+// panic 是普通语句, 可以放在循环体 / else 分支里
+fn f(b: Bool) {
+    if b {
+        panic "true";
+    } else {
+        panic;
+    }
+}
+
+fn main() {
+    let mut i = 0_i;
+    while i > 0_i {
+        panic "never reached";
+    }
+    if i > 1_i {
+        panic "also never reached";
+    }
+}

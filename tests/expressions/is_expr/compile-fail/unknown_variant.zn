@@ -1,0 +1,8 @@
+// is 的模式必须是真实存在的变体 (C::C 不存在)
+enum E { A, B }
+
+fn main() {
+    let e = E::A;
+    let b = e is E::C;
+    println(b);
+}

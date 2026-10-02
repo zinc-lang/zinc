@@ -1,0 +1,37 @@
+// 函数调用的基本形式: 0 参 / 1 参 / 多参 / 命名参数 / 嵌套调用
+fn zero() -> Int {
+    return 42_i;
+}
+
+fn one(x: Int) -> Int {
+    return x + 1_i;
+}
+
+fn three(a: Int, b: Int, c: Int) -> Int {
+    return a + b + c;
+}
+
+fn named(a: Int, b: Int) -> Int {
+    return a * 10_i + b;
+}
+
+fn no_ret(x: Int) {
+}
+
+fn main() {
+    // 0 参
+    let a = zero();
+    // 1 参
+    let b = one(1_i);
+    // 多参
+    let c = three(1_i, 2_i, 3_i);
+    // 命名参数 (书写顺序可以和声明不同)
+    let d = named(.a = 1_i, .b = 2_i);
+    let e = named(.b = 2_i, .a = 1_i);
+    // 实参可以是任意表达式
+    let f = three(one(0_i), 1_i + 1_i, zero() - 2_i);
+    // 无返回值函数
+    no_ret(1_i);
+    // 返回 Unit 的调用可以作为语句
+    no_ret(three(1_i, 2_i, 3_i));
+}

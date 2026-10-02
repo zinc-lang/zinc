@@ -1,0 +1,14 @@
+// while 基本循环: 循环体内可以声明每轮新建的绑定
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut i = 0_i;
+    let mut sum = 0_i;
+    while i < 5_i {
+        let v = i * 2_i; // 每轮迭代都新建一个 v
+        sum += v;
+        i += 1_i;
+    }
+    assert_eq(sum, 20_i); // 0 + 2 + 4 + 6 + 8
+    assert_eq(i, 5_i);
+}

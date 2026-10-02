@@ -1,0 +1,6 @@
+// 复合赋值右侧类型必须和左侧一致 (x += true 展开成 x + true)
+fn main() {
+    let mut x = 1_i;
+    x += true;
+    println(x);
+}

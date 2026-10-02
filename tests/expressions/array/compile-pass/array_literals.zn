@@ -1,0 +1,22 @@
+// 数组字面量的各种书写形式: 列表 / 空数组 / 重复字面量 / 嵌套 / 带类型标注
+fn main() {
+    // 普通列表
+    let a = [1_i, 2_i, 3_i];
+    // 单元素与空数组
+    let one = [1_i];
+    let empty: [Int; 0] = [];
+    // 重复字面量 [元素; 个数]
+    let zeros = [0_u8; 8];
+    let sevens: [Int; 4] = [7_i; 4];
+    // 嵌套数组
+    let matrix = [[1_i, 2_i], [3_i, 4_i]];
+    let cube = [[[1_i]], [[2_i]]];
+    // 显式数组类型 [T; N]
+    let typed: [Int; 3] = [1_i, 2_i, 3_i];
+    let typed2: [[UInt8; 2]; 2] = [[0_u8, 1_u8], [2_u8, 3_u8]];
+    // 元素是复合类型也可以
+    let pairs = [(1_i, 2_i), (3_i, 4_i)];
+    // 定长数组的借用可以隐式转成 Slice
+    let s: Slice<Int> = &a;
+    let es: Slice<Int> = &empty;
+}

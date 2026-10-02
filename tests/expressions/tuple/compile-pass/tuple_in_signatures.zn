@@ -1,0 +1,28 @@
+// 元组作为函数参数与返回值
+fn make_pair() -> (Int, Int) {
+    return (1_i, 2_i);
+}
+
+fn make_mixed() -> (Int, Bool, Char) {
+    return (7_i, true, 'z');
+}
+
+fn first(t: (Int, Int)) -> Int {
+    return t.0;
+}
+
+fn split(t: (Int, Int)) -> (Int, Int) {
+    return (t.1, t.0);
+}
+
+fn take_unit(u: ()) {
+}
+
+fn main() {
+    let p = make_pair();
+    let m = make_mixed();
+    let f = first((4_i, 5_i));
+    let s = split(p);
+    take_unit(());
+    let nested: ((Int, Int), Bool) = (make_pair(), true);
+}

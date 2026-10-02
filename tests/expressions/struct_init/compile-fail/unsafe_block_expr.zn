@@ -1,0 +1,9 @@
+// unsafe 的括号形式不接受语句块: `unsafe({ ... })` 解析失败
+// 需要带语句块的 unsafe 只能写成语句形式 `unsafe { ... }`
+fn main() {
+    let x = 1_i;
+    let v = unsafe({
+        let r: *raw Int = &raw x;
+        *r
+    });
+}

@@ -1,0 +1,5 @@
+// 整数不能 as 成字符串 / 布尔
+fn main() {
+    let x = 1_i as Str;
+    println(x);
+}

@@ -1,0 +1,18 @@
+// if / else if / else 链: 条件是 Bool 表达式; 每个分支体必须是一个块
+use std::{assert, assert_eq};
+
+fn classify(x: Int) -> Int {
+    if x > 0_i {
+        return 1_i;
+    } else if x < 0_i {
+        return -1_i;
+    } else {
+        return 0_i;
+    }
+}
+
+fn main() {
+    assert_eq(classify(5_i), 1_i);
+    assert_eq(classify(-5_i), -1_i);
+    assert_eq(classify(0_i), 0_i);
+}

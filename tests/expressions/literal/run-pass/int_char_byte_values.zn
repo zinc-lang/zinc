@@ -1,0 +1,38 @@
+// 整数字面量 / 布尔 / 字符 / 字节 / 浮点在运行期的实际取值
+use std::{assert, assert_eq};
+
+fn main() {
+    // 十进制与十六进制
+    assert_eq(42_i, 42_i);
+    assert_eq(0xFF_i, 255_i);
+    assert_eq(0x10_u, 16_u);
+    assert_eq(1_000_000_i, 1000000_i);
+    // 负数 (一元负号作用在字面量上)
+    assert_eq(-7_i, 0_i - 7_i);
+    // 后缀不改变数值, 只改变类型
+    assert_eq(5_i8 as Int, 5_i);
+    assert_eq(5_u64 as UInt, 5_u);
+
+    // 布尔
+    assert(true);
+    assert(!false);
+
+    // 字符: Char 只能转 UInt32
+    assert_eq('a' as UInt32, 97_u32);
+    assert_eq('\n' as UInt32, 10_u32);
+    // 注意: 双引号直接写 '"', 写成 '\"' 会被词法器拒绝
+    assert_eq('"' as UInt32, 34_u32);
+    assert_eq('\\' as UInt32, 92_u32);
+    assert_eq('好' as UInt32, 0x597D_u32);
+    // 字节字面量是 UInt8
+    assert_eq(b'a' as Int, 97_i);
+    assert_eq(b'\n' as Int, 10_i);
+    assert_eq(b'\0' as Int, 0_i);
+
+    // 浮点: 带后缀的字面量有 bug, 这里只用无后缀 + 上下文类型
+    let a: F32 = 2.5;
+    let b: F64 = a as F64;
+    assert(b == 2.5);
+    let f: F64 = 1.5;
+    assert(f == 1.5);
+}

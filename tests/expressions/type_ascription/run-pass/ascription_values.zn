@@ -1,0 +1,42 @@
+// 类型标注的运行期结果: 标注不改变值, 只约束类型
+use std::{assert, assert_eq};
+
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn make() -> Point {
+    return { .x = 1_i, .y = 2_i }: Point;
+}
+
+fn main() {
+    // 标注后取值不变
+    assert_eq(1_i: Int, 1_i);
+    assert_eq(7_u: UInt, 7_u);
+
+    // 浮点字面量必须标注 (或给出上下文类型), 这里用无后缀字面量避免
+    // 踩到带 _f64 后缀字面量的解析 bug (见 tests/expressions/literal)
+    let f = 2.5: F64;
+    assert(f == 2.5);
+
+    let c = 'a': Char;
+    assert_eq(c, 'a');
+
+    // 函数调用结果的标注
+    let p = make(): Point;
+    assert_eq(p.x, 1_i);
+    assert_eq(p.y, 2_i);
+
+    // 结构体初始化表达式的标注
+    let q = { .x = 3_i, .y = 4_i }: Point;
+    assert_eq(q.x + q.y, 7_i);
+
+    // 标注出现在子表达式里
+    let total = (1_i: Int) + (2_i: Int) + (3_i: Int);
+    assert_eq(total, 6_i);
+
+    // let 标注 + ascription 同时给出
+    let r: Point = make(): Point;
+    assert_eq(r.y, 2_i);
+}

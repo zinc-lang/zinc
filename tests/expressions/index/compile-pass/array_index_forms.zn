@@ -1,0 +1,25 @@
+// 定长数组的下标表达式: a[i]
+// 语法: base[index], 下标表达式的类型必须是 UInt
+fn main() {
+    let a = [1_i, 2_i, 3_i];
+
+    // 下标是整数字面量 (自动推导成 UInt)
+    let x = a[0];
+    let y = a[2];
+
+    // 下标是 UInt 变量
+    let i: UInt = 1_u;
+    let z = a[i];
+
+    // 下标是 UInt 表达式
+    let w = a[i + 1_u];
+
+    // 链式下标: 下标结果本身又是数组
+    let m = [[1_i, 2_i], [3_i, 4_i]];
+    let e = m[0][1];
+    let e2 = m[i][i];
+
+    // 下标 + 成员访问
+    let pairs = [(1_i, 2_i), (3_i, 4_i)];
+    let f = pairs[1].0;
+}

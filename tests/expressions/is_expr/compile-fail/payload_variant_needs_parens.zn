@@ -1,0 +1,8 @@
+// 数据枚举里带载荷的变体当模式时必须写括号 E::A(...), 不能只写 E::A
+enum E { A(Int), B }
+
+fn main() {
+    let e = E::A(1_i);
+    let b = e is E::A;
+    println(b);
+}

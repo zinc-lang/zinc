@@ -1,0 +1,5 @@
+// 取负只能用于整数/浮点, Bool 不支持
+fn main() {
+    let b = -true;
+    println(b);
+}

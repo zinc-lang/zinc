@@ -1,0 +1,5 @@
+// Char 只能转 UInt32, 不能直接 as Int (会提示"非法的类型转换")
+fn main() {
+    let x = 'a' as Int;
+    println(x);
+}

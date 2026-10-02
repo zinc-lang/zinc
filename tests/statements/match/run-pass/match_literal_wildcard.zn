@@ -1,0 +1,26 @@
+// 字面量模式 (Int / Bool) 与 _ 通配; arm 的动作可以是一个块, 也可以是一条语句
+use std::{assert, assert_eq};
+
+fn code(n: Int) -> Int {
+    let mut r = 0_i;
+    match n {
+        0_i => r = 10_i;   // 动作是表达式语句 (后面是一条语句时不需要 {} 也不写逗号)
+        1_i => { r = 20_i; }
+        _ => { r = -1_i; } // _ 通配兜底
+    }
+    return r;
+}
+
+fn main() {
+    assert_eq(code(0_i), 10_i);
+    assert_eq(code(1_i), 20_i);
+    assert_eq(code(7_i), -1_i);
+
+    let b = true;
+    let mut t = 0_i;
+    match b {
+        true => { t = 1_i; }
+        false => { t = 0_i; }
+    }
+    assert_eq(t, 1_i);
+}

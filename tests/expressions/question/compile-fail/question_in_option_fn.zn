@@ -1,0 +1,15 @@
+// `?` 运算符 (按"返回 Option 的函数里提前返回 None"的将来语义书写)
+// 目前编译器还没实现它: 校验阶段会给出 `未实现特性: question operator`
+fn get() -> Option<Int> {
+    return Option::Some(1_i);
+}
+
+fn double() -> Option<Int> {
+    let v = get()?;
+    return Option::Some(v * 2_i);
+}
+
+fn main() {
+    let r = double();
+    println(r is Option::Some(_));
+}

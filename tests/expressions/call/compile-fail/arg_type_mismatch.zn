@@ -1,0 +1,8 @@
+// 实参类型与形参不匹配
+fn f(a: Int) -> Int {
+    return a;
+}
+
+fn main() {
+    let x = f("string");
+}

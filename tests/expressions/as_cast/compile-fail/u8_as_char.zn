@@ -1,0 +1,5 @@
+// 只有 UInt32 能 as Char, UInt8 不行
+fn main() {
+    let x = 65_u8 as Char;
+    println(x);
+}

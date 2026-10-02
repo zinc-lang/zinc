@@ -1,0 +1,51 @@
+// 方法调用 / 关联函数调用 / 调用链 / 函数项与函数指针当值传递
+struct Calc {
+    base: Int,
+}
+
+impl Calc {
+    // 关联函数 (没有 receiver)
+    fn new(base: Int) -> Calc {
+        return { .base = base }: Calc;
+    }
+    fn add(&self, k: Int) -> Int {
+        return self.base + k;
+    }
+    fn mul(self, k: Int) -> Calc {
+        return { .base = self.base * k }: Calc;
+    }
+}
+
+fn add_one(x: Int) -> Int {
+    return x + 1_i;
+}
+
+fn apply(f: fn(Int) -> Int, v: Int) -> Int {
+    return f(v);
+}
+
+fn main() {
+    // 关联函数
+    let c = Calc::new(10_i);
+    // 方法调用
+    let a = c.add(5_i);
+    // 调用链: 方法返回新对象后继续调用
+    let b = Calc::new(3_i).mul(4_i).add(2_i);
+    // 调用链里混合方法接收者
+    let d = c.mul(2_i).mul(3_i).add(1_i);
+
+    // 函数项当值使用
+    let f = add_one;
+    let g = f(1_i);
+
+    // 函数项隐式转成 fn 指针当实参
+    let h = apply(add_one, 41_i);
+
+    // 函数指针显式标注
+    let fp: fn(Int) -> Int = add_one;
+    let i = fp(9_i);
+
+    // 把函数指针存进变量后继续调用
+    let fp2: fn(Int) -> Int = fp;
+    let j = fp2(0_i);
+}

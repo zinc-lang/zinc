@@ -1,0 +1,29 @@
+// 三元表达式: if 条件 then 值1 else 值2 (Zinc 里唯一的 if 表达式形式)
+// 条件必须是 Bool, 两个分支类型必须相同, 整个表达式就是分支的类型
+use std::{assert, assert_eq};
+
+fn main() {
+    let a = true;
+    let x = if a then 1_i else 2_i;
+    assert_eq(x, 1_i);
+
+    let y = if false then 1_i else 2_i;
+    assert_eq(y, 2_i);
+
+    // 分支是完整表达式
+    let z = if a then 10_i else 20_i + 1_i;
+    assert_eq(z, 10_i);
+
+    // 嵌套三元, 用括号更清楚
+    let w = if a then (if false then 1_i else 2_i) else 3_i;
+    assert_eq(w, 2_i);
+
+    // 也可以当函数实参 / 数组元素
+    assert_eq(if a then 7_i else 8_i, 7_i);
+    let arr = [if false then 1_i else 2_i, 3_i];
+    assert_eq(arr[0], 2_i);
+
+    // 分支类型也可以由类型注解决定
+    let u: UInt = if a then 1_u else 2_u;
+    assert_eq(u, 1_u);
+}

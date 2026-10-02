@@ -1,0 +1,56 @@
+// 字段访问 (member access) 的基本形式与各种基对象
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+struct Named {
+    tag: Char,
+    p: Point,
+}
+
+impl Point {
+    fn sum(&self) -> Int {
+        return self.x + self.y;
+    }
+    fn shifted(&self, dx: Int, dy: Int) -> Point {
+        return { .x = self.x + dx, .y = self.y + dy }: Point;
+    }
+}
+
+impl Named {
+    // 方法里访问 self 的字段 (包括嵌套字段)
+    fn tag_code(&self) -> UInt32 {
+        return self.tag as UInt32;
+    }
+    fn inner_sum(&self) -> Int {
+        return self.p.x + self.p.y;
+    }
+}
+
+fn main() {
+    let p = { .x = 1_i, .y = 2_i }: Point;
+
+    // 字段访问
+    let a = p.x;
+    let b = p.y;
+
+    // 字段访问 + 方法调用
+    let c = p.sum();
+
+    // 方法返回值继续做字段访问 (调用链)
+    let d = p.shifted(1_i, 1_i).x;
+    let e = p.shifted(1_i, 1_i).sum();
+
+    // 嵌套字段
+    let n = { .tag = 'z', .p = p }: Named;
+    let f = n.p.x;
+    let g = n.p.shifted(0_i, 1_i).y;
+
+    // 方法内部访问 self 的嵌套字段
+    let h = n.inner_sum();
+    let i = n.tag_code();
+
+    // 对小类型 (整数) 也可以调用成员方法
+    let j = 1_i.checked_add(2_i).get_or_panic();
+}

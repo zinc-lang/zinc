@@ -1,0 +1,6 @@
+// for 的迭代对象必须满足 std::iter::Iterable 约束, 普通 Int 不行
+fn main() {
+    for x in 1_i {
+        println(f"$(x)");
+    }
+}

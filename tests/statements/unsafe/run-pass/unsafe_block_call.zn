@@ -1,0 +1,16 @@
+// unsafe 块: 调用 unsafe fn / 执行 unsafe 操作必须放在 unsafe 上下文里
+// 两种写法: unsafe { ... } 块语句 和 unsafe(expr) 表达式包装
+use std::{assert, assert_eq};
+
+unsafe fn raw_inc(x: Int) -> Int {
+    return x + 1_i;
+}
+
+fn main() {
+    let mut r = 0_i;
+    unsafe {
+        r = raw_inc(1_i);
+    }
+    r = unsafe(raw_inc(r)); // 表达式形式
+    assert_eq(r, 3_i);
+}

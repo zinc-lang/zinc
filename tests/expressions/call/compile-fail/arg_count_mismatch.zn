@@ -1,0 +1,8 @@
+// 实参个数与函数签名不符
+fn f(a: Int, b: Int) -> Int {
+    return a + b;
+}
+
+fn main() {
+    let x = f(1_i);
+}

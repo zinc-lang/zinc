@@ -1,0 +1,8 @@
+// 结构体不能 as 成整数 (没有这种转换规则)
+struct S { v: Int }
+
+fn main() {
+    let s = { .v = 1_i }: S;
+    let x = s as Int;
+    println(x);
+}

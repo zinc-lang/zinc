@@ -1,0 +1,25 @@
+// is 的绑定可以接在 && 链上使用: `e is Some(x) && 条件(x)`
+use std::{assert, assert_eq};
+
+fn main() {
+    let o: Option<Int> = Option::Some(5_i);
+    if o is Option::Some(x) && x > 3_i {
+        assert_eq(x, 5_i);
+    }
+
+    // 多段 && 链
+    if o is Option::Some(x) && x > 0_i && x < 10_i {
+        assert_eq(x, 5_i);
+    }
+
+    // 绑定出来的也可以是指针类型的值
+    let p: Option<*Int> = Option::Some(box 7_i);
+    if p is Option::Some(q) && *q == 7_i {
+        assert_eq(*q, 7_i);
+    }
+
+    // None 分支
+    let n: Option<Int> = Option::None;
+    assert(!(n is Option::Some(y)));
+    assert(n is Option::None);
+}

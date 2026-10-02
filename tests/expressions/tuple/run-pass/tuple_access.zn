@@ -1,0 +1,40 @@
+// 元组下标访问 (.0/.1/...) 与解构
+use std::{assert, assert_eq};
+
+fn make() -> (Int, Bool) {
+    return (3_i, true);
+}
+
+fn main() {
+    let t = (1_i, 2.5_f64, true);
+    assert_eq(t.0, 1_i);
+    assert_eq(t.1, 2.5_f64);
+    assert(t.2);
+
+    // 解构声明
+    let (a, b, c) = t;
+    assert_eq(a, 1_i);
+    assert_eq(b, 2.5_f64);
+    assert(c);
+
+    // 函数返回的元组
+    let p = make();
+    assert_eq(p.0, 3_i);
+    assert(p.1);
+
+    // 单元素元组
+    let single = (9_i,);
+    assert_eq(single.0, 9_i);
+
+    // 嵌套元组: 内层元组要先取出来或者加括号再取下标。
+    // 注意 `n.0.0` 这种连写会被词法器当成浮点数 0.0, 所以必须写成 (n.0).0
+    let n = ((1_i, 2_i), 3_i);
+    assert_eq(n.1, 3_i);
+    assert_eq((n.0).0, 1_i);
+    assert_eq((n.0).1, 2_i);
+
+    // 元组可以整体参与运算 / 赋值
+    let q = (10_i, 20_i);
+    let r = q;
+    assert_eq(r.0 + r.1, 30_i);
+}

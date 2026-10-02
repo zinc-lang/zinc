@@ -1,0 +1,9 @@
+// match 的每个 arm 就是一个 statement, arm 之间不能写逗号;
+// 这里必须只报语法错误, 不能让编译器崩溃 (历史 bug: 无限递归爆栈)
+fn main() {
+    let v = 1_i;
+    match v {
+        1_i => { },
+        _ => { }
+    }
+}

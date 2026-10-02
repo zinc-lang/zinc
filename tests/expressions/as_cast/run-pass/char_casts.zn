@@ -1,0 +1,15 @@
+// 字符和整数: 只有 UInt32 <-> Char 可以互转 (按 Unicode 码点);
+// 其它整数宽度要先 as UInt32 中转
+use std::{assert, assert_eq};
+
+fn main() {
+    assert_eq(65_u32 as Char, 'A');
+    assert_eq('A' as UInt32, 65_u32);
+    assert_eq('中' as UInt32, 0x4e2d_u32);
+    assert_eq(0x4e2d_u32 as Char, '中');
+
+    // 从别的整数宽度中转
+    let c = 97_u8 as UInt32 as Char;
+    assert_eq(c, 'a');
+    assert_eq(c as UInt32 as Int, 97_i);
+}

@@ -1,0 +1,36 @@
+// 类型标注表达式: `expr: Type`
+// 语法上只有字面量 / 函数调用 / 结构体初始化表达式后面可以紧跟 `: Type`
+// (因为 ascription 的解析挂在这三种 primary expr 后面)
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn make() -> Point {
+    return { .x = 1_i, .y = 2_i }: Point;
+}
+
+fn pick(v: Int) -> Int {
+    return v;
+}
+
+fn main() {
+    // 整数字面量后面的标注
+    let a = 1_i: Int;
+    let b = 2_u: UInt;
+    let c = 3_i8: Int8;
+    // 浮点字面量: 不标注会推导失败, 必须标注
+    let d = 1.5: F64;
+    let e = 2.5: F32;
+    // 字符 / 字符串字面量
+    let f = 'a': Char;
+    let g = "hi": Str;
+    // 函数调用后面的标注 (帮助返回类型 / 泛型参数推导)
+    let h = make(): Point;
+    let i = pick(1_i): Int;
+    // 结构体初始化表达式后面的标注
+    let j = { .x = 0_i, .y = 0_i }: Point;
+    // 标注可以嵌套在更大的表达式里
+    let k = (1_i: Int) + (2_i: Int);
+    let l = make(): Point;
+}

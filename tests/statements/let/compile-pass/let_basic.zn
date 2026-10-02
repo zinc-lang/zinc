@@ -1,0 +1,19 @@
+// let 绑定: 不带类型标注 (由初值推导)、带类型标注、mut 可变绑定与重新赋值
+use std::{assert, assert_eq};
+
+fn main() {
+    let a = 1_i;        // 类型从初值推导为 Int
+    let b: Int = 2_i;   // 显式写出类型标注
+    let mut c = 3_i;    // mut: 允许之后重新赋值
+    c = a + b;          // 1 + 2 = 3
+
+    assert_eq(a, 1_i);
+    assert_eq(b, 2_i);
+    assert_eq(c, 3_i);
+
+    // Bool / 字符串字面量绑定 (字符串的 == 还不支持, 用 eq 方法或直接打印)
+    let ok: Bool = true;
+    let name = "zinc";
+    assert(ok);
+    println(name);
+}

@@ -1,0 +1,9 @@
+// 枚举变体写错
+enum Color {
+    Red,
+    Green,
+}
+
+fn main() {
+    let c = Color::Blue;
+}

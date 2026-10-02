@@ -1,0 +1,4 @@
+// let 标注与右边 ascription 冲突
+fn main() {
+    let a: UInt = 1_i: Int;
+}

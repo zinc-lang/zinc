@@ -1,0 +1,17 @@
+// 括号里的类型标注 (type ascription): (表达式: 类型)
+use std::{assert, assert_eq};
+
+fn main() {
+    let a = (1_i: Int);
+    let b: Int = (2_i: Int);
+    assert_eq(a + b, 3_i);
+
+    // 标注给字面量确定宽度
+    assert_eq((3_u8: UInt8) + 1_u8, 4_u8);
+    assert_eq((1_i64: Int64) * 2_i64, 2_i64);
+
+    // as 比一元负号松: -x as Int64 等价 (-x) as Int64
+    let x = 5_i;
+    assert_eq(-x as Int64, -5_i64);
+    assert_eq((-x) as Int64, -5_i64);
+}

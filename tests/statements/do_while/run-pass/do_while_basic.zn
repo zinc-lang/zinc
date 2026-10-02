@@ -1,0 +1,11 @@
+// do { ... } while cond;  —— 先执行一次循环体, 再判断条件 (结尾的分号不能省)
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut n = 0_i;
+    // 条件一开始就是 false, 但循环体仍然先执行一次
+    do {
+        n += 1_i;
+    } while n < 0_i;
+    assert_eq(n, 1_i);
+}

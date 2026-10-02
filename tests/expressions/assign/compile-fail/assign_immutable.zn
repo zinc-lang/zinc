@@ -1,0 +1,6 @@
+// 非 mut 的变量不能被赋值
+fn main() {
+    let x = 1_i;
+    x = 2_i;
+    println(x);
+}

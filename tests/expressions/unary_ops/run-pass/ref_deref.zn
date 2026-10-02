@@ -1,0 +1,23 @@
+// 取引用 & / &mut 和解引用 *: 借用可以读, &mut 借用可以写
+use std::{assert, assert_eq};
+
+fn main() {
+    let x = 3_i;
+    let r = &x;                 // 不可变借用
+    assert_eq(*r, 3_i);
+
+    let mut y = 4_i;
+    let m = &mut y;             // 可变借用
+    *m = 9_i;
+    assert_eq(y, 9_i);
+
+    // box 返回 *Int (堆上的值), 解引用可以读写
+    let p: *Int = box 7_i;
+    assert_eq(*p, 7_i);
+    *p = 8_i;
+    assert_eq(*p, 8_i);
+
+    // 多层解引用
+    let pp = &p;
+    assert_eq(**pp, 8_i);
+}

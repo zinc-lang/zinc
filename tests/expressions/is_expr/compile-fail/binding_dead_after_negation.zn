@@ -1,0 +1,8 @@
+// is 的绑定放在 !(...) 里时, 后面的 || 右侧使用它会被判为"已经死亡的变量"
+// (因为取反之后绑定不一定真的建立了)
+fn main() {
+    let n: Option<Int> = Option::None;
+    if !(n is Option::Some(x)) || x > 1_i {
+        println("ok");
+    }
+}

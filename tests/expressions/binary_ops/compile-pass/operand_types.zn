@@ -1,0 +1,29 @@
+// 各类基础类型上的二元运算都能通过类型检查
+//
+// 注意: Zinc 没有位运算的二元运算符 (& | ^ << >>), 只能调用整数上的
+// bit_and / bit_or / bit_xor / bit_not / bit_shl / bit_shr 方法。
+// 这里只做类型检查, 不覆盖运行期数值。
+use std::assert;
+
+fn main() {
+    // 不同宽度的整数, 两边类型一致才能运算
+    let a: UInt8 = 1_u8;
+    let b: UInt8 = 2_u8;
+    let c = a + b * a - b / a % b;
+    assert(c == 3_u8);
+
+    let d: Int64 = 1_i64;
+    let e = d * 2_i64 + 3_i64;
+    assert(e == 5_i64);
+
+    // 浮点也有四则运算
+    let f: F64 = 1.0_f64 + 2.0_f64 * 3.0_f64;
+    let g: F32 = 1.0_f32 - 2.0_f32;
+
+    // 逻辑运算只接受 Bool; 比较的结果是 Bool
+    let h = (1_i < 2_i) && !(3_i > 4_i) || false;
+    assert(h);
+
+    // 整数的位运算只能走方法
+    assert(a.bit_and(b) == 0_u8);
+}

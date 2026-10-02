@@ -1,0 +1,56 @@
+// 调用的运行期结果: 参数求值 / 递归 / 调用链
+// (命名参数的顺序无关性见 named_args.zn)
+use std::{assert, assert_eq};
+
+fn zero() -> Int {
+    return 0_i;
+}
+
+fn three(a: Int, b: Int, c: Int) -> Int {
+    return a * 100_i + b * 10_i + c;
+}
+
+fn named(a: Int, b: Int) -> Int {
+    return a * 10_i + b;
+}
+
+// 三元表达式不能直接当函数体最后一句, 所以这里用 return
+fn fact(n: Int) -> Int {
+    return if n <= 1_i then 1_i else n * fact(n - 1_i);
+}
+
+fn fib(n: Int) -> Int {
+    return if n < 2_i then n else fib(n - 1_i) + fib(n - 2_i);
+}
+
+fn add_one(x: Int) -> Int {
+    return x + 1_i;
+}
+
+fn apply(f: fn(Int) -> Int, v: Int) -> Int {
+    return f(v);
+}
+
+fn main() {
+    assert_eq(zero(), 0_i);
+    assert_eq(three(1_i, 2_i, 3_i), 123_i);
+
+    // 实参按位置求值
+    assert_eq(three(zero(), add_one(0_i), three(0_i, 0_i, 1_i)), 11_i);
+
+    // 命名参数 (按声明顺序书写时正确)
+    assert_eq(named(.a = 3_i, .b = 4_i), 34_i);
+
+    // 递归
+    assert_eq(fact(5_i), 120_i);
+    assert_eq(fib(10_i), 55_i);
+
+    // 函数指针调用
+    let f: fn(Int) -> Int = add_one;
+    assert_eq(f(1_i), 2_i);
+    assert_eq(apply(f, 41_i), 42_i);
+    assert_eq(apply(add_one, 0_i), 1_i);
+
+    // 调用链
+    assert_eq(add_one(add_one(add_one(0_i))), 3_i);
+}

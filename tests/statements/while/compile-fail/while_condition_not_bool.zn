@@ -1,0 +1,7 @@
+// while 的条件必须是 Bool
+fn main() {
+    let mut i = 0_i;
+    while i + 1_i {
+        break;
+    }
+}

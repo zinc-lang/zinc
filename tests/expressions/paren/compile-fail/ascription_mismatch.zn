@@ -1,0 +1,5 @@
+// 括号里的类型标注和实际类型不符
+fn main() {
+    let x = (1_i: Bool);
+    println(x);
+}

@@ -1,0 +1,39 @@
+// 数组的读取下标 / 可变下标赋值 / 链式下标 / 运行期下标
+use std::{assert, assert_eq};
+
+fn main() {
+    // 读取
+    let a = [10_i, 20_i, 30_i];
+    assert_eq(a[0], 10_i);
+    assert_eq(a[1], 20_i);
+    assert_eq(a[2], 30_i);
+
+    // 可变下标赋值
+    let mut m = [1_i, 2_i, 3_i];
+    m[0] = 100_i;
+    m[2] = 300_i;
+    assert_eq(m[0], 100_i);
+    assert_eq(m[1], 2_i);
+    assert_eq(m[2], 300_i);
+
+    // 下标可以是运行期变量, 类型必须是 UInt
+    let i: UInt = 1_u;
+    assert_eq(a[i], 20_i);
+    let mut j: UInt = 0_u;
+    j = j + 2_u;
+    assert_eq(a[j], 30_i);
+
+    // 链式下标: 嵌套数组
+    let matrix = [[1_i, 2_i], [3_i, 4_i]];
+    assert_eq(matrix[0][1], 2_i);
+    assert_eq(matrix[1][0], 3_i);
+
+    // 下标结果可以继续做成员访问 / 组合运算
+    let pairs = [(1_i, 2_i), (3_i, 4_i)];
+    assert_eq(pairs[1].0, 3_i);
+    assert_eq(a[0] + a[1] + a[2], 60_i);
+
+    // 定长数组借用的长度 (数组自身没有 len 方法)
+    let sl: Slice<Int> = &a;
+    assert_eq(sl.len(), 3_u);
+}

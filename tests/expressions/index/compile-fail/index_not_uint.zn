@@ -1,0 +1,6 @@
+// 数组下标必须是 UInt, 用 Int 下标会报类型不匹配
+fn main() {
+    let a = [1_i, 2_i, 3_i];
+    let i: Int = 1_i;
+    let x = a[i];
+}

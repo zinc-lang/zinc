@@ -1,0 +1,22 @@
+// 比较运算 == != < <= > >=: 结果是 Bool, 两边类型必须一致
+use std::{assert, assert_eq};
+
+fn main() {
+    assert(1_i < 2_i);
+    assert(1_i <= 1_i);
+    assert(2_i > 1_i);
+    assert(2_i >= 2_i);
+    assert(1_i == 1_i);
+    assert(1_i != 2_i);
+
+    // 字符 / 布尔也是内建可比较的类型
+    assert('a' < 'b');
+    assert('z' >= 'a');
+    assert(true != false);
+    assert_eq(true == true, true);
+
+    // 比较结果可以参与逻辑运算
+    assert(1_i < 2_i && 3_i > 2_i);
+    let b: Bool = 1_i == 1_i;
+    assert_eq(b, true);
+}

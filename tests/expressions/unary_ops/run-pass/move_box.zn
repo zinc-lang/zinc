@@ -1,0 +1,17 @@
+// box (在堆上分配, 返回 *T) 和 move (转移所有权, 之后原变量不能再用)
+use std::{assert, assert_eq};
+
+struct Point { x: Int, y: Int }
+
+fn main() {
+    let p: *Int = box 10_i;
+    assert_eq(*p, 10_i);
+
+    // move 之后用新变量 q, 不再使用 p
+    let q = move p;
+    assert_eq(*q, 10_i);
+
+    // box 一个结构体, 通过指针访问字段
+    let s: *Point = box { .x = 1_i, .y = 2_i }: Point;
+    assert_eq(s.x + s.y, 3_i);
+}

@@ -1,0 +1,24 @@
+// match 枚举变体 + 载荷绑定; 每个 arm 就是一个 statement, arm 之间不写逗号
+use std::{assert, assert_eq};
+
+enum Shape {
+    Dot,
+    Circle(Int),
+    Rect(Int, Int),
+}
+
+fn area(s: Shape) -> Int {
+    let mut r = 0_i;
+    match s {
+        Shape::Dot => { r = 0_i; }
+        Shape::Circle(rad) => { r = rad * rad * 3_i; }
+        Shape::Rect(w, h) => { r = w * h; }
+    }
+    return r;
+}
+
+fn main() {
+    assert_eq(area(Shape::Dot), 0_i);
+    assert_eq(area(Shape::Circle(3_i)), 27_i);
+    assert_eq(area(Shape::Rect(4_i, 5_i)), 20_i);
+}

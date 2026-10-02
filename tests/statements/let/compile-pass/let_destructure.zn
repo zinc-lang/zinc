@@ -1,0 +1,36 @@
+// let 的模式解构: 元组模式、结构体模式、无载荷枚举变体模式
+//
+// 注意写法:
+//   - 元组:      let (a, b) = pair;
+//   - 结构体:    let { .x = x, .y = y }: Point = p;   (必须用 ": 类型" 指明结构体类型)
+//   - 枚举变体:  只有"一定能匹配"的模式才能在 let 里用
+//                (带载荷的 E::B(n) 是可失败模式, let 里会被拒绝)
+use std::{assert, assert_eq};
+
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+enum Flag {
+    On,
+    Off,
+}
+
+fn main() {
+    // 元组解构
+    let pair = (7_i, true);
+    let (n, ok) = pair;
+    assert_eq(n, 7_i);
+    assert(ok);
+
+    // 结构体解构 (字段模式写成 ".字段名 = 子模式")
+    let p = { .x = 3_i, .y = 4_i }: Point;
+    let { .x = px, .y = py }: Point = p;
+    assert_eq(px + py, 7_i);
+
+    // 无载荷的枚举变体模式 (一定匹配的判断见 compile-fail 用例)
+    let f = Flag::On;
+    let Flag::On = f;
+    assert(f is Flag::On);
+}

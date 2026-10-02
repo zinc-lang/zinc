@@ -1,0 +1,13 @@
+// 空语句: 单独的分号是合法语句, ;; 等价于两条空语句; 空块也是合法的
+use std::{assert, assert_eq};
+
+fn noop() { } // 空函数体
+
+fn main() {
+    ;   // 一条空语句
+    ;;  // 连续两条空语句
+    let x = 1_i;
+    ;
+    noop();
+    assert_eq(x, 1_i);
+}

@@ -1,0 +1,22 @@
+// 嵌套循环: break / continue 只作用于"最内层"循环, 无标签形式不支持跳出外层
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut outer = 0_i;
+    let mut count = 0_i;
+
+    while outer < 3_i {
+        outer += 1_i;
+        let mut inner = 0_i;
+        while inner < 10_i {
+            inner += 1_i;
+            if inner == 2_i { continue; } // 跳过内层的 2
+            if inner == 4_i { break; }    // 跳出内层, 外层继续
+            count += 1_i;
+        }
+    }
+
+    // 每轮内层: inner=1 计数, 2 跳过, 3 计数, 4 跳出 => +2
+    assert_eq(count, 6_i);
+    assert_eq(outer, 3_i);
+}

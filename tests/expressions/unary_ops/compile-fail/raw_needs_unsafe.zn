@@ -1,0 +1,5 @@
+// &raw 取裸指针是 unsafe 操作, 不在 unsafe 上下文里报错
+fn main() {
+    let x = 1_i;
+    let p: *raw Int = &raw x;
+}

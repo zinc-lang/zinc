@@ -1,0 +1,10 @@
+// 下标必须是数组元素类型, 不能拿来当"字段"用
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn main() {
+    let p = { .x = 1_i, .y = 2_i }: Point;
+    let v = p[0];
+}

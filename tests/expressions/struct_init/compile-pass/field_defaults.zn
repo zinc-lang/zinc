@@ -1,0 +1,13 @@
+// 结构体字段带默认值: 声明里写 `field: T = expr`, 初始化时用 `{ ... }: T` 取默认值
+// 这是 `...` 唯一能正常工作的形式 (`...expr` / 与具名字段混用都会让编译器崩溃, 见报告)
+struct Config {
+    retries: Int = 3,
+    verbose: Bool = false,
+    name: Char = 'x',
+}
+
+fn main() {
+    // 全部字段使用声明里的默认值
+    let a: Config = { ... };
+    let b = { ... }: Config;
+}

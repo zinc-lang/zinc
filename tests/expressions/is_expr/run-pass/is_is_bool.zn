@@ -1,0 +1,21 @@
+// is 表达式的结果类型是 Bool: 可以赋给 Bool、取非、参与逻辑运算
+use std::{assert, assert_eq};
+
+fn main() {
+    let x = 3_i;
+    assert(x is 3_i);            // 常量模式
+    assert(!(x is 4_i));
+
+    let b: Bool = x is 3_i;      // 结果就是 Bool
+    assert_eq(b, true);
+    assert(b && !(x is 4_i));
+
+    let f = true;
+    assert(f is true);           // 字面量模式
+    assert(!(f is false));
+
+    // Bool 结果可以直接作为 if 的条件
+    if x is 3_i {
+        assert(true);
+    }
+}

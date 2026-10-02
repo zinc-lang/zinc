@@ -1,0 +1,6 @@
+// unsafe 只有 "unsafe { ... }" 和 "unsafe(expr)" 两种用法;
+// 裸写 unsafe 不是合法语句, 这里只应报语法错误 (不能崩溃)
+fn main() {
+    unsafe
+    let x = 1_i;
+}

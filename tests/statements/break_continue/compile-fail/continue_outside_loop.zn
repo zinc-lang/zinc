@@ -1,0 +1,6 @@
+// continue 只能出现在循环内部
+fn main() {
+    {
+        continue;
+    }
+}

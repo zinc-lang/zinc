@@ -1,0 +1,5 @@
+// 三元两个分支的类型必须一致 (这里 Int vs UInt)
+fn main() {
+    let x = if true then 1_i else 2_u;
+    println(x);
+}

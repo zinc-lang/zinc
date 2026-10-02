@@ -1,0 +1,25 @@
+// 枚举 as Int 得到判别值 (含显式判别值和带载荷的变体);
+// Bool as Int 得到 1 / 0
+use std::{assert, assert_eq};
+
+enum Color { Red, Green, Blue }
+
+enum Tagged {
+    A = 10,
+    B,          // 11
+    C(Int),     // 带载荷的变体也有判别值
+}
+
+fn main() {
+    assert_eq(Color::Red as Int, 0_i);
+    assert_eq(Color::Green as Int, 1_i);
+    assert_eq(Color::Blue as Int, 2_i);
+
+    assert_eq(Tagged::A as Int, 10_i);
+    assert_eq(Tagged::B as Int, 11_i);
+    // 带载荷的变体: 构造函数本身不是值, 要先构造一个值再 as Int
+    assert_eq(Tagged::C(0_i) as Int, 12_i);
+
+    assert_eq(true as Int, 1_i);
+    assert_eq(false as Int, 0_i);
+}

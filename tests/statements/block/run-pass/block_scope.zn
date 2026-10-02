@@ -1,0 +1,16 @@
+// 块引入新作用域: 内层块可以重新绑定同名变量 (遮蔽), 不影响外层
+use std::{assert, assert_eq};
+
+fn main() {
+    let x = 1_i;
+    {
+        let x = 2_i; // 与外层同名, 但属于不同的作用域, 合法
+        assert_eq(x, 2_i);
+        {
+            let x = 3_i;
+            assert_eq(x, 3_i);
+        }
+        assert_eq(x, 2_i);
+    }
+    assert_eq(x, 1_i);
+}

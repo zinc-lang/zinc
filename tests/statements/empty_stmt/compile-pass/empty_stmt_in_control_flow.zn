@@ -1,0 +1,24 @@
+// 空语句也能出现在 if / while / do-while 的块体里
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut i = 0_i;
+
+    while i < 2_i {
+        ;
+        i += 1_i;
+    }
+
+    do {
+        ;
+        i += 1_i;
+    } while i < 3_i;
+
+    if i == 3_i {
+        ;
+    } else {
+        ;
+    }
+
+    assert_eq(i, 3_i);
+}

@@ -1,0 +1,21 @@
+// 括号给三元一个"完整表达式"的位置 (不加括号时 if 不能直接当二元操作数);
+// 元组也用括号, 其中每个元素都是完整表达式
+use std::{assert, assert_eq};
+
+fn main() {
+    let c = true;
+    assert_eq((if c then 1_i else 2_i) + 10_i, 11_i);
+    assert_eq(10_i * (if c then 2_i else 3_i), 20_i);
+
+    // 括号里的三元再嵌套括号
+    assert_eq(((if c then (1_i) else (2_i)) + 1_i), 2_i);
+
+    // 元组: 每个元素都是完整表达式
+    let t = (1_i + 1_i, 2_i * 2_i);
+    assert_eq(t.0, 2_i);
+    assert_eq(t.1, 4_i);
+
+    // 单元组 () 是 unit 类型的表达式
+    let u: () = ();
+    let _unused_unit = u;
+}

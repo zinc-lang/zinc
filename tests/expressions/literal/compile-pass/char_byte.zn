@@ -1,0 +1,24 @@
+// 字符字面量 'a' (类型 Char) 与字节字面量 b'a' (类型 UInt8)
+// Char 只能和 UInt32 互相 as 转换, 不能直接当整数用 (见 compile-fail)
+fn main() {
+    let c: Char = 'a';
+    let z: Char = 'Z';
+    let digit: Char = '0';
+    let nl: Char = '\n';
+    let tab: Char = '\t';
+    let quote: Char = '\'';
+    // 注意: 双引号不需要转义, 写成 '"' 即可;
+    //       写成 '\"' 会被词法器判成"非法的字符字面量"
+    let dquote: Char = '"';
+    let backslash: Char = '\\';
+    // 非 ASCII 字符也是合法的 Char 字面量
+    let han: Char = '好';
+
+    let byte: UInt8 = b'a';
+    let byte_nl: UInt8 = b'\n';
+    let byte_zero: UInt8 = b'\0';
+
+    // Char <-> UInt32 是允许的显式转换
+    let code: UInt32 = 'a' as UInt32;
+    let back: Char = 97_u32 as Char;
+}

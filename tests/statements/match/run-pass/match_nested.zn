@@ -1,0 +1,33 @@
+// 嵌套模式: 枚举变体里再套枚举变体和元组模式
+use std::{assert, assert_eq};
+
+enum Inner {
+    A,
+    B(Int),
+}
+
+enum Outer {
+    Nest(Inner),
+    Pair(Int, Bool),
+    Plain,
+}
+
+fn probe(o: Outer) -> Int {
+    let mut r = -1_i;
+    match o {
+        Outer::Nest(Inner::A) => { r = 1_i; }
+        Outer::Nest(Inner::B(v)) => { r = v; }
+        Outer::Pair(x, true) => { r = x * 10_i; }
+        Outer::Pair(_, false) => { r = 0_i; }
+        Outer::Plain => { r = -2_i; }
+    }
+    return r;
+}
+
+fn main() {
+    assert_eq(probe(Outer::Nest(Inner::A)), 1_i);
+    assert_eq(probe(Outer::Nest(Inner::B(5_i))), 5_i);
+    assert_eq(probe(Outer::Pair(3_i, true)), 30_i);
+    assert_eq(probe(Outer::Pair(3_i, false)), 0_i);
+    assert_eq(probe(Outer::Plain), -2_i);
+}

@@ -1,0 +1,16 @@
+// while + break: 条件仍然成立时提前跳出循环
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut i = 0_i;
+    let mut last = -1_i;
+    while i < 100_i {
+        i += 1_i;
+        if i * i > 20_i {
+            last = i;
+            break; // 只在最内层循环里起作用
+        }
+    }
+    assert_eq(last, 5_i); // 5*5 = 25 > 20, 4*4 = 16 不够
+    assert_eq(i, 5_i);
+}

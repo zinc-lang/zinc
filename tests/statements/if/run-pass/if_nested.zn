@@ -1,0 +1,31 @@
+// 嵌套 if: else 分支里再写 if, 分支体里可以声明局部变量
+use std::{assert, assert_eq};
+
+fn main() {
+    let a = 2_i;
+    let b = 3_i;
+    let mut tag = 0_i;
+
+    if a > 0_i {
+        if b > a {
+            let diff = b - a; // 局部变量只在这个块里可见
+            tag = diff;       // 1
+        } else {
+            tag = 2_i;
+        }
+    } else {
+        if b > 0_i {
+            tag = 3_i;
+        } else {
+            tag = 4_i;
+        }
+    }
+
+    assert_eq(tag, 1_i);
+
+    // 条件本身也可以是复合 Bool 表达式
+    if a > 0_i && b > a {
+        tag = 5_i;
+    }
+    assert_eq(tag, 5_i);
+}

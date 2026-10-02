@@ -1,0 +1,18 @@
+// 一元取负 -x (Int/Float) 和逻辑非 !b (Bool);
+// ! 用在整数上得到的是按位取反 (bit_not)
+use std::{assert, assert_eq};
+
+fn main() {
+    let x = 5_i;
+    assert_eq(-x, -5_i);
+    assert_eq(-(-x), 5_i);
+    assert_eq(-x + 10_i, 5_i);
+
+    let b = true;
+    assert_eq(!b, false);
+    assert_eq(!!b, true);
+
+    // 整数上的 ! 是按位取反: !0 == -1, !1 == -2
+    assert_eq(!0_i, -1_i);
+    assert_eq(!1_i, -2_i);
+}

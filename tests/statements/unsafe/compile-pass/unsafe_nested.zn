@@ -1,0 +1,31 @@
+// unsafe 块就是块语句: 可以嵌套, 也可以作为 if / while 的体出现
+unsafe fn inc(x: Int) -> Int {
+    return x + 1_i;
+}
+
+fn main() {
+    let mut r = 0_i;
+
+    unsafe {
+        r = inc(r);
+        unsafe {
+            r = inc(r); // 嵌套 unsafe 块
+        }
+    }
+
+    let mut i = 0_i;
+    while i < 2_i {
+        unsafe {
+            r = inc(r);
+        }
+        i += 1_i;
+    }
+
+    if r > 0_i {
+        unsafe {
+            r = inc(r);
+        }
+    } else {
+        unsafe { }
+    }
+}

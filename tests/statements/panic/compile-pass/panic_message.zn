@@ -1,0 +1,9 @@
+// panic 语句: panic "msg";  —— 消息必须是字符串字面量 (Str)
+// 运行期会中止程序, 所以这里只做编译检查, 不做 run-pass
+fn main() {
+    let x = 1_i;
+    if x < 0_i {
+        panic "unreachable: x 是负数";
+    }
+    panic "end";
+}

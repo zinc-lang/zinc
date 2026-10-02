@@ -1,0 +1,19 @@
+// 字符串相关的字面量形式: 普通字符串 / 转义 / 原始字符串 / C 字符串 / 插值
+// 字符串类型本身的行为在 tests/string/ 下有更完整的用例, 这里只覆盖字面量形式
+fn main() {
+    // 普通字符串字面量, 类型是 Str
+    let plain: Str = "hello";
+    // 转义序列
+    let escaped: Str = "line\nbreak\ttab\"quote\\slash";
+    // 原始字符串: 反斜杠不转义, 可以带 # 定界符
+    // 注意: 这个语言里 `raw` 是关键字, 不能当变量名
+    let raw_str: Str = r"a\nb";
+    let raw_hash: Str = r#"say "hi""#;
+    let raw_hash2: Str = r##"with #" inside"##;
+    // C 字符串字面量: 末尾自动带一个 NUL
+    let cstr: Str = c"hello";
+    // 字符串插值: $(表达式)
+    let who: Str = "zinc";
+    let interp: String = f"hello $(who)!";
+    let calc: String = f"1+1=$(1_i + 1_i)";
+}

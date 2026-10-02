@@ -1,0 +1,21 @@
+// 复合赋值 += -= *= /= %= : 等价于读左值、做二元运算、再写回
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut x = 10_i;
+    x += 5_i;
+    assert_eq(x, 15_i);
+    x -= 3_i;
+    assert_eq(x, 12_i);
+    x *= 2_i;
+    assert_eq(x, 24_i);
+    x /= 5_i;
+    assert_eq(x, 4_i);
+    x %= 3_i;
+    assert_eq(x, 1_i);
+
+    // 右侧是完整表达式: y -= 3_i - 1_i 等价 y -= (3_i - 1_i)
+    let mut y = 10_i;
+    y -= 3_i - 1_i;
+    assert_eq(y, 8_i);
+}

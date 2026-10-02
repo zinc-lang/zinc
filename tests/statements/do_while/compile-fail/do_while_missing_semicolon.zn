@@ -1,0 +1,7 @@
+// do-while 结尾的分号必须写; 漏掉时是语法错误 (不会让编译器崩溃)
+fn main() {
+    let mut i = 0_i;
+    do {
+        i += 1_i;
+    } while i < 3_i
+}

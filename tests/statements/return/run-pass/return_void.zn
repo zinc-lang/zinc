@@ -1,0 +1,13 @@
+// 无返回值函数里的 `return;`: 提前结束, 不再往下执行 (这里用来避开 panic)
+fn check(ok: Bool) {
+    if !ok {
+        return;
+    }
+    panic "check called with ok = true";
+}
+
+fn main() {
+    // 提前 return 让两次调用都正常返回
+    check(false);
+    check(false);
+}

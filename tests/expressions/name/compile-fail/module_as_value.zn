@@ -1,0 +1,10 @@
+// 用模块名当值 / 用函数名当类型都不行: 这里把模块当值取
+mod util {
+    pub fn f() -> Int {
+        return 1_i;
+    }
+}
+
+fn main() {
+    let x = util;
+}

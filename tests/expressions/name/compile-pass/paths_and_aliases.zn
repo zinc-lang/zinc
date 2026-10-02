@@ -1,0 +1,75 @@
+// 分段名 / 限定路径: 模块路径, 枚举变体, 关联函数, 类型路径
+use std::{assert, assert_eq};
+use std::io::println;
+// use 别名
+use std::assert as my_assert;
+
+mod util {
+    pub fn triple(x: Int) -> Int {
+        return x * 3_i;
+    }
+
+    pub struct Wrapper {
+        v: Int,
+    }
+
+    pub mod inner {
+        pub fn quad(x: Int) -> Int {
+            return x * 4_i;
+        }
+        // super:: 指向父模块
+        pub fn via_super(x: Int) -> Int {
+            return super::triple(x);
+        }
+        // self:: 指向当前模块
+        pub fn via_self(x: Int) -> Int {
+            return self::quad(x);
+        }
+    }
+}
+
+enum Color {
+    Red,
+    Green,
+}
+
+struct S {
+    v: Int,
+}
+
+impl S {
+    fn make(v: Int) -> S {
+        return { .v = v }: S;
+    }
+    fn get(&self) -> Int {
+        return self.v;
+    }
+}
+
+fn main() {
+    // 单个名字
+    assert(true);
+    // use 别名
+    my_assert(true);
+    // 前导 :: 的绝对路径
+    ::std::assert_eq(1_i, 1_i);
+    // 模块路径调用函数
+    let t = util::triple(4_i);
+    // 模块路径当类型用
+    let w = { .v = t }: util::Wrapper;
+    // 嵌套模块
+    let q = util::inner::quad(2_i);
+    let sq = util::inner::via_super(5_i);
+    let si = util::inner::via_self(3_i);
+    // 枚举变体路径
+    let c = Color::Green;
+    assert(c is Color::Green);
+    assert(!(c is Color::Red));
+    // 关联函数路径 (函数项可以再当值传递)
+    let s = S::make(7_i);
+    assert_eq(s.get(), 7_i);
+    let mk = S::make;
+    assert_eq(mk(1_i).get(), 1_i);
+    // 打印
+    println("paths ok");
+}

@@ -1,0 +1,20 @@
+// 整数字面量的类型后缀: _i/_u 以及显式位宽后缀
+// _i = Int(isize), _u = UInt(usize), 其余按位宽命名
+fn main() {
+    let a: Int = 1_i;
+    let b: UInt = 2_u;
+    let c: Int8 = 3_i8;
+    let d: UInt8 = 4_u8;
+    let e: Int16 = 5_i16;
+    let f: UInt16 = 6_u16;
+    let g: Int32 = 7_i32;
+    let h: UInt32 = 8_u32;
+    let i: Int64 = 9_i64;
+    let j: UInt64 = 10_u64;
+
+    // 后缀决定类型, 不需要类型标注也能推导
+    let k = 11_i;
+    let l = 12_u;
+    let m = 13_i32;
+    let n = 14_u64;
+}

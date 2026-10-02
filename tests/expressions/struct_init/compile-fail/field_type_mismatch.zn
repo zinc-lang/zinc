@@ -1,0 +1,9 @@
+// 字段类型不匹配
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn main() {
+    let p = { .x = "not an int", .y = 2_i }: Point;
+}

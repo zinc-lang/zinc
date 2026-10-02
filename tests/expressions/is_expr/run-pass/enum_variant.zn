@@ -1,0 +1,33 @@
+// is 用于枚举变体:
+//   - C 风格 (全部无载荷) 的枚举直接写 E::V;
+//   - 数据枚举里带载荷的变体必须写 E::V(...) 或 E::V(_, _);
+//   - unit 变体要写 E::V();
+// 绑定出来的是值 (不是引用)
+use std::{assert, assert_eq};
+
+enum Flag { Off, On }                 // C 风格, 无载荷
+enum E { A(Int), B, C(Int, Int) }     // A 有载荷, B 是 unit 变体
+
+fn main() {
+    let f = Flag::On;
+    assert(f is Flag::On);
+    assert(!(f is Flag::Off));
+
+    let e = E::A(1_i);
+    assert(e is E::A(_));          // 通配, 不绑定
+    assert(!(e is E::B()));
+
+    if e is E::A(v) {              // 绑定 v: Int
+        assert_eq(v, 1_i);
+    }
+
+    let b = E::B;
+    assert(b is E::B());
+
+    let c = E::C(1_i, 2_i);
+    if c is E::C(x, y) {
+        assert_eq(x, 1_i);
+        assert_eq(y, 2_i);
+    }
+    assert(c is E::C(_, _));
+}

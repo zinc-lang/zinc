@@ -1,0 +1,5 @@
+// 浮点也不能 as Bool
+fn main() {
+    let x = 1.5_f64 as Bool;
+    println(x);
+}

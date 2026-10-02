@@ -1,0 +1,11 @@
+// 泛型函数调用的显式类型实参不受支持
+// `ident::<Int>(1_i)` 会被解析成 `ident` `::` `<Int>` ... -> 语法错误
+// `ident<Int>(1_i)` 则被当成"带泛型实参的分段名", 报"路径没找到: Int"
+// 目前只能靠类型推导: ident(1_i)
+fn ident<T>(x: T) -> T {
+    return x;
+}
+
+fn main() {
+    let a = ident::<Int>(1_i);
+}

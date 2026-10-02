@@ -1,0 +1,55 @@
+// 对借用 / 裸指针 / 解引用结果取成员
+// 注意: `unsafe({ ... })` 不能解析, unsafe 的 block 形式要写成语句块 `unsafe { ... }`
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+impl Point {
+    fn sum(&self) -> Int {
+        return self.x + self.y;
+    }
+}
+
+fn by_ref(p: &Point) -> Int {
+    return p.x;
+}
+
+fn by_raw(p: *raw Point) -> Int {
+    unsafe {
+        return (*p).y;
+    }
+}
+
+fn main() {
+    let p: *Point = box { .x = 1_i, .y = 2_i }: Point;
+
+    // 直接对 *T 取字段 / 调方法 (会自动解引用)
+    let a = p.x;
+    let b = p.sum();
+
+    // 显式借用后再取字段
+    let r: &Point = &*p;
+    let c = r.x;
+    let d = by_ref(&*p);
+
+    // 解引用得到值, 再取字段
+    let v: Point = *p;
+    let e = v.y;
+
+    // &raw 需要 unsafe 上下文
+    let f = unsafe(by_raw(&raw *p));
+
+    // 对字段取引用, 再解引用读值
+    let g = &p.x;
+    let h = *g;
+
+    // unsafe 语句块里访问裸指针成员 (raw 是关键字, 不能当变量名)
+    // 注意: unsafe { ... } 只能当语句用, 不能出现在表达式位置
+    let mut k: Int = 0_i;
+    unsafe {
+        let rp: *raw Point = &raw *p;
+        k = (*rp).x + rp.y;
+    }
+    let l = k + h;
+}

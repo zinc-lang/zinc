@@ -1,0 +1,9 @@
+// 返回类型不是 Option 的函数里用 `?`: 目前也是"未实现特性: question operator"
+fn half(x: Int) -> Int {
+    return x;
+}
+
+fn main() {
+    let y = half(4_i)?;
+    println(y);
+}

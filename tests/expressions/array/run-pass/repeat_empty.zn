@@ -1,0 +1,18 @@
+// 重复字面量与空数组在运行期的结果
+use std::{assert, assert_eq};
+
+fn main() {
+    let zeros = [0_i; 5];
+    assert_eq(zeros[0], 0_i);
+    assert_eq(zeros[4], 0_i);
+
+    let sevens: [Int; 3] = [7_i; 3];
+    let s: Slice<Int> = &sevens;
+    assert_eq(s.len(), 3_u);
+    assert_eq(sevens[2], 7_i);
+
+    // 空数组: 长度 0, 只能通过借用转成 Slice 观察
+    let empty: [Int; 0] = [];
+    let es: Slice<Int> = &empty;
+    assert_eq(es.len(), 0_u);
+}

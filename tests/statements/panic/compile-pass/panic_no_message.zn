@@ -1,0 +1,8 @@
+// 不带消息的 panic; 是合法的 panic 语句
+// 注意: panic() 不是"无消息 panic", 它会被解析成 panic (); 并因消息类型不是 Str 而报错
+fn main() {
+    let ok = true;
+    if !ok {
+        panic;
+    }
+}

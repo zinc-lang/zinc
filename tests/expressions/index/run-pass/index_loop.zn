@@ -1,0 +1,31 @@
+// 定长数组下标的运行期行为
+use std::{assert, assert_eq};
+
+fn main() {
+    let a = [10_i, 20_i, 30_i, 40_i];
+
+    // 运行期下标 (全部落在 0..len 之内)
+    let mut i: UInt = 0_u;
+    while i < 4_u {
+        assert_eq(a[i], (i as Int + 1_i) * 10_i);
+        i += 1_u;
+    }
+
+    // 可变下标赋值
+    let mut m = [0_i; 4];
+    let mut j: UInt = 0_u;
+    while j < 4_u {
+        m[j] = j as Int;
+        j += 1_u;
+    }
+    assert_eq(m[0], 0_i);
+    assert_eq(m[3], 3_i);
+
+    // 链式下标读写
+    let mut grid = [[0_i; 2]; 2];
+    grid[0][1] = 7_i;
+    grid[1][0] = 9_i;
+    assert_eq(grid[0][1], 7_i);
+    assert_eq(grid[1][0], 9_i);
+    assert_eq(grid[0][0], 0_i);
+}

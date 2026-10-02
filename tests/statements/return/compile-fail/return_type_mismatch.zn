@@ -1,0 +1,6 @@
+// return 表达式类型必须和函数返回类型一致: 返回类型是 Int 却 return Bool
+fn f() -> Int {
+    return true;
+}
+
+fn main() { }

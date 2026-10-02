@@ -1,0 +1,5 @@
+// Char 不是整数: 不允许直接把字符 as 成 Int
+// (只有 Char <-> UInt32 这一对显式转换是允许的)
+fn main() {
+    let code: Int = 'a' as Int;
+}

@@ -1,0 +1,5 @@
+// `?` 用在非 Option 的值上: 校验阶段同样直接报"未实现特性: question operator"
+fn main() {
+    let x = 1_i?;
+    println(x);
+}

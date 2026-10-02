@@ -1,0 +1,6 @@
+// 在 unsafe 上下文之外调用 unsafe fn 是错误
+unsafe fn boom() { }
+
+fn main() {
+    boom();
+}

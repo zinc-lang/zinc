@@ -1,0 +1,6 @@
+// is 的结果是 Bool, 不能隐式转成 Int
+fn main() {
+    let x = 3_i;
+    let n: Int = x is 3_i;
+    println(n);
+}

@@ -1,0 +1,17 @@
+// do-while 里的 continue / break 与 while 里的语义一致
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut i = 0_i;
+    let mut s = 0_i;
+
+    do {
+        i += 1_i;
+        if i == 2_i { continue; } // 跳过 2
+        if i == 5_i { break; }    // 到 5 提前结束
+        s += i;
+    } while i < 10_i;
+
+    assert_eq(s, 8_i); // 1 + 3 + 4
+    assert_eq(i, 5_i);
+}

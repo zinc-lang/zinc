@@ -1,0 +1,6 @@
+// break 只能出现在循环内部 (包括 if 分支里, 但所在的循环必须存在)
+fn main() {
+    if true {
+        break;
+    }
+}

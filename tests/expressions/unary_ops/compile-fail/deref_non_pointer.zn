@@ -1,0 +1,5 @@
+// * 只能用于指针/借用类型, 对 Int 解引用报错
+fn main() {
+    let x = *1_i;
+    println(x);
+}

@@ -1,0 +1,19 @@
+// while 条件里用 is 做绑定: 每轮重新求值, 匹配失败时循环结束
+use std::{assert, assert_eq};
+
+fn main() {
+    // 注意: 直接写 Some(3_i) 会报 "路径没找到: Some", 需要显式类型标注
+    let mut o: Option<Int> = Some(3_i);
+    let mut sum = 0_i;
+
+    while o is Some(v) {
+        sum += v;
+        if sum < 6_i {
+            o = Some(sum); // 继续下一轮, 绑定的 v 每轮重新取
+        } else {
+            o = None;
+        }
+    }
+
+    assert_eq(sum, 6_i); // 3 + 3
+}

@@ -1,0 +1,6 @@
+// 不支持"只声明、不初始化"的 let: 每个 let 都必须带 "= 初值"
+// 所以这里只能是语法错误 (不能出现 Panic/stackoverflow)
+fn main() {
+    let x: Int;
+    let y = x + 1_i;
+}

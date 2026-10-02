@@ -1,0 +1,32 @@
+// 对结构体字段 (含嵌套字段)、数组下标、解引用目标的赋值和复合赋值
+use std::{assert, assert_eq};
+
+struct Inner { v: Int }
+struct Outer { inner: Inner, arr: [Int; 3] }
+
+fn main() {
+    let mut s = { .v = 1_i }: Inner;
+    s.v = 10_i;
+    assert_eq(s.v, 10_i);
+    s.v += 5_i;
+    assert_eq(s.v, 15_i);
+
+    // 嵌套字段 / 数组下标
+    let mut o = { .inner = { .v = 1_i }: Inner, .arr = [0_i; 3] }: Outer;
+    o.inner.v = 9_i;
+    o.arr[2] = 7_i;
+    o.arr[0] += 4_i;
+    assert_eq(o.inner.v, 9_i);
+    assert_eq(o.arr[2], 7_i);
+    assert_eq(o.arr[0], 4_i);
+
+    // 通过 &mut 借用写入
+    let mut x = 1_i;
+    let m = &mut x;
+    *m += 41_i;
+    assert_eq(x, 42_i);
+
+    // 元组字段可以读
+    let t = (1_i, 2_i);
+    assert_eq(t.0 + t.1, 3_i);
+}

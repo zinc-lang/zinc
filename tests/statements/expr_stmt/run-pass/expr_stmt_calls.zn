@@ -1,0 +1,17 @@
+// 表达式语句: 函数调用、赋值、复合赋值、三元 if 表达式都可以带分号作语句
+use std::{assert, assert_eq};
+
+fn add(a: Int, b: Int) -> Int {
+    return a + b;
+}
+
+fn main() {
+    let mut x = 1_i;
+
+    add(1_i, 2_i);       // 有返回值的调用也可以只当语句用 (结果被丢弃)
+    x += add(2_i, 3_i);  // 复合赋值
+    x = x * 2_i;         // 普通赋值
+    if x > 0_i then 1_i else 2_i; // 三元表达式作语句
+
+    assert_eq(x, 12_i);
+}

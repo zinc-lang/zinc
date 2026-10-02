@@ -1,0 +1,18 @@
+// 提前 return: 在 if 分支里返回 Int 表达式, 后续语句不再执行
+use std::{assert, assert_eq};
+
+fn clamp(x: Int) -> Int {
+    if x < 0_i {
+        return 0_i;
+    }
+    if x > 100_i {
+        return 100_i;
+    }
+    return x;
+}
+
+fn main() {
+    assert_eq(clamp(-7_i), 0_i);
+    assert_eq(clamp(42_i), 42_i);
+    assert_eq(clamp(1000_i), 100_i);
+}
