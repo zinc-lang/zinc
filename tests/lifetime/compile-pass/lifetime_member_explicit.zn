@@ -1,0 +1,50 @@
+// 类型定义里的生命周期显式写出之后就合法:
+//   - struct / enum 成员: &'a T, 并把 'a 声明为类型的生命周期参数
+//   - 'static 是显式的, 允许
+//   - fn 类型签名里的生命周期是"每次调用"的, 成员变量不需要声明它们
+//     (所以 Vec<*Fn(&T)> 这种字段合法, std 里的 Observable 就是这样)
+struct BorrowField<'a> {
+    r: &'a Int,
+}
+
+struct MutBorrowField<'a> {
+    r: &'a mut Int,
+}
+
+enum Variant<'a> {
+    V(&'a Int),
+    W,
+}
+
+struct Nested<'a> {
+    v: Vec<&'a Int>,
+    p: (&'a Int, Int),
+}
+
+struct StaticField {
+    r: &'static Int,
+}
+
+struct CallbackField<T> {
+    value: *T,
+    observers: Vec<*Fn(&T)>,
+}
+
+struct TypeParamField<T> {
+    value: T,
+}
+
+static G: Int = 1_i;
+
+fn main() {
+    let a = 1_i;
+    let b: BorrowField = { .r = &a }: BorrowField;
+    println(*(b.r));
+
+    let s: StaticField = { .r = &G }: StaticField;
+    println(*(s.r));
+
+    // 类型参数的字段: 用具体类型实例化
+    let t: TypeParamField<Int> = { .value = 1_i }: TypeParamField<Int>;
+    println(t.value);
+}

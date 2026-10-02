@@ -1,6 +1,6 @@
 // 生命周期: 返回指向函数局部结构体字段的引用
-struct S {
-    r: &Int,
+struct S<'a> {
+    r: &'a Int,
 }
 
 fn bad<'a>() -> &'a Int {

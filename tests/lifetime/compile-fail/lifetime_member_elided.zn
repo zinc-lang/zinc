@@ -1,0 +1,41 @@
+// 类型定义里的生命周期必须显式写出: struct / enum / union 的成员变量都不允许省略。
+//   struct S<'a> { r: &'a Int }   合法 (见 compile-pass/lifetime_member_explicit.zn)
+//   struct S     { r: &Int }      非法: 字段的生命周期没有任何地方可以推导
+// 成员类型里的类型实参同样检查 (Vec<&Int>、(&Int, Int)), 用了带生命周期参数的类型
+// 也必须把生命周期实参写出来 (Inner<'a> 不能写成 Inner)。
+struct ElidedField {
+    r: &Int,
+}
+
+struct ElidedMutField {
+    r: &mut Int,
+}
+
+enum ElidedVariant {
+    V(&Int),
+    W,
+}
+
+union ElidedUnion {
+    r: &Int,
+}
+
+struct NestedElided {
+    v: Vec<&Int>,
+}
+
+struct TupleElided {
+    p: (&Int, Int),
+}
+
+struct Inner<'a> {
+    r: &'a Int,
+}
+
+// inner 这一项漏写了生命周期实参
+struct MissingLifetimeArg<'a> {
+    inner: Inner,
+    marker: &'a Int,
+}
+
+fn main() { }

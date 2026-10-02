@@ -1,7 +1,8 @@
 // 拥有所有权的 trait 对象指针 (*TR) 会擦掉被指向类型自己的生命周期实参:
 //   Arc<S<'a>> -> Arc<TR> 之后 'a 就丢了, 这个 Arc 可能活得比 S 借用的对象更长。
 // 所以只要类型里含"非 'static"的生命周期 (或会悬垂的借用), 就不能装箱成 *TR。
-// ('static 不算, 见 run-pass/lifetime_trait_object.zn)
+// ('static 不算, 见 run-pass/lifetime_trait_object.zn;
+//  省略生命周期的成员变量本身就已经是错误, 见 compile-fail/lifetime_member_elided.zn)
 trait Show {
     virtual fn show(&self) -> Int;
 }
@@ -30,35 +31,6 @@ fn box_lifetime_struct_weak<'b>(x: &'b Int) -> *weak Show {
 // 3. 泛型参数也可能被实例化成带生命周期的类型 (泛型上没有生命周期约束), 同样拒绝
 fn up<T: Show>(x: *T) -> *Show {
     return x;
-}
-
-// 4. 字段里省略生命周期的借用 (&Int, 由推断决定) 一样可能悬垂
-struct ElidedBorrow {
-    r: &Int,
-}
-
-impl Show for ElidedBorrow {
-    fn show(&self) -> Int { return *self.r; }
-}
-
-fn box_elided_borrow_field() {
-    let h = { .r = &1_i }: ElidedBorrow;
-    let a: *Show = box h;
-}
-
-// 5. union 字段里省略生命周期的借用同样拒绝
-union BorrowUnion {
-    r: &Int,
-}
-
-impl Show for BorrowUnion {
-    fn show(&self) -> Int { return 0_i; }
-}
-
-fn box_union_borrow_field() {
-    let x = 1_i;
-    let u = { .r = &x }: BorrowUnion;
-    let a: *Show = box u;
 }
 
 fn main() { }

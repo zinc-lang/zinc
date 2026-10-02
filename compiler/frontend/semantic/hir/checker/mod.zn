@@ -1517,6 +1517,8 @@ impl TypeCheckContext {
             self.check_recursive_member_field(s.to_sty(), m.stype, m.syntax_node().span());
             // 检查成员不能是 unsized type
             self.disallow_unsized_type(m.stype, m.syntax_node().span());
+            // 检查成员类型里的生命周期都写出来了
+            self.disallow_elided_member_lifetime(m.stype, m.syntax_node().span());
 
             // 检查初始化表达式的类型是否合理
             if m.init is Some(init) {
@@ -1542,6 +1544,8 @@ impl TypeCheckContext {
                 self.check_recursive_member_field(e.to_sty(), ty, ev.syntax_node().span());
                 // 检查成员不能是 unsized type
                 self.disallow_unsized_type(ty, ev.syntax_node().span());
+                // 检查成员类型里的生命周期都写出来了
+                self.disallow_elided_member_lifetime(ty, ev.syntax_node().span());
             }
         }
         self.check_trait_impl_conflict(move e);
@@ -1554,6 +1558,8 @@ impl TypeCheckContext {
             self.check_recursive_member_field(u.to_sty(), m.stype, m.syntax_node().span());
             // 检查成员不能是 unsized type
             self.disallow_unsized_type(m.stype, m.syntax_node().span());
+            // 检查成员类型里的生命周期都写出来了
+            self.disallow_elided_member_lifetime(m.stype, m.syntax_node().span());
         }
     }
 
@@ -1810,6 +1816,13 @@ impl TypeCheckContext {
     fn disallow_unsized_type(&mut self, sty: *SType, span: SourceSpan) {
         if is_unsized_type(sty) {
             DiagnosticEngine::get().emit_unsized_type_not_allowed(sty.to_string(), span);
+        }
+    }
+
+    // 成员变量的生命周期必须显式写出 (不允许 &T 这种省略, 也不允许匿名生命周期)
+    fn disallow_elided_member_lifetime(&mut self, sty: *SType, span: SourceSpan) {
+        if member_field_has_elided_lifetime(sty) {
+            DiagnosticEngine::get().emit_elided_member_lifetime(sty.to_string(), span);
         }
     }
 

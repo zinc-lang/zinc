@@ -1209,6 +1209,55 @@ fn mentions_lifetime_at(sty: *SType, depth: UInt) -> Bool {
     return false;
 }
 
+// 成员变量 (struct / enum / union 的字段) 的类型里有没有"没写出来"的生命周期。
+//
+// zinc 要求类型定义里的生命周期必须显式写出:
+//   struct S<'a> { r: &'a Int }   合法
+//   struct S     { r: &Int }      非法 (字段的生命周期没有任何地方可以推导)
+// 判定依据:
+//   1. 生命周期实参比类型声明的少 —— 借用符号声明 1 个, struct/enum 声明 lt_params 个;
+//   2. 写出来的生命周期是匿名的 (比如 '_ , 或编译器生成的匿名生命周期);
+// 然后递归到类型实参 (Vec<&Int>、(&Int, Int) 这类)。
+//
+// fn 类型 (fn(&T) -> T / *Fn(&T)) 的签名不递归: 那里的生命周期是"每次调用"的,
+// 成员变量不需要声明它们 (std 里的 Vec<*Fn(&T)> 就是合法的)。
+fn member_field_has_elided_lifetime(sty: *SType) -> Bool {
+    return member_field_elided_at(sty, 0_u);
+}
+
+fn member_field_elided_at(sty: *SType, depth: UInt) -> Bool {
+    // 类型可以是递归的 (struct S { next: *raw S }), 限深避免无限展开
+    if depth > 16_u {
+        return false;
+    }
+    let c = sty.canonical();
+    if c.args.lt_args.len() < c.type_symbol.lifetime_count() {
+        return true;
+    }
+    let mut i: UInt = 0;
+    while i < c.args.lt_args.len() {
+        let lt = c.args.lt_arg(i);
+        // 显式写出来的生命周期是具名的 (普通的 'a, 或者 'static);
+        // '_ 和编译器生成的匿名生命周期都会落到这里被拒绝
+        if !(lt.resolved is Some(lt_sym) && lt_sym.is_named()) {
+            return true;
+        }
+        i += 1;
+    }
+    let ts = c.type_symbol;
+    if ts is type *FnLowerTypeSymbol ||
+        ts is type *FnUpperTypeSymbol ||
+        ts is type *FnUpperMutTypeSymbol {
+        return false;
+    }
+    for a in c.args.ty_args {
+        if member_field_elided_at(a, depth + 1_u) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // 检查结构体/枚举/联合体的一个字段。字段类型里可能还带着类型定义自己的类型形参
 // (例如 Vec<T> 的字段是 *raw T), 必须先把实际的泛型实参代进去再判断,
 // 否则任何泛型类型都会被误判成"含生命周期"。

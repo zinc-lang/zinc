@@ -1,6 +1,6 @@
 // 生命周期: 结构体字段里的引用不超出被引用对象的作用域
-struct S {
-    r: &Int,
+struct S<'a> {
+    r: &'a Int,
 }
 
 fn main() {

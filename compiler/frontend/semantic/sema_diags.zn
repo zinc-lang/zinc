@@ -723,6 +723,16 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    // 成员变量 (struct / enum / union 字段) 的类型里有省略的生命周期
+    fn emit_elided_member_lifetime(&mut self, type_name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"成员变量的类型 $(type_name) 里有省略的生命周期: 类型定义里的生命周期必须显式写出 (例如 &'a T, 并把 'a 声明为类型的生命周期参数)",
+            .msg_en = f"member field type $(type_name) has an elided lifetime: lifetimes in type definitions must be written explicitly (e.g. &'a T with 'a declared on the type)",
+        }: DiagItem);
+    }
+
     fn emit_generic_fn_to_fn_type(&mut self, name: String, span: SourceSpan) {
         self.emit({
             .span = span,
