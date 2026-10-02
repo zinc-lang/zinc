@@ -197,6 +197,10 @@ trait SyntaxVisitor {
     virtual fn visit_array_repeat_expr(&mut self, node: *ArrayRepeatLiteralExpr) -> VisitResult {
         return VisitResult::Continue;
     }
+    virtual fn visit_interpolation_expr(&mut self, node: *InterpolationExpr) -> VisitResult {
+        return VisitResult::Continue;
+    }
+
     virtual fn visit_literal_expr(&mut self, node: *LiteralExpr) -> VisitResult {
         return VisitResult::Continue;
     }

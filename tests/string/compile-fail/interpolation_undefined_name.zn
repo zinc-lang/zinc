@@ -1,0 +1,4 @@
+// 插值表达式里的名字必须能解析
+fn main() {
+    let a = f"$(no_such_variable)";
+}

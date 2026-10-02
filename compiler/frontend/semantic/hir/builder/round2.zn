@@ -204,6 +204,9 @@ impl TopLevelAstVisitor2 {
             } else {
                 return Some(LiteralValue::new(move e) as *RValue);
             }
+        } else if init is e_interp: *InterpolationExpr {
+            // 字符串插值不是编译期可求值的: 它要构造 String 并调用 ToString
+            DiagnosticEngine::get().emit_not_const_expr(e_interp.span());
         } else if init is e_asc: *TypeAscriptionExpr {
             return self.create_const_expr(e_asc.expr, ctx);
         }

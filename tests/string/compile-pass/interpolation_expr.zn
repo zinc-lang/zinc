@@ -1,0 +1,36 @@
+// 字符串插值: $() 里可以是任意表达式 (调用 / 字段 / 下标 / 方法 / 运算 / as / is)
+// 这里只做类型检查, 运行期结果见 run-pass/interpolation_expr.zn
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn add(a: Int, b: Int) -> Int {
+    return a + b;
+}
+
+fn main() {
+    let p = { .x = 3_i, .y = 4_i }: Point;
+    let v = [10_i, 20_i];
+    let s = "hello";
+
+    // 各种表达式
+    let a = f"arith=$(1_i + 2_i * 3_i)";
+    let b = f"field=$(p.x) idx=$(v[1]) call=$(add(2_i, 5_i))";
+    let c = f"method=$(s.len()) parens=$((1_i + 2_i) * 3_i)";
+    let d = f"cast=$(1_i as UInt) is=$(p.x > 1_i)";
+    // 空格 / 换行 / 注释
+    let e = f"space=$( 1_i + 2_i ) comment=$(p.x /* hi */ + 1_i)";
+    // 嵌套字符串字面量与嵌套插值
+    let g = f"arg=$(add("xy".len() as Int, 1_i)) nested=$(f"inner=$(p.y)")";
+    // 转义: \$ 是字面量 $
+    let h = f"dollar=\$(not interpolation)";
+
+    println(a);
+    println(b);
+    println(c);
+    println(d);
+    println(e);
+    println(g);
+    println(h);
+}

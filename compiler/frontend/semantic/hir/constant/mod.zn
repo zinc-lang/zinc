@@ -21,6 +21,10 @@ fn const_value_from_rvalue(rv: *RValue) -> Option<*ConstValue> {
         lit_rv: *LiteralValue => {
             return const_value_from_lit_token(lit_rv.expr.token);
         }
+        // 字符串插值不是编译期可求值的 (调用方会报 emit_not_const_expr)
+        interp_rv: *InterpolationValue => {
+            return None;
+        }
         agg_rv: *AggregateValue => {
             let struct_cvalue = box {
                 .expr = agg_rv.expr,

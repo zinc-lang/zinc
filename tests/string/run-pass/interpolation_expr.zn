@@ -1,0 +1,91 @@
+// 字符串插值里内嵌任意表达式: 运行期结果用 assert 校验
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+enum Opt {
+    Nil,
+    One(Int),
+}
+
+fn add(a: Int, b: Int) -> Int {
+    return a + b;
+}
+
+// 带析构的临时量: 插值完之后, 语句结束才析构
+struct Probe {
+    p: *raw mut Int,
+}
+
+impl Drop for Probe {
+    fn drop(&mut self) {
+        unsafe { *self.p = *self.p + 1_i; }
+    }
+}
+
+impl ToString for Probe {
+    fn to_string_inplace(&self, buf: &mut String) {
+        buf.push_str("P");
+    }
+
+    fn to_string(&self) -> String {
+        let mut buf = String::new();
+        self.to_string_inplace(&mut buf);
+        return buf;
+    }
+}
+
+fn make_probe(q: *raw mut Int) -> Probe {
+    return { .p = q }: Probe;
+}
+
+fn main() {
+    let p = { .x = 3_i, .y = 4_i }: Point;
+    let v = [10_i, 20_i];
+    let s = "hello";
+
+    // 表达式
+    assert_eq(f"arith=$(1_i + 2_i * 3_i)", f"arith=7");
+    assert_eq(f"field=$(p.x) idx=$(v[1])", f"field=3 idx=20");
+    assert_eq(f"call=$(add(2_i, 5_i)) method=$(s.len())", f"call=7 method=5");
+    assert_eq(f"cast=$(1_i as UInt) cmp=$(p.x > 1_i)", f"cast=1 cmp=true");
+    assert_eq(f"space=$( 1_i + 2_i ) comment=$(p.x /* hi */ + 1_i)", f"space=3 comment=4");
+
+    // 嵌套字符串字面量与嵌套插值
+    assert_eq(f"arg=$(add("xy".len() as Int, 1_i))", f"arg=3");
+    assert_eq(f"nested=$(f"inner=$(p.y)")", f"nested=inner=4");
+
+    // 转义 $(
+    let mut dollar_expected = String::new();
+    dollar_expected.push_str("dollar=$(");
+    dollar_expected.push_str("x)");
+    assert_eq(f"dollar=\$(x)", dollar_expected);
+
+    // 空插值与纯文本
+    assert_eq(f"", f"");
+    assert_eq(f"plain", f"plain");
+
+    // 临时量: 插值期间活着, 语句结束析构一次
+    let mut c = 0_i;
+    let text = f"<$(make_probe(&mut c as *raw mut Int))>";
+    assert_eq(text, f"<P>");
+    assert(c == 1_i);
+
+    // 多个部分 / 多个临时量: 每个表达式都求值一次, 各析构一次
+    let mut d = 0_i;
+    let multi = f"$(make_probe(&mut d as *raw mut Int))-$(make_probe(&mut d as *raw mut Int))";
+    assert_eq(multi, f"P-P");
+    assert(d == 2_i);
+
+    // is 绑定 + && 链 作为插值表达式 (MIR 里会产生 phi, 曾经会 ICE)
+    let o1 = Opt::One(5_i);
+    assert_eq(f"$(o1 is Opt::One(pv) && pv > 1_i)", f"true");
+    let o2 = Opt::One(5_i);
+    assert_eq(f"$(o2 is Opt::One(pw) && pw > 9_i)", f"false");
+
+    assert_eq(s.len(), 5_u);
+}

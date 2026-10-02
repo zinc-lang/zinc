@@ -456,28 +456,30 @@ impl CfgBuilder {
                 return (move phi as *RValue, move end_bb);
             }
             interpolation: *InterpolationValue => {
-                // 创建 String 类型临时变量, 调用成员方法
+                // 解糖: 建一个 String 缓冲, 依次把每段 to_string_inplace 进去, 最后把缓冲读出来。
+                // 内嵌表达式可能带调用/分支, 所以每一步都要把当前基本块串下去。
                 let span = interpolation.expr.span();
+                let mut cur_bb = bb;
                 let buf = VarSymbol::create(span, interpolation.sty);
                 self.nearest_block().add_local(buf);
 
                 // 调用 String::new
                 let fn_new = self.resolver.method_string_new();
-                let qp = QualifiedPathValue::create(interpolation.expr as *ExpressionNode, fn_new as *Symbol);
-                let call_fn_new = FnCallValue::new(interpolation.expr as *ExpressionNode, move qp as *RValue);
+                let qp = QualifiedPathValue::create(interpolation.expr, fn_new as *Symbol);
+                let call_fn_new = FnCallValue::new(interpolation.expr, move qp as *RValue);
                 call_fn_new.sty = interpolation.sty;
                 call_fn_new.member_of = Some(interpolation.sty);
-                bb.add_step(call_fn_new as *XValue);
+                cur_bb.add_step(call_fn_new as *XValue);
 
                 let local = LocalVar::create(span, buf);
                 let init = WriteValue::create(call_fn_new as *RValue, move local as *LValue);
-                bb.add_step(init as *XValue);
+                cur_bb.add_step(init as *XValue);
 
                 //
-                let rd = ReadValue::new(interpolation.expr as *ExpressionNode, buf);
-                bb.add_step(rd as *XValue);
+                let rd = ReadValue::new(interpolation.expr, buf);
+                cur_bb.add_step(rd as *XValue);
                 let mut_addr = AddressofValue::create(span, AddressofKind::RefMut, rd as *RValue);
-                bb.add_step(mut_addr as *XValue);
+                cur_bb.add_step(mut_addr as *XValue);
                 let mut args = (type Vec<*RValue>)::new();
                 args.push(move mut_addr as *RValue);
 
@@ -499,40 +501,50 @@ impl CfgBuilder {
                             let method_call = MethodCallValue::create(
                                 receiver as *RValue, method, GenericArgs::new(), args, SType::sty_unit()
                             );
-                            bb.add_step(move alloca_str as *XValue);
-                            bb.add_step(move receiver as *XValue);
-                            bb.add_step(move method_call as *XValue);
+                            cur_bb.add_step(move alloca_str as *XValue);
+                            cur_bb.add_step(move receiver as *XValue);
+                            cur_bb.add_step(move method_call as *XValue);
                         }
-                        InterpolationPart::Var(v) => {
-                            // 调用 v 的类型的 to_string_inplace
-                            let method = self.resolver.method_to_string_inplace(v.stype, self.sym);
-                            let rd = ReadValue::new(interpolation.expr as *ExpressionNode, v);
-                            rd.sty = v.stype;
-                            bb.add_step(rd as *XValue);
-                            let mut receiver = rd as *RValue;
+                        InterpolationPart::Expr(part_rv) => {
+                            // 注意: 类型要在 promote_local 之前取 (promote_local 会改写 part_rv)。
+                            // 非指针类型先物化成可取地址的临时量再取引用; 指针类型直接用它的值。
+                            let part_sty = part_rv.get_stype();
+                            let method = self.resolver.method_to_string_inplace(part_sty, self.sym);
+                            let part_span = part_rv.expr_node().span();
+                            let mut receiver = part_rv;
 
-                            if !(v.stype.type_symbol is type *PointerLikeSymbol) {
-                                receiver = AddressofValue::create(span, AddressofKind::Ref, rd as *RValue) as *RValue;
-                                bb.add_step(receiver as *XValue);
-                            } else if v.stype.type_symbol is type *ArcPointerSymbol {
-                                let mut args = GenericArgs::new();
-                                args.ty_args.push(v.stype.args.ty_arg(0));
-                                let sty = BorrowImmutSymbol::new().to_sty(move args);
-                                receiver = ReBorrowValue::create(rd as *RValue, move sty) as *RValue;
-                                bb.add_step(receiver as *XValue);
+                            if !(part_sty.type_symbol is type *PointerLikeSymbol) {
+                                let (place, place_bb) = self.promote_local(part_rv, cur_bb);
+                                cur_bb = move place_bb;
+                                let addr = AddressofValue::create(part_span, AddressofKind::Ref, place as *RValue);
+                                cur_bb.add_step(addr as *XValue);
+                                receiver = addr as *RValue;
+                            } else if part_sty.type_symbol is type *ArcPointerSymbol {
+                                let (value, value_bb) = self.trans_rvalue(part_rv, cur_bb);
+                                cur_bb = move value_bb;
+                                let mut bor_args = GenericArgs::new();
+                                bor_args.ty_args.push(part_sty.args.ty_arg(0));
+                                let bor_sty = BorrowImmutSymbol::new().to_sty(move bor_args);
+                                let reb = ReBorrowValue::create(value, move bor_sty);
+                                cur_bb.add_step(reb as *XValue);
+                                receiver = reb as *RValue;
+                            } else {
+                                let (value, value_bb) = self.trans_rvalue(part_rv, cur_bb);
+                                cur_bb = move value_bb;
+                                receiver = value;
                             }
                             let method_call = MethodCallValue::create(
                                 receiver, method, GenericArgs::new(), args, SType::sty_unit()
                             );
-                            bb.add_step(move method_call as *XValue);
+                            cur_bb.add_step(move method_call as *XValue);
                         }
                     }
                 }
 
-                let res = ReadValue::new(interpolation.expr as *ExpressionNode, buf);
+                let res = ReadValue::new(interpolation.expr, buf);
                 res.sty = interpolation.sty;
-                bb.add_step(res as *XValue);
-                return (move res as *RValue, move bb);
+                cur_bb.add_step(res as *XValue);
+                return (move res as *RValue, move cur_bb);
             }
             iter: *IteratorValue => {
                 panic "BUG: IteratorValue has been handled when translate ForLoopSentence";

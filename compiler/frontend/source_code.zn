@@ -348,7 +348,11 @@ impl SourceManager {
             }
         }
 
-        let line_end_offset: UInt = *file_item.lines.index(line_num as UInt).deref();
+        // offset 可能落在最后一行之后 (例如词法分析到文件末尾), 此时取内容结尾,
+        // 否则下面的 index(line_num) 会越界 panic
+        let line_end_offset: UInt = if line_num >= file_item.lines.len()
+                                    then file_item.content.len()
+                                    else *file_item.lines.index(line_num as UInt).deref();
         let line_start_offset: UInt = if line_num == 0 
                                     then 0 
                                     else *file_item.lines.index((line_num - 1) as UInt).deref() + 1;

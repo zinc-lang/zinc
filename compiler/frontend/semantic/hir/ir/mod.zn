@@ -826,13 +826,15 @@ pub struct SelectValue {
 
 enum InterpolationPart {
     Str(String),
-    Var(*VarSymbol),
+    Expr(*RValue),
 }
 
 pub struct InterpolationValue {
-    expr: *LiteralExpr,
+    expr: *ExpressionNode,
     parent_node: Option<*ScopeSymbol>,
     parts: Vec<InterpolationPart>,
+    // 内嵌表达式的类型检查只做一次 (infer 会被反复调用, 每次都推导会重复报错/重复工作)
+    checked: Bool,
     sty: *SType,
 }
 

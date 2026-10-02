@@ -24,7 +24,19 @@ pub struct FileParser {
 
 impl FileParser {
     pub fn new(file_id: UInt, source_code: String) -> *FileParser {
-        let lexer = Lexer::new(file_id, move source_code);
+        let end = source_code.len();
+        return FileParser::new_at_range(file_id, move source_code, 0_u, end);
+    }
+
+    // 从文件里的某个绝对偏移开始解析 (字符串插值解析 $() 里的子表达式用)
+    pub fn new_at(file_id: UInt, source_code: String, start_index: UInt) -> *FileParser {
+        let end = source_code.len();
+        return FileParser::new_at_range(file_id, move source_code, move start_index, end);
+    }
+
+    // 同上, 但限制词法分析的上界 (畸形插值不能读到字面量之外)
+    pub fn new_at_range(file_id: UInt, source_code: String, start_index: UInt, end_index: UInt) -> *FileParser {
+        let lexer = Lexer::new_at_range(file_id, move source_code, move start_index, move end_index);
 
         return box {
             .file_id = file_id,

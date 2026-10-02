@@ -530,15 +530,104 @@ impl FileParser {
         return res;
     }
 
+    // f"..." : 把原始文本切成 [文本段, $(表达式), 文本段, ...]
+    //
+    // $( 之后的表达式交给一个子 FileParser, 用正常的 parse_expression 解析:
+    // 括号 / 字符串 / 嵌套插值都由词法+语法负责, span 用文件里的绝对偏移,
+    // 所以诊断位置是准确的。子解析必须停在 `)` 上。
+    fn parse_interpolation_expr(&mut self, lit: Token) -> *ExpressionNode {
+        let parts = (type Vec<InterpolationPartExpr>)::new();
+        let span = lit.span();
+        let fid = span.start.file_id;
+        let content = SourceManager::get().source_code_of(fid);
+        // token 的 span 覆盖 `"..."` (不含前面的 f), 所以内容从 start+1 开始,
+        // 长度 = span 长度 - 2 (去掉首尾两个引号)
+        let base = span.start.offset + 1;
+        // 注意 zinc 的 '-' 是右结合的, 这里必须显式加括号
+        let len = (span.end.offset - span.start.offset) - 2;
+
+        let mut i: UInt = 0;
+        while i < len {
+            // 文本段: 一直收集到 $( 或者结尾, 顺便解码转义
+            let mut text = String::new();
+            while i < len {
+                let c = content.index(base + i);
+                if c == b'$' && i + 1 < len && content.index(base + i + 1) == b'(' {
+                    break;
+                }
+                if c == b'\\' && i + 1 < len {
+                    let next = content.index(base + i + 1);
+                    if next == b't' { text.push(b'\t'); i += 2; }
+                    else if next == b'r' { text.push(b'\r'); i += 2; }
+                    else if next == b'n' { text.push(b'\n'); i += 2; }
+                    else if next == b'0' { text.push(b'\0'); i += 2; }
+                    else if next == b'\\' { text.push(b'\\'); i += 2; }
+                    else if next == b'"' { text.push(b'"'); i += 2; }
+                    else if next == b'$' { text.push(b'$'); i += 2; }
+                    else if next == b'\n' { i += 2; }
+                    else {
+                        let escape_span: SourceSpan = {
+                            .start = { .file_id = fid, .offset = base + i }: SourceLoc,
+                            .end = { .file_id = fid, .offset = base + i + 2 }: SourceLoc,
+                        };
+                        DiagnosticEngine::get().emit_invalid_escape(escape_span);
+                        i += 1;
+                    }
+                } else {
+                    text.push(c);
+                    i += 1;
+                }
+            }
+            parts.push(InterpolationPartExpr::Text(move text));
+
+            if i >= len {
+                break;
+            }
+
+            // $(expr) : 子解析器从 `(` 之后开始, 解析完必须紧跟 `)`
+            // 上界取内容结尾 (即收尾的双引号), 这样畸形输入不会词法分析到字面量之外
+            let content_end = base + len;
+            let mut sub = FileParser::new_at_range(
+                fid, SourceManager::get().source_code_of(fid), base + i + 2, content_end);
+            let sub_expr = sub.parse_expression();
+            let close = sub.lexer.peek(0);
+            if !(close.token_kind is TokenKind::Punctuation(PunctuationKind::RParen)) {
+                // 有实际词元就指向它; 到结尾了(缺 `)`)就指向 `$(`
+                if close.token_kind is TokenKind::EndOfFile {
+                    let dollar_span: SourceSpan = {
+                        .start = { .file_id = fid, .offset = base + i }: SourceLoc,
+                        .end = { .file_id = fid, .offset = base + i + 2 }: SourceLoc,
+                    };
+                    DiagnosticEngine::get().emit_illegal_string_interpolation(dollar_span);
+                } else {
+                    DiagnosticEngine::get().emit_illegal_string_interpolation(close.span());
+                }
+                break;
+            }
+            let close_end = close.span().end.offset;
+            parts.push(InterpolationPartExpr::Expr(move sub_expr));
+            i = close_end - base;
+        }
+
+        return box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .token = lit,
+            .parts = move parts,
+        }: InterpolationExpr;
+    }
+
     fn parse_primary_expr(&mut self) -> *ExpressionNode {
         let t0 = self.lexer.peek(0);
         let t1 = self.lexer.peek(1);
         if t0.token_kind is TokenKind::Literal(_) {
             let lit = self.lexer.next();
-            let expr = box {
+            let mut expr: *ExpressionNode = box {
                 .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
                 .token = lit,
-            }: LiteralExpr;
+            }: LiteralExpr as *ExpressionNode;
+            if lit.token_kind is TokenKind::Literal(LiteralKind::LIT_STR_INTERPOLATION) {
+                expr = self.parse_interpolation_expr(lit);
+            }
             // literal 后面允许使用 type ascription
             if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::Colon) {
                 let colon = self.lexer.next();

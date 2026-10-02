@@ -69,6 +69,7 @@ impl ExprTransformer {
             arr_lit: *ArrayLiteralExpr => return self.visit_array_lit_expr(move arr_lit);
             arr_repeat: *ArrayRepeatLiteralExpr => return self.visit_array_repeat_expr(move arr_repeat);
             lit: *LiteralExpr => return self.visit_lit_expr(move lit);
+            interp: *InterpolationExpr => return self.visit_interpolation_expr(move interp);
             ta: *TypeAscriptionExpr => return self.visit_type_asc_expr(move ta);
             name: *SegmentedNameExpr => return self.visit_seg_name_expr(move name);
             path: *QualifiedPathExpr => return self.visit_qualified_path_expr(move path);
@@ -540,12 +541,21 @@ impl ExprTransformer {
     }
 
     fn visit_lit_expr(&mut self, e: *LiteralExpr) -> *RValue {
-        if e.token.token_kind is TokenKind::Literal(LiteralKind::LIT_STR_INTERPOLATION) {
-            let c = InterpolationValue::new(e, self.resolver.sty_string());
-            c.name_resolve(self.get_ctx(), &self.resolver);
-            return c;
-        }
         return LiteralValue::new(move e);
+    }
+
+    // f"..." : 文本段直接存进 parts, 内嵌表达式段按普通表达式构建成 *RValue
+    fn visit_interpolation_expr(&mut self, e: *InterpolationExpr) -> *RValue {
+        let c = InterpolationValue::new(e as *ExpressionNode, self.resolver.sty_string());
+        for part in e.parts {
+            if part is InterpolationPartExpr::Text(s) {
+                c.parts.push(InterpolationPart::Str(move s));
+            } else if part is InterpolationPartExpr::Expr(sub) {
+                let v = self.visit_expr(move sub);
+                c.parts.push(InterpolationPart::Expr(move v));
+            }
+        }
+        return c;
     }
 
     fn visit_type_asc_expr(&mut self, e: *TypeAscriptionExpr) -> *RValue {

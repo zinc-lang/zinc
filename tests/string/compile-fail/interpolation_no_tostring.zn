@@ -1,0 +1,8 @@
+// 插值表达式必须实现 ToString: 自定义结构体没有实现, 报错
+struct NotString {
+    v: Int,
+}
+
+fn main() {
+    let a = f"$({ .v = 1_i }: NotString)";
+}

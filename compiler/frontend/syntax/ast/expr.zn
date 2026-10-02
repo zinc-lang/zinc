@@ -234,6 +234,18 @@ pub struct LiteralExpr {
     token: Token,
 }
 
+// 字符串插值 f"..." : 由若干文本段和内嵌表达式段组成
+pub struct InterpolationExpr {
+    parent_node: *weak SyntaxNode, 
+    token: Token,
+    parts: Vec<InterpolationPartExpr>,
+}
+
+pub enum InterpolationPartExpr {
+    Text(String),
+    Expr(*ExpressionNode),
+}
+
 pub struct TypeAscriptionExpr {
     parent_node: *weak SyntaxNode, 
     expr: *ExpressionNode,
@@ -765,6 +777,34 @@ impl SyntaxNode for LiteralExpr {
 }
 
 impl ExpressionNode for LiteralExpr {
+}
+
+impl SyntaxNode for InterpolationExpr {
+    fn span(&self) -> SourceSpan {
+        return self.token.span();
+    }
+    fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
+        return visitor.visit_interpolation_expr(self);
+    }
+    fn children(&self) -> Vec<*SyntaxNode> {
+        let mut vec = (type Vec<*SyntaxNode>)::with_capacity(self.parts.len());
+        for part in self.parts {
+            if part is InterpolationPartExpr::Expr(e) {
+                vec.push(move e as *SyntaxNode);
+            }
+        }
+        return vec;
+    }
+
+    fn parent(&self) -> Option<*weak SyntaxNode> {
+        return Some(self.parent_node);
+    }
+    fn set_parent(&mut self, parent: *weak SyntaxNode) {
+        self.parent_node = move parent;
+    }
+}
+
+impl ExpressionNode for InterpolationExpr {
 }
 
 impl SyntaxNode for TypeAscriptionExpr {
