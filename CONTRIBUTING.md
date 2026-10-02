@@ -24,14 +24,20 @@ The harness uses `./out/stage1/bin/zinc` (the compiler produced by `python x.py 
 
 `--check-only` only typechecks. It does not execute wrapping overflow, UTF-8 `insert`, or `for` loops.
 
-- `tests/compile-pass/` — files that should typecheck (`--check-only`)
-- `tests/compile-fail/` — files that should produce a compile error
+Cases live under `tests/<feature>/<expectation>/`:
+
+- `tests/<feature>/compile-pass/` — files that should typecheck (`--check-only`)
+- `tests/<feature>/compile-fail/` — files that should produce a compile error
+- `tests/<feature>/run-pass/` — files that are compiled, then run (exit code 0, no panic)
+
+Current features: `lifetime`, `lambda`, `fn`, `hash`, `string`, `range`, `misc` (see `tests/README.md`).
+Add a new feature by creating a folder, e.g. `tests/generics/compile-pass/`.
 
 Add a short comment at the top of each test describing what it covers.
 
 ## Good first contributions
 
-- More `compile-pass` / `compile-fail` cases
+- More `compile-pass` / `compile-fail` / `run-pass` cases (add them under the matching feature folder)
 - Standard-library methods with tests (collections, strings, integers)
 - Diagnostics and error-message wording
 - VS Code grammar, snippets, and README (`tools/vscode-zinc`)
