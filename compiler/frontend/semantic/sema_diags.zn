@@ -633,6 +633,26 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    fn emit_duplicate_enum_discriminant(
+        &mut self, span: SourceSpan, name: String, first_name: String, value: Int
+    ) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"枚举判别值重复: 变体 $(name) 与变体 $(first_name) 的判别值都是 $(value)",
+            .msg_en = f"duplicate enum discriminant: variant $(name) and variant $(first_name) both have value $(value)",
+        }: DiagItem);
+    }
+
+    fn emit_invalid_enum_discriminant(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"枚举判别值必须是编译期整数常量 (目前支持整数字面量以及它前面的负号)",
+            .msg_en = f"enum discriminant must be a compile-time integer literal (optionally negated)",
+        }: DiagItem);
+    }
+
     fn emit_not_const_expr(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,

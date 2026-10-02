@@ -1,0 +1,60 @@
+// 枚举判别值: 显式值 (含负数)、默认递增、as Int、tag 匹配
+// 每个 arm 就是一个 statement, arm 之间不写分隔符
+use std::{assert, assert_eq};
+
+enum E {
+    A = -1,
+    B = 5,
+    C,          // 默认 = B + 1 = 6
+}
+
+enum Inc {
+    A = 10,
+    B,          // 11
+    C,          // 12
+}
+
+enum Ord2 {
+    Less = -1,
+    Equal = 0,
+    Greater = 1,
+}
+
+fn main() {
+    // 判别值就是运行期 tag / `as Int` 看到的值
+    assert_eq(E::A as Int, -1_i);
+    assert_eq(E::B as Int, 5_i);
+    assert_eq(E::C as Int, 6_i);
+
+    // 没手写判别值: 等于上一个 + 1
+    assert_eq(Inc::A as Int, 10_i);
+    assert_eq(Inc::B as Int, 11_i);
+    assert_eq(Inc::C as Int, 12_i);
+
+    let e = E::B;
+    assert(e is E::B);
+    assert(!(e is E::A));
+
+    // match: 每个 arm 一个 statement
+    let mut got = 0_i;
+    match e {
+        E::A => { got = 1_i; }
+        E::B => { got = 2_i; }
+        E::C => { got = 3_i; }
+    }
+    assert_eq(got, 2_i);
+
+    // 负判别值也能正常 is / match
+    let o = Ord2::Less;
+    assert(o is Ord2::Less);
+    assert(!(o is Ord2::Greater));
+    assert_eq(Ord2::Greater as Int, 1_i);
+
+    let mut ord = 0_i;
+    match o {
+        Ord2::Less => { ord = -1_i; }
+        Ord2::Equal => { ord = 0_i; }
+        Ord2::Greater => { ord = 1_i; }
+    }
+    assert_eq(ord, -1_i);
+}

@@ -6,6 +6,7 @@ use ::self::frontend::syntax::ast::ty::*;
 use ::self::frontend::syntax::ast::expr::*;
 
 use ::self::frontend::semantic::hir::ir::*;
+use ::self::frontend::semantic::hir::constant::*;
 use ::self::frontend::syntax::token::*;
 use ::self::frontend::semantic::zno::*;
 use ::self::frontend::diagnostic::{Severity, DiagItem, DiagnosticEngine};
@@ -612,11 +613,44 @@ impl SyntaxVisitor for TopLevelAstVisitor2 {
                 .self_sty = Some(e_sym.to_sty()),
             }: ResolveContext;
 
+            // 判别值: 默认按声明顺序 0,1,2..., 显式 `= 常量` 覆盖
+            let mut next_tag: UInt64 = 0;
             for ev in node.variants {
                 let ec_sym = EnumVariantSymbol::new(ev);
                 self.mapping(ev as *SyntaxNode, ec_sym as *Symbol, e_sym as *ScopeSymbol);
                 ec_sym.parent_enum = Some(e_sym);
                 e_sym.variants.push(ec_sym);
+
+                let mut explicit_tag: UInt64 = 0;
+                if eval_enum_discriminant(ev, &mut explicit_tag) {
+                    ec_sym.tag_value = explicit_tag;
+                    next_tag = explicit_tag + 1;
+                } else {
+                    // 没手写判别值: 等于上一个判别值 + 1 (第一个是 0)
+                    ec_sym.tag_value = next_tag;
+                    next_tag += 1;
+                }
+
+                // 同一个 enum 里判别值不能重复。
+                // 最后一个元素就是刚 push 进去的 ec_sym, 只和它前面的比。
+                let mut dup_span = ev.span();
+                if ev.descriminant is Some(de) {
+                    dup_span = de.span();
+                }
+                let prev_count = e_sym.variants.len() - 1;
+                let mut k: UInt = 0;
+                while k < prev_count {
+                    let prev = *e_sym.variants.index(k).deref();
+                    if prev.tag_value == ec_sym.tag_value {
+                        let signed = ec_sym.tag_value as Int;
+                        let cur_name = ev.name.raw_str();
+                        let prev_name = prev.variant_node.name.raw_str();
+                        DiagnosticEngine::get().emit_duplicate_enum_discriminant(
+                            dup_span, cur_name, prev_name, signed);
+                        break;
+                    }
+                    k += 1;
+                }
 
                 for ty in ev.fields {
                     let sty = self.resolver().resolve_type_node(ctx, ty);
@@ -899,4 +933,37 @@ pub fn insert_impl(v: &mut Vec<*ImplSymbol>, i: *ImplSymbol) {
     } else {
         v.insert(0, move i);
     }
+}
+
+// 枚举判别值必须是编译期整数常量: 目前支持整数字面量以及它前面的负号。
+// (引用其它变体/常量、算术运算暂不支持, 需要时再扩展成通用常量求值)
+// 返回是否显式指定了判别值 (值写到 tag_out 里)
+fn eval_enum_discriminant(ev: *EnumVariantDecl, tag_out: &mut UInt64) -> Bool {
+    if ev.descriminant is Some(de) {
+        let expr = de;
+        let mut negate = false;
+        let mut inner = expr;
+        if inner is ue: *UnaryExpr {
+            if ue.kind is UnaryExprKind::Neg {
+                negate = true;
+                inner = ue.operand;
+            }
+        }
+        if inner is lit: *LiteralExpr {
+            if lit.token.token_kind is TokenKind::Literal(LiteralKind::LIT_INT) {
+                let cv = const_value_from_lit_token(lit.token);
+                if cv is Some(c) && c is icv: *IntegerCValue {
+                    if negate {
+                        // 二补码, 和运行期 int64 tag 保持一致
+                        *tag_out = (0_i as UInt64) - icv.value;
+                    } else {
+                        *tag_out = icv.value;
+                    }
+                    return true;
+                }
+            }
+        }
+        DiagnosticEngine::get().emit_invalid_enum_discriminant(expr.span());
+    }
+    return false;
 }

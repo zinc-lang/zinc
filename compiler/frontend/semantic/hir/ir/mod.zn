@@ -260,6 +260,9 @@ pub struct EnumVariantSymbol {
     next_overload: Option<*EnumVariantSymbol>,
     fields: Vec<*SType>,
     symbol_table: SymbolTable,
+    // 判别值 (tag): 默认按声明顺序 0,1,2..., 显式 `= 常量` 时用显式值。
+    // 用二补码存, 所以 -1 就是全 1 (和运行期 int64 tag 一致)
+    tag_value: UInt64,
 }
 
 pub struct EnumSymbol {

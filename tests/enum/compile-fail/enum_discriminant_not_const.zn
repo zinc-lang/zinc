@@ -1,0 +1,5 @@
+// 枚举判别值必须是编译期整数常量
+enum A { X = no_such_fn() }
+enum B { X = f"$(1_i)" }
+enum C { X = 1_i + 1_i }
+fn main() { }

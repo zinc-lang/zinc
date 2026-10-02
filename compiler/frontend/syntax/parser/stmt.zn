@@ -229,8 +229,18 @@ impl FileParser {
             if self.lexer.peek(0).token_kind is TokenKind::Punctuation(PunctuationKind::RBrace) {
                 break;
             }
+            let before = self.lexer.peek(0).span().start.offset;
             let arm = self.parse_match_arm(stmt);
             stmt.arms.push(arm);
+
+            // 每个 arm 就是一个 statement, arm 之间不写分隔符 (逗号是语法错误)。
+            //
+            // 但必须保证每轮都有前进: 畸形输入 (比如 arm 后面跟一个逗号) 以前会让这里
+            // 无限循环、不断 push arm 直到分配器把栈/内存吃爆。卡住就直接退出循环,
+            // 交给下面的 expect_token(RBrace) 报"非预期的词元"。
+            if self.lexer.peek(0).span().start.offset == before {
+                break;
+            }
         }
         stmt.rbrace = self.expect_token(TokenKind::Punctuation(PunctuationKind::RBrace));
         return stmt;

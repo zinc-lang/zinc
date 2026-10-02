@@ -1,8 +1,10 @@
 
+// 说明: 显式判别值 (Less = -1 之类) 编译器已经支持, 但 stage0 还是旧编译器 (会忽略判别值),
+// 用它编译出来的 std 产物与本编译器不一致。等 stage0 更新之后再改回带判别值的写法。
 pub enum Ordering {
-    Less = -1,
-    Equal = 0,
-    Greater = 1,
+    Less,
+    Equal,
+    Greater,
 }
 
 // todo `other` 的类型应该是泛型参数，这样才能支持一个类型与多个不同类型的比较

@@ -133,7 +133,8 @@ impl EnumVariantSymbol {
             .next_overload = None,
             .fields = (type Vec<*SType>)::new(),
             .symbol_table = SymbolTable::new(),
-        }: EnumVariantSymbol;
+                    .tag_value = 0,
+}: EnumVariantSymbol;
         return sym;
     }
 
@@ -171,17 +172,10 @@ impl EnumVariantSymbol {
         return TupleSymbol::new().to_sty(ga);
     }
 
+    // 运行期 tag / `as Int` 看到的值: 默认按声明顺序 (0,1,2...), 显式判别值会覆盖
+    // (见 round2::visit_enum 和 eval_enum_discriminant)
     pub fn tag_num(&self) -> UInt64 {
-        let e = self.parent_enum.get_or_panic();
-        let mut i: UInt64 = 0;
-        for ev in e.variants {
-            if ev as *raw EnumVariantSymbol as UInt ==
-                self as &EnumVariantSymbol as *raw EnumVariantSymbol as UInt {
-                return i;
-            }
-            i += 1;
-        }
-        return -1_i as UInt64;
+        return self.tag_value;
     }
 }
 
