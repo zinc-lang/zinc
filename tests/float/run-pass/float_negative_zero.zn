@@ -1,0 +1,71 @@
+// 负零字面量 `-0.0_f64` / `-0.0_f32` 必须保留符号位 (回归用例)。
+//
+// 曾经的问题: 字面量取负在常量折叠里用 `0.0 - value` 实现, 而 IEEE-754 下
+// `0.0 - 0.0` 是 +0.0, 于是 `-0.0` 丢掉符号位, `1.0 / (-0.0)` 得到 +inf。
+// 正确的实现是一元取负 (LLVM fneg, 直接翻转符号位)。
+//
+// 判定符号位用 `1.0 / x < 0.0`: 对 ±0 来说结果的符号只由操作数的符号位决定,
+// 不需要任何 signbit/to_bits API。同时钉住 IEEE 语义:
+//   -0.0 == 0.0 为 true, -(-0.0) 回到 +0.0。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+const NEG_ZERO_F64: F64 = -0.0_f64;
+static NEG_ZERO_F32: F32 = -0.0_f32;
+
+fn main() {
+    // ---- F64 ----
+    let nz: F64 = -0.0_f64;
+    // 符号位为负: 1.0 / -0.0 == -inf
+    assert(1.0_f64 / nz < 0.0_f64);
+    assert(1.0_f64 / (-0.0_f64) < 0.0_f64);
+    // 不带后缀 (上下文推导) 的字面量走同一条折叠路径
+    let nz_ctx: F64 = -0.0;
+    assert(1.0_f64 / nz_ctx < 0.0_f64);
+
+    // 与 +0.0 数值相等 (IEEE-754), 但 1.0 / +0.0 是 +inf
+    assert(-0.0_f64 == 0.0_f64);
+    assert(nz == 0.0_f64);
+    assert(!(nz < 0.0_f64));
+    assert(!(nz > 0.0_f64));
+    assert(1.0_f64 / 0.0_f64 > 0.0_f64);
+
+    // 双重取负回到 +0.0; 单独给 +0.0 取负得到 -0.0
+    assert(1.0_f64 / (-(-0.0_f64)) > 0.0_f64);
+    assert(-(-0.0_f64) == 0.0_f64);
+    assert(1.0_f64 / (-(0.0_f64)) < 0.0_f64);
+
+    // 打印形式与 0.0 的既有约定一致 (ToString / 插值)
+    assert_eq(f"$(nz)", f"-0");
+    assert_eq(nz.to_string(), f"-0");
+
+    // ---- F32 ----
+    let nz32: F32 = -0.0_f32;
+    assert(1.0_f32 / nz32 < 0.0_f32);
+    assert(1.0_f32 / (-0.0_f32) < 0.0_f32);
+    let nz32_ctx: F32 = -0.0;
+    assert(1.0_f32 / nz32_ctx < 0.0_f32);
+    assert(-0.0_f32 == 0.0_f32);
+    assert(1.0_f32 / 0.0_f32 > 0.0_f32);
+    assert(1.0_f32 / (-(-0.0_f32)) > 0.0_f32);
+    assert(1.0_f32 / (-(0.0_f32)) < 0.0_f32);
+    assert_eq(f"$(nz32)", f"-0");
+
+    // ---- 常量 / 静态上下文走同一条路径 ----
+    assert(1.0_f64 / NEG_ZERO_F64 < 0.0_f64);
+    assert(1.0_f32 / NEG_ZERO_F32 < 0.0_f32);
+
+    // ---- 普通负数不受影响 ----
+    let neg: F64 = -2.5_f64;
+    assert(neg < 0.0_f64);
+    assert(neg == (0.0_f64 - 2.5_f64));
+    assert((1.0_f64 / neg) < 0.0_f64);
+    assert(-2.5_f64 != 2.5_f64);
+    assert(-0.5_f64 == (0.0_f64 - 0.5_f64));
+    let neg32: F32 = -0.5_f32;
+    assert(neg32 < 0.0_f32);
+    assert(neg32 == (0.0_f32 - 0.5_f32));
+    assert(-1.25_f32 == (0.0_f32 - 1.25_f32));
+
+    println("negative zero ok");
+}

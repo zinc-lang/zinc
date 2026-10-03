@@ -177,7 +177,9 @@ fn const_value_of_literal(lit_rv: *LiteralValue) -> Option<*ConstValue> {
             if c is icv: *IntegerCValue {
                 icv.sign = !icv.sign;
             } else if c is fcv: *FloatCValue {
-                fcv.value = 0.0 - fcv.value;
+                // 必须用一元取负 (fneg) 翻转符号位, 不能用 `0.0 - value`:
+                // 对 `-0.0` 来说 `0.0 - 0.0` 得到的是 +0.0, 会丢掉负零。
+                fcv.value = -fcv.value;
             }
         }
     }

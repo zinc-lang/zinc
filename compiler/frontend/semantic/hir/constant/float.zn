@@ -88,8 +88,9 @@ impl FloatCValue {
 
         // 防御性处理: 如果 token 本身带前导 `-` (现在 lexer 不会再产出这种 token,
         // 负号由语义阶段折叠成 LiteralValue.negated), 把符号作用到数值上。
+        // 这里同样必须用一元取负 (fneg): `0.0 - 0.0` 是 +0.0, 会丢掉 `-0.0` 的符号位。
         if !sign {
-            num = 0.0 - num;
+            num = -num;
         }
 
         return {
