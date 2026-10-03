@@ -643,24 +643,6 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
-    fn emit_array_len_only_support_literal(&mut self, span: SourceSpan) {
-        self.emit({
-            .span = span,
-            .severity = Severity::Error,
-            .msg_zn = f"数组长度目前只支持字面量, 后续支持常量表达式",
-            .msg_en = f"Array length only support literals",
-        }: DiagItem);
-    }
-
-     fn emit_array_len_literal_must_be_uint(&mut self, span: SourceSpan) {
-        self.emit({
-            .span = span,
-            .severity = Severity::Error,
-            .msg_zn = f"数组长度字面量必须是 UInt 类型",
-            .msg_en = f"Array length literal must be of UInt type",
-        }: DiagItem);
-    }
-
     fn emit_global_must_init(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,

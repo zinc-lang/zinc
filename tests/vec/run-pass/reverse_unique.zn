@@ -1,0 +1,55 @@
+// Vec::reverse 的独占缓冲区路径: 就地首尾交换。
+// 覆盖空 Vec / 单元素 / 奇数长度 / 偶数长度, 以及 reverse 之后继续 push / 读取。
+use std::{assert, assert_eq};
+
+fn main() {
+    // 空 Vec: size == 0 直接返回
+    let mut empty = (type Vec<Int>)::new();
+    empty.reverse();
+    assert_eq(empty.len(), 0_u);
+
+    // 单元素: start == end, 循环体不执行
+    let mut one = (type Vec<Int>)::new();
+    one.push(7_i);
+    one.reverse();
+    assert_eq(one.len(), 1_u);
+    assert_eq(one.at(0_u).get_or_panic(), 7_i);
+
+    // 偶数长度 1..=4: 1 2 3 4 -> 4 3 2 1
+    let mut even = (type Vec<Int>)::new();
+    let mut i = 1_i;
+    while i <= 4_i {
+        even.push(i);
+        i += 1_i;
+    }
+    even.reverse();
+    assert_eq(even.at(0_u).get_or_panic(), 4_i);
+    assert_eq(even.at(1_u).get_or_panic(), 3_i);
+    assert_eq(even.at(2_u).get_or_panic(), 2_i);
+    assert_eq(even.at(3_u).get_or_panic(), 1_i);
+
+    // 奇数长度 1..=5: 1 2 3 4 5 -> 5 4 3 2 1 (中间元素保持不动)
+    let mut odd = (type Vec<Int>)::new();
+    let mut j = 1_i;
+    while j <= 5_i {
+        odd.push(j);
+        j += 1_i;
+    }
+    odd.reverse();
+    assert_eq(odd.at(0_u).get_or_panic(), 5_i);
+    assert_eq(odd.at(1_u).get_or_panic(), 4_i);
+    assert_eq(odd.at(2_u).get_or_panic(), 3_i);
+    assert_eq(odd.at(3_u).get_or_panic(), 2_i);
+    assert_eq(odd.at(4_u).get_or_panic(), 1_i);
+
+    // 再 reverse 一次回到原序
+    odd.reverse();
+    assert_eq(odd.at(0_u).get_or_panic(), 1_i);
+    assert_eq(odd.at(4_u).get_or_panic(), 5_i);
+
+    // reverse 之后继续 push / 读取仍然正确
+    odd.push(6_i);
+    assert_eq(odd.len(), 6_u);
+    assert_eq(odd.at(5_u).get_or_panic(), 6_i);
+    assert_eq(odd.at(0_u).get_or_panic(), 1_i);
+}

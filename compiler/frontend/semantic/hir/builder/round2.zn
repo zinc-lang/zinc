@@ -203,6 +203,8 @@ impl TopLevelAstVisitor2 {
         // 数值字面量: 一元负号已经折进 LiteralValue (见 exprs::fold_num_literal_node),
         // 常量上下文里的 `-1_i` / `-(-1_i)` / `-(1_i)` 都在这里统一成带符号字面量。
         if fold_num_literal_node(init, false) is Some(lit) {
+            // 与 exprs::visit_unary_expr 一致: 诊断位置取外层表达式 (含 `-`) 的 span
+            lit.folded_span = Some(init.span());
             return Some(move lit as *RValue);
         }
         if init is e: *LiteralExpr {

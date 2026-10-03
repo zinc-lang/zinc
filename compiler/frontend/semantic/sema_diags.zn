@@ -499,6 +499,18 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    // 数组长度 `[T; N]` / 重复字面量 `[elem; N]` 里的 N:
+    // 必须是非负、无后缀 (默认 UInt) 或 `_u` 后缀的整数字面量。负字面量 (`-1`),
+    // Int 后缀字面量 (`1_i`) 与运行期变量都不满足这个条件。
+    fn emit_array_len_must_be_uint_const(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"数组长度必须是 UInt 类型的编译时常量",
+            .msg_en = f"array length must be a compile-time constant of type UInt",
+        }: DiagItem);
+    }
+
     fn emit_cast_error(&mut self, from: String, to: String, span: SourceSpan) {
         self.emit({
             .span = span,

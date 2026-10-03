@@ -539,7 +539,8 @@ impl TypeCheckContext {
                             // 字面量自身带后缀时, 直接按后缀类型检查数值范围
                             if sty.type_symbol is int_sym: *IntegerSymbol {
                                 if !int_literal_in_range(cint.value, !cint.sign, int_sym) {
-                                    DiagnosticEngine::get().emit_int_literal_overflow(lit_rv.expr.token.source_span);
+                                    // 用 diag_span: `-129_i8` 要指到 `-`, 而不是数字
+                                    DiagnosticEngine::get().emit_int_literal_overflow(lit_rv.diag_span());
                                 }
                             }
                             Resolver::import_builtin_impls(sty.type_symbol);
@@ -628,9 +629,9 @@ impl TypeCheckContext {
                         k is LiteralKind::LIT_INT {
 
                         let cint = int_const_value_of_literal(lit);
-                        // 数组长度必须是正的常量: 负的常量 (`-1` 折叠成带符号字面量) 不能当长度
-                        if !cint.sign {
-                            DiagnosticEngine::get().emit_unimplemented(repeat_lit.len.expr_node().span(), "non-literal array length");
+                        // 数组长度必须是 UInt 类型的编译时常量: 负号 (`-1`) 与 Int 后缀 (`1_i`) 都不合法
+                        if !cint.is_valid_array_len() {
+                            DiagnosticEngine::get().emit_array_len_must_be_uint_const(lit.diag_span());
                             return SType::sty_invalid(repeat_lit.expr.span());
                         }
                         let mut args = GenericArgs::new();
@@ -641,7 +642,7 @@ impl TypeCheckContext {
                         }
                         return ArraySymbol::new().to_sty(args);
                     } else {
-                        DiagnosticEngine::get().emit_unimplemented(repeat_lit.len.expr_node().span(), "non-literal array length");
+                        DiagnosticEngine::get().emit_array_len_must_be_uint_const(repeat_lit.len.expr_node().span());
                     }
                 }
                 return SType::sty_invalid(repeat_lit.expr.span());
@@ -1126,7 +1127,8 @@ impl TypeCheckContext {
                             } else if csty.type_symbol is int_sym: *IntegerSymbol {
                                 // 没有后缀的字面量: 按上下文给出的目标类型检查范围
                                 if !int_literal_in_range(cint.value, !cint.sign, int_sym) {
-                                    DiagnosticEngine::get().emit_int_literal_overflow(lit_rv.expr.span());
+                                    // 用 diag_span: 折叠出的负数要指到 `-`
+                                    DiagnosticEngine::get().emit_int_literal_overflow(lit_rv.diag_span());
                                 }
                             }
                         }
@@ -1210,9 +1212,9 @@ impl TypeCheckContext {
                     k is LiteralKind::LIT_INT {
 
                     let cint = int_const_value_of_literal(lit);
-                    // 负数不是合法的数组长度
-                    if !cint.sign {
-                        DiagnosticEngine::get().emit_unimplemented(repeat_lit.len.expr_node().span(), "non-literal array length");
+                    // 数组长度必须是 UInt 类型的编译时常量: 负号 (`-1`) 与 Int 后缀 (`1_i`) 都不合法
+                    if !cint.is_valid_array_len() {
+                        DiagnosticEngine::get().emit_array_len_must_be_uint_const(lit.diag_span());
                         return;
                     }
                     if cint.value as UInt != sty.args.ty_args.len() {
@@ -1221,7 +1223,7 @@ impl TypeCheckContext {
                         );
                     }
                 } else {
-                    DiagnosticEngine::get().emit_unimplemented(repeat_lit.len.expr_node().span(), "non-literal array length");
+                    DiagnosticEngine::get().emit_array_len_must_be_uint_const(repeat_lit.len.expr_node().span());
                 }
             }
             binary_rv: *BinaryExprValue => {

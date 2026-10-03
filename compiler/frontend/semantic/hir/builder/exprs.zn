@@ -214,6 +214,8 @@ impl ExprTransformer {
         // 非字面量操作数 (`-x`, `-(a + b)`) 保持运行期取负。
         if e.kind is UnaryExprKind::Neg {
             if fold_num_literal_node(e.operand, true) is Some(lit) {
+                // 折叠出来的字面量只带数字 token, 诊断位置要用外层 `-` 的 span (见 LiteralValue::diag_span)
+                lit.folded_span = Some(e.span());
                 return move lit as *RValue;
             }
         }

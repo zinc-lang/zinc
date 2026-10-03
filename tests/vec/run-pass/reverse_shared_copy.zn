@@ -1,0 +1,44 @@
+// Vec::reverse 的非独占 (共享) 缓冲区路径: 必须新分配一块缓冲区按相反顺序拷贝,
+// 写入下标是 (size - 1) - x。右结合减法修复之前这里被解析成 size - 1 + x,
+// 会写到缓冲区之外; 这条路径此前没有任何用例覆盖。
+//
+// 用 `let w = v;` 做一次值拷贝让两个 Vec 共享同一缓冲区, 并用 ref_count 断言
+// 下面确实进入了 "非独占 -> 拷贝" 分支, 否则用例是无效的。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut v = (type Vec<Int>)::new();
+    v.push(1_i);
+    v.push(2_i);
+    v.push(3_i);
+    v.push(4_i);
+
+    let w = v; // 值拷贝: 引用计数 +1, 缓冲区不再独占
+    let rc: UInt = v.ref_count() as UInt;
+    assert(rc >= 2_u); // 证明 reverse 会走拷贝分支
+
+    v.reverse();
+
+    // v 换成反向拷贝的新缓冲区
+    assert_eq(v.len(), 4_u);
+    assert_eq(v.at(0_u).get_or_panic(), 4_i);
+    assert_eq(v.at(1_u).get_or_panic(), 3_i);
+    assert_eq(v.at(2_u).get_or_panic(), 2_i);
+    assert_eq(v.at(3_u).get_or_panic(), 1_i);
+
+    // w 仍指向旧缓冲区, 顺序保持原样 (copy-on-write)
+    assert_eq(w.len(), 4_u);
+    assert_eq(w.at(0_u).get_or_panic(), 1_i);
+    assert_eq(w.at(1_u).get_or_panic(), 2_i);
+    assert_eq(w.at(2_u).get_or_panic(), 3_i);
+    assert_eq(w.at(3_u).get_or_panic(), 4_i);
+
+    // 拷贝之后 v 独占自己的新缓冲区
+    let rc2: UInt = v.ref_count() as UInt;
+    assert_eq(rc2, 1_u);
+
+    // 共享分支 reverse 之后继续 push / 读取
+    v.push(9_i);
+    assert_eq(v.len(), 5_u);
+    assert_eq(v.at(4_u).get_or_panic(), 9_i);
+}

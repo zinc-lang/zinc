@@ -170,6 +170,16 @@ impl IntegerCValue {
         }: IntegerCValue;
     }
 
+    // 数组长度必须是 UInt 类型的编译时常量: 允许无后缀 (按上下文默认成 UInt) 与 `_u` 后缀,
+    // 且必须非负。`-1_i` (sign=false)、`1_i` (有符号后缀)、`1_u8` (不是 UInt) 都不合法。
+    fn is_valid_array_len(&self) -> Bool {
+        if !self.sign {
+            return false;
+        }
+        let suffix = self.suffix.as_str().deref();
+        return suffix.is_empty() || suffix.eq(&"u");
+    }
+
     fn stype_from_suffix(&self) -> *SType {
         let suffix = self.suffix.as_str().deref();
 

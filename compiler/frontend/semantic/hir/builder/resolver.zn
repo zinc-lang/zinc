@@ -608,21 +608,21 @@ impl Resolver {
                     k is LiteralKind::LIT_INT  {
 
                     let cint = IntegerCValue::new(lit.token);
-                    // 数组长度必须是正的常量。`-1` 这类负长度在语法上是一元负号 (不是 LiteralExpr),
-                    // 根本不会进这个分支, 会在下面返回 None 被拒绝; 这里保留 sign 检查作为防御。
-                    if !cint.sign {
-                        return None;
+                    if cint.is_valid_array_len() {
+                        let mut args = GenericArgs::new();
+                        let mut i: UInt = 0;
+                        while i < cint.value as UInt {
+                            args.ty_args.push(a);
+                            i += 1;
+                        }
+                        return Some(ArraySymbol::new().to_sty(args));
                     }
-                    let mut args = GenericArgs::new();
-                    let mut i: UInt = 0;
-                    while i < cint.value as UInt {
-                        args.ty_args.push(a);
-                        i += 1;
-                    }
-                    return Some(ArraySymbol::new().to_sty(args));
-                } else {
-                    return None;
                 }
+                // 负字面量 (`-1` 在语法上是一元负号, 不是 LiteralExpr)、Int 后缀字面量 (`1_i`)、
+                // 运行期变量 (`n`) 等都不是合法的长度: 给出专门的诊断, 而不是让调用方把它
+                // 当成普通的类型解析失败。位置取外层表达式 (含 `-`) 的 span。
+                DiagnosticEngine::get().emit_array_len_must_be_uint_const(array_ty.size_expr.span());
+                return None;
             } else {
                 return None;
             }

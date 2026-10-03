@@ -700,6 +700,10 @@ pub struct LiteralValue {
     // 一元负号折叠的结果: token 本身永远是无符号字面量 (lexer 不再合并负号),
     // 该标志表示这个字面量在语义上要取负。`-(-1_i)` 会翻转两次, 因此只用布尔即可。
     negated: Bool,
+    // 折叠时外层表达式 (UnaryExpr, 含 `-` 与可能的括号) 的 span。
+    // `LiteralValue.expr` 只指向数字 token, 诊断要用这个 span 才能把 `-129_i8` 指到 `-`;
+    // 非折叠产生的字面量为 None, 此时用 expr 自己的 span (见 diag_span)。
+    folded_span: Option<SourceSpan>,
 }
 
 pub struct TypeAscriptionValue {

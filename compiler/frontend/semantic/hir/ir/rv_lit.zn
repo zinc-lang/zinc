@@ -1,5 +1,6 @@
 use ::self::frontend::syntax::ast::{SyntaxNode, ExpressionNode};
 use ::self::frontend::syntax::ast::expr::*;
+use ::self::frontend::source_code::SourceSpan;
 use super::*;
 
 impl LiteralValue {
@@ -10,7 +11,17 @@ impl LiteralValue {
             .parent_node = None,
             .sty = SType::sty_invalid(span),
             .negated = false,
+            .folded_span = None,
         }: LiteralValue;
+    }
+
+    // 诊断用的位置: 一元负号折叠出来的字面量用外层表达式 (含 `-`) 的 span,
+    // 其它情况用数字 token 自己的 span。
+    fn diag_span(&self) -> SourceSpan {
+        if self.folded_span is Some(s) {
+            return s;
+        }
+        return self.expr.span();
     }
 }
 
