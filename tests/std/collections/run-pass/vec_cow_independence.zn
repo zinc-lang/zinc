@@ -1,0 +1,71 @@
+// Vec 的值语义 / copy-on-write: `let w = v;` 之后两个 Vec 共享缓冲区,
+// 任何一方的修改都不得影响另一方 (push / insert / reverse / pop / pop_front / clear)。
+use std::{assert, assert_eq};
+
+fn main() {
+    // push
+    let mut v = (type Vec<Int>)::new();
+    v.push(1_i);
+    v.push(2_i);
+    v.push(3_i);
+    let w = v;
+    assert(v.ref_count() as UInt >= 2_u);
+    v.push(4_i);
+    assert_eq(v.len(), 4_u);
+    assert_eq(w.len(), 3_u);
+    assert_eq(w.at(0_u).get_or_panic(), 1_i);
+    assert_eq(w.at(2_u).get_or_panic(), 3_i);
+
+    // insert
+    let mut a = (type Vec<Int>)::new();
+    a.push(10_i);
+    a.push(20_i);
+    let b = a;
+    a.insert(0_u, 5_i);
+    assert_eq(a.len(), 3_u);
+    assert_eq(a.at(0_u).get_or_panic(), 5_i);
+    assert_eq(a.at(1_u).get_or_panic(), 10_i);
+    assert_eq(b.len(), 2_u);
+    assert_eq(b.at(0_u).get_or_panic(), 10_i);
+    assert_eq(b.at(1_u).get_or_panic(), 20_i);
+
+    // reverse
+    let mut c = (type Vec<Int>)::new();
+    c.push(1_i);
+    c.push(2_i);
+    c.push(3_i);
+    let d = c;
+    c.reverse();
+    assert_eq(c.at(0_u).get_or_panic(), 3_i);
+    assert_eq(c.at(2_u).get_or_panic(), 1_i);
+    assert_eq(d.at(0_u).get_or_panic(), 1_i);
+    assert_eq(d.at(2_u).get_or_panic(), 3_i);
+
+    // pop / pop_front
+    let mut e = (type Vec<Int>)::new();
+    e.push(1_i);
+    e.push(2_i);
+    e.push(3_i);
+    let f = e;
+    assert_eq(e.pop().get_or_panic(), 3_i);
+    assert_eq(e.pop_front().get_or_panic(), 1_i);
+    assert_eq(e.len(), 1_u);
+    assert_eq(e.at(0_u).get_or_panic(), 2_i);
+    assert_eq(f.len(), 3_u);
+    assert_eq(f.at(0_u).get_or_panic(), 1_i);
+    assert_eq(f.at(2_u).get_or_panic(), 3_i);
+
+    // clear
+    let mut g = (type Vec<Int>)::new();
+    g.push(1_i);
+    g.push(2_i);
+    let h = g;
+    g.clear();
+    assert_eq(g.len(), 0_u);
+    assert_eq(h.len(), 2_u);
+    assert_eq(h.at(1_u).get_or_panic(), 2_i);
+
+    // 修改之后各自独占
+    let rc_v: UInt = v.ref_count() as UInt;
+    assert_eq(rc_v, 1_u);
+}

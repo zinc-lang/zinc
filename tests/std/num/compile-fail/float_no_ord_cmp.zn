@@ -1,0 +1,8 @@
+// F64 / F32 只实现 PartialOrd, 没有 Ord: NaN 无法构成全序, 因此不能调用 cmp。
+use std::cmp::Ord;
+
+fn main() {
+    let a: F64 = 1.0_f64;
+    let b: F64 = 2.0_f64;
+    let _o = a.cmp(&b);
+}

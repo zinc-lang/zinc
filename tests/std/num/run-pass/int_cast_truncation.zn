@@ -1,0 +1,100 @@
+// `as` 的截断 / 符号语义 (只覆盖已有用例没覆盖的宽度组合)。
+//
+// 注意: 这里刻意只写"同符号性加宽"和"窄化截断"两类; 无符号加宽到有符号、
+// 有符号加宽到无符号这两种跨符号性转换当前实现有问题 (扩展符号取的是目标类型的
+// 符号性), 已在 bug 报告里单独记录, 修好后再补进 suite。
+use std::{assert, assert_eq};
+
+fn to_i8(v: Int) -> Int8 {
+    return v as Int8;
+}
+fn to_i16(v: Int) -> Int16 {
+    return v as Int16;
+}
+fn to_i32(v: Int) -> Int32 {
+    return v as Int32;
+}
+fn i16_to_i8(v: Int16) -> Int8 {
+    return v as Int8;
+}
+fn u16_to_u8(v: UInt16) -> UInt8 {
+    return v as UInt8;
+}
+fn u32_to_u16(v: UInt32) -> UInt16 {
+    return v as UInt16;
+}
+fn i8_to_i(v: Int8) -> Int {
+    return v as Int;
+}
+fn u8_to_u64(v: UInt8) -> UInt64 {
+    return v as UInt64;
+}
+fn u32_to_u64(v: UInt32) -> UInt64 {
+    return v as UInt64;
+}
+fn i8_to_f64(v: Int8) -> F64 {
+    return v as F64;
+}
+fn u8_to_f64(v: UInt8) -> F64 {
+    return v as F64;
+}
+
+fn main() {
+    // ---- 宽化截断 (trunc) ----
+    assert_eq(to_i8(300_i), 44_i8);
+    assert_eq(to_i8(256_i), 0_i8);
+    assert_eq(to_i8(-1_i), -1_i8);
+    assert_eq(to_i16(65536_i), 0_i16);
+    assert_eq(to_i16(65537_i), 1_i16);
+    assert_eq(to_i32(0x1_0000_0001_i), 1_i32);
+    assert_eq(i16_to_i8(-1_i16), -1_i8);
+    assert_eq(i16_to_i8(0x0100_i16), 0_i8);
+    assert_eq(i16_to_i8(0x017F_i16), 127_i8);
+    assert_eq(u16_to_u8(256_u16), 0_u8);
+    assert_eq(u16_to_u8(0xFFFF_u16), 255_u8);
+    assert_eq(u32_to_u16(0x1_0001_u32), 1_u16);
+    assert_eq(u32_to_u16(0xFFFF_FFFF_u32), 65535_u16);
+
+    // ---- 同符号性加宽 (sext/zext 结果一致) ----
+    assert_eq(i8_to_i(-1_i8), -1_i);
+    assert_eq(i8_to_i(-128_i8), -128_i);
+    assert_eq(i8_to_i(127_i8), 127_i);
+    assert_eq(i8_to_f64(-1_i8), -1.0_f64);       // IntToFloat 按源类型符号性, 正确
+    assert_eq(i8_to_f64(-128_i8), -128.0_f64);
+    assert_eq(u8_to_f64(255_u8), 255.0_f64);
+    assert_eq(u8_to_u64(255_u8), 255_u64);
+    assert_eq(u32_to_u64(4294967295_u32), 4294967295_u64);
+    assert_eq(u32_to_u64(0_u32), 0_u64);
+
+    // ---- 同宽度 有符号 <-> 无符号 (按位重新解释, 不涉及扩展) ----
+    assert_eq(255_u8 as Int8, -1_i8);
+    assert_eq(200_u8 as Int8, -56_i8);
+    assert_eq(0xFFFF_u16 as Int16, -1_i16);
+    assert_eq(0xFFFF_FFFF_u32 as Int32, -1_i32);
+    assert_eq((-1_i8) as UInt8, 255_u8);
+    assert_eq((-2_i8) as UInt8, 254_u8);
+    assert_eq((-1_i16) as UInt16, 65535_u16);
+    assert_eq((-1_i32) as UInt32, 4294967295_u32);
+
+    // ---- 浮点 -> 整数: 向零截断 ----
+    assert_eq(3.75_f64 as Int, 3);
+    assert_eq((-3.75_f64) as Int, -3);
+    assert_eq(1.999_f64 as Int, 1);
+    assert_eq((-0.5_f64) as Int, 0);
+    assert_eq(3.5_f32 as Int, 3);
+    assert_eq((-3.5_f32) as Int, -3);
+    assert_eq(0.0_f64 as Int, 0);
+    assert_eq(255.9_f64 as UInt8, 255_u8);
+    assert_eq(200.5_f64 as UInt8, 200_u8);
+    assert_eq((-1.0_f64) as Int8, -1_i8);
+
+    // ---- 整数 -> 浮点 ----
+    assert_eq(3_i as F64, 3.0_f64);
+    assert_eq((-7_i) as F64, -7.0_f64);
+    assert_eq(3_i as F32, 3.0_f32);
+    assert_eq((-7_i) as F32, -7.0_f32);
+    assert_eq(16777216_i as F32, 16777216.0_f32);
+    assert_eq(0_u64 as F64, 0.0_f64);
+
+    println("int cast truncation ok");
+}

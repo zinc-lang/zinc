@@ -1,0 +1,49 @@
+// Vec 的 PartialEq/Eq: 长度不同 / 元素不同 / 空表, 以及 eq 与 ne 的一致性。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut a = (type Vec<Int>)::new();
+    a.push(1_i);
+    a.push(2_i);
+    a.push(3_i);
+
+    let mut b = (type Vec<Int>)::new();
+    b.push(1_i);
+    b.push(2_i);
+    b.push(3_i);
+
+    // 内容相同
+    assert(a.eq(&b));
+    assert(!a.ne(&b));
+
+    // 长度不同
+    b.push(4_i);
+    assert(!a.eq(&b));
+    assert(a.ne(&b));
+
+    // 长度相同但元素不同
+    b.pop();
+    b.pop();
+    b.push(9_i);
+    assert_eq(b.len(), 3_u);
+    assert(!a.eq(&b));
+    assert(a.ne(&b));
+
+    // 空表互等
+    let e1 = (type Vec<Int>)::new();
+    let e2 = (type Vec<Int>)::new();
+    assert(e1.eq(&e2));
+
+    // 单个元素
+    let mut s1 = (type Vec<Int>)::new();
+    s1.push(5_i);
+    let mut s2 = (type Vec<Int>)::new();
+    s2.push(5_i);
+    assert(s1.eq(&s2));
+    s2.pop();
+    s2.push(6_i);
+    assert(!s1.eq(&s2));
+
+    // 自己等于自己
+    assert(a.eq(&a));
+}

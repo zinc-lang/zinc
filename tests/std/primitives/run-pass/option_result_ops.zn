@@ -1,0 +1,80 @@
+// Option / Result 的运行期行为:
+//   Option::get_or_panic() / get_or_panic(msg) / get_or_else()
+//   Result::get_or_panic() / get_or_panic(msg)
+//   `is Some/None/Ok/Err` 判定与绑定
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    // Option<Int>
+    let o: Option<Int> = Some(42_i);
+    let n: Option<Int> = None;
+    assert_eq(o.get_or_panic(), 42_i);
+    assert_eq(o.get_or_panic("o is none"), 42_i);
+    assert_eq(o.get_or_else(7_i), 42_i);
+    assert_eq(n.get_or_else(7_i), 7_i);
+    assert(o is Option::Some(_));
+    assert(n is Option::None);
+    assert(!(n is Option::Some(_)));
+    if o is Option::Some(x) {
+        assert_eq(x, 42_i);
+    } else {
+        assert(false, "expected Some");
+    }
+
+    // Option<String> (带堆内存的值)
+    let os: Option<String> = Some(String::from_str("x"));
+    let s1: String = os.get_or_panic();
+    assert(s1.eq(&String::from_str("x")));
+    let ns: Option<String> = None;
+    let s2: String = ns.get_or_else(String::from_str("fallback"));
+    assert(s2.eq(&String::from_str("fallback")));
+    let s3: String = os.get_or_else(String::from_str("fallback"));
+    assert(s3.eq(&String::from_str("x")));
+
+    // get_or_panic / get_or_else 取出的 String 与容器内的值解耦 (COW)
+    let mut taken: String = os.get_or_panic();
+    taken.push_str("+");
+    assert(taken.eq(&String::from_str("x+")));
+    if os is Option::Some(inner) {
+        assert(inner.eq(&String::from_str("x")));
+    } else {
+        assert(false, "os lost its value");
+    }
+    let mut fb: String = ns.get_or_else(String::from_str("fallback"));
+    fb.push_str("!");
+    assert(fb.eq(&String::from_str("fallback!")));
+
+    // Option<Char> / Option<Bool>
+    let oc: Option<Char> = Some('中');
+    assert_eq(oc.get_or_panic() as UInt32, 0x4E2D_u32);
+    let ob: Option<Bool> = Some(false);
+    assert(!ob.get_or_panic());
+
+    // Result
+    let r: Result<Int, String> = (type Result<Int, String>)::Ok(5_i);
+    assert_eq(r.get_or_panic(), 5_i);
+    assert_eq(r.get_or_panic("r is err"), 5_i);
+    assert(r is Result::Ok(_));
+    assert(!(r is Result::Err(_)));
+    if r is Result::Ok(v) {
+        assert_eq(v, 5_i);
+    } else {
+        assert(false, "expected Ok");
+    }
+
+    // Result<String, Int>
+    let rs: Result<String, Int> = (type Result<String, Int>)::Ok(String::from_str("ok"));
+    let s4: String = rs.get_or_panic();
+    assert(s4.eq(&String::from_str("ok")));
+
+    // Err 的判定 (不调用 get_or_panic)
+    let re: Result<Int, String> = (type Result<Int, String>)::Err(String::from_str("bad"));
+    assert(re is Result::Err(_));
+    assert(!(re is Result::Ok(_)));
+    if re is Result::Err(e) {
+        assert(e.eq(&String::from_str("bad")));
+    } else {
+        assert(false, "expected Err");
+    }
+}

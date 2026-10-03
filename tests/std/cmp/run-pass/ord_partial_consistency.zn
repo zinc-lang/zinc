@@ -1,0 +1,116 @@
+// 一致性: 同一对值上 Ord::cmp 与 PartialOrd::partial_cmp 必须给出同样的顺序,
+// 并且 lt / le / gt / ge 与顺序符号一致。
+use std::{assert, assert_eq};
+use std::cmp::{Ordering, PartialOrd, Ord};
+
+fn sign(o: Ordering) -> Int {
+    match o {
+        Ordering::Less => { return -1; }
+        Ordering::Equal => { return 0; }
+        Ordering::Greater => { return 1; }
+    }
+}
+
+fn check_i(a: Int, b: Int) {
+    let c = sign(a.cmp(&b));
+    let p = sign(a.partial_cmp(&b).get_or_panic());
+    assert_eq(c, p);
+    assert_eq(a.lt(&b), c == -1);
+    assert_eq(a.le(&b), c <= 0);
+    assert_eq(a.gt(&b), c == 1);
+    assert_eq(a.ge(&b), c >= 0);
+    // 反对称性
+    assert_eq(sign(b.cmp(&a)), 0 - c);
+}
+
+fn check_i8(a: Int8, b: Int8) {
+    let c = sign(a.cmp(&b));
+    let p = sign(a.partial_cmp(&b).get_or_panic());
+    assert_eq(c, p);
+    assert_eq(a.lt(&b), c == -1);
+    assert_eq(a.le(&b), c <= 0);
+    assert_eq(a.gt(&b), c == 1);
+    assert_eq(a.ge(&b), c >= 0);
+}
+
+fn check_u(a: UInt, b: UInt) {
+    let c = sign(a.cmp(&b));
+    let p = sign(a.partial_cmp(&b).get_or_panic());
+    assert_eq(c, p);
+    assert_eq(a.lt(&b), c == -1);
+    assert_eq(a.le(&b), c <= 0);
+    assert_eq(a.gt(&b), c == 1);
+    assert_eq(a.ge(&b), c >= 0);
+}
+
+fn check_ush(a: UShort, b: UShort) {
+    let c = sign(a.cmp(&b));
+    let p = sign(a.partial_cmp(&b).get_or_panic());
+    assert_eq(c, p);
+    assert_eq(a.lt(&b), c == -1);
+    assert_eq(a.le(&b), c <= 0);
+    assert_eq(a.gt(&b), c == 1);
+    assert_eq(a.ge(&b), c >= 0);
+}
+
+fn check_bool(a: Bool, b: Bool) {
+    let c = sign(a.cmp(&b));
+    let p = sign(a.partial_cmp(&b).get_or_panic());
+    assert_eq(c, p);
+    assert_eq(a.lt(&b), c == -1);
+    assert_eq(a.le(&b), c <= 0);
+    assert_eq(a.gt(&b), c == 1);
+    assert_eq(a.ge(&b), c >= 0);
+}
+
+fn check_char(a: Char, b: Char) {
+    let c = sign(a.cmp(&b));
+    let p = sign(a.partial_cmp(&b).get_or_panic());
+    assert_eq(c, p);
+    assert_eq(a.lt(&b), c == -1);
+    assert_eq(a.le(&b), c <= 0);
+    assert_eq(a.gt(&b), c == 1);
+    assert_eq(a.ge(&b), c >= 0);
+}
+
+fn main() {
+    // Int: 覆盖负数 / 零 / 边界
+    check_i(1_i, 2_i);
+    check_i(2_i, 1_i);
+    check_i(2_i, 2_i);
+    check_i(-1_i, 1_i);
+    check_i(-2_i, -1_i);
+    check_i(Int::min_value(), -1_i);
+    check_i(Int::max_value(), Int::min_value());
+    check_i(0_i, -1_i);
+
+    // Int8
+    check_i8(1_i8, 2_i8);
+    check_i8(Int8::min_value(), Int8::max_value());
+    check_i8(Int8::min_value(), Int8::min_value());
+    check_i8(-1_i8, 1_i8);
+
+    // UInt / UShort
+    check_u(0_u, 1_u);
+    check_u(UInt::max_value(), 0_u);
+    check_u(UInt::max_value(), UInt::max_value());
+    let us1: UShort = 5;
+    let us2: UShort = 4294967295;
+    let us0: UShort = 0;
+    check_ush(us1, us2);
+    check_ush(us2, us0);
+    check_ush(us0, us0);
+
+    // Bool / Char
+    check_bool(false, true);
+    check_bool(true, false);
+    check_bool(true, true);
+    check_char('a', 'b');
+    check_char('z', 'a');
+    check_char('a', 'a');
+    check_char('A', 'a');
+    check_char('中', 'a');
+    check_char('z', '中');
+
+    println("ord partial consistency ok");
+}

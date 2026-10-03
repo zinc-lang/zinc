@@ -1,0 +1,72 @@
+// Vec 基本操作: new / with_capacity / len / is_empty / capacity /
+// push / pop / pop_front / at / get / 空表上的 pop。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut v = (type Vec<Int>)::new();
+    assert(v.is_empty());
+    assert_eq(v.len(), 0_u);
+    assert(v.capacity() >= 4_u);
+
+    // 空表 pop / pop_front 都返回 None
+    let p = v.pop();
+    assert(p is None);
+    let f = v.pop_front();
+    assert(f is None);
+    assert_eq(v.len(), 0_u);
+
+    v.push(1_i);
+    v.push(2_i);
+    v.push(3_i);
+    assert(!v.is_empty());
+    assert_eq(v.len(), 3_u);
+    // 容量不变量
+    assert(v.capacity() >= v.len());
+    assert(v.capacity() >= 4_u);
+
+    // at / index: 顺序与下标一致
+    assert_eq(v.at(0_u).get_or_panic(), 1_i);
+    assert_eq(v.at(1_u).get_or_panic(), 2_i);
+    assert_eq(v.at(2_u).get_or_panic(), 3_i);
+    assert(v.at(3_u) is None);
+
+    // get: 越界返回 None, 合法下标返回 Some
+    let g0 = v.get(0_u);
+    assert(g0 is Some(_));
+    let g3 = v.get(3_u);
+    assert(g3 is None);
+    let g1 = v.get(1_u);
+    if g1 is Some(x) {
+        assert_eq(*x.item, 2_i);
+    } else {
+        assert(false, "get(1) should be Some");
+    }
+
+    // pop_front / pop 的返回值与剩余顺序
+    let mut w = (type Vec<Int>)::new();
+    w.push(10_i);
+    w.push(20_i);
+    w.push(30_i);
+    assert_eq(w.pop_front().get_or_panic(), 10_i);
+    assert_eq(w.pop().get_or_panic(), 30_i);
+    assert_eq(w.len(), 1_u);
+    assert_eq(w.at(0_u).get_or_panic(), 20_i);
+
+    // pop 到空
+    let last = w.pop();
+    assert(last is Some(_));
+    assert(w.is_empty());
+    let none = w.pop();
+    assert(none is None);
+
+    // 用 with_capacity 建的表同样正确
+    let mut c = (type Vec<Int>)::with_capacity(2_u);
+    assert_eq(c.capacity(), 2_u);
+    assert(c.is_empty());
+    c.push(7_i);
+    c.push(8_i);
+    c.push(9_i); // 触发扩容
+    assert(c.capacity() >= c.len());
+    assert_eq(c.at(0_u).get_or_panic(), 7_i);
+    assert_eq(c.at(2_u).get_or_panic(), 9_i);
+}

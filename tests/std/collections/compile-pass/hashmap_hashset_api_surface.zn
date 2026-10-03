@@ -1,0 +1,72 @@
+// HashMap / HashSet 的 API 类型面与泛型组合: 只要求编译通过 (--check-only)。
+// 覆盖 get/get_mut/or_insert/at/keys/values/merge/iter 以及 HashSet::keys。
+use std::collections::hashset::HashSet;
+use std::{assert, assert_eq};
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn main() {
+    let mut m = (type HashMap<UInt, Vec<Int>>)::new();
+    m.insert(1_u, mk(1_i));
+    m.insert(2_u, mk(2_i));
+
+    {
+        let g = m.get(&1_u);
+        let c = m.contains(&1_u);
+        assert(c);
+        let a = m.at(&1_u);
+        assert(a is Some(_));
+    }
+
+    {
+        let gm = m.get_mut(&1_u);
+        assert(gm is Some(_));
+    }
+
+    {
+        let mut r = m.or_insert(3_u, mk(3_i));
+        *r = mk(33_i);
+    }
+
+    let ks = m.keys();
+    let vs = m.values();
+    assert_eq(ks.len(), m.len());
+    assert_eq(vs.len(), m.len());
+
+    let mut other = (type HashMap<UInt, Vec<Int>>)::new();
+    other.insert(4_u, mk(4_i));
+    m.merge(&other);
+
+    let mut count: UInt = 0_u;
+    for (k, v) in m {
+        count += 1_u;
+    }
+    assert_eq(count, m.len());
+
+    let removed = m.remove(&1_u);
+    assert(removed is Some(_));
+    m.clear();
+    assert(m.is_empty());
+
+    let mut s = (type HashSet<UInt>)::new();
+    s.insert(1_u);
+    s.insert(2_u);
+    let sk = s.keys();
+    assert_eq(sk.len(), s.len());
+    s.remove(&1_u);
+    s.clear();
+    assert_eq(s.len(), 0_u);
+
+    // String 作为 key (Hash + Eq)
+    let mut sm = (type HashMap<String, UInt>)::new();
+    sm.insert(String::from_str("k"), 1_u);
+    assert(sm.contains(&String::from_str("k")));
+
+    let mut ss = (type HashSet<String>)::new();
+    ss.insert(String::from_str("k"));
+    assert(ss.contains(&String::from_str("k")));
+}

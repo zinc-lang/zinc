@@ -1,0 +1,4 @@
+// Option<Int> 里放 Str 必须是类型错误。
+fn main() {
+    let o: Option<Int> = Some("x");
+}

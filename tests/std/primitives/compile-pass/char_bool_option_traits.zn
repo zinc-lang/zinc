@@ -1,0 +1,79 @@
+// Char / Bool / Option / Result 的 trait 实现与成员函数的类型检查 (compile-pass)。
+use std::primitives::string::ToString;
+use std::primitives::default::Default;
+use std::cmp::{Ordering, PartialEq, PartialOrd, Ord, Eq};
+use std::hash::{Hash, Hasher, default_hasher};
+
+fn main() {
+    // ---- Char ----
+    let c: Char = '中';
+    let _ts: String = c.to_string();
+    let mut buf: String = String::new();
+    c.to_string_inplace(&mut buf);
+    let _eq: Bool = c.eq(&'a');
+    let _ne: Bool = c.ne(&'a');
+    let _pc: Option<Ordering> = c.partial_cmp(&'a');
+    let _cmp: Ordering = c.cmp(&'a');
+    let _lt: Bool = c.lt(&'a');
+    let _le: Bool = c.le(&'a');
+    let _gt: Bool = c.gt(&'a');
+    let _ge: Bool = c.ge(&'a');
+    let _cl: Char = c.clone();
+    let _def: Char = Char::default();
+    let _cp: UInt32 = c as UInt32;
+    let mut h1 = default_hasher();
+    c.hash(&mut h1);
+    let _hf: UInt64 = h1.finish();
+
+    // ---- Bool ----
+    let b: Bool = true;
+    let _bts: String = b.to_string();
+    b.to_string_inplace(&mut buf);
+    let _beq: Bool = b.eq(&false);
+    let _bne: Bool = b.ne(&false);
+    let _bpc: Option<Ordering> = b.partial_cmp(&false);
+    let _bcmp: Ordering = b.cmp(&false);
+    let _blt: Bool = b.lt(&false);
+    let _ble: Bool = b.le(&false);
+    let _bgt: Bool = b.gt(&false);
+    let _bge: Bool = b.ge(&false);
+    let _bcl: Bool = b.clone();
+    let _bdef: Bool = Bool::default();
+    let mut h2 = default_hasher();
+    b.hash(&mut h2);
+    let _bhf: UInt64 = h2.finish();
+
+    // ---- Option ----
+    let o: Option<Int> = Some(1_i);
+    let n: Option<Int> = None;
+    let _op: Int = o.get_or_panic();
+    let _opm: Int = o.get_or_panic("msg");
+    let _oe: Int = o.get_or_else(2_i);
+    let _ne2: Int = n.get_or_else(2_i);
+    let _is: Bool = o is Option::Some(_);
+    if o is Option::Some(x) {
+        let _v: Int = x;
+    }
+
+    // Option<String> / Option<Char> / Option<Bool>
+    let osw: Option<String> = Some(String::from_str("x"));
+    let _osw: String = osw.get_or_panic();
+    let oc: Option<Char> = Some('a');
+    let _oc: Char = oc.get_or_panic();
+    let ob: Option<Bool> = Some(true);
+    let _ob: Bool = ob.get_or_panic();
+
+    // ---- Result ----
+    let r: Result<Int, Int> = (type Result<Int, Int>)::Ok(1_i);
+    let _rp: Int = r.get_or_panic();
+    let _rpm: Int = r.get_or_panic("msg");
+    let _rok: Bool = r is Result::Ok(_);
+    if r is Result::Ok(v) {
+        let _v: Int = v;
+    }
+    let re: Result<Int, String> = (type Result<Int, String>)::Err(String::from_str("e"));
+    let _rerr: Bool = re is Result::Err(_);
+    if re is Result::Err(e) {
+        let _e: String = e;
+    }
+}

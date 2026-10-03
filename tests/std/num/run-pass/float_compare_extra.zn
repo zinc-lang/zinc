@@ -1,0 +1,131 @@
+// 浮点比较里已有用例没覆盖的方面: 无穷 / NaN 传播 / ±0 的 partial_cmp / 跨类型宽度。
+// 已有的 float_nan_compare.zn 覆盖了 NaN 的基本比较, 这里补 inf、le/ge 边界、
+// partial_cmp 的全部取值以及 F32 的对应行为。
+use std::{assert, assert_eq};
+use std::cmp::{PartialOrd, Ordering};
+
+fn cmp_f64(a: F64, b: F64) -> Int {
+    let o = a.partial_cmp(&b);
+    match o {
+        Some(v) => {
+            match v {
+                Ordering::Less => { return -1; }
+                Ordering::Equal => { return 0; }
+                Ordering::Greater => { return 1; }
+            }
+        }
+        None => { return 9; } // NaN
+    }
+}
+
+fn cmp_f32(a: F32, b: F32) -> Int {
+    let o = a.partial_cmp(&b);
+    match o {
+        Some(v) => {
+            match v {
+                Ordering::Less => { return -1; }
+                Ordering::Equal => { return 0; }
+                Ordering::Greater => { return 1; }
+            }
+        }
+        None => { return 9; }
+    }
+}
+
+fn main() {
+    let z: F64 = 0.0;
+    let inf = 1.0_f64 / z;
+    let ninf = -1.0_f64 / z;
+    let nan = z / z;
+    let one: F64 = 1.0;
+    let big: F64 = 100000000000000000000.0;
+
+    // ---- inf 不是 NaN, 也不有限 ----
+    assert(!inf.is_nan());
+    assert(!ninf.is_nan());
+    assert(nan.is_nan());
+    assert(inf == inf);
+    assert(ninf == ninf);
+    assert(inf != ninf);
+    assert(inf > big);
+    assert(ninf < -big);
+    assert(ninf < inf);
+    assert(inf > one);
+    assert(one < inf);
+    assert(ninf < one);
+
+    // ---- inf / -inf 的 partial_cmp ----
+    assert_eq(cmp_f64(inf, big), 1);
+    assert_eq(cmp_f64(big, inf), -1);
+    assert_eq(cmp_f64(inf, inf), 0);
+    assert_eq(cmp_f64(ninf, inf), -1);
+    assert_eq(cmp_f64(ninf, ninf), 0);
+    assert_eq(cmp_f64(inf, ninf), 1);
+
+    // ---- NaN: 所有有序比较都是 false, partial_cmp 是 None ----
+    assert_eq(cmp_f64(nan, one), 9);
+    assert_eq(cmp_f64(one, nan), 9);
+    assert_eq(cmp_f64(nan, nan), 9);
+    assert_eq(cmp_f64(nan, inf), 9);
+    assert(!(nan < one));
+    assert(!(nan > one));
+    assert(!(nan <= one));
+    assert(!(nan >= one));
+    assert(!nan.le(&one));
+    assert(!nan.ge(&one));
+    assert(!nan.lt(&one));
+    assert(!nan.gt(&one));
+    assert(!nan.le(&nan));
+    assert(!nan.ge(&nan));
+
+    // inf 的 le/ge 自反
+    assert(inf.le(&inf));
+    assert(inf.ge(&inf));
+    assert(ninf.le(&inf));
+    assert(inf.ge(&ninf));
+    assert(one.le(&inf));
+    assert(ninf.le(&one));
+
+    // ---- NaN 传播 ----
+    assert((nan + one).is_nan());
+    assert((nan * z).is_nan());
+    assert((nan - nan).is_nan());
+    assert((inf - inf).is_nan());
+    assert((inf * z).is_nan());
+    assert((inf / inf).is_nan());
+    assert((inf + one) == inf);
+    assert((inf * 2.0_f64) == inf);
+    assert((ninf * 2.0_f64) == ninf);
+
+    // ---- ±0 ----
+    let nz: F64 = -0.0;
+    assert(nz == z);
+    assert(!(nz < z));
+    assert(!(nz > z));
+    assert_eq(cmp_f64(nz, z), 0);
+    assert_eq(cmp_f64(z, nz), 0);
+    assert(1.0_f64 / nz < 0.0_f64);
+    assert(1.0_f64 / z > 0.0_f64);
+
+    // ---- F32 对应行为 ----
+    let z32: F32 = 0.0;
+    let inf32 = 1.0_f32 / z32;
+    let ninf32 = -1.0_f32 / z32;
+    let nan32 = z32 / z32;
+    assert(!inf32.is_nan());
+    assert(nan32.is_nan());
+    assert(inf32 > 1.0_f32);
+    assert(ninf32 < -1.0_f32);
+    assert_eq(cmp_f32(inf32, 1.0_f32), 1);
+    assert_eq(cmp_f32(nan32, 1.0_f32), 9);
+    assert(!nan32.le(&1.0_f32));
+    assert(!nan32.ge(&1.0_f32));
+    assert(!(nan32 == nan32));
+    assert(inf32 == inf32);
+    let nz32: F32 = -0.0;
+    assert(nz32 == z32);
+    assert_eq(cmp_f32(nz32, z32), 0);
+    assert(1.0_f32 / nz32 < 0.0_f32);
+
+    println("float compare extra ok");
+}

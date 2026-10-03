@@ -1,0 +1,26 @@
+// assert / assert_eq / assert_ne 的合法调用形式 (1 参数与带消息的 2/3 参数版本)。
+use std::{assert, assert_eq, assert_ne};
+
+fn main() {
+    assert(true);
+    assert(true, "message");
+    let m: Str = "also a message";
+    assert(true, m);
+    assert(1_i < 2_i, "int compare");
+    assert(1_u8 <= 2_u8, "uint compare");
+
+    assert_eq(1_i, 1_i);
+    assert_eq(1_i, 1_i, "int eq");
+    assert_eq(1_i, 1_i, m);
+    assert_eq(true, true, "bool eq");
+    assert_eq('a', 'a');
+    assert_eq(1.5_f64, 1.5_f64, "float eq");
+    assert_eq("s", "s");
+    assert_eq(f"x=$(1_i)", f"x=1");
+
+    assert_ne(1_i, 2_i);
+    assert_ne(1_i, 2_i, "int ne");
+    assert_ne(true, false, m);
+    assert_ne('a', 'b');
+    assert_ne("a", "b");
+}

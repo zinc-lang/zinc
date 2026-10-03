@@ -1,0 +1,83 @@
+// meta::Type: of / size / align / kind / name / short_name / ToString / eq / clone。
+// 注意只对"限定名 (含 `::`)"断言 short_name: 不含 `::` 的内建类型名当前有 bug
+// (会丢掉首字符), 见 bug 报告。
+use std::{assert, assert_eq};
+use std::meta::{Type, type_of};
+use std::primitives::string::ToString;
+
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn main() {
+    // ---- 内建类型 ----
+    let ti = Type::of(<Int>);
+    assert_eq(ti.name(), "Int");
+    assert_eq(ti.size(), 8_u);
+    assert_eq(ti.align(), 8_u8);
+
+    let tf = Type::of(<F64>);
+    assert_eq(tf.name(), "F64");
+    assert_eq(tf.size(), 8_u);
+
+    let tb = Type::of(<Bool>);
+    assert_eq(tb.name(), "Bool");
+    assert_eq(tb.size(), 1_u);
+
+    let tc = Type::of(<Char>);
+    assert_eq(tc.name(), "Char");
+    assert_eq(tc.size(), 4_u);
+
+    // kind 只要能取到值 (具体数值是实现细节)
+    let k: UInt8 = ti.kind();
+    assert(k == ti.kind());
+
+    // ---- ToString 与 name 一致 ----
+    assert_eq(ti.to_string(), ti.name().to_string());
+    assert_eq(tf.to_string(), tf.name().to_string());
+
+    // ---- 限定名类型的 short_name ----
+    let tp = Type::of(<Point>);
+    assert(tp.name().starts_with("::"));
+    assert_eq(tp.short_name(), "Point");
+    assert_eq(tp.size(), 16_u);
+    assert_eq(tp.align(), 8_u8);
+
+    let ts = Type::of(<Str>);
+    assert_eq(ts.short_name(), "Str");
+    assert_eq(ts.size(), 16_u);
+
+    let tstr = Type::of(<String>);
+    assert_eq(tstr.short_name(), "String");
+
+    // ---- 相等性 ----
+    assert(ti.eq(&Type::of(<Int>)));
+    assert(ti.ne(&Type::of(<Int8>)));
+    assert(Type::of(<Point>).eq(&Type::of(<Point>)));
+    assert(Type::of(<Point>).ne(&Type::of(<Int>)));
+
+    // ---- Clone ----
+    let ti2 = ti.clone();
+    assert(ti2.eq(&ti));
+    assert_eq(ti2.name(), "Int");
+
+    // ---- type_of(&value) 与 Type::of<T> 一致 ----
+    let x: Int = 5;
+    let tv = type_of(&x);
+    assert(tv.eq(&ti));
+    assert_eq(tv.name(), "Int");
+
+    let p = { .x = 1_i, .y = 2_i }: Point;
+    let tpv = type_of(&p);
+    assert(tpv.eq(&tp));
+    assert_eq(tpv.short_name(), "Point");
+
+    let b: Bool = true;
+    assert(type_of(&b).eq(&Type::of(<Bool>)));
+
+    // Type::of(&value) 也能拿到和 type_of(&value) 一样的结果
+    assert(Type::of(&x).eq(&tv));
+
+    println("meta type info ok");
+}

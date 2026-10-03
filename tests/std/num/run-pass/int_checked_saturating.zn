@@ -1,0 +1,136 @@
+// checked_* (溢出返回 None) 与 saturating_* (溢出饱和到 min/max)。
+// Option 没有 is_none, 用 match 包一层。
+use std::{assert, assert_eq};
+
+fn none_i8(o: Option<Int8>) -> Bool {
+    match o {
+        Some(v) => { return false; }
+        None => { return true; }
+    }
+}
+fn none_i16(o: Option<Int16>) -> Bool {
+    match o {
+        Some(v) => { return false; }
+        None => { return true; }
+    }
+}
+fn none_i(o: Option<Int>) -> Bool {
+    match o {
+        Some(v) => { return false; }
+        None => { return true; }
+    }
+}
+fn none_u8(o: Option<UInt8>) -> Bool {
+    match o {
+        Some(v) => { return false; }
+        None => { return true; }
+    }
+}
+fn none_u32(o: Option<UInt32>) -> Bool {
+    match o {
+        Some(v) => { return false; }
+        None => { return true; }
+    }
+}
+fn none_u64(o: Option<UInt64>) -> Bool {
+    match o {
+        Some(v) => { return false; }
+        None => { return true; }
+    }
+}
+fn none_sh(o: Option<Short>) -> Bool {
+    match o {
+        Some(v) => { return false; }
+        None => { return true; }
+    }
+}
+fn none_ush(o: Option<UShort>) -> Bool {
+    match o {
+        Some(v) => { return false; }
+        None => { return true; }
+    }
+}
+
+fn main() {
+    // ---- checked_add ----
+    assert(!none_i8(126_i8.checked_add(1_i8)));
+    assert_eq(126_i8.checked_add(1_i8).get_or_panic(), 127_i8);
+    assert(none_i8(127_i8.checked_add(1_i8)));
+    assert(none_i8(Int8::min_value().checked_add(-1_i8)));
+    assert_eq(Int8::min_value().checked_add(1_i8).get_or_panic(), -127_i8);
+    assert(none_i16(32767_i16.checked_add(1_i16)));
+    assert(none_i(Int::max_value().checked_add(1_i)));
+    assert(none_i(Int::min_value().checked_add(-1_i)));
+    assert(!none_i(Int::min_value().checked_add(1_i)));
+    assert(none_u8(200_u8.checked_add(100_u8)));
+    assert_eq(200_u8.checked_add(55_u8).get_or_panic(), 255_u8);
+    assert(none_u32(4294967295_u32.checked_add(1_u32)));
+    assert(none_u64(UInt64::max_value().checked_add(1_u64)));
+
+    // ---- checked_sub ----
+    assert(none_i8(Int8::min_value().checked_sub(1_i8)));
+    assert_eq(Int8::min_value().checked_sub(-1_i8).get_or_panic(), -127_i8);
+    assert(!none_i8(127_i8.checked_sub(1_i8)));
+    assert(none_u8(0_u8.checked_sub(1_u8)));
+    assert_eq(5_u8.checked_sub(3_u8).get_or_panic(), 2_u8);
+    assert(none_u64(0_u64.checked_sub(1_u64)));
+    assert(none_i(Int::min_value().checked_sub(1_i)));
+    assert(!none_i(Int::min_value().checked_sub(-1_i)));
+
+    // ---- checked_mul ----
+    assert(none_i8(12_i8.checked_mul(12_i8)));   // 144 > 127
+    assert_eq(11_i8.checked_mul(11_i8).get_or_panic(), 121_i8);
+    assert(none_i8(Int8::min_value().checked_mul(-1_i8)));
+    assert(none_i8((-12_i8).checked_mul(12_i8)));
+    assert_eq(0_i8.checked_mul(100_i8).get_or_panic(), 0_i8);
+    assert(none_u8(16_u8.checked_mul(16_u8)));   // 256 > 255
+    assert_eq(15_u8.checked_mul(17_u8).get_or_panic(), 255_u8);
+    assert_eq(0_u8.checked_mul(255_u8).get_or_panic(), 0_u8);
+    assert(none_u32(65536_u32.checked_mul(65536_u32)));
+    assert(none_u64(UInt64::max_value().checked_mul(2_u64)));
+    assert(none_i(Int::min_value().checked_mul(-1_i)));
+    assert(!none_i(Int::max_value().checked_mul(1_i)));
+
+    // ---- Short / UShort ----
+    assert(none_sh(Short::max_value().checked_add(1)));
+    assert(none_sh(Short::min_value().checked_mul(-1)));
+    assert_eq(Short::max_value().saturating_add(1), Short::max_value());
+    assert_eq(Short::min_value().saturating_sub(1), Short::min_value());
+    assert(none_ush(UShort::max_value().checked_add(1)));
+    assert(none_ush(UShort::min_value().checked_sub(1)));
+    let u65536: UShort = 65536;
+    assert(none_ush(u65536.checked_mul(u65536)));
+    assert_eq(u65536.saturating_mul(u65536), UShort::max_value());
+
+    // ---- saturating_add / sub / mul ----
+    assert_eq(127_i8.saturating_add(1_i8), 127_i8);
+    assert_eq(Int8::min_value().saturating_add(-1_i8), Int8::min_value());
+    assert_eq(Int8::min_value().saturating_sub(1_i8), Int8::min_value());
+    assert_eq(100_i8.saturating_mul(2_i8), 127_i8);
+    assert_eq((-100_i8).saturating_mul(2_i8), -128_i8);
+    assert_eq(100_i8.saturating_mul(-2_i8), -128_i8);
+    assert_eq(Int8::min_value().saturating_mul(-1_i8), 127_i8);
+    assert_eq(200_u8.saturating_add(100_u8), 255_u8);
+    assert_eq(0_u8.saturating_sub(1_u8), 0_u8);
+    assert_eq(16_u8.saturating_mul(16_u8), 255_u8);
+    assert_eq(0_u32.saturating_sub(1_u32), 0_u32);
+    assert_eq(0_u.saturating_sub(1_u), 0_u);
+    assert_eq(Int::max_value().saturating_add(1_i), Int::max_value());
+    assert_eq(Int::min_value().saturating_sub(1_i), Int::min_value());
+    assert_eq(Int::min_value().saturating_mul(-1_i), Int::max_value());
+    assert_eq(Int::max_value().saturating_mul(2_i), Int::max_value());
+    assert_eq(UInt64::max_value().saturating_mul(2_u64), UInt64::max_value());
+
+    // 未溢出的 saturating_* 与普通运算一致
+    assert_eq(1_i8.saturating_add(2_i8), 3_i8);
+    assert_eq(7_u8.saturating_sub(3_u8), 4_u8);
+    assert_eq(6_i8.saturating_mul(7_i8), 42_i8);
+
+    // wrapping_* 是环绕运算的具名形式, 和 + - * 结果一致
+    assert_eq(127_i8.wrapping_add(1_i8), -128_i8);
+    assert_eq(0_u8.wrapping_sub(1_u8), 255_u8);
+    assert_eq(100_i8.wrapping_mul(2_i8), -56_i8);
+    assert_eq(UInt64::max_value().wrapping_add(1_u64), 0_u64);
+
+    println("int checked saturating ok");
+}

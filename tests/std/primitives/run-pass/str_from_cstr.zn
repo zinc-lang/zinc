@@ -1,0 +1,34 @@
+// Str::from_cstr: C 字符串字面量以 NUL 结尾 (len 多 1), from_cstr 得到的 Str 不含 NUL。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    let cs = c"abc";
+    // C 字符串字面量本身带末尾 NUL
+    assert_eq(cs.len(), 4_u);
+
+    let s: Str = unsafe(Str::from_cstr(cs.raw_ptr()));
+    assert_eq(s.len(), 3_u);
+    assert(s.eq(&"abc"));
+    assert(s.starts_with("ab"));
+    assert(s.ends_with("bc"));
+    assert_eq(s.index(0_u), 97_u8);
+    assert_eq(s.index(2_u), 99_u8);
+
+    // 空 C 字符串 -> 长度 0
+    let empty = c"";
+    let e: Str = unsafe(Str::from_cstr(empty.raw_ptr()));
+    assert(e.is_empty());
+    assert_eq(e.len(), 0_u);
+    assert(e.eq(&""));
+
+    // 含转义字符
+    let nl = c"a\nb";
+    let t: Str = unsafe(Str::from_cstr(nl.raw_ptr()));
+    assert_eq(t.len(), 3_u);
+    assert_eq(t.index(1_u), 10_u8);
+    assert(t.eq(&"a\nb"));
+
+    // to_string 拷贝
+    assert(s.to_string().eq(&String::from_str("abc")));
+}

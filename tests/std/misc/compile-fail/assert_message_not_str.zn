@@ -1,0 +1,6 @@
+// assert 的消息参数必须是 Str, 传 Int 必须报错。
+use std::assert;
+
+fn main() {
+    assert(true, 1_i);
+}

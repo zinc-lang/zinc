@@ -1,0 +1,35 @@
+// 共享缓冲区上的 reverse 走 copy-on-write: 复制到新缓冲区的元素必须 retain,
+// 回归: reverse 的 COW 曾经用 `*new_data = *cur` 裸写入不 retain, rc == 1 ->
+// w 析构后 v 里的元素变成悬垂引用 (use-after-free)。
+use std::{assert, assert_eq};
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn rc_of(v: &Vec<Vec<Int>>, i: UInt) -> UInt {
+    let p = unsafe(v.get_unchecked(i));
+    return p.ref_count() as UInt;
+}
+
+fn main() {
+    let mut v = (type Vec<Vec<Int>>)::new();
+    v.push(mk(1_i));
+    v.push(mk(2_i));
+    v.push(mk(3_i));
+    let mut w = v; // 共享
+    assert(v.ref_count() as UInt >= 2_u);
+
+    v.reverse();
+    assert_eq(v.len(), 3_u);
+    assert_eq(w.len(), 3_u);
+    // 引用计数 (先于内容断言: at() 的 Option 临时量在当前编译器上不会被析构, 会多占一个强引用)
+    assert_eq(rc_of(&v, 0_u), 2_u);
+    assert_eq(rc_of(&v, 1_u), 2_u);
+    assert_eq(rc_of(&v, 2_u), 2_u);
+    // 内容
+    assert_eq(v.at(0_u).get_or_panic().at(0_u).get_or_panic(), 3_i);
+    assert_eq(w.at(0_u).get_or_panic().at(0_u).get_or_panic(), 1_i);
+}

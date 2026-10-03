@@ -1,0 +1,26 @@
+// 各整数类型的 min_value / max_value 是常量函数, 但 min_value - 1 / max_value + 1
+// 在类型系统里不是常量错误 (运行期环绕), 所以这里只检查"类型函数可调用 + 类型正确"。
+// 真正的边界行为在 run-pass/int_wrapping.zn。
+use std::primitives::string::ToString;
+
+fn take_i8(v: Int8) -> Int8 {
+    return v;
+}
+fn take_u64(v: UInt64) -> UInt64 {
+    return v;
+}
+
+fn main() {
+    // 用 min/max 直接当值参与运算和类型标注
+    let a: Int8 = Int8::min_value();
+    let b: Int8 = Int8::max_value();
+    let c: UInt64 = UInt64::min_value();
+    let d: UInt64 = UInt64::max_value();
+    let _s: String = a.to_string();
+    let _s2: String = b.to_string();
+    let _s3: String = c.to_string();
+    let _s4: String = d.to_string();
+    let _e: Int8 = take_i8(Int8::min_value());
+    let _f: UInt64 = take_u64(UInt64::max_value());
+    let _g: Int8 = take_i8(0_i8 - 1_i8);
+}

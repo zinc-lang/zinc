@@ -1,0 +1,63 @@
+// Str (字符串字面量类型) 的核心 API 运行期行为:
+// len / is_empty / index / sub_str / starts_with / ends_with / eq / ne / as_bytes / to_string。
+// Str 的 len 是字节数; 多字节 UTF-8 只按字节访问。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    let s = "hello world";
+
+    assert_eq(s.len(), 11_u);
+    assert(!s.is_empty());
+    assert("".is_empty());
+    assert_eq("".len(), 0_u);
+
+    // index 按字节
+    assert_eq(s.index(0_u), 104_u8);  // 'h'
+    assert_eq(s.index(10_u), 100_u8); // 'd'
+    assert_eq(s.index(5_u), 32_u8);   // ' '
+
+    // sub_str(start) / sub_str(start, len)
+    assert(s.sub_str(6_u).eq(&"world"));
+    assert(s.sub_str(0_u, 5_u).eq(&"hello"));
+    assert(s.sub_str(11_u).is_empty());
+    assert_eq(s.sub_str(0_u, 0_u).len(), 0_u);
+    assert_eq(s.sub_str(6_u).len(), 5_u);
+
+    // starts_with / ends_with
+    assert(s.starts_with("hello"));
+    assert(s.ends_with("world"));
+    assert(!s.starts_with("world"));
+    assert(!s.ends_with("hello"));
+    assert(s.starts_with(""));
+    assert(s.ends_with(""));
+    assert(!s.starts_with("hello world!"));
+    assert(!s.ends_with("!hello world"));
+
+    // eq / ne
+    assert(s.eq(&"hello world"));
+    assert(s.ne(&"hello worle"));
+    assert("abc".ne(&"abcd"));
+    assert(!"".eq(&"a"));
+
+    // 多字节串按字节
+    let u = "héllo";
+    assert_eq(u.len(), 6_u);
+    assert_eq(u.index(1_u), 0xC3_u8);
+    assert_eq(u.index(2_u), 0xA9_u8);
+    assert(u.sub_str(1_u, 2_u).eq(&"é"));
+    assert(u.starts_with("hé"));
+    assert(u.ends_with("llo"));
+
+    // as_bytes -> Slice<UInt8>
+    let bytes = s.as_bytes();
+    assert_eq(bytes.len(), 11_u);
+    assert_eq(*bytes.get(0_u).get_or_panic(), 104_u8);
+    assert(bytes.get(11_u) is Option::None);
+
+    // to_string 拷贝出 String
+    let owned: String = s.to_string();
+    assert(owned.eq(&String::from_str("hello world")));
+    assert_eq(owned.len(), 11_u);
+    assert("".to_string().is_empty());
+}

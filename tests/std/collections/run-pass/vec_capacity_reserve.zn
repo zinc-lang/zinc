@@ -1,0 +1,48 @@
+// Vec 容量: 连续 push 后 cap >= len 始终成立; reserve 之后容量满足 size+additional;
+// clear 不释放已有容量, 之后可以复用。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut v = (type Vec<UInt>)::with_capacity(3_u);
+    assert_eq(v.capacity(), 3_u);
+    let mut i: UInt = 0_u;
+    while i < 20_u {
+        v.push(i);
+        // 每次 push 之后都必须满足容量不变量
+        assert(v.capacity() >= v.len());
+        i += 1_u;
+    }
+    assert_eq(v.len(), 20_u);
+    assert(v.capacity() >= 20_u);
+    // 内容正确 (扩容不能打乱顺序)
+    i = 0_u;
+    while i < 20_u {
+        assert_eq(v.at(i).get_or_panic(), i);
+        i += 1_u;
+    }
+
+    // reserve: 小于当前容量时不缩容; 大于时至少满足 size + additional
+    let mut r = (type Vec<UInt>)::new();
+    r.push(1_u);
+    let cap0 = r.capacity();
+    r.reserve(2_u); // size+2 = 3 <= cap0
+    assert_eq(r.capacity(), cap0);
+    r.reserve(10_u); // 需要 11
+    assert(r.capacity() >= r.len() + 10_u);
+    let cap1 = r.capacity();
+    r.reserve(0_u);
+    assert_eq(r.capacity(), cap1);
+
+    // clear: size 归零, 容量保留, 之后 push 仍正确
+    let mut c = (type Vec<UInt>)::with_capacity(8_u);
+    c.push(1_u);
+    c.push(2_u);
+    let before = c.capacity();
+    c.clear();
+    assert_eq(c.len(), 0_u);
+    assert(c.is_empty());
+    assert_eq(c.capacity(), before);
+    c.push(7_u);
+    assert_eq(c.len(), 1_u);
+    assert_eq(c.at(0_u).get_or_panic(), 7_u);
+}

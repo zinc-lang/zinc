@@ -1,0 +1,72 @@
+// cmp::Ordering 与 Ord / PartialOrd 的基本用法。
+use std::{assert, assert_eq};
+use std::cmp::{Ordering, PartialOrd, Ord};
+
+fn ord_i(o: Ordering) -> Int {
+    match o {
+        Ordering::Less => { return -1; }
+        Ordering::Equal => { return 0; }
+        Ordering::Greater => { return 1; }
+    }
+}
+
+// 用 Ord::cmp 实现 min / max (std 的 Ord 里 min/max 还没实现)
+fn min_i(a: Int, b: Int) -> Int {
+    if a.cmp(&b) is Ordering::Greater {
+        return b;
+    }
+    return a;
+}
+fn max_i(a: Int, b: Int) -> Int {
+    if a.cmp(&b) is Ordering::Less {
+        return b;
+    }
+    return a;
+}
+
+fn main() {
+    // 三个取值都能被 match 命中
+    match 1_i.cmp(&2_i) {
+        Ordering::Less => { }
+        Ordering::Equal => { assert(false, "1 < 2 不应该是 Equal"); }
+        Ordering::Greater => { assert(false, "1 < 2 不应该是 Greater"); }
+    }
+    match 2_i.cmp(&2_i) {
+        Ordering::Less => { assert(false, "2 == 2 不应该是 Less"); }
+        Ordering::Equal => { }
+        Ordering::Greater => { assert(false, "2 == 2 不应该是 Greater"); }
+    }
+    match 3_i.cmp(&2_i) {
+        Ordering::Less => { assert(false, "3 > 2 不应该是 Less"); }
+        Ordering::Equal => { assert(false, "3 > 2 不应该是 Equal"); }
+        Ordering::Greater => { }
+    }
+
+    // is 模式判定
+    assert(1_i.cmp(&2_i) is Ordering::Less);
+    assert(2_i.cmp(&2_i) is Ordering::Equal);
+    assert(3_i.cmp(&2_i) is Ordering::Greater);
+    assert(!(1_i.cmp(&2_i) is Ordering::Greater));
+
+    assert_eq(ord_i(1_i.cmp(&2_i)), -1);
+    assert_eq(ord_i(2_i.cmp(&2_i)), 0);
+    assert_eq(ord_i(2_i.cmp(&1_i)), 1);
+
+    // min / max 用法
+    assert_eq(min_i(3_i, 7_i), 3_i);
+    assert_eq(min_i(7_i, 3_i), 3_i);
+    assert_eq(max_i(3_i, 7_i), 7_i);
+    assert_eq(max_i(7_i, 3_i), 7_i);
+
+    // 边界值
+    assert_eq(min_i(Int::min_value(), Int::max_value()), Int::min_value());
+    assert_eq(max_i(Int::min_value(), Int::max_value()), Int::max_value());
+    assert(Int::min_value().cmp(&Int::max_value()) is Ordering::Less);
+
+    // PartialOrd 的 partial_cmp 返回值与 cmp 一致
+    assert_eq(ord_i(1_i.partial_cmp(&2_i).get_or_panic()), -1);
+    assert_eq(ord_i(2_i.partial_cmp(&2_i).get_or_panic()), 0);
+    assert_eq(ord_i(2_i.partial_cmp(&1_i).get_or_panic()), 1);
+
+    println("ordering basics ok");
+}

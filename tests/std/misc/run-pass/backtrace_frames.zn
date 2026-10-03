@@ -1,0 +1,67 @@
+// BackTrace: 采集 / 帧数 / 渲染文本 / 追加到已有字符串。
+// 已有 tests/misc/run-pass/backtrace.zn 覆盖了基本采集, 这里补帧数、嵌套深度、
+// 渲染文本与 len() 的一致性, 以及 to_string_inplace 追加。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+use std::primitives::backtrace::BackTrace;
+
+fn capture_here() -> BackTrace {
+    return BackTrace::capture();
+}
+
+fn capture_nested() -> BackTrace {
+    return capture_here();
+}
+
+fn main() {
+    // 直接在当前函数采集
+    let bt = capture_here();
+    assert(!bt.is_empty());
+    assert(bt.len() >= 1_u);
+    let text = bt.to_string();
+    assert(text.len() > 0_u);
+    // 第一帧一定从调用 capture 的位置开始渲染
+    assert(text.starts_with("├ #1"));
+
+    // 同一个调用点重复采集, 帧数必须稳定
+    let bt_again = capture_here();
+    assert_eq(bt.len(), bt_again.len());
+
+    // 深一层调用: 帧数不能变少
+    let nested = capture_nested();
+    assert(!nested.is_empty());
+    assert(nested.len() >= bt.len());
+
+    // 在 main 里直接采集也要有帧 (至少 main 自己)
+    let direct = BackTrace::capture();
+    assert(!direct.is_empty());
+    assert(direct.len() >= 1_u);
+    let direct_text = direct.to_string();
+    assert(direct_text.starts_with("├ #1"));
+
+    // to_string_inplace 追加到已有内容: 前缀必须保留
+    let mut s = String::new();
+    s.push_str("HEAD|");
+    bt.to_string_inplace(&mut s);
+    assert(s.len() > 5_u);
+    assert(s.starts_with("HEAD|"));
+
+    // 渲染文本里帧编号的数量应当等于 bt.len()
+    // 每一帧渲染成两行, 只有第一行以 "├ #" 开头。
+    // text 是 String, 这里把它按字节重新看成 Str 才能用 split。
+    let rp = text.raw_ptr();
+    let text_str: Str = unsafe({ .pointer = rp as &UInt8, .length = text.len() }: Str);
+    let lines = text_str.split(b'\n');
+    let mut frames: UInt = 0_u;
+    let mut i: UInt = 0_u;
+    while i < lines.len() {
+        let line = lines.at(i).get_or_panic();
+        if line.starts_with("├ #") {
+            frames += 1_u;
+        }
+        i += 1_u;
+    }
+    assert_eq(frames, bt.len());
+
+    println("backtrace frames ok");
+}

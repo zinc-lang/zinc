@@ -1,0 +1,73 @@
+// HashMap::keys / values / 迭代 (for-in): 条目数与内容必须与 len 一致,
+// 遍历或取 keys/values 之后表本身仍然可用。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut m = (type HashMap<UInt, UInt>)::new();
+    let mut i: UInt = 0_u;
+    while i < 100_u {
+        m.insert(i, i * 2_u);
+        i += 1_u;
+    }
+    assert_eq(m.len(), 100_u);
+
+    let ks = m.keys();
+    let vs = m.values();
+    assert_eq(ks.len(), 100_u);
+    assert_eq(vs.len(), 100_u);
+
+    // key 之和 0..99 = 4950, value 之和 = 9900
+    let mut ksum: UInt = 0_u;
+    let mut vsum: UInt = 0_u;
+    let mut j: UInt = 0_u;
+    while j < 100_u {
+        ksum += ks.at(j).get_or_panic();
+        vsum += vs.at(j).get_or_panic();
+        j += 1_u;
+    }
+    assert_eq(ksum, 4950_u);
+    assert_eq(vsum, 9900_u);
+
+    // keys/values 是快照, 表不受影响
+    assert_eq(m.len(), 100_u);
+    assert(m.contains(&50_u));
+    assert_eq(m.at(&50_u).get_or_panic(), 100_u);
+
+    // for-in 迭代: 每个 Occupied 条目恰好访问一次
+    let mut count: UInt = 0_u;
+    let mut isum: UInt = 0_u;
+    for (k, v) in m {
+        count += 1_u;
+        isum += k;
+    }
+    assert_eq(count, 100_u);
+    assert_eq(isum, 4950_u);
+    // 迭代之后表仍然完整
+    assert_eq(m.len(), 100_u);
+    assert_eq(m.at(&99_u).get_or_panic(), 198_u);
+
+    // 删除一半之后再检查 keys/values/迭代 的条目数
+    i = 0_u;
+    while i < 100_u {
+        if i % 2_u == 0_u {
+            m.remove(&i);
+        }
+        i += 1_u;
+    }
+    assert_eq(m.len(), 50_u);
+    let ks2 = m.keys();
+    let vs2 = m.values();
+    assert_eq(ks2.len(), 50_u);
+    assert_eq(vs2.len(), 50_u);
+    let mut count2: UInt = 0_u;
+    for (k, v) in m {
+        count2 += 1_u;
+    }
+    assert_eq(count2, 50_u);
+    // 剩下的都是奇数 key
+    let mut a: UInt = 0_u;
+    while a < 50_u {
+        assert(m.contains(&(a * 2_u + 1_u)));
+        a += 1_u;
+    }
+}

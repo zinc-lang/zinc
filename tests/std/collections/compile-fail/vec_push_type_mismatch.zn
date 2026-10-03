@@ -1,0 +1,6 @@
+// Vec<Int>::push 只接受 Int; 传入 Str 必须是类型错误。
+// 这是集合元素类型必须与泛型实参一致的负向用例。
+fn main() {
+    let mut v = (type Vec<Int>)::new();
+    v.push("not an int");
+}

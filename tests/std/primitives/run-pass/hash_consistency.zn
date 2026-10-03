@@ -1,0 +1,87 @@
+// Hash 与 Eq 的一致性: 相等 (eq) 的 key 必须命中同一个桶。
+// 覆盖 String (自定义 Hash/PartialEq)、Char、Bool 作为 HashMap 的 key。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    // String key: 内容相等 (不同对象) 必须命中
+    let mut m = (type HashMap<String, Int>)::new();
+    m.insert(String::from_str("hello"), 1_i);
+    m.insert(String::from_str("world"), 2_i);
+    assert_eq(m.len(), 2_u);
+    let v1 = m.at(&String::from_str("hello"));
+    if v1 is Some(x) {
+        assert_eq(x, 1_i);
+    } else {
+        assert(false, "hello missing");
+    }
+    let v2 = m.at(&String::from_str("world"));
+    if v2 is Some(y) {
+        assert_eq(y, 2_i);
+    } else {
+        assert(false, "world missing");
+    }
+
+    // 相同 key 覆盖, 长度不变
+    m.insert(String::from_str("hello"), 3_i);
+    assert_eq(m.len(), 2_u);
+    let v3 = m.at(&String::from_str("hello"));
+    if v3 is Some(z) {
+        assert_eq(z, 3_i);
+    } else {
+        assert(false, "hello missing after overwrite");
+    }
+
+    // 不同长度 / 前缀不同的 key 不应互相命中
+    m.insert(String::from_str("hell"), 4_i);
+    assert_eq(m.len(), 3_u);
+    let v4 = m.at(&String::from_str("hell"));
+    if v4 is Some(w) {
+        assert_eq(w, 4_i);
+    } else {
+        assert(false, "hell missing");
+    }
+    let v5 = m.at(&String::from_str("hello"));
+    if v5 is Some(w2) {
+        assert_eq(w2, 3_i);
+    } else {
+        assert(false, "hello changed");
+    }
+
+    // Char key (含多字节)
+    let mut cm = (type HashMap<Char, Int>)::new();
+    cm.insert('a', 1_i);
+    cm.insert('中', 2_i);
+    cm.insert('😀', 3_i);
+    assert_eq(cm.len(), 3_u);
+    let cv = cm.at(&'中');
+    if cv is Some(c) {
+        assert_eq(c, 2_i);
+    } else {
+        assert(false, "char 中 missing");
+    }
+    let cv2 = cm.at(&'😀');
+    if cv2 is Some(c2) {
+        assert_eq(c2, 3_i);
+    } else {
+        assert(false, "char 😀 missing");
+    }
+
+    // Bool key: Hash 值 true=1 / false=0, eq 一致
+    let mut bm = (type HashMap<Bool, Int>)::new();
+    bm.insert(true, 1_i);
+    bm.insert(false, 0_i);
+    assert_eq(bm.len(), 2_u);
+    let bv = bm.at(&true);
+    if bv is Some(t) {
+        assert_eq(t, 1_i);
+    } else {
+        assert(false, "true missing");
+    }
+    let bv0 = bm.at(&false);
+    if bv0 is Some(f) {
+        assert_eq(f, 0_i);
+    } else {
+        assert(false, "false missing");
+    }
+}

@@ -1,0 +1,38 @@
+// Vec::clear: 独占缓冲区时析构所有元素并保留容量; 共享缓冲区时只清空自己,
+// 不影响另一个别名; 清空后可以继续 push。
+use std::{assert, assert_eq};
+
+fn main() {
+    // 独占
+    let mut v = (type Vec<Int>)::with_capacity(8_u);
+    v.push(1_i);
+    v.push(2_i);
+    v.push(3_i);
+    let cap = v.capacity();
+    v.clear();
+    assert_eq(v.len(), 0_u);
+    assert(v.is_empty());
+    assert_eq(v.capacity(), cap);
+    assert(v.at(0_u) is None);
+    v.push(9_i);
+    assert_eq(v.len(), 1_u);
+    assert_eq(v.at(0_u).get_or_panic(), 9_i);
+
+    // 共享 (copy-on-write)
+    let mut a = (type Vec<Int>)::new();
+    a.push(1_i);
+    a.push(2_i);
+    let b = a;
+    assert(a.ref_count() as UInt >= 2_u); // 证明确实共享
+    a.clear();
+    assert_eq(a.len(), 0_u);
+    // b 不受影响
+    assert_eq(b.len(), 2_u);
+    assert_eq(b.at(0_u).get_or_panic(), 1_i);
+    assert_eq(b.at(1_u).get_or_panic(), 2_i);
+    // 清空后的 a 可以继续用
+    a.push(5_i);
+    assert_eq(a.len(), 1_u);
+    assert_eq(a.at(0_u).get_or_panic(), 5_i);
+    assert_eq(b.len(), 2_u);
+}

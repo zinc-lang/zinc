@@ -1,0 +1,4 @@
+// Result<Int, Int>::Ok 里放 Str 必须是类型错误。
+fn main() {
+    let r: Result<Int, Int> = (type Result<Int, Int>)::Ok("x");
+}

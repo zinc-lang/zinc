@@ -1,0 +1,79 @@
+// String 核心 API 的运行期行为: new / from_str / len / is_empty / push / push_str /
+// index / slice / eq / ne / starts_with / ends_with / as_str / to_string / clear。
+// 覆盖空串、纯 ASCII、以及含多字节 UTF-8 的串 (len 按字节数计)。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    // new / is_empty / len
+    let mut s = String::new();
+    assert(s.is_empty());
+    assert_eq(s.len(), 0_u);
+
+    // from_str: 多字节 UTF-8 按字节计数 ("héllo" = 6 字节)
+    let h = String::from_str("héllo");
+    assert_eq(h.len(), 6_u);
+    assert(!h.is_empty());
+
+    // push 单字节 / eq / ne
+    s.push(104_u8); // 'h'
+    s.push(105_u8); // 'i'
+    assert_eq(s.len(), 2_u);
+    assert(s.eq(&String::from_str("hi")));
+    assert(s.ne(&String::from_str("hi!")));
+    assert(!s.eq(&String::from_str("h")));
+
+    // push_str / push_char
+    s.push_str(" there");
+    assert_eq(s.len(), 8_u);
+    assert(s.eq(&String::from_str("hi there")));
+    s.push_char('!');
+    assert(s.eq(&String::from_str("hi there!")));
+    assert_eq(s.len(), 9_u);
+
+    // starts_with / ends_with (含空前缀/后缀和超长前缀)
+    assert(s.starts_with("hi"));
+    assert(!s.starts_with("ih"));
+    assert(s.ends_with("there!"));
+    assert(!s.ends_with("there"));
+    assert(s.starts_with(""));
+    assert(s.ends_with(""));
+    assert(!s.starts_with("hi there!!"));
+    assert(!s.ends_with("!hi there"));
+
+    // 多字节前缀 / 后缀按字节比较
+    assert(h.starts_with("hé"));
+    assert(h.ends_with("llo"));
+    assert(!h.starts_with("hx"));
+
+    // index 按字节取值
+    assert_eq(s.index(0_u), 104_u8);
+    assert_eq(s.index(8_u), 33_u8); // '!'
+    assert_eq(h.index(1_u), 0xC3_u8);
+    assert_eq(h.index(2_u), 0xA9_u8);
+
+    // slice(start) / slice(start, len)
+    assert(s.slice(3_u).deref().eq(&"there!"));
+    assert(s.slice(0_u, 2_u).deref().eq(&"hi"));
+    assert(s.slice(0_u).deref().eq(&"hi there!"));
+    assert_eq(s.slice(9_u).deref().len(), 0_u);
+    assert(s.slice(9_u).deref().is_empty());
+    assert_eq(s.slice(5_u, 0_u).deref().len(), 0_u);
+
+    // as_str / to_string 快照
+    let view = s.as_str();
+    let copy = view.to_string();
+    assert_eq(view.deref().len(), 9_u);
+    assert(copy.eq(&s));
+    assert(copy.eq(&String::from_str("hi there!")));
+
+    // clear 之后可以继续追加
+    let mut c = String::from_str("abc");
+    c.clear();
+    assert(c.is_empty());
+    assert_eq(c.len(), 0_u);
+    assert(c.eq(&String::new()));
+    c.push_str("z");
+    assert(c.eq(&String::from_str("z")));
+    assert_eq(c.len(), 1_u);
+}

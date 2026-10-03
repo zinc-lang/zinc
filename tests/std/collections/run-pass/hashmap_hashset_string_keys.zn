@@ -1,0 +1,64 @@
+// HashMap / HashSet 使用 String 作为 key: Hash + Eq 必须按内容判定,
+// 不同分配但内容相同的 key 互相覆盖/命中。
+use std::collections::hashset::HashSet;
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut m = (type HashMap<String, UInt>)::new();
+    m.insert(String::from_str("alpha"), 1_u);
+    m.insert(String::from_str("beta"), 2_u);
+    m.insert(String::from_str("gamma"), 3_u);
+    assert_eq(m.len(), 3_u);
+
+    // 用新构造的等价 String 查询
+    assert(m.contains(&String::from_str("alpha")));
+    assert_eq(m.at(&String::from_str("beta")).get_or_panic(), 2_u);
+    assert(m.at(&String::from_str("delta")) is None);
+
+    // 覆盖写: 返回旧值, 长度不变
+    let old = m.insert(String::from_str("beta"), 22_u);
+    assert(old is Some(_));
+    if old is Some(v) {
+        assert_eq(v, 2_u);
+    }
+    assert_eq(m.len(), 3_u);
+    assert_eq(m.at(&String::from_str("beta")).get_or_panic(), 22_u);
+
+    // 删除
+    let r = m.remove(&String::from_str("alpha"));
+    assert(r is Some(_));
+    if r is Some(v) {
+        assert_eq(v, 1_u);
+    }
+    assert_eq(m.len(), 2_u);
+    assert(!m.contains(&String::from_str("alpha")));
+
+    // HashSet<String>: 重复插入返回 false, 长度不变
+    let mut s = (type HashSet<String>)::new();
+    let a1 = s.insert(String::from_str("x"));
+    let a2 = s.insert(String::from_str("x"));
+    assert(a1);
+    assert(!a2);
+    assert_eq(s.len(), 1_u);
+    assert(s.contains(&String::from_str("x")));
+    assert(!s.contains(&String::from_str("y")));
+
+    let removed = s.remove(&String::from_str("x"));
+    assert(removed);
+    assert_eq(s.len(), 0_u);
+    let again = s.remove(&String::from_str("x"));
+    assert(!again);
+
+    // HashSet 迭代计数
+    let mut h = (type HashSet<String>)::new();
+    h.insert(String::from_str("a"));
+    h.insert(String::from_str("b"));
+    h.insert(String::from_str("c"));
+    let mut n: UInt = 0_u;
+    for x in h {
+        assert(x.len() == 1_u);
+        n += 1_u;
+    }
+    assert_eq(n, 3_u);
+    assert_eq(h.len(), 3_u);
+}

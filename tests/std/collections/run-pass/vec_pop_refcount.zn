@@ -1,0 +1,35 @@
+// pop / pop_front 返回的元素必须恰好被返回值持有一次 (不多 retain)。
+// 注意: `is Some(x)` 绑定会把元素再拷贝一份 (返回的 Option 与 x 各持有一份),
+// 所以这里观察到 rc == 2 才是正确的; 如果 pop 返回时自己多持有一份, 这里会是 3。
+use std::{assert, assert_eq};
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn main() {
+    let mut v = (type Vec<Vec<Int>>)::new();
+    v.push(mk(1_i));
+    v.push(mk(2_i));
+
+    let a = v.pop();
+    assert(a is Some(_));
+    if a is Some(x) {
+        // a 与 x 各持有一份 -> 2; 若 pop 返回值自己多 retain 一次, 这里会是 3。
+        assert_eq(x.ref_count() as UInt, 2_u);
+        assert_eq(x.at(0_u).get_or_panic(), 2_i);
+    }
+
+    let mut w = (type Vec<Vec<Int>>)::new();
+    w.push(mk(1_i));
+    w.push(mk(2_i));
+    let b = w.pop_front();
+    assert(b is Some(_));
+    if b is Some(y) {
+        // 同上: b 与 y 各持有一份 -> 2 (若有多余 retain 则为 3)。
+        assert_eq(y.ref_count() as UInt, 2_u);
+        assert_eq(y.at(0_u).get_or_panic(), 1_i);
+    }
+}

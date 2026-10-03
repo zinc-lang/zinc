@@ -1,0 +1,81 @@
+// 各整数宽度的 Step 实现: for-in range (半开 `..<` 与闭区间 `..=`) 都要能跑。
+// 已有用例只覆盖 Int / UInt, 这里补齐 8/16/32/64 位以及 Short/UShort / Char。
+use std::{assert, assert_eq};
+
+fn main() {
+    // 半开区间: 0..<4 求和 = 6
+    let mut s8: Int = 0;
+    for x in 0_i8 ..< 4_i8 { s8 += x as Int; }
+    assert_eq(s8, 6_i);
+
+    let mut u8s: Int = 0;
+    for x in 0_u8 ..< 4_u8 { u8s += x as Int; }
+    assert_eq(u8s, 6_i);
+
+    let mut s16: Int = 0;
+    for x in 0_i16 ..< 4_i16 { s16 += x as Int; }
+    assert_eq(s16, 6_i);
+
+    let mut u16s: Int = 0;
+    for x in 0_u16 ..< 4_u16 { u16s += x as Int; }
+    assert_eq(u16s, 6_i);
+
+    let mut s32: Int = 0;
+    for x in 0_i32 ..< 4_i32 { s32 += x as Int; }
+    assert_eq(s32, 6_i);
+
+    let mut u32s: Int = 0;
+    for x in 0_u32 ..< 4_u32 { u32s += x as Int; }
+    assert_eq(u32s, 6_i);
+
+    let mut s64: Int = 0;
+    for x in 0_i64 ..< 4_i64 { s64 += x as Int; }
+    assert_eq(s64, 6_i);
+
+    let mut u64s: Int = 0;
+    for x in 0_u64 ..< 4_u64 { u64s += x as Int; }
+    assert_eq(u64s, 6_i);
+
+    let sh_lo: Short = 0;
+    let sh_hi: Short = 4;
+    let mut shs: Int = 0;
+    for x in sh_lo ..< sh_hi { shs += x as Int; }
+    assert_eq(shs, 6_i);
+
+    let ush_lo: UShort = 0;
+    let ush_hi: UShort = 4;
+    let mut ushs: Int = 0;
+    for x in ush_lo ..< ush_hi { ushs += x as Int; }
+    assert_eq(ushs, 6_i);
+
+    // 闭区间
+    let mut inc8: Int = 0;
+    for x in 0_i8 ..= 3_i8 { inc8 += x as Int; }
+    assert_eq(inc8, 6_i);
+
+    let mut incu: Int = 0;
+    for x in 0_u32 ..= 3_u32 { incu += x as Int; }
+    assert_eq(incu, 6_i);
+
+    // 负起点
+    let mut neg: Int = 0;
+    for x in (-2_i8) ..< 2_i8 { neg += x as Int; }
+    assert_eq(neg, -2_i); // -2 + -1 + 0 + 1
+
+    // 空区间不进入循环
+    let mut empty: Int = 0;
+    for x in 3_i8 ..< 1_i8 { empty += 1; }
+    assert_eq(empty, 0_i);
+
+    // 单元素区间
+    let mut one: Int = 0;
+    for x in 5_u8 ..< 6_u8 { one += x as Int; }
+    assert_eq(one, 5_i);
+
+    // Char 也是 Step: 'a'..='c'
+    let mut chars: Int = 0;
+    for c in 'a' ..= 'c' { chars += c as UInt32 as Int; }
+    assert_eq(chars, ('a' as UInt32 as Int) + ('b' as UInt32 as Int) + ('c' as UInt32 as Int));
+
+    println("int step ranges ok");
+}

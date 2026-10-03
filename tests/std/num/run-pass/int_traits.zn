@@ -1,0 +1,112 @@
+// 各整数类型的 trait 实现: PartialEq/Eq, PartialOrd/Ord, Hash, Clone, Default。
+use std::{assert, assert_eq};
+use std::cmp::{Ordering, PartialOrd, Ord};
+use std::hash::{Hash, Hasher, default_hasher};
+
+fn ord_i(o: Ordering) -> Int {
+    match o {
+        Ordering::Less => { return -1; }
+        Ordering::Equal => { return 0; }
+        Ordering::Greater => { return 1; }
+    }
+}
+
+fn hash_i8(v: Int8) -> UInt64 {
+    let mut h = default_hasher();
+    v.hash(&mut h);
+    return h.finish();
+}
+fn hash_u8(v: UInt8) -> UInt64 {
+    let mut h = default_hasher();
+    v.hash(&mut h);
+    return h.finish();
+}
+fn hash_i(v: Int) -> UInt64 {
+    let mut h = default_hasher();
+    v.hash(&mut h);
+    return h.finish();
+}
+fn hash_u64(v: UInt64) -> UInt64 {
+    let mut h = default_hasher();
+    v.hash(&mut h);
+    return h.finish();
+}
+fn hash_i16(v: Int16) -> UInt64 {
+    let mut h = default_hasher();
+    v.hash(&mut h);
+    return h.finish();
+}
+
+fn main() {
+    // ---- PartialEq / Eq / PartialOrd / Ord (Int) ----
+    assert_eq(ord_i(1_i.cmp(&2_i)), -1);
+    assert_eq(ord_i(2_i.cmp(&1_i)), 1);
+    assert_eq(ord_i(2_i.cmp(&2_i)), 0);
+    assert(1_i.cmp(&2_i) is Ordering::Less);
+    assert(2_i.cmp(&2_i) is Ordering::Equal);
+    assert(2_i.cmp(&1_i) is Ordering::Greater);
+
+    assert(1_i.lt(&2_i));
+    assert(1_i.le(&2_i));
+    assert(1_i.le(&1_i));
+    assert(!1_i.lt(&1_i));
+    assert(2_i.gt(&1_i));
+    assert(2_i.ge(&2_i));
+    assert(!1_i.gt(&2_i));
+
+    assert(1_i.partial_cmp(&2_i) is Some(Ordering::Less));
+    assert(1_i.partial_cmp(&1_i) is Some(Ordering::Equal));
+    assert(2_i.partial_cmp(&1_i) is Some(Ordering::Greater));
+
+    // 边界值之间的比较
+    assert(Int::min_value().cmp(&Int::max_value()) is Ordering::Less);
+    assert(Int::max_value().cmp(&Int::min_value()) is Ordering::Greater);
+    assert(Int::min_value().lt(&(-1_i)));
+    assert(Int::max_value().gt(&0_i));
+
+    // ---- 其它宽度 ----
+    assert(Int8::min_value().cmp(&Int8::max_value()) is Ordering::Less);
+    assert(Int16::max_value().cmp(&0_i16) is Ordering::Greater);
+    assert(Int32::min_value().lt(&Int32::max_value()));
+    assert(Int64::max_value().gt(&Int64::min_value()));
+    assert(UInt::min_value().cmp(&UInt::max_value()) is Ordering::Less);
+    assert(UInt8::min_value().lt(&UInt8::max_value()));
+    assert(UInt16::max_value().ge(&65535_u16));
+    assert(UInt32::min_value().le(&0_u32));
+    assert(UInt64::max_value().gt(&0_u64));
+    assert(Short::min_value().cmp(&Short::max_value()) is Ordering::Less);
+    assert(UShort::min_value().lt(&UShort::max_value()));
+
+    // eq / ne 方法路径
+    assert(1_u8.eq(&1_u8));
+    assert(!1_u8.eq(&2_u8));
+    assert(1_u8.ne(&2_u8));
+    assert(!(1_u8.ne(&1_u8)));
+
+    // ---- Hash: 同值同 hash ----
+    assert_eq(hash_i8(1_i8), hash_i8(1_i8));
+    assert_eq(hash_u8(1_u8), hash_u8(1_u8));
+    assert_eq(hash_i(12345_i), hash_i(12345_i));
+    assert_eq(hash_i(-1_i), hash_i(-1_i));
+    assert_eq(hash_u64(UInt64::max_value()), hash_u64(UInt64::max_value()));
+    assert_eq(hash_i16(7_i16), hash_i16(7_i16));
+    // 不同的值一般要落在不同的 hash 上 (这里选的是必然不同的输入)
+    assert(hash_u8(0_u8) != hash_u8(1_u8));
+
+    // ---- Clone / Default ----
+    assert_eq(42_i.clone(), 42_i);
+    assert_eq((-7_i8).clone(), -7_i8);
+    assert_eq(UInt64::max_value().clone(), UInt64::max_value());
+    assert_eq(Int::default(), 0_i);
+    assert_eq(UInt::default(), 0_u);
+    assert_eq(Int8::default(), 0_i8);
+    assert_eq(UInt8::default(), 0_u8);
+    assert_eq(Int64::default(), 0_i64);
+    assert_eq(UInt64::default(), 0_u64);
+    let zero_short: Short = 0;
+    let zero_ushort: UShort = 0;
+    assert_eq(Short::default(), zero_short);
+    assert_eq(UShort::default(), zero_ushort);
+
+    println("int traits ok");
+}

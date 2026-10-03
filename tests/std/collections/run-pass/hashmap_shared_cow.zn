@@ -1,0 +1,79 @@
+// HashMap 的值语义 / copy-on-write: `let m2 = m;` 之后两个表共享底层表,
+// 对其中一个 insert / remove / clear 不得影响另一个。
+// (不涉及 get_mut / or_insert 返回的借用, 那是另一类场景。)
+//
+// 这里读 value 用 get() 而不是 at(): at() 目前每次调用会多留 2 个表引用
+// (见 bug 报告), 会把最后的 ref_count 断言带偏。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut m = (type HashMap<UInt, UInt>)::new();
+    let mut i: UInt = 0_u;
+    while i < 10_u {
+        m.insert(i, i * 10_u);
+        i += 1_u;
+    }
+    assert_eq(m.len(), 10_u);
+
+    let mut m2 = m;
+    // 共享底层缓冲区
+    assert(m.ref_count() as UInt >= 2_u);
+
+    // insert 触发 COW
+    m.insert(100_u, 1000_u);
+    assert_eq(m.len(), 11_u);
+    assert_eq(m2.len(), 10_u);
+    assert(!m2.contains(&100_u));
+    let g100 = m.get(&100_u);
+    assert(g100 is Some(_));
+    if g100 is Some(x) {
+        assert_eq(*x.item, 1000_u);
+    }
+    // m2 原有内容不受影响
+    i = 0_u;
+    while i < 10_u {
+        let g = m2.get(&i);
+        if g is Some(x) {
+            assert_eq(*x.item, i * 10_u);
+        } else {
+            assert(false, "m2 lost an entry");
+        }
+        i += 1_u;
+    }
+
+    // remove 触发 COW
+    let r = m.remove(&0_u);
+    assert(r is Some(_));
+    assert_eq(m.len(), 10_u);
+    assert_eq(m2.len(), 10_u);
+    assert(m2.contains(&0_u));
+    assert(!m.contains(&0_u));
+
+    // clear 触发 COW
+    m.clear();
+    assert_eq(m.len(), 0_u);
+    assert_eq(m2.len(), 10_u);
+    {
+        let g9 = m2.get(&9_u);
+        if g9 is Some(x) {
+            assert_eq(*x.item, 90_u);
+        } else {
+            assert(false, "m2 lost key 9");
+        }
+    }
+
+    // m2 自己继续用
+    m2.insert(200_u, 2000_u);
+    assert_eq(m2.len(), 11_u);
+    assert(m2.contains(&200_u));
+    {
+        let g200 = m2.get(&200_u);
+        if g200 is Some(x) {
+            assert_eq(*x.item, 2000_u);
+        } else {
+            assert(false, "m2 lost key 200");
+        }
+    }
+    // 修改之后 m2 独占自己的表 (上面的 ItemRef 已经离开作用域)
+    assert_eq(m2.ref_count() as UInt, 1_u);
+}

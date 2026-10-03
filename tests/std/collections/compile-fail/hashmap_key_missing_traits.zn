@@ -1,0 +1,10 @@
+// HashMap 的 K 必须实现 Eq + Hash; 自定义 struct 两者都没实现,
+// 用它做 key 必须是类型错误 (而不是运行期出错)。
+struct Key {
+    v: Int,
+}
+
+fn main() {
+    let mut m = (type HashMap<Key, Int>)::new();
+    m.insert({ .v = 1_i }: Key, 1_i);
+}

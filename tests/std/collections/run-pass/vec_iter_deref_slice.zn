@@ -1,0 +1,62 @@
+// Vec 的 Iterable::iter / for-in 迭代, 以及 Deref -> VecSlice -> Slice 的视图。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut v = (type Vec<Int>)::new();
+    v.push(1_i);
+    v.push(2_i);
+    v.push(3_i);
+    v.push(4_i);
+
+    // for-in 迭代求和
+    let mut sum: Int = 0_i;
+    let mut count: UInt = 0_u;
+    for x in v {
+        sum += x;
+        count += 1_u;
+    }
+    assert_eq(count, 4_u);
+    assert_eq(sum, 10_i);
+
+    // 手动 iter / next: 逐个取出, 结束后返回 None
+    let mut it = v.iter();
+    let a = it.next();
+    assert(a is Some(_));
+    if a is Some(x) {
+        assert_eq(*x, 1_i);
+    }
+    let b = it.next();
+    if b is Some(x) {
+        assert_eq(*x, 2_i);
+    }
+    let c = it.next();
+    if c is Some(x) {
+        assert_eq(*x, 3_i);
+    }
+    let d = it.next();
+    if d is Some(x) {
+        assert_eq(*x, 4_i);
+    }
+    let e = it.next();
+    assert(e is None);
+
+    // as_slice / Deref: 视图长度与内容
+    let view = v.as_slice();
+    assert_eq(view.deref().len(), 4_u);
+    assert(view.deref().contains(&3_i));
+    assert(!view.deref().contains(&9_i));
+    assert_eq(*view.deref().get(2_u).get_or_panic(), 3_i);
+
+    // 视图是快照: 视图创建后 Vec 再 push, 视图长度不变
+    v.push(5_i);
+    assert_eq(view.deref().len(), 4_u);
+    assert_eq(v.len(), 5_u);
+
+    // 用迭代器遍历空表: 一次都不进入循环
+    let empty = (type Vec<Int>)::new();
+    let mut n: UInt = 0_u;
+    for x in empty {
+        n += 1_u;
+    }
+    assert_eq(n, 0_u);
+}

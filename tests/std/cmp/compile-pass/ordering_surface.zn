@@ -1,0 +1,67 @@
+// cmp 模块的 trait 与方法签名 (类型检查)。
+use std::cmp::{Ordering, Eq, PartialEq, PartialOrd, Ord};
+
+fn describe(o: Ordering) -> Int {
+    match o {
+        Ordering::Less => { return -1; }
+        Ordering::Equal => { return 0; }
+        Ordering::Greater => { return 1; }
+    }
+}
+
+fn main() {
+    // ---- Int ----
+    let a: Int = 1_i;
+    let b: Int = 2_i;
+    let _eq: Bool = a.eq(&b);
+    let _ne: Bool = a.ne(&b);
+    let _pc: Option<Ordering> = a.partial_cmp(&b);
+    let _c: Ordering = a.cmp(&b);
+    let _lt: Bool = a.lt(&b);
+    let _le: Bool = a.le(&b);
+    let _gt: Bool = a.gt(&b);
+    let _ge: Bool = a.ge(&b);
+    let _d: Int = describe(a.cmp(&b));
+
+    // ---- UInt / Int8 / Short / UShort ----
+    let u1: UInt = 1_u;
+    let u2: UInt = 2_u;
+    let _uc: Ordering = u1.cmp(&u2);
+    let _upc: Option<Ordering> = u1.partial_cmp(&u2);
+
+    let i1: Int8 = 1_i8;
+    let _ic: Ordering = i1.cmp(&i1);
+    let _ipc: Option<Ordering> = i1.partial_cmp(&i1);
+
+    let s1: Short = 1;
+    let _sc: Ordering = s1.cmp(&s1);
+    let _spc: Option<Ordering> = s1.partial_cmp(&s1);
+
+    let us1: UShort = 1;
+    let _usc: Ordering = us1.cmp(&us1);
+    let _uspc: Option<Ordering> = us1.partial_cmp(&us1);
+
+    // ---- Bool / Char ----
+    let bt: Bool = true;
+    let _bc: Ordering = bt.cmp(&false);
+    let _bpc: Option<Ordering> = bt.partial_cmp(&false);
+    let c1: Char = 'a';
+    let _cc: Ordering = c1.cmp(&'b');
+    let _cpc: Option<Ordering> = c1.partial_cmp(&'b');
+
+    // ---- F64 / F32: 只有 PartialOrd ----
+    let f1: F64 = 1.0;
+    let f2: F64 = 2.0;
+    let _fpc: Option<Ordering> = f1.partial_cmp(&f2);
+    let _flt: Bool = f1.lt(&f2);
+    let _fle: Bool = f1.le(&f2);
+    let _fgt: Bool = f1.gt(&f2);
+    let _fge: Bool = f1.ge(&f2);
+    let g1: F32 = 1.0_f32;
+    let _gpc: Option<Ordering> = g1.partial_cmp(&g1);
+
+    // Ordering 可以用在 if 条件里 (需要先 match 出一个 Int)
+    if describe(1_i.cmp(&2_i)) == -1 {
+        let _x: Int = 1;
+    }
+}

@@ -1,0 +1,122 @@
+// Vec 上含析构元素 (Drop) 的操作: 每个被创建的元素句柄必须恰好析构一次。
+// D 含 String 成员, 因此是"非平凡类型" (值拷贝会做引用计数处理)。
+//
+// 覆盖: push / pop / pop_front / insert(首/中/扩容) / reverse / clear,
+// 以及共享缓冲区分支下的 clear。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+struct D {
+    p: *raw mut Int,
+    s: String,
+}
+
+impl Drop for D {
+    fn drop(&mut self) {
+        unsafe { *self.p = *self.p + 1_i; }
+    }
+}
+
+fn mk(q: *raw mut Int) -> D {
+    return { .p = q, .s = String::from_str("d") }: D;
+}
+
+fn main() {
+    // 空表上的 pop / pop_front 不析构任何东西, 也不应出错
+    let mut z = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        let p = v.pop();
+        assert(p is None);
+        let f = v.pop_front();
+        assert(f is None);
+    }
+    assert_eq(z, 0_i);
+
+    // push 3 个 + pop 1 个: 共 3 个句柄, 全部析构一次
+    let mut a = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(&mut a as *raw mut Int));
+        v.push(mk(&mut a as *raw mut Int));
+        v.push(mk(&mut a as *raw mut Int));
+        assert_eq(a, 0_i);
+        let x = v.pop();
+        assert(x is Some(_));
+        assert_eq(v.len(), 2_u);
+    }
+    assert_eq(a, 3_i);
+
+    // insert 到首部: 4 个句柄
+    let mut b = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(&mut b as *raw mut Int));
+        v.push(mk(&mut b as *raw mut Int));
+        v.push(mk(&mut b as *raw mut Int));
+        v.insert(0_u, mk(&mut b as *raw mut Int));
+    }
+    assert_eq(b, 4_i);
+
+    // insert 触发扩容: 5 个句柄
+    let mut g = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(&mut g as *raw mut Int));
+        v.push(mk(&mut g as *raw mut Int));
+        v.push(mk(&mut g as *raw mut Int));
+        v.push(mk(&mut g as *raw mut Int));
+        v.insert(1_u, mk(&mut g as *raw mut Int));
+    }
+    assert_eq(g, 5_i);
+
+    // reverse: 3 个句柄
+    let mut c = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(&mut c as *raw mut Int));
+        v.push(mk(&mut c as *raw mut Int));
+        v.push(mk(&mut c as *raw mut Int));
+        v.reverse();
+    }
+    assert_eq(c, 3_i);
+
+    // clear: 3 个句柄立即析构
+    let mut d = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(&mut d as *raw mut Int));
+        v.push(mk(&mut d as *raw mut Int));
+        v.push(mk(&mut d as *raw mut Int));
+        v.clear();
+        assert_eq(d, 3_i);
+        assert_eq(v.len(), 0_u);
+    }
+    // clear 之后不再重复析构
+    assert_eq(d, 3_i);
+
+    // pop_front: 2 个句柄
+    let mut e = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(&mut e as *raw mut Int));
+        v.push(mk(&mut e as *raw mut Int));
+        let x = v.pop_front();
+        assert(x is Some(_));
+        assert_eq(v.len(), 1_u);
+    }
+    assert_eq(e, 2_i);
+
+    // 共享缓冲区上的 clear: 老缓冲区仍归别名所有, 由别名析构; v 不析构
+    let mut f = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(&mut f as *raw mut Int));
+        v.push(mk(&mut f as *raw mut Int));
+        let mut w = v;
+        v.clear();
+        assert_eq(f, 0_i);
+        assert_eq(w.len(), 2_u);
+    }
+    assert_eq(f, 2_i);
+}

@@ -1,0 +1,6 @@
+// HashMap<UInt,_>::get 的 key 参数必须是 &UInt; 传 &Str 必须是类型错误。
+fn main() {
+    let mut m = (type HashMap<UInt, UInt>)::new();
+    m.insert(1_u, 1_u);
+    m.get(&"one");
+}

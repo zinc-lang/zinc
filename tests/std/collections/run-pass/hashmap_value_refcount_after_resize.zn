@@ -1,0 +1,70 @@
+// HashMap 值的内存语义: 大量 insert (多次 resize) / remove / 重新 insert 之后,
+// 每个 value 都只能被表本身持有一次 (内层 Vec 的 ref_count() == 1), 不能泄漏引用。
+use std::{assert, assert_eq};
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn main() {
+    let mut m = (type HashMap<UInt, Vec<Int>>)::new();
+    let mut i: UInt = 0_u;
+    while i < 200_u {
+        m.insert(i, mk(i as Int));
+        i += 1_u;
+    }
+    assert_eq(m.len(), 200_u);
+
+    // 每个 value 唯一一次引用
+    let mut bad: UInt = 0_u;
+    i = 0_u;
+    while i < 200_u {
+        let g = m.get(&i);
+        if g is Some(x) {
+            if x.item.ref_count() as UInt != 1_u {
+                bad += 1_u;
+            }
+        } else {
+            bad += 100_u;
+        }
+        i += 1_u;
+    }
+    assert_eq(bad, 0_u);
+
+    // 全部删除: remove 必须把 value 交还给调用者 (返回 Some)
+    i = 0_u;
+    while i < 200_u {
+        let r = m.remove(&i);
+        assert(r is Some(_));
+        i += 1_u;
+    }
+    assert_eq(m.len(), 0_u);
+
+    // 重新插入, 内容与引用计数都正确
+    i = 0_u;
+    while i < 200_u {
+        m.insert(i, mk(i as Int));
+        i += 1_u;
+    }
+    assert_eq(m.len(), 200_u);
+    let mut bad2: UInt = 0_u;
+    i = 0_u;
+    while i < 200_u {
+        let want: Int = i as Int;
+        let g = m.get(&i);
+        if g is Some(x) {
+            if x.item.ref_count() as UInt != 1_u {
+                bad2 += 1_u;
+            }
+            if x.item.at(0_u).get_or_panic() != want {
+                bad2 += 10_u;
+            }
+        } else {
+            bad2 += 100_u;
+        }
+        i += 1_u;
+    }
+    assert_eq(bad2, 0_u);
+}

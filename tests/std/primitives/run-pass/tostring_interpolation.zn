@@ -1,0 +1,45 @@
+// ToString 与插值 f"$(x)" 的一致性: 对 String / Str / StringSlice / Char / Bool,
+// 插值结果必须等于 x.to_string()。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    // String
+    let s = String::from_str("hi");
+    assert(f"$(s)".eq(&s));
+    assert(f"$(s)".eq(&s.to_string()));
+    assert(f"<$(s)>".eq(&String::from_str("<hi>")));
+
+    // StringSlice / Str
+    let v = s.as_str();
+    assert(f"$(v.deref())".eq(&s));
+    assert(v.to_string().eq(&s));
+    assert(v.to_string().eq(&v.to_string()));
+
+    // Char (ASCII 与多字节)
+    let c = '中';
+    assert(f"$(c)".eq(&c.to_string()));
+    assert(f"$(c)".eq(&String::from_str("中")));
+    assert(f"$('a')".eq(&String::from_str("a")));
+
+    // Bool
+    let b = true;
+    assert(f"$(b)".eq(&b.to_string()));
+    assert(f"$(!b)".eq(&String::from_str("false")));
+
+    // 切片视图的 to_string 是快照, 不受之后修改影响
+    let mut m = String::from_str("abc");
+    let view = m.as_str();
+    let snap = view.to_string();
+    let interp = f"$(view.deref())";
+    m.push_str("def");
+    assert(snap.eq(&String::from_str("abc")));
+    assert(interp.eq(&String::from_str("abc")));
+    assert(m.eq(&String::from_str("abcdef")));
+
+    // to_string 返回独立的 String (修改副本不影响源)
+    let mut copy = s.to_string();
+    copy.push_str("!");
+    assert(copy.eq(&String::from_str("hi!")));
+    assert(s.eq(&String::from_str("hi")));
+}

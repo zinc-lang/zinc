@@ -1,0 +1,8 @@
+// String 没有实现运算符重载, 因此 `s == t` 必须是编译错误。
+// 比较两个 String 要用 s.eq(&t) / s.ne(&t) (或 assert_eq)。
+fn main() {
+    let s = String::from_str("a");
+    let t = String::from_str("a");
+    if s == t {
+    }
+}

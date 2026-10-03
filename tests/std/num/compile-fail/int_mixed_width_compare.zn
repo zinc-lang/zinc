@@ -1,0 +1,8 @@
+// 不同宽度的整数不能直接比较 (没有隐式加宽), 必须先显式 as。
+fn main() {
+    let a: Int8 = 1_i8;
+    let b: Int16 = 1_i16;
+    if a == b {
+        println("impossible");
+    }
+}

@@ -1,0 +1,87 @@
+// 数值类型作为 HashMap / HashSet 的 key: 相等 (用不同表达式算出来) 的 key 必须命中同一个桶。
+// 已有的 hash 用例覆盖 String / Char / Bool 和 Int / UInt, 这里补有符号窄宽度和边界值。
+use std::{assert, assert_eq};
+use std::collections::hashmap::HashMap;
+use std::collections::hashset::HashSet;
+
+fn main() {
+    // ---- HashMap<Int8, Int>: 负 key、边界 key、计算出来的等价 key ----
+    let mut m = (type HashMap<Int8, Int> )::new();
+    m.insert(-5_i8, 10_i);
+    m.insert(127_i8, 20_i);
+    m.insert(Int8::min_value(), 30_i);
+    assert_eq(m.len(), 3_u);
+
+    let computed: Int8 = 0_i8 - 5_i8;
+    let v = m.at(&computed);
+    if v is Some(x) {
+        assert_eq(x, 10_i);
+    } else {
+        assert(false, "computed -5_i8 没有命中");
+    }
+
+    let vmin = m.at(&Int8::min_value());
+    if vmin is Some(x) {
+        assert_eq(x, 30_i);
+    } else {
+        assert(false, "Int8::min_value() 没有命中");
+    }
+    assert(m.contains(&127_i8));
+    assert(!m.contains(&126_i8));
+
+    // 覆盖写入: 长度不变
+    m.insert(127_i8, 21_i);
+    assert_eq(m.len(), 3_u);
+    let v2 = m.at(&127_i8);
+    if v2 is Some(x) {
+        assert_eq(x, 21_i);
+    } else {
+        assert(false, "覆盖后的 127_i8 丢失");
+    }
+
+    // ---- HashSet<UInt32>: min / max 边界 ----
+    let mut s = (type HashSet<UInt32>)::new();
+    s.insert(UInt32::min_value());
+    s.insert(UInt32::max_value());
+    s.insert(4294967295_u32); // 和 max_value 是同一个值
+    assert_eq(s.len(), 2_u);
+    assert(s.contains(&0_u32));
+    assert(s.contains(&4294967295_u32));
+    assert(s.contains(&UInt32::max_value()));
+    assert(!s.contains(&1_u32));
+
+    // ---- HashSet<UInt64> 边界 ----
+    let mut s64 = (type HashSet<UInt64>)::new();
+    s64.insert(UInt64::max_value());
+    s64.insert(0_u64);
+    assert_eq(s64.len(), 2_u);
+    assert(s64.contains(&UInt64::max_value()));
+    assert(s64.contains(&0_u64));
+
+    // ---- HashMap<Short, Int> ----
+    let mut sm = (type HashMap<Short, Int> )::new();
+    let k1: Short = -2147483648;
+    let k2: Short = 2147483647;
+    sm.insert(k1, 1_i);
+    sm.insert(k2, 2_i);
+    sm.insert(k1, 3_i);
+    assert_eq(sm.len(), 2_u);
+    let sv = sm.at(&Short::min_value());
+    if sv is Some(x) {
+        assert_eq(x, 3_i);
+    } else {
+        assert(false, "Short::min_value() 没有命中");
+    }
+    assert(sm.contains(&Short::max_value()));
+
+    // ---- HashSet<Int16> 负值 ----
+    let mut s16 = (type HashSet<Int16>)::new();
+    s16.insert(-1_i16);
+    s16.insert(Int16::min_value());
+    s16.insert(0_i16);
+    assert_eq(s16.len(), 3_u);
+    assert(s16.contains(&(0_i16 - 1_i16)));
+    assert(s16.contains(&Int16::min_value()));
+
+    println("numeric hash keys ok");
+}

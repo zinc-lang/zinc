@@ -1,0 +1,81 @@
+// 含析构值 (Drop) 的元素放进 Option / Result 之后的析构次数:
+//   - 正常作用域结束时恰好析构一次
+//   - Option 被覆盖为 None / 另一个 Some 时, 旧值恰好析构一次
+// D 含一个 String 成员, 因此是非平凡类型 (值拷贝会做引用计数处理), 不会踩到
+// "成员全是位拷贝却实现 Drop" 的警告。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+struct D {
+    p: *raw mut Int,
+    s: String,
+}
+
+impl Drop for D {
+    fn drop(&mut self) {
+        unsafe { *self.p = *self.p + 1_i; }
+    }
+}
+
+fn make_d(q: *raw mut Int) -> D {
+    return { .p = q, .s = String::from_str("d") }: D;
+}
+
+fn main() {
+    // 直接作用域: 1 次
+    let mut a = 0_i;
+    {
+        let d = make_d(&mut a as *raw mut Int);
+        assert_eq(a, 0_i);
+    }
+    assert_eq(a, 1_i);
+
+    // Option<D> 正常结束: 1 次
+    let mut b = 0_i;
+    {
+        let o: Option<D> = Some(make_d(&mut b as *raw mut Int));
+        assert(o is Option::Some(_));
+        assert_eq(b, 0_i);
+    }
+    assert_eq(b, 1_i);
+
+    // Option 覆盖为 None: 旧值立即析构一次, 作用域结束不再析构
+    let mut c = 0_i;
+    {
+        let mut o: Option<D> = Some(make_d(&mut c as *raw mut Int));
+        assert_eq(c, 0_i);
+        o = (type Option<D>)::None;
+        assert_eq(c, 1_i);
+        assert(o is Option::None);
+    }
+    assert_eq(c, 1_i);
+
+    // Option 覆盖为另一个 Some: 旧值先析构, 新值在作用域结束时析构
+    let mut e = 0_i;
+    {
+        let mut o: Option<D> = Some(make_d(&mut e as *raw mut Int));
+        assert_eq(e, 0_i);
+        o = Some(make_d(&mut e as *raw mut Int));
+        assert_eq(e, 1_i);
+        assert(o is Option::Some(_));
+    }
+    assert_eq(e, 2_i);
+
+    // Result<D, Int> 的 Ok 分支: 1 次
+    let mut f = 0_i;
+    {
+        let r: Result<D, Int> = (type Result<D, Int>)::Ok(make_d(&mut f as *raw mut Int));
+        assert(r is Result::Ok(_));
+        assert_eq(f, 0_i);
+    }
+    assert_eq(f, 1_i);
+
+    // Result<Int, D> 的 Err 分支: 1 次
+    let mut g = 0_i;
+    {
+        let r: Result<Int, D> = (type Result<Int, D>)::Err(make_d(&mut g as *raw mut Int));
+        assert(r is Result::Err(_));
+        assert_eq(g, 0_i);
+    }
+    assert_eq(g, 1_i);
+}

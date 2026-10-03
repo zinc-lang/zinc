@@ -1,0 +1,77 @@
+// HashMap 基本语义: 插入 / 查询 / 删除 / 长度, 覆盖写返回旧值,
+// 查询不存在的 key 一律返回 None/false。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut m = (type HashMap<UInt, UInt>)::new();
+    assert(m.is_empty());
+    assert_eq(m.len(), 0_u);
+    assert(m.capacity() >= 1_u);
+
+    // 空表查询
+    assert(m.get(&1_u) is None);
+    assert(m.at(&1_u) is None);
+    assert(!m.contains(&1_u));
+    let r0 = m.remove(&1_u);
+    assert(r0 is None);
+
+    // 插入
+    m.insert(1_u, 10_u);
+    m.insert(2_u, 20_u);
+    m.insert(3_u, 30_u);
+    assert_eq(m.len(), 3_u);
+    assert(!m.is_empty());
+    assert(m.contains(&1_u));
+    assert(m.contains(&3_u));
+    assert(!m.contains(&4_u));
+
+    // at 返回值
+    assert_eq(m.at(&1_u).get_or_panic(), 10_u);
+    assert_eq(m.at(&3_u).get_or_panic(), 30_u);
+    assert(m.at(&4_u) is None);
+
+    // get 返回引用
+    let g = m.get(&2_u);
+    assert(g is Some(_));
+    if g is Some(x) {
+        assert_eq(*x.item, 20_u);
+    } else {
+        assert(false, "get(2) should be Some");
+    }
+    assert(m.get(&9_u) is None);
+
+    // 覆盖写: 长度不变, 返回旧值, 新值生效
+    let old = m.insert(2_u, 200_u);
+    assert(old is Some(_));
+    if old is Some(v) {
+        assert_eq(v, 20_u);
+    }
+    assert_eq(m.len(), 3_u);
+    assert_eq(m.at(&2_u).get_or_panic(), 200_u);
+
+    // 删除: 返回当前值, 长度减一, 再查为 None
+    let removed = m.remove(&1_u);
+    assert(removed is Some(_));
+    if removed is Some(v) {
+        assert_eq(v, 10_u);
+    }
+    assert_eq(m.len(), 2_u);
+    assert(!m.contains(&1_u));
+    assert(m.get(&1_u) is None);
+    let again = m.remove(&1_u);
+    assert(again is None);
+
+    // 删除后重新插入同一个 key
+    m.insert(1_u, 11_u);
+    assert_eq(m.len(), 3_u);
+    assert_eq(m.at(&1_u).get_or_panic(), 11_u);
+
+    // clear 之后重新使用
+    m.clear();
+    assert_eq(m.len(), 0_u);
+    assert(m.is_empty());
+    assert(!m.contains(&2_u));
+    m.insert(5_u, 50_u);
+    assert_eq(m.len(), 1_u);
+    assert_eq(m.at(&5_u).get_or_panic(), 50_u);
+}

@@ -1,0 +1,270 @@
+// 各整数类型暴露的方法签名 (只做类型检查, 运行期行为在 run-pass 里验证)。
+// 覆盖 Int / UInt / Int8..64 / UInt8..64 / Short / UShort 的:
+// 位运算、min/max_value、wrapping_*、checked_*、saturating_*、ToString、Clone、Default。
+use std::primitives::string::ToString;
+use std::hash::{Hash, Hasher, default_hasher};
+use std::cmp::Ordering;
+
+fn int_api() {
+    let v: Int = 0x0F_i;
+    let _r: Int = v.reverse_bits();
+    let _l: Int = v.rotate_left(1_u32);
+    let _rr: Int = v.rotate_right(1_u32);
+    let _a: Int = v.bit_and(0xFF_i);
+    let _o: Int = v.bit_or(0xF0_i);
+    let _x: Int = v.bit_xor(0xFF_i);
+    let _n: Int = v.bit_not();
+    let _sl: Int = v.bit_shl(1_u32);
+    let _sr: Int = v.bit_shr(1_u32);
+    let _min: Int = Int::min_value();
+    let _max: Int = Int::max_value();
+    let _wa: Int = v.wrapping_add(1_i);
+    let _ws: Int = v.wrapping_sub(1_i);
+    let _wm: Int = v.wrapping_mul(2_i);
+    let _ca: Option<Int> = v.checked_add(1_i);
+    let _cs: Option<Int> = v.checked_sub(1_i);
+    let _cm: Option<Int> = v.checked_mul(2_i);
+    let _sa: Int = v.saturating_add(1_i);
+    let _ss: Int = v.saturating_sub(1_i);
+    let _sm: Int = v.saturating_mul(2_i);
+    let _ts: String = v.to_string();
+    let _cl: Int = v.clone();
+    let _df: Int = Int::default();
+    let mut h = default_hasher();
+    v.hash(&mut h);
+    let _hf: UInt64 = h.finish();
+}
+
+fn uint_api() {
+    let v: UInt = 0x0F_u;
+    let _r: UInt = v.reverse_bits();
+    let _l: UInt = v.rotate_left(1_u32);
+    let _rr: UInt = v.rotate_right(1_u32);
+    let _a: UInt = v.bit_and(0xFF_u);
+    let _o: UInt = v.bit_or(0xF0_u);
+    let _x: UInt = v.bit_xor(0xFF_u);
+    let _n: UInt = v.bit_not();
+    let _sl: UInt = v.bit_shl(1_u32);
+    let _sr: UInt = v.bit_shr(1_u32);
+    let _min: UInt = UInt::min_value();
+    let _max: UInt = UInt::max_value();
+    let _wa: UInt = v.wrapping_add(1_u);
+    let _ws: UInt = v.wrapping_sub(1_u);
+    let _wm: UInt = v.wrapping_mul(2_u);
+    let _ca: Option<UInt> = v.checked_add(1_u);
+    let _cs: Option<UInt> = v.checked_sub(1_u);
+    let _cm: Option<UInt> = v.checked_mul(2_u);
+    let _sa: UInt = v.saturating_add(1_u);
+    let _ss: UInt = v.saturating_sub(1_u);
+    let _sm: UInt = v.saturating_mul(2_u);
+    let _ts: String = v.to_string();
+    let _cl: UInt = v.clone();
+    let _df: UInt = UInt::default();
+    let mut h = default_hasher();
+    v.hash(&mut h);
+    let _hf: UInt64 = h.finish();
+}
+
+fn int8_api() {
+    let v: Int8 = 0x0F_i8;
+    let _r: Int8 = v.reverse_bits();
+    let _l: Int8 = v.rotate_left(1_u32);
+    let _a: Int8 = v.bit_and(0x0F_i8);
+    let _n: Int8 = v.bit_not();
+    let _sl: Int8 = v.bit_shl(1_u32);
+    let _sr: Int8 = v.bit_shr(1_u32);
+    let _min: Int8 = Int8::min_value();
+    let _max: Int8 = Int8::max_value();
+    let _wa: Int8 = v.wrapping_add(1_i8);
+    let _ca: Option<Int8> = v.checked_add(1_i8);
+    let _cm: Option<Int8> = v.checked_mul(2_i8);
+    let _sa: Int8 = v.saturating_mul(2_i8);
+    let _ts: String = v.to_string();
+    let _cl: Int8 = v.clone();
+    let _df: Int8 = Int8::default();
+}
+
+fn int16_api() {
+    let v: Int16 = 0x0F_i16;
+    let _r: Int16 = v.reverse_bits();
+    let _l: Int16 = v.rotate_left(1_u32);
+    let _a: Int16 = v.bit_and(0xFF_i16);
+    let _n: Int16 = v.bit_not();
+    let _sl: Int16 = v.bit_shl(1_u32);
+    let _sr: Int16 = v.bit_shr(1_u32);
+    let _min: Int16 = Int16::min_value();
+    let _max: Int16 = Int16::max_value();
+    let _ca: Option<Int16> = v.checked_sub(1_i16);
+    let _sa: Int16 = v.saturating_add(1_i16);
+    let _ts: String = v.to_string();
+    let _cl: Int16 = v.clone();
+    let _df: Int16 = Int16::default();
+}
+
+fn int32_api() {
+    let v: Int32 = 0x0F_i32;
+    let _r: Int32 = v.reverse_bits();
+    let _l: Int32 = v.rotate_left(1_u32);
+    let _a: Int32 = v.bit_and(0xFF_i32);
+    let _n: Int32 = v.bit_not();
+    let _sl: Int32 = v.bit_shl(1_u32);
+    let _sr: Int32 = v.bit_shr(1_u32);
+    let _min: Int32 = Int32::min_value();
+    let _max: Int32 = Int32::max_value();
+    let _ca: Option<Int32> = v.checked_add(1_i32);
+    let _sa: Int32 = v.saturating_mul(2_i32);
+    let _ts: String = v.to_string();
+    let _cl: Int32 = v.clone();
+    let _df: Int32 = Int32::default();
+}
+
+fn int64_api() {
+    let v: Int64 = 0x0F_i64;
+    let _r: Int64 = v.reverse_bits();
+    let _l: Int64 = v.rotate_right(1_u32);
+    let _a: Int64 = v.bit_and(0xFF_i64);
+    let _n: Int64 = v.bit_not();
+    let _sl: Int64 = v.bit_shl(1_u32);
+    let _sr: Int64 = v.bit_shr(1_u32);
+    let _min: Int64 = Int64::min_value();
+    let _max: Int64 = Int64::max_value();
+    let _ca: Option<Int64> = v.checked_add(1_i64);
+    let _sa: Int64 = v.saturating_sub(1_i64);
+    let _ts: String = v.to_string();
+    let _cl: Int64 = v.clone();
+    let _df: Int64 = Int64::default();
+}
+
+fn uint8_api() {
+    let v: UInt8 = 0x0F_u8;
+    let _r: UInt8 = v.reverse_bits();
+    let _l: UInt8 = v.rotate_left(1_u32);
+    let _a: UInt8 = v.bit_and(0xFF_u8);
+    let _n: UInt8 = v.bit_not();
+    let _sl: UInt8 = v.bit_shl(1_u32);
+    let _sr: UInt8 = v.bit_shr(1_u32);
+    let _min: UInt8 = UInt8::min_value();
+    let _max: UInt8 = UInt8::max_value();
+    let _ca: Option<UInt8> = v.checked_add(1_u8);
+    let _sa: UInt8 = v.saturating_mul(2_u8);
+    let _ts: String = v.to_string();
+    let _cl: UInt8 = v.clone();
+    let _df: UInt8 = UInt8::default();
+}
+
+fn uint16_api() {
+    let v: UInt16 = 0x0F_u16;
+    let _r: UInt16 = v.reverse_bits();
+    let _l: UInt16 = v.rotate_left(1_u32);
+    let _a: UInt16 = v.bit_and(0xFF_u16);
+    let _n: UInt16 = v.bit_not();
+    let _sl: UInt16 = v.bit_shl(1_u32);
+    let _sr: UInt16 = v.bit_shr(1_u32);
+    let _min: UInt16 = UInt16::min_value();
+    let _max: UInt16 = UInt16::max_value();
+    let _ca: Option<UInt16> = v.checked_sub(1_u16);
+    let _sa: UInt16 = v.saturating_add(1_u16);
+    let _ts: String = v.to_string();
+    let _cl: UInt16 = v.clone();
+    let _df: UInt16 = UInt16::default();
+}
+
+fn uint32_api() {
+    let v: UInt32 = 0x0F_u32;
+    let _r: UInt32 = v.reverse_bits();
+    let _l: UInt32 = v.rotate_left(1_u32);
+    let _a: UInt32 = v.bit_and(0xFF_u32);
+    let _n: UInt32 = v.bit_not();
+    let _sl: UInt32 = v.bit_shl(1_u32);
+    let _sr: UInt32 = v.bit_shr(1_u32);
+    let _min: UInt32 = UInt32::min_value();
+    let _max: UInt32 = UInt32::max_value();
+    let _ca: Option<UInt32> = v.checked_mul(2_u32);
+    let _sa: UInt32 = v.saturating_mul(2_u32);
+    let _ts: String = v.to_string();
+    let _cl: UInt32 = v.clone();
+    let _df: UInt32 = UInt32::default();
+}
+
+fn uint64_api() {
+    let v: UInt64 = 0x0F_u64;
+    let _r: UInt64 = v.reverse_bits();
+    let _l: UInt64 = v.rotate_right(1_u32);
+    let _a: UInt64 = v.bit_and(0xFF_u64);
+    let _n: UInt64 = v.bit_not();
+    let _sl: UInt64 = v.bit_shl(1_u32);
+    let _sr: UInt64 = v.bit_shr(1_u32);
+    let _min: UInt64 = UInt64::min_value();
+    let _max: UInt64 = UInt64::max_value();
+    let _ca: Option<UInt64> = v.checked_add(1_u64);
+    let _sa: UInt64 = v.saturating_sub(1_u64);
+    let _ts: String = v.to_string();
+    let _cl: UInt64 = v.clone();
+    let _df: UInt64 = UInt64::default();
+}
+
+fn short_api() {
+    let v: Short = 15;
+    let _r: Short = v.reverse_bits();
+    let _l: Short = v.rotate_left(1_u32);
+    let _a: Short = v.bit_and(255);
+    let _n: Short = v.bit_not();
+    let _sl: Short = v.bit_shl(1_u32);
+    let _sr: Short = v.bit_shr(1_u32);
+    let _min: Short = Short::min_value();
+    let _max: Short = Short::max_value();
+    let _ca: Option<Short> = v.checked_add(1);
+    let _sa: Short = v.saturating_mul(2);
+    let _ts: String = v.to_string();
+    let _cl: Short = v.clone();
+    let _df: Short = Short::default();
+}
+
+fn ushort_api() {
+    let v: UShort = 15;
+    let _r: UShort = v.reverse_bits();
+    let _l: UShort = v.rotate_left(1_u32);
+    let _a: UShort = v.bit_and(255);
+    let _n: UShort = v.bit_not();
+    let _sl: UShort = v.bit_shl(1_u32);
+    let _sr: UShort = v.bit_shr(1_u32);
+    let _min: UShort = UShort::min_value();
+    let _max: UShort = UShort::max_value();
+    let _ca: Option<UShort> = v.checked_add(1);
+    let _sa: UShort = v.saturating_mul(2);
+    let _ts: String = v.to_string();
+    let _cl: UShort = v.clone();
+    let _df: UShort = UShort::default();
+}
+
+fn float_api() {
+    let a: F64 = 1.5;
+    let b: F32 = 1.5_f32;
+    let _na: Bool = a.is_nan();
+    let _nb: Bool = b.is_nan();
+    let _tsa: String = a.to_string();
+    let _tsb: String = b.to_string();
+    let _cla: F64 = a.clone();
+    let _clb: F32 = b.clone();
+    let _dfa: F64 = F64::default();
+    let _dfb: F32 = F32::default();
+    let _pc: Option<Ordering> = a.partial_cmp(&a);
+    let _eq: Bool = a.eq(&a);
+    let _lt: Bool = a.lt(&a);
+}
+
+fn main() {
+    int_api();
+    uint_api();
+    int8_api();
+    int16_api();
+    int32_api();
+    int64_api();
+    uint8_api();
+    uint16_api();
+    uint32_api();
+    uint64_api();
+    short_api();
+    ushort_api();
+    float_api();
+}

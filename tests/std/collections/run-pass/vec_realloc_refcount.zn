@@ -1,0 +1,58 @@
+// 独占 Vec 发生重新分配 (push 扩容 / reserve / extend_from_slice 扩容) 之后,
+// 旧缓冲区里的元素句柄必须被正确交接: 每个元素只能被新缓冲区持有一次 (rc == 1)。
+// 回归: 独占分支的重新分配必须用 mem_move 搬运句柄 (转移所有权); 若改用 mem_copy
+// 又直接丢弃旧缓冲区, 每个原有元素会永久多出 1 个强引用 (内存泄漏, 内层缓冲区不释放)。
+use std::{assert, assert_eq};
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn rc_of(v: &Vec<Vec<Int>>, i: UInt) -> UInt {
+    let p = unsafe(v.get_unchecked(i));
+    return p.ref_count() as UInt;
+}
+
+fn main() {
+    // push 扩容
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        let mut i: Int = 0_i;
+        while i < 5_i {
+            v.push(mk(i));
+            i += 1_i;
+        }
+        assert_eq(v.len(), 5_u);
+        let mut j: UInt = 0_u;
+        while j < 4_u {
+            assert_eq(rc_of(&v, j), 1_u);
+            j += 1_u;
+        }
+    }
+
+    // reserve
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        v.push(mk(2_i));
+        v.reserve(10_u);
+        assert_eq(rc_of(&v, 0_u), 1_u);
+        assert_eq(rc_of(&v, 1_u), 1_u);
+    }
+
+    // extend_from_slice 触发扩容
+    {
+        let mut v = (type Vec<Vec<Int>>)::with_capacity(1_u);
+        v.push(mk(7_i));
+        let mut src = (type Vec<Vec<Int>>)::new();
+        src.push(mk(8_i));
+        src.push(mk(9_i));
+        v.extend_from_slice(src.as_slice().deref());
+        assert_eq(v.len(), 3_u);
+        assert_eq(rc_of(&v, 0_u), 1_u);
+        assert_eq(rc_of(&v, 1_u), 2_u); // v + src
+        assert_eq(rc_of(&src, 0_u), 2_u);
+    }
+}

@@ -1,0 +1,60 @@
+// Vec::extend_from_slice / Vec::from(slice) / as_slice: 追加会复制元素,
+// 目标与源互相独立; 追加时容量不足会扩容且顺序不变。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut a = (type Vec<Int>)::new();
+    a.push(1_i);
+    a.push(2_i);
+
+    let mut b = (type Vec<Int>)::new();
+    b.push(3_i);
+    b.push(4_i);
+    b.push(5_i);
+
+    a.extend_from_slice(b.as_slice().deref());
+    assert_eq(a.len(), 5_u);
+    assert_eq(a.at(0_u).get_or_panic(), 1_i);
+    assert_eq(a.at(1_u).get_or_panic(), 2_i);
+    assert_eq(a.at(2_u).get_or_panic(), 3_i);
+    assert_eq(a.at(3_u).get_or_panic(), 4_i);
+    assert_eq(a.at(4_u).get_or_panic(), 5_i);
+    assert(a.capacity() >= a.len());
+
+    // 源不受影响, 双方独立
+    assert_eq(b.len(), 3_u);
+    b.push(6_i);
+    assert_eq(a.len(), 5_u);
+    assert_eq(b.len(), 4_u);
+
+    // 追加空 slice 不改变内容
+    let empty = (type Vec<Int>)::new();
+    a.extend_from_slice(empty.as_slice().deref());
+    assert_eq(a.len(), 5_u);
+
+    // 扩容路径: 目标容量只有 1, 追加 3 个元素
+    let mut c = (type Vec<Int>)::with_capacity(1_u);
+    c.push(0_i);
+    c.extend_from_slice(b.as_slice().deref());
+    assert_eq(c.len(), 5_u);
+    assert(c.capacity() >= c.len());
+    assert_eq(c.at(0_u).get_or_panic(), 0_i);
+    assert_eq(c.at(1_u).get_or_panic(), 3_i);
+    assert_eq(c.at(4_u).get_or_panic(), 6_i);
+
+    // Vec::from 得到一份独立拷贝
+    let d = (type Vec<Int>)::from(b.as_slice().deref());
+    assert_eq(d.len(), b.len());
+    assert(d.eq(&b));
+    b.push(7_i);
+    assert_eq(d.len(), 4_u);
+    assert_eq(b.len(), 5_u);
+
+    // as_slice/Deref 是快照: len 不随之后 push 变化
+    let mut e = (type Vec<Int>)::new();
+    e.push(1_i);
+    let view = e.as_slice();
+    e.push(2_i);
+    assert_eq(view.deref().len(), 1_u);
+    assert_eq(*view.deref().get(0_u).get_or_panic(), 1_i);
+}

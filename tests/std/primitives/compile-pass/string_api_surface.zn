@@ -1,0 +1,59 @@
+// String 现有公开 API 的类型检查 (compile-pass):
+// 把所有实际存在的方法都调用一遍, 防止 API 被误删/改签名。
+use std::primitives::string::ToString;
+use std::primitives::string::FromUtf8Error;
+
+fn main() {
+    let mut s: String = String::new();
+    let mut w: String = String::with_capacity(16_u);
+    let _cap: UInt = w.capacity();
+    let _len: UInt = s.len();
+    let _empty: Bool = s.is_empty();
+    let _p: *raw UInt8 = s.raw_ptr();
+
+    s.push_str("hello");
+    s.push(32_u8);
+    s.push_char('中');
+    let _b: UInt8 = s.index(0_u);
+    let _s1: StringSlice = s.slice(1_u);
+    let _s2: StringSlice = s.slice(0_u, 2_u);
+    let _as: StringSlice = s.as_str();
+    let _str: Str = s.as_str().deref();
+
+    s.insert(1_u, 'x');
+    s.insert_byte(2_u, 121_u8);
+    s.insert_str(0_u, "pre");
+    s.reserve(32_u);
+    s.reverse();
+    let _starts: Bool = s.starts_with("pre");
+    let _ends: Bool = s.ends_with("pre");
+    let _eq: Bool = s.eq(&w);
+    let _ne: Bool = s.ne(&w);
+
+    let mut t: String = String::from_str("abc");
+    let _same: Bool = t.eq(&String::from_str("abc"));
+    let _bytes: Vec<UInt8> = t.bytes();
+
+    let mut buf: String = String::new();
+    t.to_string_inplace(&mut buf);
+    let _ts: String = t.to_string();
+    let _ts2: String = t.as_str().to_string();
+    let _ts3: String = "lit".to_string();
+    let _ts4: String = t.deref().to_string();
+
+    // from_utf8 返回 Result
+    let mut v: Vec<UInt8> = (type Vec<UInt8>)::new();
+    v.push(97_u8);
+    let r: Result<String, FromUtf8Error> = String::from_utf8(v);
+    match r {
+        Result::Ok(ok) => {
+            let _l: UInt = ok.len();
+        }
+        Result::Err(_e) => {
+            let _x: Int = 0_i;
+        }
+    }
+
+    s.clear();
+    let _cleared: Bool = s.is_empty();
+}

@@ -1,0 +1,74 @@
+// String 的容量/预留 (reserve) 与 bytes() 视图语义:
+//   - 不断 push 时 cap >= len 始终成立, len 精确递增
+//   - reserve 之后容量足够、已有内容不丢
+//   - bytes() 返回的 Vec 与 String 共享缓冲区, 但任一方修改都必须 copy-on-write
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    // 空串的各种入口
+    let e = String::from_str("");
+    assert(e.is_empty());
+    assert_eq(e.len(), 0_u);
+    assert(e.eq(&String::new()));
+    assert(e.starts_with(""));
+    assert(e.ends_with(""));
+    assert(!e.starts_with("a"));
+
+    let mut z = String::from_str("");
+    z.push(97_u8); // 'a'
+    assert(z.eq(&String::from_str("a")));
+
+    // with_capacity(0) 之后仍可正常增长
+    let mut c0 = String::with_capacity(0_u);
+    c0.push_str("abc");
+    assert(c0.eq(&String::from_str("abc")));
+    assert(c0.capacity() >= c0.len());
+
+    // 容量增长时 cap >= len, 内容不丢
+    let mut g = String::new();
+    let mut i: UInt = 0;
+    while i < 100_u {
+        g.push(120_u8); // 'x'
+        assert(g.capacity() >= g.len());
+        assert_eq(g.len(), i + 1_u);
+        i += 1_u;
+    }
+    assert_eq(g.len(), 100_u);
+    let mut j: UInt = 0;
+    while j < 100_u {
+        assert_eq(g.index(j), 120_u8);
+        j += 1_u;
+    }
+
+    // reserve: 容量足够且内容保持
+    let mut r = String::from_str("abc");
+    let cap_before = r.capacity();
+    r.reserve(100_u);
+    assert(r.capacity() >= 103_u);
+    assert(r.capacity() >= cap_before);
+    assert(r.eq(&String::from_str("abc")));
+    r.push_str("def");
+    assert(r.eq(&String::from_str("abcdef")));
+    assert(r.capacity() >= r.len());
+
+    // bytes(): 与 String 解耦 (两侧各自修改互不影响)
+    let mut s2 = String::from_str("abc");
+    let mut b = s2.bytes();
+    assert_eq(b.len(), 3_u);
+    b.push(100_u8); // 'd'
+    assert_eq(b.len(), 4_u);
+    assert_eq(b.at(3_u).get_or_panic(), 100_u8);
+    assert_eq(s2.len(), 3_u);
+    s2.push_str("xy");
+    assert(s2.eq(&String::from_str("abcxy")));
+    assert_eq(b.len(), 4_u);
+    assert_eq(b.at(0_u).get_or_panic(), 97_u8);
+    assert_eq(b.at(3_u).get_or_panic(), 100_u8);
+
+    // 把自身视图追加到自身: 必须得到两倍内容
+    let mut sa = String::from_str("ab");
+    sa.push_str(sa.as_str().deref());
+    assert(sa.eq(&String::from_str("abab")));
+    assert_eq(sa.len(), 4_u);
+}

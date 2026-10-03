@@ -1,0 +1,21 @@
+// with_capacity(0) 得到的 Vec 容量为 0; insert 必须像 push 一样先扩容再写,
+// 不能按 `cap * 2 == 0` 分配 0 字节的缓冲区再越界写入。
+// 回归: 曾经直接按 `cap * 2 == 0` 分配 0 字节缓冲区, cap 保持 0 而 len 变成 1,
+// 容量不变量被破坏 (堆越界写)。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut v = (type Vec<Int>)::with_capacity(0_u);
+    assert_eq(v.capacity(), 0_u);
+    v.insert(0_u, 42_i);
+    assert_eq(v.len(), 1_u);
+    assert(v.capacity() >= v.len());
+    assert_eq(v.at(0_u).get_or_panic(), 42_i);
+
+    // 继续 insert 也不能继续越界
+    v.insert(1_u, 43_i);
+    assert_eq(v.len(), 2_u);
+    assert(v.capacity() >= v.len());
+    assert_eq(v.at(0_u).get_or_panic(), 42_i);
+    assert_eq(v.at(1_u).get_or_panic(), 43_i);
+}

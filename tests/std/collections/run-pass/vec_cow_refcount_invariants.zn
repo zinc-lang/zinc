@@ -1,0 +1,133 @@
+// Vec 元素引用计数不变量: 对"值拷贝之后 copy-on-write"的各条路径,
+// 每个元素缓冲区的强引用数必须等于真正持有它的 Vec (或返回的 Option) 数量。
+// 用 Vec<Vec<Int>> 做元素: 内层 Vec 的 ref_count() 可以被观察到。
+//
+// 只覆盖当前行为正确的路径 (push / reserve / extend_from_slice / to_unique /
+// pop / pop_front / clear / from(slice) 的共享分支)。
+use std::{assert, assert_eq};
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn rc_of(v: &Vec<Vec<Int>>, i: UInt) -> UInt {
+    let p = unsafe(v.get_unchecked(i));
+    return p.ref_count() as UInt;
+}
+
+fn main() {
+    // push 的 COW: v 与 w 各持一份, 内层引用计数为 2
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        let mut w = v;
+        assert_eq(v.ref_count() as UInt, 2_u);
+        v.push(mk(2_i));
+        assert_eq(rc_of(&v, 0_u), 2_u);
+        assert_eq(rc_of(&w, 0_u), 2_u);
+        assert_eq(v.at(0_u).get_or_panic().at(0_u).get_or_panic(), 1_i);
+        assert_eq(w.at(0_u).get_or_panic().at(0_u).get_or_panic(), 1_i);
+    }
+
+    // reserve 的 COW
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        v.push(mk(2_i));
+        let mut w = v;
+        v.reserve(10_u);
+        assert_eq(rc_of(&v, 0_u), 2_u);
+        assert_eq(rc_of(&v, 1_u), 2_u);
+        assert_eq(rc_of(&w, 0_u), 2_u);
+        assert_eq(rc_of(&w, 1_u), 2_u);
+    }
+
+    // extend_from_slice 的 COW: src / v / w 三方各持一份
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        let mut w = v;
+        let mut other = (type Vec<Vec<Int>>)::new();
+        other.push(mk(2_i));
+        v.extend_from_slice(other.as_slice().deref());
+        assert_eq(rc_of(&v, 0_u), 2_u); // v + w
+        assert_eq(rc_of(&v, 1_u), 2_u); // v + other
+        assert_eq(rc_of(&w, 0_u), 2_u);
+        assert_eq(rc_of(&other, 0_u), 2_u);
+    }
+
+    // to_unique 的拷贝
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        v.push(mk(2_i));
+        let mut w = v;
+        v.to_unique();
+        assert_eq(rc_of(&v, 0_u), 2_u);
+        assert_eq(rc_of(&w, 0_u), 2_u);
+        // 内容一致
+        assert_eq(v.at(1_u).get_or_panic().at(0_u).get_or_panic(), 2_i);
+        assert_eq(w.at(1_u).get_or_panic().at(0_u).get_or_panic(), 2_i);
+    }
+
+    // pop 的 COW: 弹出的元素在返回值和 w 之间共享
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        v.push(mk(2_i));
+        let mut w = v;
+        {
+            let a = v.pop();
+            assert(a is Some(_));
+            assert_eq(rc_of(&v, 0_u), 2_u); // v 的新缓冲区 + w
+            assert_eq(rc_of(&w, 0_u), 2_u); // w + v 的新缓冲区
+            assert_eq(rc_of(&w, 1_u), 2_u); // w + 返回的 a
+        }
+        // a 析构之后, w 里的第二个元素恢复为独占
+        assert_eq(rc_of(&w, 1_u), 1_u);
+        assert_eq(w.len(), 2_u);
+        assert_eq(v.len(), 1_u);
+    }
+
+    // pop_front 的 COW
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        v.push(mk(2_i));
+        let mut w = v;
+        {
+            let a = v.pop_front();
+            assert(a is Some(_));
+            assert_eq(rc_of(&v, 0_u), 2_u); // mk2: v 的新缓冲区 + w
+            assert_eq(rc_of(&w, 0_u), 2_u); // mk1: w + a
+            assert_eq(rc_of(&w, 1_u), 2_u); // mk2: w + v 的新缓冲区
+        }
+        assert_eq(rc_of(&w, 0_u), 1_u);
+        assert_eq(v.at(0_u).get_or_panic().at(0_u).get_or_panic(), 2_i);
+    }
+
+    // clear 的共享分支: 只清空自己, 老缓冲区完整留给别名
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        v.push(mk(2_i));
+        let mut w = v;
+        v.clear();
+        assert_eq(v.len(), 0_u);
+        assert_eq(rc_of(&w, 0_u), 1_u);
+        assert_eq(rc_of(&w, 1_u), 1_u);
+        assert_eq(w.at(0_u).get_or_panic().at(0_u).get_or_panic(), 1_i);
+    }
+
+    // Vec::from(slice): 目标与源各持一份
+    {
+        let mut src = (type Vec<Vec<Int>>)::new();
+        src.push(mk(1_i));
+        let v = (type Vec<Vec<Int>>)::from(src.as_slice().deref());
+        assert_eq(rc_of(&v, 0_u), 2_u);
+        assert_eq(rc_of(&src, 0_u), 2_u);
+        assert_eq(v.at(0_u).get_or_panic().at(0_u).get_or_panic(), 1_i);
+    }
+}

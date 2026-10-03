@@ -1,0 +1,54 @@
+// HashMap::or_insert / get_mut / merge:
+//   - or_insert 已存在时不覆盖, 缺失时写入默认值
+//   - get_mut 能就地修改 value
+//   - merge 用另一个表的条目覆盖/追加
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut m = (type HashMap<UInt, UInt>)::new();
+
+    // or_insert 新增
+    let r = m.or_insert(1_u, 10_u);
+    assert_eq(*r.item, 10_u);
+    assert_eq(m.len(), 1_u);
+
+    // or_insert 已存在: 不覆盖, 返回旧值
+    let r2 = m.or_insert(1_u, 99_u);
+    assert_eq(*r2.item, 10_u);
+    assert_eq(m.len(), 1_u);
+    assert_eq(m.at(&1_u).get_or_panic(), 10_u);
+
+    // or_insert 再用在另一个 key
+    let r3 = m.or_insert(2_u, 20_u);
+    assert_eq(*r3.item, 20_u);
+    assert_eq(m.len(), 2_u);
+    assert_eq(m.at(&2_u).get_or_panic(), 20_u);
+
+    // get_mut 就地修改
+    let gm = m.get_mut(&2_u);
+    assert(gm is Some(_));
+    if gm is Some(x) {
+        *x.item = 21_u;
+    }
+    assert_eq(m.at(&2_u).get_or_panic(), 21_u);
+    assert_eq(m.len(), 2_u);
+
+    // get_mut 缺失 key
+    let missing = m.get_mut(&3_u);
+    assert(missing is None);
+
+    // merge: 覆盖已有的, 追加缺失的
+    let mut other = (type HashMap<UInt, UInt>)::new();
+    other.insert(2_u, 222_u);
+    other.insert(3_u, 30_u);
+    other.insert(4_u, 40_u);
+    m.merge(&other);
+    assert_eq(m.len(), 4_u);
+    assert_eq(m.at(&2_u).get_or_panic(), 222_u);
+    assert_eq(m.at(&3_u).get_or_panic(), 30_u);
+    assert_eq(m.at(&4_u).get_or_panic(), 40_u);
+    assert_eq(m.at(&1_u).get_or_panic(), 10_u);
+    // 源表不受影响
+    assert_eq(other.len(), 3_u);
+    assert_eq(other.at(&2_u).get_or_panic(), 222_u);
+}

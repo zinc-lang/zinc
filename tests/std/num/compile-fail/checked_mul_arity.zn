@@ -1,0 +1,4 @@
+// checked_* 只接收一个参数 (rhs), 多传参数必须报错。
+fn main() {
+    let x = 1_i8.checked_mul(1_i8, 2_i8);
+}

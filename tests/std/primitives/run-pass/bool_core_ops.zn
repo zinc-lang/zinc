@@ -1,0 +1,50 @@
+// Bool 的 trait 实现运行期行为:
+// ToString、PartialEq/Eq、PartialOrd/Ord (false < true)、Clone、Default。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+use std::primitives::default::Default;
+use std::cmp::Ordering;
+
+fn main() {
+    // ToString 与插值一致
+    assert(true.to_string().eq(&String::from_str("true")));
+    assert(false.to_string().eq(&String::from_str("false")));
+    assert(f"$(true)".eq(&String::from_str("true")));
+    assert(f"$(false)".eq(&String::from_str("false")));
+
+    // PartialEq / Eq
+    assert(true.eq(&true));
+    assert(false.eq(&false));
+    assert(true.ne(&false));
+    assert(false.ne(&true));
+    assert(!true.ne(&true));
+
+    // PartialOrd / Ord: false < true
+    assert(false.lt(&true));
+    assert(true.gt(&false));
+    assert(true.ge(&true));
+    assert(false.le(&false));
+    assert(!true.lt(&false));
+    assert(!false.gt(&true));
+
+    assert(true.cmp(&true) is Ordering::Equal);
+    assert(false.cmp(&false) is Ordering::Equal);
+    assert(false.cmp(&true) is Ordering::Less);
+    assert(true.cmp(&false) is Ordering::Greater);
+    assert(true.partial_cmp(&false) is Some(Ordering::Greater));
+    assert(false.partial_cmp(&true) is Some(Ordering::Less));
+    assert(true.partial_cmp(&true) is Some(Ordering::Equal));
+
+    // Clone
+    let t = true;
+    let tc = t.clone();
+    assert(tc);
+    let f = false;
+    let fc = f.clone();
+    assert(!fc);
+
+    // Default == false
+    let def: Bool = Bool::default();
+    assert(!def);
+    assert(def.eq(&false));
+}

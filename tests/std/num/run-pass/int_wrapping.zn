@@ -1,0 +1,61 @@
+// 溢出行为: 整数的 + - * 在运行期是环绕 (two's complement), 不 panic。
+// 用函数参数把操作数变成运行期值, 避免被常量折叠掩盖。
+use std::{assert, assert_eq};
+
+fn add_i8(a: Int8, b: Int8) -> Int8 {
+    return a + b;
+}
+fn sub_u8(a: UInt8, b: UInt8) -> UInt8 {
+    return a - b;
+}
+fn mul_i8(a: Int8, b: Int8) -> Int8 {
+    return a * b;
+}
+fn add_i(a: Int, b: Int) -> Int {
+    return a + b;
+}
+fn mul_i(a: Int, b: Int) -> Int {
+    return a * b;
+}
+fn add_u64(a: UInt64, b: UInt64) -> UInt64 {
+    return a + b;
+}
+fn sub_u64(a: UInt64, b: UInt64) -> UInt64 {
+    return a - b;
+}
+fn add_i16(a: Int16, b: Int16) -> Int16 {
+    return a + b;
+}
+fn add_i32(a: Int32, b: Int32) -> Int32 {
+    return a + b;
+}
+
+fn main() {
+    // 有符号: max + 1 -> min, min - 1 -> max
+    assert_eq(add_i8(127_i8, 1_i8), -128_i8);
+    assert_eq(add_i8(Int8::min_value(), -1_i8), 127_i8);
+    assert_eq(add_i16(32767_i16, 1_i16), -32768_i16);
+    assert_eq(add_i32(Int32::max_value(), 1_i32), Int32::min_value());
+    assert_eq(add_i(Int::max_value(), 1_i), Int::min_value());
+    assert_eq(add_i(Int::min_value(), -1_i), Int::max_value());
+
+    // 乘法溢出
+    assert_eq(mul_i8(100_i8, 2_i8), -56_i8);
+    assert_eq(mul_i8(Int8::min_value(), -1_i8), Int8::min_value());
+    assert_eq(mul_i(Int::min_value(), -1_i), Int::min_value());
+
+    // 无符号: 0 - 1 -> max, max + 1 -> 0
+    assert_eq(sub_u8(0_u8, 1_u8), 255_u8);
+    assert_eq(add_i8(255_u8 as Int8, 1_i8), 0_i8);
+    assert_eq(sub_u64(0_u64, 1_u64), UInt64::max_value());
+    assert_eq(add_u64(UInt64::max_value(), 1_u64), 0_u64);
+
+    // 没溢出的普通运算不受影响
+    assert_eq(add_i8(1_i8, 2_i8), 3_i8);
+    assert_eq(add_i8(-1_i8, -2_i8), -3_i8);
+    assert_eq(mul_i8(-3_i8, 4_i8), -12_i8);
+    assert_eq(add_i(5_i, 7_i), 12_i);
+    assert_eq(sub_u64(5_u64, 3_u64), 2_u64);
+
+    println("int wrapping ok");
+}

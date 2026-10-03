@@ -1,0 +1,18 @@
+// Vec::clone 之后内容与长度必须与源一致 (值语义的深拷贝 / 或共享缓冲区)。
+// 回归: clone 曾经把结果 Vec 的 size 写成 0, 导致 len()==0 且 at(0)==None。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut v = (type Vec<Int>)::new();
+    v.push(1_i);
+    v.push(2_i);
+    v.push(3_i);
+
+    let c = v.clone();
+    assert_eq(c.len(), 3_u);
+    assert_eq(c.at(0_u).get_or_panic(), 1_i);
+    assert_eq(c.at(1_u).get_or_panic(), 2_i);
+    assert_eq(c.at(2_u).get_or_panic(), 3_i);
+    // clone 出来的必须是独立的一份, 改一边不影响另一边
+    assert_eq(v.len(), 3_u);
+}

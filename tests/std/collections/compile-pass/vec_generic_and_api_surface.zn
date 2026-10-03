@@ -1,0 +1,72 @@
+// Vec<T> 的泛型使用与 API 类型面: 只要求编译通过 (--check-only)。
+// 这里刻意包含 run-pass 不好断言的路径 (index/index_mut 的越界 panic 分支、
+// unsafe 的 get_unchecked、as_slice/Deref、from(slice)、Iterable::iter)。
+use std::{assert, assert_eq};
+
+fn sum(v: &Vec<UInt>) -> UInt {
+    let mut s: UInt = 0_u;
+    let mut i: UInt = 0_u;
+    while i < v.len() {
+        s += v.at(i).get_or_panic();
+        i += 1_u;
+    }
+    return s;
+}
+
+fn first_or<T>(v: &Vec<T>, fallback: T) -> T {
+    if v.is_empty() {
+        return fallback;
+    }
+    return v.at(0_u).get_or_else(fallback);
+}
+
+fn append_all<T>(dst: &mut Vec<T>, src: &Vec<T>) {
+    let mut i: UInt = 0_u;
+    while i < src.len() {
+        dst.push(src.at(i).get_or_panic());
+        i += 1_u;
+    }
+}
+
+fn main() {
+    let mut v = (type Vec<Int>)::new();
+    v.push(1_i);
+    v.push(2_i);
+
+    // 泛型函数实例化
+    let f = first_or(&v, 0_i);
+    let mut dst = (type Vec<Int>)::new();
+    append_all(&mut dst, &v);
+    assert_eq(dst.len(), 2_u);
+
+    let mut u = (type Vec<UInt>)::new();
+    u.push(3_u);
+    assert_eq(sum(&u), 3_u);
+
+    // panic 路径与 unsafe API 的类型检查
+    let i1 = v.index(0_u);
+    assert_eq(*i1, 1_i);
+    let mut v2 = (type Vec<Int>)::new();
+    v2.push(5_i);
+    let mut m1 = v2.index_mut(0_u);
+    *m1 = 6_i;
+
+    let g = v.get(0_u);
+    let gm = v.get_mut(0_u);
+    let u1 = unsafe(v.get_unchecked(0_u));
+    let u2 = unsafe(v.get_unchecked_mut(0_u));
+    let p = v.raw_ptr();
+
+    let sl = v.as_slice();
+    v.extend_from_slice(sl.deref());
+    let w = (type Vec<Int>)::from(sl.deref());
+    assert_eq(w.len(), 2_u);
+
+    let mut it = v.iter();
+    let nxt = it.next();
+    assert(nxt is Some(_));
+
+    v.reserve(8_u);
+    v.to_unique();
+    assert(v.capacity() >= v.len());
+}

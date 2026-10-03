@@ -1,0 +1,37 @@
+// 共享缓冲区上的 insert 走 copy-on-write: 复制到新缓冲区的元素必须 retain,
+// 这样 v 和 w 各持一份, 元素 rc == 2, 两边互不影响且都不会变成悬垂指针。
+// 回归: insert 的 COW 曾经用 mem_move 裸搬运 (不 retain), rc == 1 ->
+// w 析构时元素缓冲区被释放, v 里的元素变成悬垂引用 (use-after-free)。
+use std::{assert, assert_eq};
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn rc_of(v: &Vec<Vec<Int>>, i: UInt) -> UInt {
+    let p = unsafe(v.get_unchecked(i));
+    return p.ref_count() as UInt;
+}
+
+fn main() {
+    let mut v = (type Vec<Vec<Int>>)::new();
+    v.push(mk(11_i));
+    v.push(mk(22_i));
+    let mut w = v; // 共享
+    assert(v.ref_count() as UInt >= 2_u);
+
+    v.insert(0_u, mk(99_i));
+    assert_eq(v.len(), 3_u);
+    assert_eq(w.len(), 2_u);
+
+    // 新缓冲区里的元素必须也持有一份引用
+    assert_eq(rc_of(&v, 1_u), 2_u);
+    assert_eq(rc_of(&v, 2_u), 2_u);
+    assert_eq(rc_of(&w, 0_u), 2_u);
+
+    // 两边内容都正确
+    assert_eq(v.at(1_u).get_or_panic().at(0_u).get_or_panic(), 11_i);
+    assert_eq(w.at(0_u).get_or_panic().at(0_u).get_or_panic(), 11_i);
+}

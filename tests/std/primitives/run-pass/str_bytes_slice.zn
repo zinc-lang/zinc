@@ -1,0 +1,46 @@
+// Str::as_bytes() 返回 Slice<UInt8>: len / get / contains 的边界行为。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    let b = "abc".as_bytes();
+    assert_eq(b.len(), 3_u);
+
+    // get: 有效下标返回 Some, 越界返回 None
+    assert_eq(*b.get(0_u).get_or_panic(), 97_u8);
+    assert_eq(*b.get(1_u).get_or_panic(), 98_u8);
+    assert_eq(*b.get(2_u).get_or_panic(), 99_u8);
+    assert(b.get(3_u) is Option::None);
+    assert(b.get(100_u) is Option::None);
+
+    // contains 使用 UInt8 的 PartialEq
+    assert(b.contains(&97_u8));
+    assert(b.contains(&99_u8));
+    assert(!b.contains(&122_u8));
+
+    // 空 Slice
+    let e = "".as_bytes();
+    assert_eq(e.len(), 0_u);
+    assert(e.get(0_u) is Option::None);
+    assert(!e.contains(&0_u8));
+
+    // 多字节串的字节视图
+    let u = "héllo".as_bytes();
+    assert_eq(u.len(), 6_u);
+    assert_eq(*u.get(1_u).get_or_panic(), 0xC3_u8);
+    assert_eq(*u.get(2_u).get_or_panic(), 0xA9_u8);
+    assert(u.contains(&0xC3_u8));
+
+    // String::bytes() 返回 Vec<UInt8>, 与 Slice 视图内容一致
+    let s = String::from_str("ab");
+    let v = s.bytes();
+    assert_eq(v.len(), 2_u);
+    assert_eq(v.at(0_u).get_or_panic(), 97_u8);
+    assert_eq(v.at(1_u).get_or_panic(), 98_u8);
+    assert(v.at(2_u) is Option::None);
+
+    // String::raw_ptr 与 bytes 内容一致
+    let rp = s.raw_ptr();
+    assert_eq(unsafe(*rp), 97_u8);
+    assert_eq(unsafe(*(rp + 1_u)), 98_u8);
+}

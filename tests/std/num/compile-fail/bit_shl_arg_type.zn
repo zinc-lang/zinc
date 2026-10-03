@@ -1,0 +1,6 @@
+// bit_shl / bit_shr / rotate_* 的位数参数类型是 UInt32, 传 Int 必须报错
+// (这里曾经出现过把参数按目标类型符号性扩展的隐患, 见 bug 报告)。
+fn main() {
+    let x = 1_i.bit_shl(1_i);
+    println(x);
+}

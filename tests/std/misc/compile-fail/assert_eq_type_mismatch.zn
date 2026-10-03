@@ -1,0 +1,6 @@
+// assert_eq 的两个参数必须是同一类型 (不能隐式转换)。
+use std::assert_eq;
+
+fn main() {
+    assert_eq(1_i, 1_u8);
+}

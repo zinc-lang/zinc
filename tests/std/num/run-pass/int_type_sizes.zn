@@ -1,0 +1,86 @@
+// 各整数/浮点类型的 size_of 与 meta::Type 的 size/align/name (类型检查 + 运行期断言)。
+use std::{assert, assert_eq};
+use std::mem::size_of;
+use std::meta::Type;
+
+struct Pair {
+    a: Int,
+    b: Int,
+}
+
+fn main() {
+    // ---- size_of ----
+    assert_eq(size_of(<Int8>), 1_u);
+    assert_eq(size_of(<UInt8>), 1_u);
+    assert_eq(size_of(<Int16>), 2_u);
+    assert_eq(size_of(<UInt16>), 2_u);
+    assert_eq(size_of(<Int32>), 4_u);
+    assert_eq(size_of(<UInt32>), 4_u);
+    assert_eq(size_of(<Int64>), 8_u);
+    assert_eq(size_of(<UInt64>), 8_u);
+    assert_eq(size_of(<Int>), 8_u);
+    assert_eq(size_of(<UInt>), 8_u);
+    assert_eq(size_of(<Short>), 4_u);
+    assert_eq(size_of(<UShort>), 4_u);
+    assert_eq(size_of(<F32>), 4_u);
+    assert_eq(size_of(<F64>), 8_u);
+    assert_eq(size_of(<Bool>), 1_u);
+    assert_eq(size_of(<Char>), 4_u);
+    assert_eq(size_of(<Byte>), 1_u);
+    assert_eq(size_of(<[UInt8; 4]>), 4_u);
+    assert_eq(size_of(<(Int, UInt8)>), 16_u);
+
+    // ---- meta::Type::size / align ----
+    assert_eq(Type::of(<Int8>).size(), 1_u);
+    assert_eq(Type::of(<Int8>).align(), 1_u8);
+    assert_eq(Type::of(<UInt8>).size(), 1_u);
+    assert_eq(Type::of(<UInt8>).align(), 1_u8);
+    assert_eq(Type::of(<Int16>).size(), 2_u);
+    assert_eq(Type::of(<Int16>).align(), 2_u8);
+    assert_eq(Type::of(<Int32>).size(), 4_u);
+    assert_eq(Type::of(<UInt32>).size(), 4_u);
+    assert_eq(Type::of(<Int64>).size(), 8_u);
+    assert_eq(Type::of(<UInt64>).size(), 8_u);
+    assert_eq(Type::of(<Int>).size(), 8_u);
+    assert_eq(Type::of(<UInt>).size(), 8_u);
+    assert_eq(Type::of(<Int>).align(), 8_u8);
+    assert_eq(Type::of(<Short>).size(), 4_u);
+    assert_eq(Type::of(<UShort>).size(), 4_u);
+    assert_eq(Type::of(<F32>).size(), 4_u);
+    assert_eq(Type::of(<F64>).size(), 8_u);
+    assert_eq(Type::of(<Bool>).size(), 1_u);
+    assert_eq(Type::of(<Char>).size(), 4_u);
+    assert_eq(Type::of(<Pair>).size(), 16_u);
+    assert_eq(Type::of(<Pair>).align(), 8_u8);
+
+    // ---- 名字 ----
+    assert_eq(Type::of(<Int>).name(), "Int");
+    assert_eq(Type::of(<UInt>).name(), "UInt");
+    assert_eq(Type::of(<Int8>).name(), "Int8");
+    assert_eq(Type::of(<UInt8>).name(), "UInt8");
+    assert_eq(Type::of(<Int16>).name(), "Int16");
+    assert_eq(Type::of(<UInt16>).name(), "UInt16");
+    assert_eq(Type::of(<Int32>).name(), "Int32");
+    assert_eq(Type::of(<UInt32>).name(), "UInt32");
+    assert_eq(Type::of(<Int64>).name(), "Int64");
+    assert_eq(Type::of(<UInt64>).name(), "UInt64");
+    assert_eq(Type::of(<Short>).name(), "Short");
+    assert_eq(Type::of(<UShort>).name(), "UShort");
+    assert_eq(Type::of(<F32>).name(), "F32");
+    assert_eq(Type::of(<F64>).name(), "F64");
+    assert_eq(Type::of(<Bool>).name(), "Bool");
+    assert_eq(Type::of(<Char>).name(), "Char");
+    // 限定名 (带 `::`) 的 short_name 必须只保留最后一段
+    assert_eq(Type::of(<Str>).short_name(), "Str");
+    assert_eq(Type::of(<Pair>).short_name(), "Pair");
+
+    // ---- 相等性: 同一类型相等, 不同类型不等 (Type 没有 `==` 运算符, 用 eq) ----
+    assert(Type::of(<Int>).eq(&Type::of(<Int>)));
+    assert(Type::of(<Int>).ne(&Type::of(<Int8>)));
+    assert(Type::of(<Int8>).ne(&Type::of(<UInt8>)));
+    assert(Type::of(<F32>).ne(&Type::of(<F64>)));
+    // 同名同结构的不同位置匿名类型也要稳定
+    assert(Type::of(<Pair>).eq(&Type::of(<Pair>)));
+
+    println("int type sizes ok");
+}

@@ -1,0 +1,101 @@
+// std::hash 的 DefaultHasher: 相同输入序列产生相同 hash; 相等的值 (即使来自不同表达式)
+// 必须产生相同 hash。数值类型的 Hash/Eq 一致性。
+use std::{assert, assert_eq};
+use std::hash::{Hash, Hasher, DefaultHasher, default_hasher};
+use std::meta::Type;
+
+fn hash_i(v: Int) -> UInt64 {
+    let mut h = default_hasher();
+    v.hash(&mut h);
+    return h.finish();
+}
+fn hash_i8(v: Int8) -> UInt64 {
+    let mut h = default_hasher();
+    v.hash(&mut h);
+    return h.finish();
+}
+fn hash_u32(v: UInt32) -> UInt64 {
+    let mut h = default_hasher();
+    v.hash(&mut h);
+    return h.finish();
+}
+fn hash_u64(v: UInt64) -> UInt64 {
+    let mut h = default_hasher();
+    v.hash(&mut h);
+    return h.finish();
+}
+fn hash_i16(v: Int16) -> UInt64 {
+    let mut h = default_hasher();
+    v.hash(&mut h);
+    return h.finish();
+}
+fn hash_short(v: Short) -> UInt64 {
+    let mut h = default_hasher();
+    v.hash(&mut h);
+    return h.finish();
+}
+fn hash_type(t: Type) -> UInt64 {
+    let mut h = default_hasher();
+    t.hash(&mut h);
+    return h.finish();
+}
+
+fn main() {
+    // 空 hasher 的 finish 是 0
+    let empty = default_hasher();
+    assert_eq(empty.finish(), 0_u64);
+    let mut fresh = DefaultHasher::default();
+    assert_eq(fresh.finish(), 0_u64);
+
+    // 相同输入序列 -> 相同结果
+    let mut h1 = default_hasher();
+    let mut h2 = default_hasher();
+    h1.combine(1_u64);
+    h1.combine(2_u64);
+    h2.combine(1_u64);
+    h2.combine(2_u64);
+    assert_eq(h1.finish(), h2.finish());
+
+    // combine 的顺序会影响结果 (顺序不同一般不同)
+    let mut h3 = default_hasher();
+    let mut h4 = default_hasher();
+    h3.combine(1_u64);
+    h3.combine(2_u64);
+    h4.combine(2_u64);
+    h4.combine(1_u64);
+    assert(h3.finish() != h4.finish());
+
+    // ---- 相等值 -> 相等 hash (运行期计算与字面量) ----
+    assert_eq(hash_i(2_i), hash_i(1_i + 1_i));
+    assert_eq(hash_i(-1_i), hash_i(0_i - 1_i));
+    assert_eq(hash_i(Int::min_value()), hash_i(Int::min_value()));
+    assert_eq(hash_i(Int::max_value()), hash_i(Int::max_value()));
+    assert_eq(hash_i8(-1_i8), hash_i8(0_i8 - 1_i8));
+    assert_eq(hash_u32(4294967295_u32), hash_u32(UInt32::max_value()));
+    assert_eq(hash_u64(UInt64::max_value()), hash_u64(UInt64::max_value()));
+    assert_eq(hash_i16(-32768_i16), hash_i16(Int16::min_value()));
+    let neg_short: Short = -1;
+    assert_eq(hash_short(neg_short), hash_short(neg_short));
+
+    // 不同值一般 hash 不同 (这里选必然不同的输入)
+    assert(hash_i(0_i) != hash_i(1_i));
+    assert(hash_u32(0_u32) != hash_u32(1_u32));
+    assert(hash_i8(-1_i8) != hash_i8(1_i8));
+
+    // 相同 hash 函数对同一值重复调用稳定
+    assert_eq(hash_i(123456789_i), hash_i(123456789_i));
+
+    // ---- Type 的 Hash 与 Eq 一致 ----
+    let t1 = Type::of(<Int>);
+    let t2 = Type::of(<Int>);
+    assert(t1.eq(&t2));
+    assert_eq(hash_type(t1), hash_type(t2));
+
+    let t3 = Type::of(<Int8>);
+    let t4 = Type::of(<Int8>);
+    assert(t3.eq(&t4));
+    assert_eq(hash_type(t3), hash_type(t4));
+    assert(t1.ne(&t3));
+
+    println("hasher consistency ok");
+}

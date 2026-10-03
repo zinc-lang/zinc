@@ -1,0 +1,81 @@
+// HashMap 的哈希冲突 (同桶) 压力 + 墓碑 (删除后再插入) 语义。
+// DefaultHasher 对 UInt 的哈希是 k + 常量, 所以初表 7 个槽时 i*7 全部落在同一个桶,
+// 这是探测链/墓碑最容易出错的场景。
+use std::{assert, assert_eq};
+
+fn main() {
+    // 64 个同桶 key
+    let mut m = (type HashMap<UInt, UInt>)::new();
+    assert_eq(m.capacity(), 7_u);
+    let mut i: UInt = 0_u;
+    while i < 64_u {
+        m.insert(i * 7_u, i);
+        i += 1_u;
+    }
+    assert_eq(m.len(), 64_u);
+
+    // 全部能查到, 且值正确
+    i = 0_u;
+    while i < 64_u {
+        let k = i * 7_u;
+        assert(m.contains(&k));
+        assert_eq(m.at(&k).get_or_panic(), i);
+        i += 1_u;
+    }
+
+    // 删掉偶数位置, 制造墓碑
+    i = 0_u;
+    while i < 64_u {
+        if i % 2_u == 0_u {
+            let r = m.remove(&(i * 7_u));
+            assert(r is Some(_));
+        }
+        i += 1_u;
+    }
+    assert_eq(m.len(), 32_u);
+
+    // 剩下的仍然可查, 删掉的查不到
+    i = 0_u;
+    while i < 64_u {
+        let k = i * 7_u;
+        if i % 2_u == 0_u {
+            assert(!m.contains(&k));
+            assert(m.at(&k) is None);
+        } else {
+            assert(m.contains(&k));
+            assert_eq(m.at(&k).get_or_panic(), i);
+        }
+        i += 1_u;
+    }
+
+    // 把删掉的 key 重新插回去 (复用墓碑), 长度回到 64, 且不能出现重复条目
+    i = 0_u;
+    while i < 64_u {
+        if i % 2_u == 0_u {
+            m.insert(i * 7_u, i + 100_u);
+        }
+        i += 1_u;
+    }
+    assert_eq(m.len(), 64_u);
+    i = 0_u;
+    while i < 64_u {
+        let k = i * 7_u;
+        assert(m.contains(&k));
+        if i % 2_u == 0_u {
+            assert_eq(m.at(&k).get_or_panic(), i + 100_u);
+        } else {
+            assert_eq(m.at(&k).get_or_panic(), i);
+        }
+        i += 1_u;
+    }
+
+    // 反复覆盖同一个 key: 长度不变
+    i = 0_u;
+    while i < 20_u {
+        let old = m.insert(0_u, i);
+        assert(old is Some(_));
+        i += 1_u;
+    }
+    assert_eq(m.len(), 64_u);
+    assert_eq(m.at(&0_u).get_or_panic(), 19_u);
+}

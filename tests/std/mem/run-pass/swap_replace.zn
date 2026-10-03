@@ -1,0 +1,78 @@
+// mem::swap 与 mem::replace: 基本值 / 结构体 / 带析构函数的值 (String)。
+use std::{assert, assert_eq};
+use std::mem::{swap, replace};
+
+struct Point {
+    x: Int,
+    y: Int,
+}
+struct Named {
+    name: String,
+    id: Int,
+}
+
+fn main() {
+    // ---- swap: 基本值 ----
+    let mut a: Int = 1;
+    let mut b: Int = 2;
+    swap(&mut a, &mut b);
+    assert_eq(a, 2_i);
+    assert_eq(b, 1_i);
+
+    let mut u1: UInt8 = 10_u8;
+    let mut u2: UInt8 = 200_u8;
+    swap(&mut u1, &mut u2);
+    assert_eq(u1, 200_u8);
+    assert_eq(u2, 10_u8);
+
+    // ---- swap 同一个位置 ----
+    let mut c: Int = 5;
+    swap(&mut c, &mut c);
+    assert_eq(c, 5_i);
+
+    // ---- swap: 结构体 ----
+    let mut p1 = { .x = 1_i, .y = 2_i }: Point;
+    let mut p2 = { .x = 3_i, .y = 4_i }: Point;
+    swap(&mut p1, &mut p2);
+    assert_eq(p1.x, 3_i);
+    assert_eq(p1.y, 4_i);
+    assert_eq(p2.x, 1_i);
+    assert_eq(p2.y, 2_i);
+
+    // ---- swap: 带析构函数的值 (String) ----
+    let mut n1 = { .name = String::from_str("aaa"), .id = 1_i }: Named;
+    let mut n2 = { .name = String::from_str("bbb"), .id = 2_i }: Named;
+    swap(&mut n1, &mut n2);
+    assert_eq(n1.id, 2_i);
+    assert_eq(n2.id, 1_i);
+    assert_eq(n1.name, String::from_str("bbb"));
+    assert_eq(n2.name, String::from_str("aaa"));
+
+    let mut s1 = String::from_str("hello");
+    let mut s2 = String::from_str("world!");
+    swap(&mut s1, &mut s2);
+    assert_eq(s1, String::from_str("world!"));
+    assert_eq(s2, String::from_str("hello"));
+
+    // ---- replace: 返回旧值, 写入新值 ----
+    let mut x: Int = 7;
+    let old = replace(&mut x, 99_i);
+    assert_eq(old, 7_i);
+    assert_eq(x, 99_i);
+
+    let old2 = replace(&mut p1.x, 42_i);
+    assert_eq(old2, 3_i);
+    assert_eq(p1.x, 42_i);
+
+    let mut s3 = String::from_str("abc");
+    let old3 = replace(&mut s3, String::from_str("xyz"));
+    assert_eq(old3, String::from_str("abc"));
+    assert_eq(s3, String::from_str("xyz"));
+
+    let mut f: F64 = 1.5;
+    let oldf = replace(&mut f, 2.5_f64);
+    assert_eq(oldf, 1.5_f64);
+    assert_eq(f, 2.5_f64);
+
+    println("mem swap replace ok");
+}

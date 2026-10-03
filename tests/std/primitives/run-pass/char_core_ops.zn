@@ -1,0 +1,57 @@
+// Char 的 trait 实现运行期行为:
+// ToString (ASCII / 多字节 / 转义)、as UInt32、PartialEq/Eq、PartialOrd/Ord、Clone、Default。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+use std::primitives::default::Default;
+use std::cmp::Ordering;
+
+fn main() {
+    // ToString: 与字面量一致
+    assert('a'.to_string().eq(&String::from_str("a")));
+    assert('中'.to_string().eq(&String::from_str("中")));
+    assert('\n'.to_string().eq(&String::from_str("\n")));
+    assert('\0'.to_string().eq(&String::from_str("\0")));
+
+    // 与插值结果一致
+    assert(f"$('好')".eq(&'好'.to_string()));
+    assert(f"$('a')".eq(&String::from_str("a")));
+
+    // as UInt32 是码点
+    assert_eq('a' as UInt32, 97_u32);
+    assert_eq('中' as UInt32, 0x4E2D_u32);
+    assert_eq('\0' as UInt32, 0_u32);
+    assert_eq('😀' as UInt32, 0x1F600_u32);
+
+    // PartialEq / Eq
+    assert('a'.eq(&'a'));
+    assert('a'.ne(&'b'));
+    assert(!('a'.eq(&'b')));
+    assert(!('a'.ne(&'a')));
+    assert('中'.eq(&'中'));
+
+    // PartialOrd / Ord
+    assert('a'.lt(&'b'));
+    assert('a'.le(&'a'));
+    assert('b'.gt(&'a'));
+    assert('b'.ge(&'b'));
+    assert(!('b'.lt(&'a')));
+    assert('中'.gt(&'a')); // 码点更大
+
+    assert('a'.cmp(&'a') is Ordering::Equal);
+    assert('a'.cmp(&'b') is Ordering::Less);
+    assert('b'.cmp(&'a') is Ordering::Greater);
+    assert('a'.partial_cmp(&'b') is Some(Ordering::Less));
+    assert('a'.partial_cmp(&'a') is Some(Ordering::Equal));
+    assert('b'.partial_cmp(&'a') is Some(Ordering::Greater));
+
+    // Clone
+    let c = 'z';
+    let d = c.clone();
+    assert(d.eq(&'z'));
+    assert_eq(d as UInt32, 122_u32);
+
+    // Default == '\0'
+    let def: Char = Char::default();
+    assert_eq(def as UInt32, 0_u32);
+    assert(def.eq(&'\0'));
+}

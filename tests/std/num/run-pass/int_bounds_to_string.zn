@@ -1,0 +1,69 @@
+// 各整数类型的 min_value / max_value 与十进制 to_string。
+// 只做同类型比较和字符串比较: 不涉及跨宽度转换 (那部分在 int_cast_truncation.zn)。
+use std::{assert, assert_eq};
+
+fn main() {
+    // ---- Int (isize, 64 位) ----
+    assert_eq(f"$(Int::min_value())", f"-9223372036854775808");
+    assert_eq(f"$(Int::max_value())", f"9223372036854775807");
+    assert(Int::min_value() < Int::max_value());
+    assert(Int::min_value() < 0_i);
+    assert(Int::max_value() > 0_i);
+
+    // ---- UInt (usize, 64 位) ----
+    assert_eq(f"$(UInt::min_value())", f"0");
+    assert_eq(f"$(UInt::max_value())", f"18446744073709551615");
+    assert(UInt::min_value() < UInt::max_value());
+
+    // ---- 8 / 16 / 32 / 64 位有符号 ----
+    assert_eq(f"$(Int8::min_value())", f"-128");
+    assert_eq(f"$(Int8::max_value())", f"127");
+    assert(Int8::min_value() < Int8::max_value());
+
+    assert_eq(f"$(Int16::min_value())", f"-32768");
+    assert_eq(f"$(Int16::max_value())", f"32767");
+    assert(Int16::min_value() < Int16::max_value());
+
+    assert_eq(f"$(Int32::min_value())", f"-2147483648");
+    assert_eq(f"$(Int32::max_value())", f"2147483647");
+    assert(Int32::min_value() < Int32::max_value());
+
+    assert_eq(f"$(Int64::min_value())", f"-9223372036854775808");
+    assert_eq(f"$(Int64::max_value())", f"9223372036854775807");
+    assert(Int64::min_value() < Int64::max_value());
+
+    // ---- 8 / 16 / 32 / 64 位无符号 ----
+    assert_eq(f"$(UInt8::min_value())", f"0");
+    assert_eq(f"$(UInt8::max_value())", f"255");
+    assert(UInt8::min_value() < UInt8::max_value());
+
+    assert_eq(f"$(UInt16::min_value())", f"0");
+    assert_eq(f"$(UInt16::max_value())", f"65535");
+    assert(UInt16::min_value() < UInt16::max_value());
+
+    assert_eq(f"$(UInt32::min_value())", f"0");
+    assert_eq(f"$(UInt32::max_value())", f"4294967295");
+    assert(UInt32::min_value() < UInt32::max_value());
+
+    assert_eq(f"$(UInt64::min_value())", f"0");
+    assert_eq(f"$(UInt64::max_value())", f"18446744073709551615");
+    assert(UInt64::min_value() < UInt64::max_value());
+
+    // ---- Short / UShort (4 字节) ----
+    assert_eq(f"$(Short::min_value())", f"-2147483648");
+    assert_eq(f"$(Short::max_value())", f"2147483647");
+    assert(Short::min_value() < Short::max_value());
+
+    assert_eq(f"$(UShort::min_value())", f"0");
+    assert_eq(f"$(UShort::max_value())", f"4294967295");
+    assert(UShort::min_value() < UShort::max_value());
+
+    // 每个类型的最小值打印长度必须正确 (负数不能丢符号位, 也不能多算位数)
+    assert_eq(Int8::min_value().to_string().len(), 4_u);
+    assert_eq(Int8::max_value().to_string().len(), 3_u);
+    assert_eq(UInt8::max_value().to_string().len(), 3_u);
+    assert_eq(UInt64::max_value().to_string().len(), 20_u);
+    assert_eq(UInt64::min_value().to_string().len(), 1_u);
+
+    println("int bounds to_string ok");
+}

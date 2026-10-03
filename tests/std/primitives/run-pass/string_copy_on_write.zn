@@ -1,0 +1,74 @@
+// String 的值语义 / copy-on-write:
+//   - `let t = s;` 之后两个 String 共享缓冲区, 任何一方修改都不得影响另一方
+//   - as_str()/bytes() 得到的视图是"快照": 之后 String 再修改, 视图仍看到旧内容
+//   - 覆盖 (赋值) 一个 String 时, 之前拿到的视图仍必须有效
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    // 值拷贝后 insert: COW
+    let mut s = String::from_str("abcdef");
+    let t = s;
+    s.insert(1_u, 'X');
+    assert(s.eq(&String::from_str("aXbcdef")));
+    assert(t.eq(&String::from_str("abcdef")));
+    assert_eq(t.len(), 6_u);
+
+    // 值拷贝后 insert_str: COW
+    let mut u = String::from_str("abcdef");
+    let v = u;
+    u.insert_str(3_u, "YY");
+    assert(u.eq(&String::from_str("abcYYdef")));
+    assert(v.eq(&String::from_str("abcdef")));
+
+    // 值拷贝后 clear: COW
+    let mut p = String::from_str("abc");
+    let q = p;
+    p.clear();
+    assert(p.is_empty());
+    assert(q.eq(&String::from_str("abc")));
+
+    // 值拷贝后 reverse / push: COW
+    let mut r = String::from_str("abc");
+    let r2 = r;
+    r.reverse();
+    assert(r.eq(&String::from_str("cba")));
+    assert(r2.eq(&String::from_str("abc")));
+    r.push_str("de");
+    assert(r.eq(&String::from_str("cbade")));
+    assert(r2.eq(&String::from_str("abc")));
+
+    // 共享缓冲区 (bytes()) 期间的 clear / push
+    let mut sh = String::from_str("abc");
+    let b = sh.bytes();
+    sh.clear();
+    assert(sh.is_empty());
+    assert_eq(b.len(), 3_u);
+    assert_eq(b.at(0_u).get_or_panic(), 97_u8);
+    sh.push_str("z");
+    assert(sh.eq(&String::from_str("z")));
+    assert_eq(b.len(), 3_u);
+    assert_eq(b.at(2_u).get_or_panic(), 99_u8);
+
+    // as_str 视图: 是快照, 长度不随之后的修改变化
+    let mut sn = String::from_str("abc");
+    let view = sn.as_str();
+    sn.push_str("def");
+    assert(view.deref().eq(&"abc"));
+    assert_eq(view.deref().len(), 3_u);
+    assert(sn.eq(&String::from_str("abcdef")));
+    let snap = view.to_string();
+    sn.push_str("ghi");
+    assert(snap.eq(&String::from_str("abc")));
+
+    // 覆盖整个 String 时, 旧视图仍指向仍然存活的数据
+    let mut ov = String::from_str("hello world long enough");
+    let old_view = ov.as_str();
+    let old_bytes = ov.bytes();
+    ov = String::from_str("replacement");
+    assert(ov.eq(&String::from_str("replacement")));
+    assert(old_view.deref().eq(&"hello world long enough"));
+    assert_eq(old_view.deref().len(), 23_u);
+    assert_eq(old_bytes.len(), 23_u);
+    assert_eq(old_bytes.at(0_u).get_or_panic(), 104_u8);
+}

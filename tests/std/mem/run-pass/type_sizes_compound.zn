@@ -1,0 +1,44 @@
+// mem::size_of 与 meta::Type 在复合类型上的取值 (Str / String / Vec / Option /
+// Result / 数组 / 元组), 补充整数类型之外的部分。
+use std::{assert, assert_eq};
+use std::mem::size_of;
+use std::meta::Type;
+
+fn main() {
+    // Str = 指针 + 长度
+    assert_eq(size_of(<Str>), 16_u);
+    assert_eq(Type::of(<Str>).size(), 16_u);
+    assert_eq(Type::of(<Str>).align(), 8_u8);
+
+    // String = Vec<UInt8>, 24 字节 (ptr / size / cap)
+    assert_eq(size_of(<String>), 24_u);
+    assert_eq(Type::of(<String>).size(), 24_u);
+
+    // Vec<T> 与元素类型无关, 是 24 字节
+    assert_eq(size_of(<Vec<Int>>), 24_u);
+    assert_eq(size_of(<Vec<UInt8>>), 24_u);
+    assert_eq(Type::of(<Vec<Int>>).align(), 8_u8);
+
+    // Option<Int> 需要一个额外的 tag, 对齐到 16
+    assert_eq(size_of(<Option<Int>>), 16_u);
+    // Result<Int, Int> 同样是 tag + payload
+    assert_eq(size_of(<Result<Int, Int>>), 16_u);
+
+    // 数组: 元素大小 * 个数
+    assert_eq(size_of(<[Int; 3]>), 24_u);
+    assert_eq(size_of(<[UInt8; 5]>), 5_u);
+    assert_eq(size_of(<[Int; 0]>), 0_u);
+
+    // 元组: 字段按对齐排布
+    assert_eq(size_of(<(Int, Int)>), 16_u);
+    assert_eq(size_of(<(UInt8, UInt8)>), 2_u);
+    assert_eq(size_of(<(Int, UInt8)>), 16_u);
+    assert_eq(Type::of(<(Int, Int)>).align(), 8_u8);
+    assert_eq(Type::of(<(UInt8, UInt8)>).align(), 1_u8);
+
+    // size_of 是编译期常量, 可以和字面量比较
+    assert(size_of(<F64>) == 8_u);
+    assert(size_of(<Bool>) == 1_u);
+
+    println("mem type sizes ok");
+}

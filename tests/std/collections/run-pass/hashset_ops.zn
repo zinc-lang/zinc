@@ -1,0 +1,100 @@
+// HashSet: 集合语义 (重复插入不增加长度) / remove / contains / keys 唯一性 /
+// 迭代计数 / clear / with_capacity(0) / 大量增长。
+use std::collections::hashset::HashSet;
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut s = (type HashSet<UInt>)::new();
+    assert_eq(s.len(), 0_u);
+
+    // 空表
+    assert(!s.contains(&1_u));
+    assert(!s.remove(&1_u));
+
+    // 插入与重复插入
+    assert(s.insert(1_u));
+    assert(!s.insert(1_u));
+    assert_eq(s.len(), 1_u);
+    assert(s.contains(&1_u));
+
+    // 删除
+    assert(s.remove(&1_u));
+    assert(!s.remove(&1_u));
+    assert_eq(s.len(), 0_u);
+    assert(!s.contains(&1_u));
+
+    // 重复插入大量元素: 只有 50 个不同值
+    let mut i: UInt = 0_u;
+    while i < 200_u {
+        s.insert(i % 50_u);
+        i += 1_u;
+    }
+    assert_eq(s.len(), 50_u);
+
+    // keys 里没有重复
+    let ks = s.keys();
+    assert_eq(ks.len(), 50_u);
+    let mut dup: UInt = 0_u;
+    let mut a: UInt = 0_u;
+    while a < ks.len() {
+        let mut b: UInt = a + 1_u;
+        while b < ks.len() {
+            if ks.at(a).get_or_panic() == ks.at(b).get_or_panic() {
+                dup += 1_u;
+            }
+            b += 1_u;
+        }
+        a += 1_u;
+    }
+    assert_eq(dup, 0_u);
+
+    // 迭代: 每个元素恰好访问一次
+    let mut count: UInt = 0_u;
+    let mut sum: UInt = 0_u;
+    for x in s {
+        count += 1_u;
+        sum += x;
+    }
+    assert_eq(count, 50_u);
+    assert_eq(sum, 1225_u); // 0+1+...+49
+
+    // 全部删除
+    i = 0_u;
+    while i < 50_u {
+        assert(s.remove(&i));
+        i += 1_u;
+    }
+    assert_eq(s.len(), 0_u);
+    assert_eq(s.keys().len(), 0_u);
+
+    // clear 之后重新使用
+    s.insert(7_u);
+    s.clear();
+    assert_eq(s.len(), 0_u);
+    assert(!s.contains(&7_u));
+    assert(s.insert(9_u));
+    assert_eq(s.len(), 1_u);
+
+    // with_capacity(0) 也能正常工作 (插入时自动扩容)
+    let mut z = (type HashSet<UInt>)::with_capacity(0_u);
+    assert_eq(z.len(), 0_u);
+    assert(z.insert(5_u));
+    assert_eq(z.len(), 1_u);
+    assert(z.contains(&5_u));
+    assert(z.insert(6_u));
+    assert_eq(z.len(), 2_u);
+
+    // 容量很小的时候连续插入
+    let mut small = (type HashSet<UInt>)::with_capacity(1_u);
+    i = 0_u;
+    while i < 64_u {
+        assert(small.insert(i));
+        i += 1_u;
+    }
+    assert_eq(small.len(), 64_u);
+    i = 0_u;
+    while i < 64_u {
+        assert(small.contains(&i));
+        i += 1_u;
+    }
+}

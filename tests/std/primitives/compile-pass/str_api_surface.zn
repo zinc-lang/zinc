@@ -1,0 +1,46 @@
+// Str / StringSlice 现有公开 API 的类型检查 (compile-pass)。
+use std::primitives::string::ToString;
+use std::iter::Iterable;
+use std::iter::Iterator;
+
+fn main() {
+    let s: Str = "hello world";
+    let _len: UInt = s.len();
+    let _empty: Bool = s.is_empty();
+    let _raw: *raw UInt8 = s.raw_ptr();
+    let _b: UInt8 = s.index(0_u);
+    let _sub1: Str = s.sub_str(2_u);
+    let _sub2: Str = s.sub_str(0_u, 3_u);
+    let _sw: Bool = s.starts_with("he");
+    let _ew: Bool = s.ends_with("ld");
+    let _eq: Bool = s.eq(&"hello world");
+    let _ne: Bool = s.ne(&"x");
+    let _bytes: Slice<UInt8> = s.as_bytes();
+    let _tl: UInt = s.as_bytes().len();
+    let _c: Bool = s.as_bytes().contains(&104_u8);
+
+    // split 返回 Vec<String>
+    let _parts: Vec<String> = s.split(32_u8);
+
+    // ToString
+    let mut buf: String = String::new();
+    s.to_string_inplace(&mut buf);
+    let _ts: String = s.to_string();
+
+    // Str 上的切片视图
+    let owned: String = String::from_str("abcdef");
+    let view: StringSlice = owned.slice(1_u, 3_u);
+    let _v1: StringSlice = view.slice(1_u);
+    let _v2: StringSlice = view.slice(0_u, 1_u);
+    let _vd: Str = view.deref();
+    let _vt: String = view.to_string();
+    let _vs: Bool = view.deref().eq(&"bc");
+
+    // from_cstr (unsafe)
+    let cs = c"abc";
+    let _cstr: Str = unsafe(Str::from_cstr(cs.raw_ptr()));
+
+    // Iterable / Iterator 接口存在
+    let mut it: StrIter = s.iter();
+    let _next: Option<&Char> = it.next();
+}

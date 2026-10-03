@@ -1,0 +1,8 @@
+// F32 和 F64 不能直接比较, 必须先显式 as 成同一宽度。
+fn main() {
+    let a: F32 = 1.0_f32;
+    let b: F64 = 1.0_f64;
+    if a == b {
+        println("impossible");
+    }
+}

@@ -1,0 +1,92 @@
+// assert / assert_eq / assert_ne 的正常路径 (不触发 panic 的情形)。
+// 失败路径会 panic, run-pass 不允许, 因此这里只覆盖条件成立的分支;
+// 错误用法 (类型不匹配) 放在 compile-fail。
+use std::{assert, assert_eq, assert_ne};
+use std::cmp::{PartialEq, Eq};
+
+struct Pt {
+    x: Int,
+    y: Int,
+}
+
+impl PartialEq for Pt {
+    fn eq(&self, other: &Self) -> Bool {
+        return self.x == other.x && self.y == other.y;
+    }
+    fn ne(&self, other: &Self) -> Bool {
+        return !(self.x == other.x && self.y == other.y);
+    }
+}
+impl Eq for Pt {}
+
+fn main() {
+    // ---- assert ----
+    assert(true);
+    assert(true, "带消息的 assert 条件成立时不应 panic");
+    assert(1_i < 2_i);
+    assert(1_i <= 1_i);
+    assert(2_i > 1_i);
+    assert(2_i >= 2_i);
+    assert(1_i == 1_i);
+    assert(1_i != 2_i);
+    assert(true && true);
+    assert(true || false);
+    assert(!false);
+
+    // ---- assert_eq ----
+    assert_eq(1_i, 1_i);
+    assert_eq(1_i, 1_i, "Int 相等");
+    assert_eq(-1_i, -1_i);
+    assert_eq(Int::min_value(), Int::min_value());
+    assert_eq(Int::max_value(), Int::max_value());
+    assert_eq(1_u8, 1_u8);
+    assert_eq(255_u8, UInt8::max_value());
+    assert_eq(UInt64::max_value(), 18446744073709551615_u64);
+    assert_eq(Short::min_value(), Short::min_value());
+    assert_eq(true, true);
+    assert_eq(false, false);
+    assert_eq('a', 'a');
+    assert_eq('中', '中');
+    assert_eq(1.5_f64, 1.5_f64);
+    assert_eq(-0.5_f64, -0.5_f64);
+    assert_eq(0.0_f64, -0.0_f64);       // IEEE: ±0 数值相等
+    assert_eq(1.5_f32, 1.5_f32);
+    assert_eq(f"abc", f"abc");
+    assert_eq("abc", "abc");
+    assert_eq(String::from_str("hello"), String::from_str("hello"));
+    assert_eq(String::from_str("hello"), String::from_str("hello"), "String 相等");
+    let p1 = { .x = 1_i, .y = 2_i }: Pt;
+    assert_eq(p1, { .x = 1_i, .y = 2_i }: Pt);
+
+    // ---- assert_ne ----
+    assert_ne(1_i, 2_i);
+    assert_ne(1_i, 2_i, "Int 不等");
+    assert_ne(-1_i, 1_i);
+    assert_ne(Int::min_value(), Int::max_value());
+    assert_ne(1_u8, 2_u8);
+    assert_ne(Short::min_value(), Short::max_value());
+    assert_ne(true, false);
+    assert_ne('a', 'b');
+    assert_ne(1.5_f64, -1.5_f64);
+    assert_ne(f"abc", f"abd");
+    assert_ne("abc", "abd");
+    assert_ne(String::from_str("hello"), String::from_str("world"));
+    let p2 = { .x = 1_i, .y = 2_i }: Pt;
+    assert_ne(p2, { .x = 1_i, .y = 3_i }: Pt);
+
+    // NaN 与任何值 (包括自己) 都不等
+    let z: F64 = 0.0;
+    let nan = z / z;
+    assert_ne(nan, nan);
+    assert(!(nan == nan));
+
+    // Option 的值用 get_or_panic 取出后再断言
+    let some: Option<Int> = Some(42_i);
+    assert_eq(some.get_or_panic(), 42_i);
+    let none: Option<Int> = None;
+    assert_eq(none.get_or_else(7_i), 7_i);
+    let some_str: Option<Str> = Some("hi");
+    assert_eq(some_str.get_or_panic(), "hi");
+
+    println("assert api ok");
+}

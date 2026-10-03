@@ -1,0 +1,7 @@
+// HashSet<UInt>::insert 只接受 UInt; 传入 Str 必须是类型错误。
+use std::collections::hashset::HashSet;
+
+fn main() {
+    let mut s = (type HashSet<UInt>)::new();
+    s.insert("one");
+}

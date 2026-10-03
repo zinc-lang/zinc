@@ -1,0 +1,83 @@
+// String 的插入/编码路径: insert / insert_str / push_char / index。
+// 覆盖首/中/尾插入、多字节 UTF-8 字符、1~4 字节编码, 以及 ASCII 的 reverse。
+// (注意: 源码 string.zn 明确注释 reverse 目前不按 UTF-8 实现, 因此这里只测 ASCII。)
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    // insert: 中 / 尾 / 首
+    let mut s = String::from_str("ac");
+    s.insert(1_u, 'b');
+    assert(s.eq(&String::from_str("abc")));
+
+    let mut t = String::from_str("hello");
+    t.insert(5_u, '!');
+    assert(t.eq(&String::from_str("hello!")));
+
+    let mut u = String::from_str("ello");
+    u.insert(0_u, 'h');
+    assert(u.eq(&String::from_str("hello")));
+
+    // 在中间插入多字节字符
+    let mut m = String::from_str("ab");
+    m.insert(1_u, '中');
+    assert_eq(m.len(), 5_u);
+    assert(m.eq(&String::from_str("a中b")));
+    assert_eq(m.index(1_u), 0xE4_u8);
+    assert_eq(m.index(2_u), 0xB8_u8);
+    assert_eq(m.index(3_u), 0xAD_u8);
+
+    // insert_str: 在中间插入多字节字符串
+    let mut ist = String::from_str("ab");
+    ist.insert_str(1_u, "中");
+    assert_eq(ist.len(), 5_u);
+    assert(ist.eq(&String::from_str("a中b")));
+    let mut is2 = String::from_str("bc");
+    is2.insert_str(0_u, "a");
+    is2.insert_str(3_u, "d");
+    assert(is2.eq(&String::from_str("abcd")));
+
+    // push_char: 1/2/3/4 字节编码逐字节校验
+    let mut e = String::new();
+    e.push_char('A');  // 1 字节
+    e.push_char('é');  // 2 字节
+    e.push_char('中'); // 3 字节
+    e.push_char('😀'); // 4 字节 U+1F600
+    assert_eq(e.len(), 1_u + 2_u + 3_u + 4_u);
+    assert_eq(e.index(0_u), 0x41_u8);
+    assert_eq(e.index(1_u), 0xC3_u8);
+    assert_eq(e.index(2_u), 0xA9_u8);
+    assert_eq(e.index(3_u), 0xE4_u8);
+    assert_eq(e.index(4_u), 0xB8_u8);
+    assert_eq(e.index(5_u), 0xAD_u8);
+    assert_eq(e.index(6_u), 0xF0_u8);
+    assert_eq(e.index(7_u), 0x9F_u8);
+    assert_eq(e.index(8_u), 0x98_u8);
+    assert_eq(e.index(9_u), 0x80_u8);
+    assert(e.eq(&String::from_str("Aé中😀")));
+
+    // push_char('\0') 只占一个字节 0x00
+    let mut z = String::new();
+    z.push_char('\0');
+    assert_eq(z.len(), 1_u);
+    assert_eq(z.index(0_u), 0_u8);
+
+    // insert_byte: 原样插入一个字节
+    let mut ib = String::from_str("ac");
+    ib.insert_byte(1_u, 98_u8); // 'b'
+    assert(ib.eq(&String::from_str("abc")));
+
+    // ASCII reverse (空串 / 单字符 / 奇数 / 偶数)
+    let mut r = String::from_str("abcde");
+    r.reverse();
+    assert(r.eq(&String::from_str("edcba")));
+    let mut r0 = String::from_str("");
+    r0.reverse();
+    assert(r0.is_empty());
+    let mut r1 = String::from_str("x");
+    r1.reverse();
+    assert(r1.eq(&String::from_str("x")));
+    let mut r4 = String::from_str("abcd");
+    r4.reverse();
+    assert(r4.eq(&String::from_str("dcba")));
+}

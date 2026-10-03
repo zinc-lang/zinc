@@ -1,0 +1,59 @@
+// Vec::insert 在首/中/尾插入后的重排, 以及 size == cap 时的扩容路径。
+use std::{assert, assert_eq};
+
+fn main() {
+    // 首部插入
+    let mut v = (type Vec<Int>)::new();
+    v.push(1_i);
+    v.push(2_i);
+    v.push(3_i);
+    v.insert(0_u, 9_i);
+    assert_eq(v.len(), 4_u);
+    assert(v.capacity() >= v.len());
+    assert_eq(v.at(0_u).get_or_panic(), 9_i);
+    assert_eq(v.at(1_u).get_or_panic(), 1_i);
+    assert_eq(v.at(2_u).get_or_panic(), 2_i);
+    assert_eq(v.at(3_u).get_or_panic(), 3_i);
+
+    // 尾部插入 (idx == len)
+    v.insert(v.len(), 8_i);
+    assert_eq(v.len(), 5_u);
+    assert_eq(v.at(4_u).get_or_panic(), 8_i);
+    assert_eq(v.at(0_u).get_or_panic(), 9_i);
+
+    // 中间插入
+    v.insert(2_u, 7_i);
+    assert_eq(v.len(), 6_u);
+    assert_eq(v.at(0_u).get_or_panic(), 9_i);
+    assert_eq(v.at(1_u).get_or_panic(), 1_i);
+    assert_eq(v.at(2_u).get_or_panic(), 7_i);
+    assert_eq(v.at(3_u).get_or_panic(), 2_i);
+    assert_eq(v.at(4_u).get_or_panic(), 3_i);
+    assert_eq(v.at(5_u).get_or_panic(), 8_i);
+
+    // size == cap 时插入: 必须扩容并且不丢元素
+    let mut g = (type Vec<Int>)::with_capacity(3_u);
+    g.push(1_i);
+    g.push(2_i);
+    g.push(3_i);
+    assert_eq(g.capacity(), 3_u);
+    g.insert(1_u, 9_i);
+    assert_eq(g.len(), 4_u);
+    assert(g.capacity() >= g.len());
+    assert_eq(g.at(0_u).get_or_panic(), 1_i);
+    assert_eq(g.at(1_u).get_or_panic(), 9_i);
+    assert_eq(g.at(2_u).get_or_panic(), 2_i);
+    assert_eq(g.at(3_u).get_or_panic(), 3_i);
+
+    // 插入到空表
+    let mut e = (type Vec<Int>)::new();
+    e.insert(0_u, 42_i);
+    assert_eq(e.len(), 1_u);
+    assert_eq(e.at(0_u).get_or_panic(), 42_i);
+
+    // 插入之后继续 push / pop 仍然正确
+    e.push(43_i);
+    assert_eq(e.pop().get_or_panic(), 43_i);
+    assert_eq(e.len(), 1_u);
+    assert_eq(e.at(0_u).get_or_panic(), 42_i);
+}

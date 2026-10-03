@@ -1,0 +1,74 @@
+// String / StringSlice 的切片 API 边界:
+//   String::slice(start) / String::slice(start, len)
+//   StringSlice::slice(start) / StringSlice::slice(start, len)
+// 覆盖 start==len、len==0、整段、二次切片, 以及多字节边界上的合法切片。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    let s = String::from_str("abcdef");
+    let v = s.as_str();
+
+    // StringSlice::slice(start)
+    let w = v.slice(2_u);
+    assert(w.deref().eq(&"cdef"));
+    assert_eq(w.deref().len(), 4_u);
+
+    // StringSlice::slice(start, len)
+    let x = v.slice(1_u, 3_u);
+    assert(x.deref().eq(&"bcd"));
+    assert_eq(x.deref().len(), 3_u);
+
+    // 边界: start == len -> 空视图
+    let e = v.slice(6_u);
+    assert(e.deref().is_empty());
+    assert_eq(e.deref().len(), 0_u);
+    // len == 0 -> 空视图
+    let z = v.slice(0_u, 0_u);
+    assert(z.deref().is_empty());
+    // 整段
+    let all = v.slice(0_u, 6_u);
+    assert(all.deref().eq(&"abcdef"));
+
+    // 二次切片: 视图上再切
+    let y = w.slice(1_u, 2_u);
+    assert(y.deref().eq(&"de"));
+    let y2 = w.slice(4_u);
+    assert(y2.deref().is_empty());
+
+    // String::slice(start) / slice(start, len)
+    let p = s.slice(3_u);
+    assert(p.deref().eq(&"def"));
+    let q = s.slice(2_u, 2_u);
+    assert(q.deref().eq(&"cd"));
+    assert(s.slice(0_u, 6_u).deref().eq(&"abcdef"));
+    assert(s.slice(6_u).deref().is_empty());
+
+    // 多字节串上按合法字符边界切片 ("héllo": h C3 A9 l l o)
+    let h = String::from_str("héllo");
+    assert_eq(h.len(), 6_u);
+    let he = h.slice(0_u, 3_u);      // "hé"
+    assert(he.deref().eq(&"hé"));
+    assert_eq(he.deref().len(), 3_u);
+    assert_eq(he.deref().index(1_u), 0xC3_u8);
+    assert_eq(he.deref().index(2_u), 0xA9_u8);
+    let llo = h.slice(3_u);          // "llo"
+    assert(llo.deref().eq(&"llo"));
+    let mid = h.slice(1_u, 2_u);     // "é"
+    assert(mid.deref().eq(&"é"));
+    assert_eq(mid.deref().len(), 2_u);
+
+    // 视图的 to_string 是拷贝
+    assert(w.to_string().eq(&String::from_str("cdef")));
+    assert(mid.to_string().eq(&String::from_str("é")));
+
+    // 旧视图是快照: 之后 append 不影响它的长度; 新切片看到新内容
+    let mut mut_s = String::from_str("xyz");
+    let pre = mut_s.as_str();
+    assert_eq(pre.deref().len(), 3_u);
+    mut_s.push_str("123");
+    let post = mut_s.slice(3_u);
+    assert(post.deref().eq(&"123"));
+    assert_eq(post.deref().len(), 3_u);
+    assert_eq(pre.deref().len(), 3_u);
+}

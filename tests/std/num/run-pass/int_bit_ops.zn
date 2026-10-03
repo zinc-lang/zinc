@@ -1,0 +1,92 @@
+// 整数的位运算方法 (没有运算符, 只有方法): bit_and / bit_or / bit_xor /
+// bit_not / bit_shl / bit_shr, 以及 reverse_bits / rotate_left / rotate_right。
+//
+// 重点钉住两件容易写错的事:
+//   * 有符号的 bit_shr 必须是算术右移 (符号位扩展), 无符号是逻辑右移;
+//   * rotate 的位数按位宽取模, 移满一整个位宽回到原值。
+use std::{assert, assert_eq};
+
+fn shr_i8(v: Int8, n: UInt32) -> Int8 {
+    return v.bit_shr(n);
+}
+
+fn shr_i(v: Int, n: UInt32) -> Int {
+    return v.bit_shr(n);
+}
+
+fn shl_i8(v: Int8, n: UInt32) -> Int8 {
+    return v.bit_shl(n);
+}
+
+fn main() {
+    // ---- bit_and / bit_or / bit_xor / bit_not ----
+    assert_eq(0xF0_u8.bit_and(0x3C_u8), 0x30_u8);
+    assert_eq(0xF0_u8.bit_or(0x0F_u8), 0xFF_u8);
+    assert_eq(0xFF_u8.bit_xor(0x0F_u8), 0xF0_u8);
+    assert_eq(0_u8.bit_not(), 255_u8);
+    assert_eq(0x0F_u8.bit_not(), 0xF0_u8);
+
+    assert_eq(0_u16.bit_not(), 65535_u16);
+    assert_eq(0_u32.bit_not(), 4294967295_u32);
+    assert_eq(0_u64.bit_not(), 18446744073709551615_u64);
+    assert_eq(0_i.bit_not(), -1_i);
+    assert_eq(0_i8.bit_not(), -1_i8);
+    assert_eq((-1_i8).bit_not(), 0_i8);
+    assert_eq((-1_i8).bit_and(0x0F_i8), 15_i8);
+
+    // 有符号 / 无符号同宽度混用时的位模式
+    assert_eq(0xFFFF_u16.bit_and(0x00FF_u16), 255_u16);
+    assert_eq(0x80000000_u32.bit_shr(31_u32), 1_u32);
+    assert_eq(0x8000000000000000_u64.bit_shr(63_u32), 1_u64);
+
+    // ---- bit_shl ----
+    assert_eq(1_i8.bit_shl(1_u32), 2_i8);
+    assert_eq(1_u8.bit_shl(7_u32), 128_u8);
+    assert_eq(64_i8.bit_shl(1_u32), -128_i8); // 溢出位被截断, 不 panic
+    assert_eq(1_i.bit_shl(63_u32), Int::min_value());
+    assert_eq(1_u64.bit_shl(63_u32), 0x8000000000000000_u64);
+
+    // ---- bit_shr: 有符号算术右移, 无符号逻辑右移 ----
+    assert_eq(shr_i8(-8_i8, 1_u32), -4_i8);
+    assert_eq(shr_i8(-1_i8, 1_u32), -1_i8);
+    assert_eq(shr_i8(-1_i8, 7_u32), -1_i8);
+    assert_eq(shr_i8(127_i8, 1_u32), 63_i8);
+    assert_eq(shr_i(-8_i, 1_u32), -4_i);
+    assert_eq(shr_i(-1_i, 63_u32), -1_i);
+    assert_eq(0x80_u8.bit_shr(1_u32), 64_u8);
+    assert_eq(0xFF_u8.bit_shr(4_u32), 15_u8);
+    assert_eq(0x80000000_u32.bit_shr(1_u32), 1073741824_u32);
+
+    // ---- reverse_bits ----
+    assert_eq(1_u8.reverse_bits(), 128_u8);
+    assert_eq(0x80_u8.reverse_bits(), 1_u8);
+    assert_eq(0x0F_u8.reverse_bits(), 0xF0_u8);
+    assert_eq(1_u16.reverse_bits(), 32768_u16);
+    assert_eq(1_u32.reverse_bits(), 2147483648_u32);
+    assert_eq(1_u64.reverse_bits(), 0x8000000000000000_u64);
+    assert_eq(1_i8.reverse_bits(), -128_i8);
+    assert_eq(0_u64.reverse_bits(), 0_u64);
+    assert_eq(0xFFFFFFFFFFFFFFFF_u64.reverse_bits(), 0xFFFFFFFFFFFFFFFF_u64);
+
+    // ---- rotate: 位数按位宽取模 ----
+    assert_eq(1_u8.rotate_left(1_u32), 2_u8);
+    assert_eq(0x81_u8.rotate_left(1_u32), 0x03_u8);
+    assert_eq(1_u8.rotate_right(1_u32), 128_u8);
+    assert_eq(0x81_u8.rotate_right(1_u32), 0xC0_u8);
+    assert_eq(1_u8.rotate_left(8_u32), 1_u8);
+    assert_eq(1_u8.rotate_left(0_u32), 1_u8);
+    assert_eq(1_u8.rotate_right(9_u32), 128_u8);
+    assert_eq(1_u64.rotate_left(64_u32), 1_u64);
+    assert_eq(0x80000000_u32.rotate_left(1_u32), 1_u32);
+    assert_eq(0x8000000000000000_u64.rotate_left(1_u32), 1_u64);
+    assert_eq(1_i8.rotate_left(1_u32), 2_i8);
+    assert_eq((-128_i8).rotate_right(1_u32), 64_i8);
+    assert_eq(1_u32.rotate_right(33_u32), 0x80000000_u32);
+
+    // 位移量用变量 (走运行期路径, 不被常量折叠)
+    let n: UInt32 = 2_u32;
+    assert_eq(shl_i8(1_i8, n), 4_i8);
+    assert_eq(shr_i(-16_i, n), -4_i);
+
+    println("int bit ops ok");
+}

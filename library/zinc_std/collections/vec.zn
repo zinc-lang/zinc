@@ -95,8 +95,11 @@ impl<T> Vec<T> {
         let mut data = Self::alloc_n(min_cap);
         unsafe {
             if (::self::ptr::is_unique(&self.ptr)) {
-                ::self::mem::mem_copy(self.ptr as *raw Shared<T> as *raw T, data as *raw Shared<T> as *raw mut T, self.size);
+                // 独占: 旧缓冲区马上会被释放, 元素句柄直接搬运过去 (mem_move 不增减引用计数),
+                // 如果这里用 mem_copy 就会给每个元素多 retain 一次, 造成泄漏。
+                ::self::mem::mem_move(self.ptr as *raw Shared<T> as *raw T, data as *raw Shared<T> as *raw mut T, self.size);
             } else {
+                // 共享: 旧缓冲区仍归别名所有, 复制一份并让新缓冲区的元素持有引用计数。
                 ::self::mem::mem_copy(self.ptr as *raw Shared<T> as *raw T, data as *raw Shared<T> as *raw mut T, self.size);
             }
         }
@@ -248,7 +251,8 @@ impl<T> Vec<T> {
                 let new_cap = self.expanded_cap();
                 self.ptr = Self::alloc_n(new_cap);
                 self.cap = new_cap;
-                unsafe { ::self::mem::mem_copy(old as *raw Shared<T> as *raw T, self.ptr as *raw Shared<T> as *raw mut T, self.size); }
+                // 独占: 旧缓冲区随后被释放, 用 mem_move 搬运句柄, 避免多 retain 造成泄漏
+                unsafe { ::self::mem::mem_move(old as *raw Shared<T> as *raw T, self.ptr as *raw Shared<T> as *raw mut T, self.size); }
             }
         }
         ::self::ptr::write((self.ptr as *raw Shared<T> as *raw mut T) + self.size, move item); // 避免 item 发生不必要的拷贝和析构
@@ -268,7 +272,8 @@ impl<T> Vec<T> {
                 let old = self.ptr;
                 self.ptr = Self::alloc_n(new_cap);
                 self.cap = new_cap;
-                unsafe { ::self::mem::mem_copy(old as *raw Shared<T> as *raw T, self.ptr as *raw Shared<T> as *raw mut T, self.size); }
+                // 独占: 旧缓冲区随后被释放, 用 mem_move 搬运句柄, 避免多 retain 造成泄漏
+                unsafe { ::self::mem::mem_move(old as *raw Shared<T> as *raw T, self.ptr as *raw Shared<T> as *raw mut T, self.size); }
             }
         }
         unsafe { ::self::mem::mem_copy(other.pointer as *raw T, (self.ptr as *raw Shared<T> as *raw mut T) + self.size, other.length); }
@@ -318,7 +323,11 @@ impl<T> Vec<T> {
             self.size -= 1;
             let last_item = (self.ptr as *raw Shared<T> as *raw mut T) + self.size;
             unsafe {
-                let item = *last_item;
+                // 独占: 用 mem_move 显式把最后一个元素的句柄转移给返回值, 再清零原位置。
+                // 与 insert / reverse / 重新分配等搬运路径保持一致, 不依赖裸指针读取的 retain 语义
+                // (本编译器里 `let item = *rawptr;` 恰好不 retain, 但显式搬运更不容易出错)。
+                let mut item: T = ::self::intrinsic::zeroed(<T>);
+                ::self::mem::mem_move(last_item as *raw T, &raw mut item as *raw mut T, 1);
                 ::self::intrinsic::write_bytes(last_item as *raw mut(), 0, size_of(<T>));
                 return Some(move item);
             }
@@ -347,7 +356,10 @@ impl<T> Vec<T> {
             self.size -= 1;
             let old = self.ptr as *raw Shared<T> as *raw mut T;
             unsafe {
-                let item = *old;
+                // 独占: 用 mem_move 显式把第一个元素的句柄转移给返回值, 再整体前移。
+                // 与其它搬运路径保持一致, 不依赖裸指针读取的 retain 语义。
+                let mut item: T = ::self::intrinsic::zeroed(<T>);
+                ::self::mem::mem_move(old as *raw T, &raw mut item as *raw mut T, 1);
                 // 把 n-1 个元素往前挪一位, 可以调用 mem_move
                 let mut i: UInt = 1;
                 while (i <= self.size) {
@@ -374,15 +386,19 @@ impl<T> Vec<T> {
 
             self.ptr = Self::alloc_n(new_cap);
             self.cap = new_cap;
+            // 共享: 旧缓冲区仍归别名所有, 复制到新缓冲区时必须让每个元素 retain (mem_copy),
+            // 用 mem_move 裸搬运会导致新缓冲区的元素没有引用计数 -> 别名析构后 use-after-free。
             // [0, idx) 拷贝到 [0, idx), [idx, size) 拷贝到 [idx+1, size+1)
             unsafe {
-                ::self::mem::mem_move(old as *raw Shared<T> as *raw T, self.ptr as *raw Shared<T> as *raw mut T, idx);
-                ::self::mem::mem_move(old as *raw Shared<T> as *raw T + idx, self.ptr as *raw Shared<T> as *raw mut T + idx + 1, self.size - idx);
+                ::self::mem::mem_copy(old as *raw Shared<T> as *raw T, self.ptr as *raw Shared<T> as *raw mut T, idx);
+                ::self::mem::mem_copy(old as *raw Shared<T> as *raw T + idx, self.ptr as *raw Shared<T> as *raw mut T + idx + 1, self.size - idx);
             }
         } else {
             let old = self.ptr;
             if (self.size == self.cap) {
-                let new_cap = self.cap * 2;
+                // 跟 push 一样用 expanded_cap(), 保证 cap == 0 时也能分配到非零容量,
+                // 否则 cap * 2 == 0 会在 0 字节缓冲区上越界写, 破坏 cap >= len 不变量。
+                let new_cap = self.expanded_cap();
                 self.ptr = Self::alloc_n(new_cap);
                 self.cap = new_cap;
                 // [0, idx) 拷贝到 [0, idx), [idx, size) 拷贝到 [idx+1, size+1)
@@ -425,7 +441,9 @@ impl<T> Vec<T> {
             while x < size {
                 let cur: *raw T = (self.ptr as *raw Shared<T> as *raw T) + x;
                 let new_data: *raw mut T = (data as *raw Shared<T> as *raw mut T) + size - 1 - x;
-                unsafe { *new_data = *cur; }
+                // 共享: 旧缓冲区仍归别名所有, 新缓冲区的元素必须 retain (mem_copy);
+                // 直接 `*new_data = *cur` 是裸写不 retain, 别名析构后会 use-after-free。
+                unsafe { ::self::mem::mem_copy(cur, new_data, 1); }
                 x += 1;
             }
             self.ptr = unsafe(data as *Shared<T>);
@@ -438,11 +456,13 @@ impl<T> Vec<T> {
             while start < end {
                 let head: *raw mut T = ptr + start;
                 let tail: *raw mut T = ptr + end;
-                // todo: 使用 ManuallyDrop 类型
+                // 独占: 用 mem_move 做句柄交换, 只搬运所有权, 不产生额外的 retain/release。
+                // 原来的 `tmp = *head` 会 retain 一次而 forget 没有配对释放 -> 泄漏。
                 unsafe {
-                    let mut tmp: T = *head;
-                    *head = *tail;
-                    *tail = tmp;
+                    let mut tmp: T = ::self::intrinsic::zeroed(<T>);
+                    ::self::mem::mem_move(head as *raw T, &raw mut tmp as *raw mut T, 1);
+                    ::self::mem::mem_move(tail as *raw T, head, 1);
+                    ::self::mem::mem_move(&raw tmp as *raw T, tail, 1);
                     ::self::intrinsic::forget(move tmp);
                 }
                 start += 1;
@@ -499,11 +519,15 @@ impl<T> Clone for Vec<T> {
         let s = size_of(<T>);
         let data = unsafe(raw_alloc_n(s, self.size) as *raw Shared<T> as *Shared<T>);
 
+        // 逐元素调用 T 的拷贝函数 (对 Arc 类型会 retain), 因此克隆出来的缓冲区
+        // 自己持有一份引用, 与源 Vec 相互独立; 若源是唯一所有者, 则两边的元素 rc 都为 1,
+        // 若源与别名共享, 则 rc 各自 +1, 不会泄漏也不会 double-free。
         unsafe { ::self::mem::mem_copy(self.ptr as *raw Shared<T> as *raw T, data as *raw Shared<T> as *raw mut T, self.size); }
         return {
             .ptr = move data,
             .cap = self.size,
-            .size = 0,
+            // clone 之后长度必须与源一致, 否则缓冲区里的元素永远不被析构 (泄漏) 也读不到。
+            .size = self.size,
         }: Vec<T>;
     }
 }
