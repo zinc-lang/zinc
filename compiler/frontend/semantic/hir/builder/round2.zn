@@ -310,6 +310,26 @@ impl SyntaxVisitor for TopLevelAstVisitor2 {
                         DiagnosticEngine::get().emit_recursive_use_path(node.span());
                         continue;
                     }
+                    // import 的 "similar" 查找会做前缀匹配, 可能把 `a::b::c` 静默截断成 `a::b`。
+                    // 这里再核对最后一段的名字是否和解析出来的符号对得上, 对不上就报告路径不存在。
+                    if !p.ends_with_star() {
+                        let mut name_ok = true;
+                        if p.last() is Some(last_tok) {
+                            if last_tok.token_kind is TokenKind::Keyword(KeywordKind::KW_SELF_LOWER) ||
+                                last_tok.token_kind is TokenKind::Keyword(KeywordKind::KW_SUPER) {
+                                name_ok = true;
+                            } else {
+                                name_ok = last_tok.raw_str().eq(&resolved.short_name());
+                            }
+                        }
+                        if !name_ok {
+                            if p.last() is Some(bad_tok) {
+                                DiagnosticEngine::get().emit_path_do_not_exist(
+                                    bad_tok.raw_str(), bad_tok.source_span);
+                            }
+                            continue;
+                        }
+                    }
                     if p.ends_with_star() {
                         if resolved is resolved_scope: *ScopeSymbol {
                             ss.sym_table().add_star_use(resolved_scope);

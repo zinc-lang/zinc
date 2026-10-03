@@ -1,0 +1,22 @@
+// 带 _f32/_f64 后缀的浮点字面量, 数值必须和不带后缀时一致
+use std::assert;
+
+fn main() {
+    let a: F64 = 2.5;
+    let b: F64 = 2.5_f64;
+    let c: F32 = 2.5_f32;
+    assert(b == a);
+    assert((c as F64) == a);
+
+    let d: F64 = 0.5;
+    let e: F64 = 0.5_f64;
+    assert(e == d);
+
+    let f: F64 = 3.75;
+    let g: F64 = 3.75_f64;
+    assert(g == f);
+
+    let h: F32 = 1.25;
+    let i: F32 = 1.25_f32;
+    assert(i == h);
+}

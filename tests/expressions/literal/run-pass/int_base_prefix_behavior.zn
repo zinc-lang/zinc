@@ -1,22 +1,17 @@
-// 整数字面量的进制前缀存在 bug: 0b/0o/前导 0 都会被当成十六进制处理。
-// 这个用例记录当前的 (错误的) 运行期行为, 详见报告。
-//
-// compiler/frontend/semantic/hir/constant/int.zn 里判断前缀用的是
-//   if tok_str.eq(&"0b") ... else if tok_str.eq(&"0o") ... else if tok_str.ne(&"0x") ...
-// 前两个分支永远不成立, 第三个分支 (ne) 永远成立, 于是:
-//   1. 任何以 '0' 开头的字面量都被当成十六进制;
-//   2. 而且都无条件砍掉前两个字符 (sub_str(2)), 把前缀字符也吃掉了。
-//
-// 结果: 0b1010 -> "1010" 按十六进制 = 4112, 0o17 -> "17" = 23,
-//       010 -> "0" = 0, 019 -> "9" = 9
+// 整数字面量的进制前缀: 0b/0B (二), 0o/0O (八), 0x/0X (十六)
+// 以 0 开头又没有进制前缀的写法 (010 等) 会报非法前缀, 见 compile-fail/int_leading_zero.zn
 use std::{assert, assert_eq};
 
 fn main() {
-    assert_eq(0b1010_i, 4112_i);
-    assert_eq(0o17_i, 23_i);
-    assert_eq(010_i, 0_i);
-    assert_eq(019_i, 9_i);
-    // 只有 0x/0X 前缀是"碰巧正确"的 (前缀本来就要砍掉两个字符)
+    assert_eq(0b1010_i, 10_i);
+    assert_eq(0B11_i, 3_i);
+    assert_eq(0o17_i, 15_i);
+    assert_eq(0O10_i, 8_i);
     assert_eq(0xFF_i, 255_i);
     assert_eq(0X10_i, 16_i);
+
+    // 下划线分隔符在三种进制里都要忽略
+    assert_eq(0b1111_0000_i, 240_i);
+    assert_eq(0o7_7_i, 63_i);
+    assert_eq(0xDEAD_BEEF_i, 3735928559_i);
 }

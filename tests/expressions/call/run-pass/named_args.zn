@@ -1,8 +1,4 @@
-// 命名参数的运行期行为 (编译器 bug: 实参按位置绑定, 不是按名字绑定)
-//
-// 期望: named3(.b = 2_i, .a = 3_i, .c = 1_i) 应该是 321
-// 实际: 第一个实参 (2) 绑给了形参 a, 第二个 (3) 给了 b, 第三个 (1) 给了 c,
-//       得到 2*100 + 3*10 + 1 == 231
+// 命名参数按参数名绑定到形参, 与书写顺序无关
 use std::{assert, assert_eq};
 
 fn named(a: Int, b: Int) -> Int {
@@ -14,12 +10,12 @@ fn named3(a: Int, b: Int, c: Int) -> Int {
 }
 
 fn main() {
-    // 书写顺序与声明一致时结果正确
+    // 书写顺序与声明一致
     assert_eq(named(.a = 3_i, .b = 4_i), 34_i);
     assert_eq(named3(.a = 3_i, .b = 2_i, .c = 1_i), 321_i);
 
-    // 书写顺序改变后结果就变了, 说明并没有按名字绑定
-    assert_eq(named(.b = 4_i, .a = 3_i), 43_i);
-    assert_eq(named3(.c = 1_i, .b = 2_i, .a = 3_i), 123_i);
-    assert_eq(named3(.b = 2_i, .a = 3_i, .c = 1_i), 231_i);
+    // 书写顺序改变, 结果不变: 按名字绑定
+    assert_eq(named(.b = 4_i, .a = 3_i), 34_i);
+    assert_eq(named3(.c = 1_i, .b = 2_i, .a = 3_i), 321_i);
+    assert_eq(named3(.b = 2_i, .a = 3_i, .c = 1_i), 321_i);
 }

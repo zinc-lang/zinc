@@ -1,0 +1,5 @@
+// 引用不存在的导入路径必须报错, 不能静默忽略
+use std::assert::nope;
+
+fn main() {
+}

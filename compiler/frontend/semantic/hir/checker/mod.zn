@@ -534,7 +534,14 @@ impl TypeCheckContext {
                             return sty;
                         }
                         LiteralKind::LIT_INT => {
-                            let sty = IntegerCValue::new(lit_rv.expr.token).stype_from_suffix();
+                            let cint = IntegerCValue::new(lit_rv.expr.token);
+                            let sty = cint.stype_from_suffix();
+                            // 字面量自身带后缀时, 直接按后缀类型检查数值范围
+                            if sty.type_symbol is int_sym: *IntegerSymbol {
+                                if !int_literal_in_range(cint.value, !cint.sign, int_sym) {
+                                    DiagnosticEngine::get().emit_int_literal_overflow(lit_rv.expr.token.source_span);
+                                }
+                            }
                             Resolver::import_builtin_impls(sty.type_symbol);
                             return sty;
                         }
@@ -1103,13 +1110,19 @@ impl TypeCheckContext {
                             expect_type_eq(csty, IntegerSymbol::new(IntegerKind::U8).to_sty(), lit_rv.expr.span());
                         }
                         LiteralKind::LIT_INT => {
-                            let lit_ty = IntegerCValue::new(lit_rv.expr.token).stype_from_suffix();
+                            let cint = IntegerCValue::new(lit_rv.expr.token);
+                            let lit_ty = cint.stype_from_suffix();
                             if !(csty.type_symbol is type *IntegerSymbol) {
                                 DiagnosticEngine::get().emit_type_mismatch(csty.to_string(), f"integer", lit_rv.expr.span());
                                 return;
                             }
                             if !lit_ty.is_invalid() {
                                 expect_type_eq(csty, lit_ty, lit_rv.expr.span());
+                            } else if csty.type_symbol is int_sym: *IntegerSymbol {
+                                // 没有后缀的字面量: 按上下文给出的目标类型检查范围
+                                if !int_literal_in_range(cint.value, !cint.sign, int_sym) {
+                                    DiagnosticEngine::get().emit_int_literal_overflow(lit_rv.expr.span());
+                                }
                             }
                         }
                         LiteralKind::LIT_FLOAT => {
@@ -1935,6 +1948,10 @@ impl TypeCheckContext {
                 if found is Some(callee_fsym) {
                     let mut constraints = GenericConstraints::new();
                     qpv.symbol = callee_fsym as *Symbol;
+                    // 命名参数先按名字绑定到形参, 后面的逻辑统一按位置处理
+                    if !self.bind_named_fn_args(fn_call, &callee_fsym.params) {
+                        return SType::sty_invalid(fn_call.expr.span());
+                    }
                     constraints.merge(&callee_fsym.generics.constraints);
 
                     if callee_fsym.func_node.qualifiers().has(QualifierKind::Unsafe) ||
@@ -2206,6 +2223,9 @@ impl TypeCheckContext {
             DiagnosticEngine::get().emit_wrong_arg_count(param_len, fn_call.fn_args.len(), fn_call.expr.span());
             return SType::sty_invalid(fn_call.expr.span());
         }
+        if !self.bind_named_fn_args(fn_call, &fsym.params) {
+            return SType::sty_invalid(fn_call.expr.span());
+        }
         let mut params_tys = (type Vec<*SType>)::new();
         let mut args_values = (type Vec<*RValue>)::new();
         let mut i: UInt = 0;
@@ -2225,6 +2245,10 @@ impl TypeCheckContext {
         let param_len = fn_sty.fn_param_count();
         if fn_call.fn_args.len() != param_len {
             DiagnosticEngine::get().emit_wrong_arg_count(param_len, fn_call.fn_args.len(), fn_call.expr.span());
+            return SType::sty_invalid(fn_call.expr.span());
+        }
+        if self.fn_call_has_named_args(fn_call) {
+            DiagnosticEngine::get().emit_named_args_unsupported(fn_call.expr.span());
             return SType::sty_invalid(fn_call.expr.span());
         }
         let mut params_tys = (type Vec<*SType>)::new();
@@ -2321,6 +2345,9 @@ impl TypeCheckContext {
             DiagnosticEngine::get().emit_wrong_arg_count(param_len, arg_len, fn_call.expr.span());
             return SType::sty_invalid(fn_call.expr.span());
         }
+        if !self.bind_named_fn_args(fn_call, &lsym.params) {
+            return SType::sty_invalid(fn_call.expr.span());
+        }
 
         // 参数类型没有标注出来的时候暂时跳过类型检查
         let params_tys = lsym.params_tys();
@@ -2351,6 +2378,10 @@ impl TypeCheckContext {
                 let found = fsym.find_overload(fn_call.fn_args.len());
                 if found is Some(callee_fsym) {
                     qpv.symbol = callee_fsym as *Symbol;
+                    // 命名参数先按名字绑定到形参, 后面的逻辑统一按位置处理
+                    if !self.bind_named_fn_args(fn_call, &callee_fsym.params) {
+                        return;
+                    }
                     constraints.merge(&callee_fsym.generics.constraints);
 
                     if callee_fsym.func_node.qualifiers().has(QualifierKind::Unsafe) ||
@@ -2426,6 +2457,10 @@ impl TypeCheckContext {
             // callee 是 fn 指针 (或者指向 Fn/FnMut 的胖指针) 类型的值:
             // 参数/返回类型都从签名里取, 后面的公共代码会按签名检查实参并插入隐式转换。
             if callable_sty.is_fn_type() {
+                if self.fn_call_has_named_args(fn_call) {
+                    DiagnosticEngine::get().emit_named_args_unsupported(fn_call.expr.span());
+                    return;
+                }
                 let param_len = callable_sty.fn_param_count();
                 if fn_call.fn_args.len() != param_len {
                     DiagnosticEngine::get().emit_wrong_arg_count(param_len, fn_call.fn_args.len(), fn_call.expr.span());
@@ -2449,6 +2484,9 @@ impl TypeCheckContext {
                 let param_len = fsym.params.len();
                 if fn_call.fn_args.len() != param_len {
                     DiagnosticEngine::get().emit_wrong_arg_count(param_len, fn_call.fn_args.len(), fn_call.expr.span());
+                    return;
+                }
+                if !self.bind_named_fn_args(fn_call, &fsym.params) {
                     return;
                 }
                 let mut i: UInt = 0;
@@ -2544,6 +2582,109 @@ impl TypeCheckContext {
             j += 1;
         }
         fn_call.desugared_args = self.desugar_fn_args(&args_values, &params_tys);
+    }
+
+    // 把命名参数按参数名绑定到形参 (与书写顺序无关), 并把 fn_call.fn_args 重排成形参顺序。
+    // 位置参数仍然按顺序绑定到最前面的形参; 命名参数必须写在位置参数后面 (validator 已保证)。
+    // 这个函数是幂等的: 已经排好序的实参再调用一次结果不变。
+    fn bind_named_fn_args(&mut self, fn_call: *FnCallValue, params: &Vec<*VarSymbol>) -> Bool {
+        let arg_count = fn_call.fn_args.len();
+        let param_count = params.len();
+        if arg_count == 0 || arg_count != param_count {
+            return true;
+        }
+
+        let mut has_named = false;
+        let mut pos_count: UInt = 0;
+        let mut k: UInt = 0;
+        while k < arg_count {
+            let arg = fn_call.fn_args.at(k).get_or_panic();
+            if arg.named.token_kind is TokenKind::Identifier {
+                has_named = true;
+            } else {
+                pos_count += 1;
+            }
+            k += 1;
+        }
+        if !has_named {
+            return true;
+        }
+
+        let mut param_names = (type Vec<String>)::new();
+        let mut pi: UInt = 0;
+        while pi < param_count {
+            let p = params.at(pi).get_or_panic();
+            param_names.push(p.short_name());
+            pi += 1;
+        }
+
+        // 每个命名参数都必须能找到一个同名形参
+        let mut ai: UInt = 0;
+        while ai < arg_count {
+            let arg = fn_call.fn_args.at(ai).get_or_panic();
+            if arg.named.token_kind is TokenKind::Identifier {
+                let name = arg.named.raw_str();
+                let mut exists = false;
+                let mut pj: UInt = 0;
+                while pj < param_names.len() {
+                    let pname = param_names.at(pj).get_or_panic();
+                    if pname.eq(&name) {
+                        exists = true;
+                        break;
+                    }
+                    pj += 1;
+                }
+                if !exists {
+                    DiagnosticEngine::get().emit_named_arg_not_found(name, arg.value.expr_node().span());
+                    return false;
+                }
+            }
+            ai += 1;
+        }
+
+        // 按形参顺序重新排列实参: 位置参数占前 pos_count 个, 其余按名字查找
+        let mut ordered = (type Vec<FnArgValue>)::new();
+        let mut i: UInt = 0;
+        while i < param_count {
+            if i < pos_count {
+                let arg = fn_call.fn_args.at(i).get_or_panic();
+                ordered.push(move arg);
+            } else {
+                let name = param_names.at(i).get_or_panic();
+                let mut found: Option<FnArgValue> = None;
+                let mut sj: UInt = 0;
+                while sj < arg_count {
+                    let arg = fn_call.fn_args.at(sj).get_or_panic();
+                    if arg.named.token_kind is TokenKind::Identifier &&
+                        arg.named.raw_str().eq(&name) {
+                        found = Some(move arg);
+                        break;
+                    }
+                    sj += 1;
+                }
+                if found is Some(arg) {
+                    ordered.push(move arg);
+                } else {
+                    DiagnosticEngine::get().emit_named_arg_missing(name, fn_call.expr.span());
+                    return false;
+                }
+            }
+            i += 1;
+        }
+        fn_call.fn_args = move ordered;
+        return true;
+    }
+
+    fn fn_call_has_named_args(&self, fn_call: *FnCallValue) -> Bool {
+        let mut i: UInt = 0;
+        while i < fn_call.fn_args.len() {
+            let arg = fn_call.fn_args.at(i).get_or_panic();
+            if arg.named.token_kind is TokenKind::Identifier {
+                return true;
+            }
+            i += 1;
+        }
+        return false;
     }
 
     fn desugar_fn_args(&mut self, args: &Vec<*RValue>, stys: &Vec<*SType>) -> Vec<*RValue> {

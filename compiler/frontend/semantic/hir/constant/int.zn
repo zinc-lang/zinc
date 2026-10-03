@@ -35,33 +35,17 @@ impl IntegerCValue {
             tok_str = tok_str.sub_str(1);
         }
 
-        // 处理进制
-        let mut numeral: UInt32 = 10;
-        if tok_str.len() > 1 && tok_str.index(0) == b'0' {
-            if tok_str.eq(&"0b") || tok_str.eq(&"0B") { numeral = 2; }
-            else if tok_str.eq(&"0o") || tok_str.eq(&"0O") { numeral = 8; }
-            else if tok_str.ne(&"0x") || tok_str.ne(&"0X") { numeral = 16; }
-            else {
-                DiagnosticEngine::get().emit_illegal_int_prefix(t.source_span);
-            }
-            tok_str = tok_str.sub_str(2);
-        }
-
+        // 先剥掉后缀并删除所有的下划线, 这个函数应该写到标准库里面。
+        // 必须先剥后缀再判断进制前缀: 否则 `0_i` 的 `_i` 会被当成 "0 后面跟了非进制前缀"。
         let mut str = String::new();
         let mut suffix = String::new();
-        // 删除所有的下划线, 这个函数应该写到标准库里面
         {
             let len = tok_str.len();
             let mut i: UInt = 0;
             while i < len {
                 let c = tok_str.index(i);
-                if c == b'i' {
-                    // 处理后缀
-                    suffix = tok_str.sub_str(i).to_string();
-                    break;
-                }
-                if c == b'u' {
-                    // 处理后缀
+                if c == b'i' || c == b'u' {
+                    // 后缀合法性在 lexer 里面已经判断过了
                     suffix = tok_str.sub_str(i).to_string();
                     break;
                 }
@@ -71,16 +55,35 @@ impl IntegerCValue {
                 i += 1;
             }
         }
-        let mut s: Str = str.as_str().deref();
-        // 后缀合法性在 lexer 里面已经判断过了
+
+        // 处理进制前缀: 只认 0b/0B (二), 0o/0O (八), 0x/0X (十六)。
+        // 单独的数字 0 是十进制; `010` 这种以 0 开头又没有进制前缀的写法没有明确含义,
+        // 按非法前缀报错 (符合本文件原有的 emit_illegal_int_prefix 意图), 不再静默按十六进制算错。
+        let mut numeral: UInt32 = 10;
+        let mut digits: Str = str.as_str().deref();
+        if digits.len() > 1 && digits.index(0) == b'0' {
+            let second = digits.index(1);
+            if second == b'b' || second == b'B' {
+                numeral = 2;
+                digits = digits.sub_str(2);
+            } else if second == b'o' || second == b'O' {
+                numeral = 8;
+                digits = digits.sub_str(2);
+            } else if second == b'x' || second == b'X' {
+                numeral = 16;
+                digits = digits.sub_str(2);
+            } else {
+                DiagnosticEngine::get().emit_illegal_int_prefix(t.source_span);
+            }
+        }
 
         // 解析整数部分
         let mut num: UInt64 = 0;
         {
-            let len = s.len();
+            let len = digits.len();
             let mut i: UInt = 0;
             while i < len {
-                let c = s.index(i);
+                let c = digits.index(i);
                 if numeral == 2 {
                     if c != b'0' && c != b'1' {
                         DiagnosticEngine::get().emit_illegal_int_literal(t.source_span);

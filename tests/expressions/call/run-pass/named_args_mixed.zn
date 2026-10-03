@@ -1,0 +1,17 @@
+// 命名参数乱序 + 与位置参数混用: 都按参数名绑定到形参
+// (validator 规定命名参数必须写在位置参数后面)
+use std::assert_eq;
+
+fn named3(a: Int, b: Int, c: Int) -> Int {
+    return a * 100_i + b * 10_i + c;
+}
+
+fn main() {
+    // 全部乱序
+    assert_eq(named3(.c = 1_i, .b = 2_i, .a = 3_i), 321_i);
+
+    // 位置参数 + 命名参数混用
+    assert_eq(named3(3_i, .c = 1_i, .b = 2_i), 321_i);
+    assert_eq(named3(3_i, 2_i, .c = 1_i), 321_i);
+    assert_eq(named3(3_i, 2_i, 1_i), 321_i);
+}

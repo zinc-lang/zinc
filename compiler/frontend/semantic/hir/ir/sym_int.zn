@@ -251,13 +251,16 @@ impl IntegerKind {
     }
 
     fn min_num(&self) -> Int64 {
+        // 注意: 不要写成 `-9223372036854775808_i64` 这样的字面量。
+        // `-` 是一元运算符, 真正被解析的整数字面量是正的 9223372036854775808,
+        // 它超出了 Int64 的范围 (会被字面量范围检查报错), 所以用无符号字面量转换得到最小负数。
         match self {
-            IntegerKind::I8 => return 0x80_i64 as Int8 as Int64;
-            IntegerKind::I16 => return 0x8000_i64 as Int8 as Int64;
-            IntegerKind::I32 => return 0x8000_0000_i64 as Int8 as Int64;
-            IntegerKind::I64 => return 0x8000_0000_0000_0000_i64 as Int8 as Int64;
-            IntegerKind::Isize => return 0x8000_0000_0000_0000_i64 as Int8 as Int64;
-            IntegerKind::Ishort => return 0x8000_0000_i64 as Int8 as Int64;
+            IntegerKind::I8 => return 0_i64 - 128_i64;
+            IntegerKind::I16 => return 0_i64 - 32768_i64;
+            IntegerKind::I32 => return 0_i64 - 2147483648_i64;
+            IntegerKind::I64 => return 0x8000000000000000_u64 as Int64;
+            IntegerKind::Isize => return 0x8000000000000000_u64 as Int64;
+            IntegerKind::Ishort => return 0_i64 - 2147483648_i64;
             IntegerKind::U8 => return 0_i64;
             IntegerKind::U16 => return 0_i64;
             IntegerKind::U32 => return 0_i64;

@@ -126,7 +126,14 @@ impl Resolver {
                     let key = {
                         .segmented_parts = move segs,
                     }: ExportKey;
-                    return Self::imported_symbol_of(&key);
+                    let imported = Self::imported_symbol_of(&key);
+                    if imported is None && !path.ends_with_star() {
+                        if path.last() is Some(last_tok) {
+                            DiagnosticEngine::get().emit_path_do_not_exist(
+                                last_tok.raw_str(), last_tok.source_span);
+                        }
+                    }
+                    return imported;
                 }
             }
             // 报错
@@ -168,11 +175,27 @@ impl Resolver {
                             }
 
                             let key = ExportKey::from_use_path(path);
-                            return Self::imported_symbol_of(&key);
+                            let imported = Self::imported_symbol_of(&key);
+                            if imported is None && !path.ends_with_star() {
+                                if path.last() is Some(last_tok) {
+                                    DiagnosticEngine::get().emit_path_do_not_exist(
+                                        last_tok.raw_str(), last_tok.source_span);
+                                }
+                            }
+                            return imported;
                         }
                     } else {
+                        // 当前作用域里找不到这一级: use 的路径不存在, 必须报错而不是静默忽略
+                        DiagnosticEngine::get().emit_path_do_not_exist(
+                            token.raw_str(), token.source_span);
                         return None;
                     }
+                }
+                else {
+                    // 路径中间出现了不是作用域的东西 (例如函数/静态变量), 后面的段没法再解析
+                    DiagnosticEngine::get().emit_path_do_not_exist(
+                        token.raw_str(), token.source_span);
+                    return None;
                 }
             } else if token.token_kind is TokenKind::Punctuation(PunctuationKind::Star) {
                 // 如果不是最后一项，在 desugar_to_paths_helper 函数里面已经报错了

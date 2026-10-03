@@ -247,6 +247,33 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    fn emit_named_arg_not_found(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"命名参数 $(name) 没有对应的形参",
+            .msg_en = f"no parameter named $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_named_arg_missing(&mut self, name: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"形参 $(name) 没有对应的实参",
+            .msg_en = f"missing argument for parameter $(name)",
+        }: DiagItem);
+    }
+
+    fn emit_named_args_unsupported(&mut self, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"通过函数指针调用时形参没有名字, 不能使用命名参数",
+            .msg_en = f"named arguments cannot be used when calling through a function pointer",
+        }: DiagItem);
+    }
+
     fn emit_irrefutable_pattern_only(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,

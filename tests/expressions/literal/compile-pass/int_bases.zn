@@ -1,10 +1,12 @@
 // 整数字面量的进制前缀与下划线分隔符
-// 注意: 目前只有十六进制 (0x/0X) 前缀真的会按对应进制解析, 见 compile-fail 目录说明
+// 注意: 以 0 开头又没有进制前缀的写法 (010 等) 会报非法前缀, 见 compile-fail/int_leading_zero.zn
 fn main() {
     let hex: Int = 0xFF_i;
     let hex_upper: UInt = 0X10_u;
     let with_underscore: Int = 1_000_000_i;
     let hex_underscore: Int = 0xDEAD_BEEF_i;
+    let bin: Int = 0b1010_i;
+    let oct: Int = 0o17_i;
     let dec: Int = 42_i;
     let zero: Int = 0_i;
 }

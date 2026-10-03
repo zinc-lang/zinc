@@ -332,6 +332,18 @@ fn stype_eq_regardless_lifetime(ty1: *SType, ty2: *SType) -> Bool {
     return true;
 }
 
+// 整数字面量的值是否落在目标整数类型能表达的范围内。
+// negative 表示带负号的字面量: 非负时上限是 max_num(), 负数时幅值上限是 max_num() + 1。
+fn int_literal_in_range(value: UInt64, negative: Bool, int_sym: *IntegerSymbol) -> Bool {
+    if !negative {
+        return value <= int_sym.kind.max_num();
+    }
+    if !int_sym.is_signed() {
+        return false;
+    }
+    return value <= int_sym.kind.max_num() + 1_u64;
+}
+
 fn expect_type_eq(ty1: *SType, ty2: *SType, span: SourceSpan) {
     if !stype_eq_regardless_lifetime(ty1, ty2) {
         DiagnosticEngine::get().emit_type_mismatch(

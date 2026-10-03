@@ -69,6 +69,14 @@ fn resolve_type_cast_kind(from: *SType, to: *SType) -> ResolvedCastKind {
     let src = from.canonical();
     let dst = to.canonical();
 
+    // 定长数组的元素个数也是类型的一部分: [T; 2] 和 [T; 3] 不是同一个类型。
+    // stype_eq_regardless_lifetime 只按较短的一边比较元素, 这里必须先挡掉长度不一致的情况。
+    if src.type_symbol is type *ArraySymbol && dst.type_symbol is type *ArraySymbol {
+        if src.args.ty_args.len() != dst.args.ty_args.len() {
+            return ResolvedCastKind::Err;
+        }
+    }
+
     if src as *raw SType as UInt == dst as *raw SType as UInt {
         return ResolvedCastKind::SameType;
     }

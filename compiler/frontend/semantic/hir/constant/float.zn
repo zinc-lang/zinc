@@ -57,20 +57,21 @@ impl FloatCValue {
                 i += 1;
             }
         }
-        let mut s: Str = str.as_str().deref();
+        let s: Str = str.as_str().deref();
 
-        // 解析数字部分
+        // 解析数字部分: 只遍历去掉后缀和下划线后的 s,
+        // 不能再用 tok_str (它带着 _f32/_f64 后缀, 会把后缀字符也当成数字)。
         let mut num: F64 = 0.0;
         {
-            let len = tok_str.len();
+            let len = s.len();
             let mut i: UInt = 0;
             while i < len {
-                let c = tok_str.index(i);
+                let c = s.index(i);
                 if c == b'.' {
                     i += 1;
                     let mut n: F64 = 1.0;
                     while i < len {
-                        let c = tok_str.index(i);
+                        let c = s.index(i);
                         n = n / 10.0;
                         num += n * ((c - b'0') as F64);
                         i += 1;

@@ -38,7 +38,7 @@ fn main() {
     // 实参按位置求值
     assert_eq(three(zero(), add_one(0_i), three(0_i, 0_i, 1_i)), 11_i);
 
-    // 命名参数 (按声明顺序书写时正确)
+    // 命名参数
     assert_eq(named(.a = 3_i, .b = 4_i), 34_i);
 
     // 递归
