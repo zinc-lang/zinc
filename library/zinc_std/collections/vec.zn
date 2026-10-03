@@ -8,7 +8,6 @@ use ::self::iter::Iterator;
 use ::self::cmp::PartialEq;
 use ::self::cmp::Eq;
 
-extern fn zinc_core_set_strong_count(p: *raw (), val: UShort) -> UShort;
 extern fn zinc_core_println_int(x: UInt);
 
 pub struct Vec<T> {
@@ -127,12 +126,11 @@ impl<T> Vec<T> {
             return None;
         }
         self.to_unique();
+        // ItemRefMut 的 ptr 字段本身就是 ARC 指针 (*()), 读取 self.ptr 时编译器会
+        // 为句柄 retain 一份强引用, 句柄析构时再由编译器生成的 dtorfn release 掉,
+        // 天然是对称的 inc/dec。不需要 (也不能) 再手工钉计数。
         let ptr = self.ptr as *();
         let raw_ptr = self.ptr as *raw Shared<T> as *raw T;
-        unsafe {
-            zinc_core_set_strong_count(self.ptr as *raw Shared<T> as *raw (), ::self::ptr::UShortMax);
-        }
-
         return Some({
             .ptr = move ptr,
             .size = self.size,
@@ -165,24 +163,11 @@ impl<T> Vec<T> {
         }
         self.to_unique();
 
-        // 在把 Vec 变成 unique 之后, 还要把 ref count 修改为 MAX 然后返回 ItemRefMut, 最后靠 ItemRefMut 的析构函数把 ref count 改回来。
-        // 
-        // 这么做的目的是为了防止用户获得了指向 item 的 mut 借用之后, 再拷贝 Vec 到新线程, 造成线程不安全。
-        // 以 Vec<Int> 为例, 假如用户写出这样的代码:
-        // let p: &mut Int = &vec[0];  // 调用 index_mut 方法可以确保 vec 已经 to_unique 了
-        // sender.send(vec);           // 但后面给 vec 又创建了一个新的 alias
-        // *p += 1;                    // 因为 Int 不是 Sync 类型, 这个修改会产生 data race
-        // 
-        // 所以在返回 ItemRefMut 之前先把 ref count 修改为 MAX, 在后续拷贝 vec 的时候会触发 ref count overflow 导致 panic。这就杜绝了上述 data race 的可能性。
-        //
-        // 至于额外的引用计数加减操作导致的性能问题, 我寄望于性能优化模块解决。一般情况下调用 index_mut 方法的场景是即用即抛, 不会把借用保存下来: vec[0] = 2;
-        // 像这样的代码, 只要我们把 index_mut 方法内联, 编译器就知道在引用计数加减操作之间没有别的有风险的操作, 就可以直接把这一对操作抵消掉。
-
+        // ItemRefMut 的 ptr 字段是 ARC 指针 (*()), 构造句柄时读取 self.ptr 会让句柄
+        // 持有一份强引用, 句柄析构时由编译器生成的 ItemRefMut.dtorfn 释放, 是对称的
+        // inc/dec。
         let ptr = self.ptr as *();
         let raw_ptr = self.ptr as *raw Shared<T> as *raw T;
-        unsafe {
-            zinc_core_set_strong_count(self.ptr as *raw Shared<T> as *raw (), ::self::ptr::UShortMax);
-        }
         return {
             .ptr = move ptr,
             .size = self.size,
@@ -299,7 +284,8 @@ impl<T> Vec<T> {
         }: VecSlice<'s, T>;
     }
 
-    // 与 index_mut 类似, 不仅需要 to_unique 还需要把引用计数设置为 UShortMax
+    // 与 index_mut 类似, 需要先 to_unique; 句柄自身持有的强引用由编译器生成的
+    // copyfn/dtorfn 负责, 不再需要手工钉计数。
     // pub fn as_slice_mut () 
 
     pub fn pop(&mut self) -> Option<T> {

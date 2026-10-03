@@ -1,0 +1,86 @@
+// Vec::get_mut 句柄 (ItemRefMut) 与含析构元素 (Drop) 的交互:
+// 借出/归还/拷贝句柄本身不能让元素多析构或少析构 (不 double-free、不泄漏)。
+//
+// 用 D 做元素: 它的 drop 里累加计数器, 因此能观察"恰好析构一次"。
+// 注意: 句柄只持有缓冲区的强引用, 不析构元素; 元素仍由 Vec 的析构负责。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+struct D {
+    p: *raw mut Int,
+    s: String,
+}
+
+impl Drop for D {
+    fn drop(&mut self) {
+        unsafe { *self.p = *self.p + 1_i; }
+    }
+}
+
+fn mk(q: *raw mut Int) -> D {
+    return { .p = q, .s = String::from_str("d") }: D;
+}
+
+fn main() {
+    // 借出 / 归还句柄: 不析构元素
+    let mut a = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(&mut a as *raw mut Int));
+        v.push(mk(&mut a as *raw mut Int));
+        assert_eq(a, 0_i);
+
+        {
+            let g = v.get_mut(0_u);
+            assert(g is Some(_));
+        }
+        assert_eq(a, 0_i);
+
+        // 命名句柄 + is Some(x) 绑定 (x 是一份句柄拷贝, 应正常析构)
+        {
+            let g = v.get_mut(1_u);
+            if g is Some(x) {
+                let _n = unsafe(*x.item.p);
+            }
+        }
+        assert_eq(a, 0_i);
+    }
+    // 恰好析构两次
+    assert_eq(a, 2_i);
+
+    // 句柄拷贝: 两个句柄都析构之后, 元素仍然只析构一次
+    let mut b = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(&mut b as *raw mut Int));
+        {
+            let g = v.get_mut(0_u);
+            let g2 = g;
+            assert(g is Some(_));
+            assert(g2 is Some(_));
+            if g is Some(x) {
+                let _n = unsafe(*x.item.p);
+            }
+            if g2 is Some(y) {
+                let _n = unsafe(*y.item.p);
+            }
+        }
+        assert_eq(b, 0_i);
+        // 句柄全部归还后, Vec 仍然独占且可用
+        assert_eq(v.ref_count() as UInt, 1_u);
+    }
+    assert_eq(b, 1_i);
+
+    // 借出未越界时返回 None, 不触碰元素
+    let mut c = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(&mut c as *raw mut Int));
+        {
+            let g = v.get_mut(1_u);
+            assert(g is None);
+        }
+        assert_eq(c, 0_i);
+    }
+    assert_eq(c, 1_i);
+}

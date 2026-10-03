@@ -1,0 +1,146 @@
+// Vec::get_mut 句柄 (ItemRefMut) 的引用计数不变量。
+//
+// ItemRefMut 是"胖句柄": 它的 ptr 字段是 ARC 指针 (*()), 借出时 retain 一份
+// 缓冲区强引用, 句柄析构时由编译器生成的 dtorfn release。因此:
+//   - 借出期间缓冲区 rc = 借出前 + 1 (每多一个句柄拷贝就再 +1);
+//   - 句柄析构后回到借出前的值, 不是任何写死的常数;
+//   - 独占时 get_mut 先 to_unique 走原地路径, 元素本身不会被多 retain。
+//
+// 用 Vec<Vec<Int>> 做元素, 内层 Vec 的 ref_count() 可以被观察到。
+// 注意 inner_val 用 get_unchecked 取引用再取 Int, 避免 Vec::at 返回
+// Option<Arc 元素> 的临时量 (编译器当前不析构这类临时量, 会污染内层 rc)。
+use std::{assert, assert_eq};
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn inner_rc(v: &Vec<Vec<Int>>, i: UInt) -> UInt {
+    let p = unsafe(v.get_unchecked(i));
+    return p.ref_count() as UInt;
+}
+
+fn inner_val(v: &Vec<Vec<Int>>, i: UInt) -> Int {
+    let p = unsafe(v.get_unchecked(i));
+    return p.at(0_u).get_or_panic();
+}
+
+fn main() {
+    // A. 独占: 借出 +1 / 归还 -1, 元素 rc 不变
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        v.push(mk(2_i));
+        assert_eq(v.ref_count() as UInt, 1_u);
+
+        {
+            let g = v.get_mut(0_u);
+            assert(g is Some(_));
+            assert_eq(v.ref_count() as UInt, 2_u);
+            assert_eq(inner_rc(&v, 0_u), 1_u);
+            assert_eq(inner_rc(&v, 1_u), 1_u);
+        }
+        assert_eq(v.ref_count() as UInt, 1_u);
+        assert_eq(inner_rc(&v, 0_u), 1_u);
+
+        // 归还之后仍然可以正常独占修改 (覆盖旧元素而不是泄漏)
+        {
+            let g = v.get_mut(1_u);
+            assert(g is Some(_));
+            // 用命名局部变量接住 get_or_panic 返回的句柄拷贝:
+            // 临时量形式 `*g.get_or_panic() = ...` 的临时句柄当前不会被析构 (编译器问题)
+            let mut r = g.get_or_panic();
+            *r = mk(20_i);
+        }
+        assert_eq(inner_val(&v, 1_u), 20_i);
+        assert_eq(inner_rc(&v, 1_u), 1_u);
+    }
+
+    // B. 句柄拷贝: 每份拷贝各持一次强引用, 析构后全部归还
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        assert_eq(v.ref_count() as UInt, 1_u);
+
+        {
+            let g = v.get_mut(0_u);
+            assert_eq(v.ref_count() as UInt, 2_u);
+            let g2 = g;
+            assert_eq(v.ref_count() as UInt, 3_u);
+            assert(g is Some(_));
+            assert(g2 is Some(_));
+        }
+        assert_eq(v.ref_count() as UInt, 1_u);
+        assert_eq(inner_val(&v, 0_u), 1_i);
+
+        // 分层析构: 计数必须跟着"还活着的句柄数"走, 不能被写死成某个常数。
+        // 旧实现析构时 set_strong_count(ptr, 2), 在多层拷贝下会算错。
+        {
+            let g = v.get_mut(0_u); // rc = 2
+            {
+                let g2 = g; // rc = 3
+                {
+                    let g3 = g2; // rc = 4
+                }
+                assert_eq(v.ref_count() as UInt, 3_u);
+            }
+            assert_eq(v.ref_count() as UInt, 2_u);
+            assert(g is Some(_));
+        }
+        assert_eq(v.ref_count() as UInt, 1_u);
+    }
+
+    // C. 共享缓冲区 + 句柄: get_mut 先 to_unique 拷贝新缓冲区
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        v.push(mk(2_i));
+        {
+            let mut w = v; // 值拷贝: 老缓冲区 B0 的 rc = 2 (v + w)
+            assert_eq(v.ref_count() as UInt, 2_u);
+
+            {
+                let g = v.get_mut(0_u); // to_unique: v 换到新缓冲区 B1
+                assert(g is Some(_));
+                // v 独占 B1 并多一个句柄 (B1 的 rc = 2); w 独占 B0
+                assert_eq(v.ref_count() as UInt, 2_u);
+                assert_eq(w.ref_count() as UInt, 1_u);
+                // 元素被拷到 B1 (mem_copy retain), 因此内层 rc = B0 + B1 = 2
+                assert_eq(inner_rc(&v, 0_u), 2_u);
+                assert_eq(inner_rc(&w, 0_u), 2_u);
+                // 通过句柄改 v 的副本, w 的老缓冲区不受影响
+                let mut r = g.get_or_panic();
+                *r = mk(9_i);
+            }
+            assert_eq(v.ref_count() as UInt, 1_u);
+            assert_eq(w.ref_count() as UInt, 1_u);
+            assert_eq(inner_val(&v, 0_u), 9_i);
+            assert_eq(inner_val(&w, 0_u), 1_i);
+            assert_eq(inner_val(&v, 1_u), 2_i);
+            assert_eq(inner_val(&w, 1_u), 2_i);
+        }
+        // w 析构: B0 上的元素槽被析构, v 里的元素恢复为独占
+        assert_eq(v.ref_count() as UInt, 1_u);
+        assert_eq(inner_rc(&v, 0_u), 1_u);
+        assert_eq(inner_rc(&v, 1_u), 1_u);
+    }
+
+    // D. 多次借出 / 归还不会累积引用计数
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        let mut i: UInt = 0;
+        while i < 10_u {
+            {
+                let g = v.get_mut(0_u);
+                assert(g is Some(_));
+                assert_eq(v.ref_count() as UInt, 2_u);
+            }
+            assert_eq(v.ref_count() as UInt, 1_u);
+            i += 1_u;
+        }
+        assert_eq(inner_rc(&v, 0_u), 1_u);
+    }
+}

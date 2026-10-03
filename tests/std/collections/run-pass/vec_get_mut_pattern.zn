@@ -1,0 +1,84 @@
+// Vec::get_mut / index_mut 返回 Option<ItemRefMut> / ItemRefMut 的正常用法。
+//
+// 回归点 (旧实现把缓冲区强引用数钉成 UShortMax, 任何句柄拷贝都会触发
+// ARC copyfn -> 运行期 panic "reference count of ARC pointer overflows"):
+//   1. 内联的 `if v.get_mut(..) is Some(mut x) { *x = ... }` 必须可用;
+//   2. 句柄借出期间缓冲区强引用 = 借出前 + 1, 句柄析构后回到借出前的值
+//      (旧实现析构时写死 set_strong_count(ptr, 2), 并不是借出前的值);
+//   3. get_mut 入口先 to_unique: 独占时原地借用 (元素不会被多 retain 一份)。
+//
+// 注意: 内联的 `if <函数调用> is Some(..)` / `match <函数调用>` 的临时量当前不会
+// 被析构 (编译器侧问题, 见任务报告), 所以计数断言部分统一用"块内命名的 let 句柄"
+// 来测量; 功能断言仍然使用内联模式。
+use std::{assert, assert_eq};
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn inner_rc(v: &Vec<Vec<Int>>, i: UInt) -> UInt {
+    let p = unsafe(v.get_unchecked(i));
+    return p.ref_count() as UInt;
+}
+
+// 功能: 内联模式不再 panic, 写入可见
+fn inline_pattern_works() {
+    let mut v = (type Vec<Vec<Int>>)::new();
+    v.push(mk(1_i));
+    v.push(mk(2_i));
+
+    if v.get_mut(0_u) is Some(mut x) {
+        *x = mk(9_i);
+    } else {
+        assert(false, "get_mut(0) should be Some");
+    }
+    assert_eq(v.at(0_u).get_or_panic().at(0_u).get_or_panic(), 9_i);
+    assert_eq(v.at(1_u).get_or_panic().at(0_u).get_or_panic(), 2_i);
+
+    // index_mut 同族路径
+    let mut r = v.index_mut(1_u);
+    *r = mk(8_i);
+    assert_eq(v.at(1_u).get_or_panic().at(0_u).get_or_panic(), 8_i);
+    assert_eq(v.at(0_u).get_or_panic().at(0_u).get_or_panic(), 9_i);
+}
+
+fn main() {
+    inline_pattern_works();
+
+    // 计数不变量: 借出 +1, 归还回到借出前的值
+    let mut v = (type Vec<Vec<Int>>)::new();
+    v.push(mk(1_i));
+    v.push(mk(2_i));
+
+    let before = v.ref_count() as UInt;
+    assert_eq(before, 1_u);
+
+    {
+        let g = v.get_mut(0_u);
+        assert(g is Some(_));
+        assert_eq(v.ref_count() as UInt, before + 1_u);
+        // 独占缓冲区: to_unique 走原地路径, 元素本身不会被 retain
+        assert_eq(inner_rc(&v, 0_u), 1_u);
+        assert_eq(inner_rc(&v, 1_u), 1_u);
+    }
+    // 句柄析构后必须回到借出前的值 (旧实现是写死的 2)
+    assert_eq(v.ref_count() as UInt, before);
+    assert_eq(inner_rc(&v, 0_u), 1_u);
+    assert_eq(inner_rc(&v, 1_u), 1_u);
+
+    // get_mut 越界: 返回 None, 不改变引用计数
+    {
+        let g = v.get_mut(2_u);
+        assert(g is None);
+    }
+    assert_eq(v.ref_count() as UInt, before);
+
+    // index_mut 的计数同样对称
+    {
+        let r = v.index_mut(1_u);
+        assert_eq(v.ref_count() as UInt, before + 1_u);
+    }
+    assert_eq(v.ref_count() as UInt, before);
+}

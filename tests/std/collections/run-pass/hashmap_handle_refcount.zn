@@ -1,0 +1,62 @@
+// HashMap 可变句柄 (ItemRefMut) 的引用计数记账:
+//   - get_mut / or_insert 借出期间表 rc = 借出前 + 1, 句柄归还后回到借出前的值;
+//   - 缺失 key 时返回 None / 不改变 rc;
+//   - get 的不可变句柄 (ItemRef) 只在命名局部量时测量 (临时量的析构是编译器侧问题)。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut m = (type HashMap<UInt, UInt>)::new();
+    m.insert(1_u, 10_u);
+    assert_eq(m.ref_count() as UInt, 1_u);
+
+    // get_mut 命中: 借出 +1
+    {
+        let g = m.get_mut(&1_u);
+        assert(g is Some(_));
+        assert_eq(m.ref_count() as UInt, 2_u);
+    }
+    assert_eq(m.ref_count() as UInt, 1_u);
+
+    // get_mut 缺失: 返回 None, 计数不变
+    {
+        let g = m.get_mut(&9_u);
+        assert(g is None);
+    }
+    assert_eq(m.ref_count() as UInt, 1_u);
+
+    // or_insert 新增: 借出 +1, 归还 -1
+    {
+        let r = m.or_insert(2_u, 20_u);
+        assert_eq(*r.item, 20_u);
+        assert_eq(m.ref_count() as UInt, 2_u);
+    }
+    assert_eq(m.ref_count() as UInt, 1_u);
+    assert_eq(m.len(), 2_u);
+
+    // or_insert 命中已有 key: 不覆盖, 计数同样对称
+    {
+        let r = m.or_insert(1_u, 99_u);
+        assert_eq(*r.item, 10_u);
+        assert_eq(m.ref_count() as UInt, 2_u);
+    }
+    assert_eq(m.ref_count() as UInt, 1_u);
+    assert_eq(m.len(), 2_u);
+
+    // get 的不可变句柄: 命名局部量借出 +1, 块结束归还
+    {
+        let g = m.get(&2_u);
+        assert(g is Some(_));
+        assert_eq(m.ref_count() as UInt, 2_u);
+        if g is Some(x) {
+            assert_eq(*x.item, 20_u);
+        }
+    }
+    assert_eq(m.ref_count() as UInt, 1_u);
+
+    // at 查不到 key: 不构造句柄, 计数不变
+    {
+        let c = m.at(&9_u);
+        assert(c is None);
+    }
+    assert_eq(m.ref_count() as UInt, 1_u);
+}

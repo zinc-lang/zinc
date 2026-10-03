@@ -1,0 +1,24 @@
+// 在 get_mut 返回的可变借用还活着的时候拷贝整个表, 必须要么被拒绝/panic,
+// 要么保证拷贝与原来的表互相独立 (copy-on-write)。
+// 当前 HashMap::get_mut 没有像 Vec::get_mut 那样把强引用数钉成 MAX, 结果:
+//   - 借用结束后表的 rc 变成 1 (虽然 m 和 m2 都持有它)
+//   - 之后 m.insert 直接原地修改共享的表, m2 也"看到"了新 key
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut m = (type HashMap<UInt, UInt>)::new();
+    m.insert(1_u, 10_u);
+    let mut m2 = (type HashMap<UInt, UInt>)::new();
+    {
+        let g = m.get_mut(&1_u);
+        m2 = m;
+        assert(g is Some(_));
+    }
+    // m 与 m2 都持有底层表 -> rc 必须是 2
+    assert_eq(m.ref_count() as UInt, 2_u);
+
+    m.insert(3_u, 30_u);
+    // m2 是拷贝, 不应看到 m 后来插入的 key
+    assert(!m2.contains(&3_u));
+    assert_eq(m2.len(), 1_u);
+}

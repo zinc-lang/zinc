@@ -1,0 +1,51 @@
+// 与 get_mut 同类问题: or_insert 返回 ItemRefMut 期间拷贝整个表, 之后
+// 两个表必须互相独立 (copy-on-write), 且句柄归还后表的强引用数必须正确。
+//
+// 修复前: ItemRefMut 析构时把强引用数写死成 2, 于是 r 归还之后 m/m2 共享的表
+// 被算成 rc=1, m.insert 会原地修改共享表, m2 也"看到"了新 key。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut m = (type HashMap<UInt, UInt>)::new();
+    m.insert(1_u, 10_u);
+    let mut m2 = (type HashMap<UInt, UInt>)::new();
+    {
+        let r = m.or_insert(2_u, 20_u);
+        m2 = m;
+        assert_eq(*r.item, 20_u);
+    }
+    // m 与 m2 都持有底层表 -> rc 必须是 2
+    assert_eq(m.ref_count() as UInt, 2_u);
+
+    m.insert(3_u, 30_u);
+    // m2 是拷贝, 不应看到 m 后来插入的 key
+    assert(!m2.contains(&3_u));
+    // m2 是"or_insert(2) 已提交之后"的快照, 因此含 1 和 2 两个 key
+    assert_eq(m2.len(), 2_u);
+    assert(m2.contains(&1_u));
+    assert(m2.contains(&2_u));
+    {
+        let g1 = m2.get(&1_u);
+        if g1 is Some(x) {
+            assert_eq(*x.item, 10_u);
+        } else {
+            assert(false, "m2 should contain key 1");
+        }
+        let g2 = m2.get(&2_u);
+        if g2 is Some(x) {
+            assert_eq(*x.item, 20_u);
+        } else {
+            assert(false, "m2 should contain key 2");
+        }
+    }
+    // m 保留自己的新表
+    assert_eq(m.len(), 3_u);
+    {
+        let g3 = m.get(&3_u);
+        if g3 is Some(x) {
+            assert_eq(*x.item, 30_u);
+        } else {
+            assert(false, "m should contain key 3");
+        }
+    }
+}

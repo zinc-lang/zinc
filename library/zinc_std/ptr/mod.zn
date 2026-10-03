@@ -12,7 +12,6 @@ extern fn zinc_core_both_count(p: *raw ()) -> UInt;
 extern fn zinc_core_is_unique(p: *raw ()) -> Bool;
 
 extern fn zinc_core_inc_strong_atomic(p: *raw ()) -> UShort;
-static UShortMax: UShort = 0xFFFF_FFFF;
 
 // 把弱指针升级为强指针
 // todo 需要支持 T: ?Sized, 指向 trait 的胖指针怎么办?
