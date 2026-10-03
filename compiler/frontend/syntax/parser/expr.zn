@@ -99,110 +99,143 @@ impl FileParser {
         }
     }
 
+    // 二元运算符的结合性: 同一优先级内部一律左结合, 即 a - b - c 等价 (a - b) - c。
+    // 每层都是 "先解析更高一级的操作数, 然后只要当前算符仍属于本层就继续把
+    // 右侧也解析成更高一级, 并构造左嵌套的 BinaryExpr"。
     fn parse_or_expr(&mut self) -> *ExpressionNode {
-        let left = self.parse_and_expr();
+        let mut left = self.parse_and_expr();
 
-        let t = self.lexer.peek(0);
-        if t.token_kind is TokenKind::Punctuation(PunctuationKind::OrOr) {
-            let op = self.lexer.next();
-            let right = self.parse_or_expr();
-            return box {
-                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
-                .lhs = move left,
-                .op = op,
-                .rhs = move right,
-            }: BinaryExpr;
+        let mut t = self.lexer.peek(0);
+        while true {
+            if t.token_kind is TokenKind::Punctuation(PunctuationKind::OrOr) {
+                let op = self.lexer.next();
+                let right = self.parse_and_expr();
+                let e = box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lhs = move left,
+                    .op = op,
+                    .rhs = move right,
+                }: BinaryExpr;
+                left = move e;
+
+                t = self.lexer.peek(0);
+            }
+            else {
+                break;
+            }
         }
-        else {
-            return left;
-        }
+        return left;
     }
 
     fn parse_and_expr(&mut self) -> *ExpressionNode {
-        let left = self.parse_cmp_expr();
+        let mut left = self.parse_cmp_expr();
 
-        let t = self.lexer.peek(0);
-        if t.token_kind is TokenKind::Punctuation(PunctuationKind::AndAnd) {
-            let op = self.lexer.next();
-            let right = self.parse_and_expr();
-            return box {
-                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
-                .lhs = move left,
-                .op = op,
-                .rhs = move right,
-            }: BinaryExpr;
+        let mut t = self.lexer.peek(0);
+        while true {
+            if t.token_kind is TokenKind::Punctuation(PunctuationKind::AndAnd) {
+                let op = self.lexer.next();
+                let right = self.parse_cmp_expr();
+                let e = box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lhs = move left,
+                    .op = op,
+                    .rhs = move right,
+                }: BinaryExpr;
+                left = move e;
+
+                t = self.lexer.peek(0);
+            }
+            else {
+                break;
+            }
         }
-        else {
-            return left;
-        }
+        return left;
     }
 
     fn parse_cmp_expr(&mut self) -> *ExpressionNode {
-        let left = self.parse_add_expr();
+        let mut left = self.parse_add_expr();
 
-        let t = self.lexer.peek(0);
-        if t.token_kind is TokenKind::Punctuation(PunctuationKind::EqEq) ||
-            t.token_kind is TokenKind::Punctuation(PunctuationKind::NotEq) ||
-            t.token_kind is TokenKind::Punctuation(PunctuationKind::Lt) ||
-            t.token_kind is TokenKind::Punctuation(PunctuationKind::LtEq) ||
-            t.token_kind is TokenKind::Punctuation(PunctuationKind::Gt) ||
-            t.token_kind is TokenKind::Punctuation(PunctuationKind::GtEq) {
-            
-            let op = self.lexer.next();
-            let right = self.parse_cmp_expr();
-            return box {
-                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
-                .lhs = move left,
-                .op = op,
-                .rhs = move right,
-            }: BinaryExpr;
+        let mut t = self.lexer.peek(0);
+        while true {
+            if t.token_kind is TokenKind::Punctuation(PunctuationKind::EqEq) ||
+                t.token_kind is TokenKind::Punctuation(PunctuationKind::NotEq) ||
+                t.token_kind is TokenKind::Punctuation(PunctuationKind::Lt) ||
+                t.token_kind is TokenKind::Punctuation(PunctuationKind::LtEq) ||
+                t.token_kind is TokenKind::Punctuation(PunctuationKind::Gt) ||
+                t.token_kind is TokenKind::Punctuation(PunctuationKind::GtEq) {
+
+                let op = self.lexer.next();
+                let right = self.parse_add_expr();
+                let e = box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lhs = move left,
+                    .op = op,
+                    .rhs = move right,
+                }: BinaryExpr;
+                left = move e;
+
+                t = self.lexer.peek(0);
+            }
+            else {
+                break;
+            }
         }
-        else {
-            return left;
-        }
+        return left;
     }
 
     fn parse_add_expr(&mut self) -> *ExpressionNode {
-        let left = self.parse_mul_expr();
+        let mut left = self.parse_mul_expr();
 
-        let t = self.lexer.peek(0);
-        if t.token_kind is TokenKind::Punctuation(PunctuationKind::Plus) ||
-            t.token_kind is TokenKind::Punctuation(PunctuationKind::Minus) {
-            
-            let op = self.lexer.next();
-            let right = self.parse_add_expr();
-            return box {
-                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
-                .lhs = move left,
-                .op = op,
-                .rhs = move right,
-            }: BinaryExpr;
+        let mut t = self.lexer.peek(0);
+        while true {
+            if t.token_kind is TokenKind::Punctuation(PunctuationKind::Plus) ||
+                t.token_kind is TokenKind::Punctuation(PunctuationKind::Minus) {
+
+                let op = self.lexer.next();
+                let right = self.parse_mul_expr();
+                let e = box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lhs = move left,
+                    .op = op,
+                    .rhs = move right,
+                }: BinaryExpr;
+                left = move e;
+
+                t = self.lexer.peek(0);
+            }
+            else {
+                break;
+            }
         }
-        else {
-            return left;
-        }
+        return left;
     }
 
     fn parse_mul_expr(&mut self) -> *ExpressionNode {
-        let left = self.parse_cast_expr();
+        let mut left = self.parse_cast_expr();
 
-        let t = self.lexer.peek(0);
-        if t.token_kind is TokenKind::Punctuation(PunctuationKind::Star) ||
-            t.token_kind is TokenKind::Punctuation(PunctuationKind::Div) ||
-            t.token_kind is TokenKind::Punctuation(PunctuationKind::Percent) {
-            
-            let op = self.lexer.next();
-            let right = self.parse_mul_expr();
-            return box {
-                .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
-                .lhs = move left,
-                .op = op,
-                .rhs = move right,
-            }: BinaryExpr;
+        let mut t = self.lexer.peek(0);
+        while true {
+            if t.token_kind is TokenKind::Punctuation(PunctuationKind::Star) ||
+                t.token_kind is TokenKind::Punctuation(PunctuationKind::Div) ||
+                t.token_kind is TokenKind::Punctuation(PunctuationKind::Percent) {
+
+                let op = self.lexer.next();
+                let right = self.parse_cast_expr();
+                let e = box {
+                    .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+                    .lhs = move left,
+                    .op = op,
+                    .rhs = move right,
+                }: BinaryExpr;
+                left = move e;
+
+                t = self.lexer.peek(0);
+            }
+            else {
+                break;
+            }
         }
-        else {
-            return left;
-        }
+        return left;
     }
 
     fn parse_cast_expr(&mut self) -> *ExpressionNode {
@@ -543,7 +576,7 @@ impl FileParser {
         // token 的 span 覆盖 `"..."` (不含前面的 f), 所以内容从 start+1 开始,
         // 长度 = span 长度 - 2 (去掉首尾两个引号)
         let base = span.start.offset + 1;
-        // 注意 zinc 的 '-' 是右结合的, 这里必须显式加括号
+        // span 长度减去首尾两个引号; 括号只是让分组更直观 ('-' 现在是左结合的)
         let len = (span.end.offset - span.start.offset) - 2;
 
         let mut i: UInt = 0;

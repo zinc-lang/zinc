@@ -1,0 +1,52 @@
+// && / || 同一优先级内部左结合: a && b && c 等价 (a && b) && c。
+// 对布尔逻辑来说结合方向不改变最终真值, 但求值顺序仍然是严格从左到右,
+// 短路语义必须保持不变 (一旦结果确定, 后面的操作数不再求值)。
+use std::{assert, assert_eq};
+
+struct Counter {
+    n: Int,
+}
+
+impl Counter {
+    fn new() -> Counter {
+        return { .n = 0_i }: Counter;
+    }
+    fn yes(&mut self) -> Bool {
+        self.n = self.n + 1_i;
+        return true;
+    }
+    fn no(&mut self) -> Bool {
+        self.n = self.n + 1_i;
+        return false;
+    }
+    fn count(&self) -> Int {
+        return self.n;
+    }
+}
+
+fn main() {
+    // false 开头: 后面的 && 操作数都不求值
+    let mut a = Counter::new();
+    assert(!(a.no() && a.yes() && a.yes()));
+    assert_eq(a.count(), 1_i);
+
+    // 第一个为 true, 第二个为 false: 第三个不求值
+    let mut b = Counter::new();
+    assert(!(b.yes() && b.no() && b.yes()));
+    assert_eq(b.count(), 2_i);
+
+    // 全 true: 三个操作数各求值一次
+    let mut c = Counter::new();
+    assert(c.yes() && c.yes() && c.yes());
+    assert_eq(c.count(), 3_i);
+
+    // true 开头: 后面的 || 操作数都不求值
+    let mut d = Counter::new();
+    assert(d.yes() || d.yes() || d.yes());
+    assert_eq(d.count(), 1_i);
+
+    // 前两个 false: 第三个必须求值
+    let mut e = Counter::new();
+    assert(e.no() || e.no() || e.yes());
+    assert_eq(e.count(), 3_i);
+}

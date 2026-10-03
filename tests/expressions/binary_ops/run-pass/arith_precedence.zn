@@ -5,9 +5,12 @@ fn main() {
     // 优先级: 先 * / %, 再 + -
     assert_eq(1_i + 2_i * 3_i, 7_i);
     assert_eq(10_i - 6_i / 2_i, 7_i);
-    // 同一优先级内部也是右结合: 2_i * (3_i % 4_i)
-    assert_eq(2_i * 3_i % 4_i, 6_i);
-    assert_eq(8_i % 6_i * 2_i, 8_i % (6_i * 2_i));
+    // 同一优先级内部左结合: (2_i * 3_i) % 4_i
+    assert_eq(2_i * 3_i % 4_i, 2_i);
+    assert_eq(8_i % 6_i * 2_i, 4_i);
+    // 想按另一边分组必须显式写括号
+    assert_eq(2_i * (3_i % 4_i), 6_i);
+    assert_eq(8_i % (6_i * 2_i), 8_i);
 
     // 括号改变分组
     assert_eq((1_i + 2_i) * 3_i, 9_i);
