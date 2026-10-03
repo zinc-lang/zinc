@@ -1,0 +1,68 @@
+// 快照不变量: 借出句柄后容器做 push / insert / reserve, 句柄看到的始终是借出时的
+// 旧缓冲区 (冻结): 增删都会 COW 到新缓冲区, 旧缓冲区的元素个数与内容不再变化。
+// 句柄归还时旧缓冲区上的元素必须被正确析构, 容器的新缓冲区内容完全不受影响。
+//
+// 注意: 通过陈旧句柄写入是设计使然地不会反映到容器; 这里只断言"读到的仍是旧快照",
+// 不断言"写入可见"。
+use std::{assert, assert_eq};
+
+struct D {
+    id: Int,
+    p: *raw mut Int,
+}
+
+impl Drop for D {
+    fn drop(&mut self) {
+        unsafe { *self.p = *self.p + 1_i; }
+    }
+}
+
+fn mk(id: Int, q: *raw mut Int) -> D {
+    return { .id = id, .p = q }: D;
+}
+
+fn id_at(v: &Vec<D>, i: UInt) -> Int {
+    return unsafe(v.get_unchecked(i)).id;
+}
+
+fn main() {
+    let mut n = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(10_i, &mut n as *raw mut Int));
+        v.push(mk(11_i, &mut n as *raw mut Int));
+
+        {
+            let g = v.index_mut(0_u); // 借出时 B0 = (10, 11)
+
+            // 借出期间容器各行修改
+            v.push(mk(12_i, &mut n as *raw mut Int));        // 共享 COW -> B1 = (10, 11, 12)
+            v.insert(0_u, mk(13_i, &mut n as *raw mut Int)); // 独占: B1 = (13, 10, 11, 12)
+            v.reserve(64_u);                                 // 独占扩容
+            assert_eq(v.len(), 4_u);
+
+            // 句柄读到的仍是旧缓冲区快照 B0 = (10, 11)
+            assert_eq(unsafe(*g.item).id, 10_i);
+
+            // 容器内容正确
+            assert_eq(id_at(&v, 0_u), 13_i);
+            assert_eq(id_at(&v, 1_u), 10_i);
+            assert_eq(id_at(&v, 2_u), 11_i);
+            assert_eq(id_at(&v, 3_u), 12_i);
+            assert_eq(n, 0_i);
+        }
+        // 句柄归还: 析构旧缓冲区 B0 上的 2 个元素
+        assert_eq(n, 2_i);
+
+        // 容器内容不受句柄归还影响
+        assert_eq(v.len(), 4_u);
+        assert_eq(id_at(&v, 0_u), 13_i);
+        assert_eq(id_at(&v, 1_u), 10_i);
+        assert_eq(id_at(&v, 2_u), 11_i);
+        assert_eq(id_at(&v, 3_u), 12_i);
+    }
+    // B1 上的 4 个元素析构
+    assert_eq(n, 6_i);
+
+    println("ok");
+}

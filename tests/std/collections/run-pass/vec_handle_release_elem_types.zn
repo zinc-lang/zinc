@@ -1,0 +1,90 @@
+// 三种元素类型下"最后持有者负责释放元素"的行为:
+//   (1) Int       : 析构是空操作 (destruct_in_place 走空 dtorfn 快路径), 只验证内容/计数;
+//   (2) Vec<Int>  : ARC 元素, 旧缓冲区释放必须把内层强引用计数降回来 (修复前会泄漏);
+//   (3) D (含 Drop): 旧缓冲区元素必须恰好析构一次。
+use std::{assert, assert_eq};
+
+struct D {
+    id: Int,
+    p: *raw mut Int,
+}
+
+impl Drop for D {
+    fn drop(&mut self) {
+        unsafe { *self.p = *self.p + 1_i; }
+    }
+}
+
+fn mk(id: Int, q: *raw mut Int) -> D {
+    return { .id = id, .p = q }: D;
+}
+
+fn mk_inner(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn inner_rc(v: &Vec<Vec<Int>>, i: UInt) -> UInt {
+    let p = unsafe(v.get_unchecked(i));
+    return p.ref_count() as UInt;
+}
+
+fn main() {
+    // (1) Int: trivial 元素, 走空 dtorfn
+    {
+        let mut v = (type Vec<Int>)::new();
+        v.push(1_i);
+        v.push(2_i);
+        {
+            let g = v.index_mut(0_u);
+            v.push(3_i); // COW -> B1 = (1, 2, 3)
+            assert_eq(unsafe(*g.item), 1_i);
+        }
+        assert_eq(v.len(), 3_u);
+        assert_eq(unsafe(*v.get_unchecked(0_u)), 1_i);
+        assert_eq(unsafe(*v.get_unchecked(1_u)), 2_i);
+        assert_eq(unsafe(*v.get_unchecked(2_u)), 3_i);
+        assert_eq(v.ref_count() as UInt, 1_u);
+    }
+
+    // (2) Vec<Int>: 旧缓冲区上的内层 Vec 必须被析构 (内层 rc 降回 1)
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk_inner(1_i));
+        v.push(mk_inner(2_i));
+        assert_eq(inner_rc(&v, 0_u), 1_u);
+        {
+            let g = v.index_mut(0_u);  // B0 计数 2
+            v.push(mk_inner(3_i));     // 共享 COW: B1 复制 (1, 2), 内层 rc -> 2
+            assert_eq(inner_rc(&v, 0_u), 2_u);
+            assert_eq(inner_rc(&v, 1_u), 2_u);
+            assert_eq(inner_rc(&v, 2_u), 1_u);
+            // 句柄看到的旧缓冲区里, 内层元素与 B1 的副本共享同一个引用计数对象 (rc = 2)
+            assert_eq(unsafe(*g.item).ref_count() as UInt, 2_u);
+        }
+        // 句柄归还: 析构旧缓冲区的内层 Vec, 内层 rc 降回 1。
+        // 修复前句柄不析构元素, 这里会停在 2 (泄漏)。
+        assert_eq(inner_rc(&v, 0_u), 1_u);
+        assert_eq(inner_rc(&v, 1_u), 1_u);
+        assert_eq(inner_rc(&v, 2_u), 1_u);
+    }
+
+    // (3) 含 Drop 的 D
+    let mut n = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(1_i, &mut n as *raw mut Int));
+        {
+            let g = v.index_mut(0_u);
+            v.push(mk(2_i, &mut n as *raw mut Int));
+            assert_eq(unsafe(*g.item).id, 1_i);
+            assert_eq(n, 0_i);
+        }
+        assert_eq(n, 1_i);
+    }
+    // 旧缓冲区 B0 的 1 个元素 + B1 上的 2 个元素
+    assert_eq(n, 3_i);
+
+    println("ok");
+}

@@ -1,0 +1,52 @@
+// 同一缓冲区上的多个句柄: 只有最后一个归还时才释放元素, 且只释放一次。
+//
+// 句柄拷贝由编译器生成的 copyfn 负责 retain (每份拷贝 +1), 归还时各自 dec。
+// 前面的句柄归还时看到的计数 >= 2, 不是最后持有者, 不遍历元素;
+// 最后一个归还时计数为 1, 恰好遍历一次。
+use std::{assert, assert_eq};
+
+struct D {
+    id: Int,
+    p: *raw mut Int,
+}
+
+impl Drop for D {
+    fn drop(&mut self) {
+        unsafe { *self.p = *self.p + 1_i; }
+    }
+}
+
+fn mk(id: Int, q: *raw mut Int) -> D {
+    return { .id = id, .p = q }: D;
+}
+
+fn main() {
+    let mut n = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(1_i, &mut n as *raw mut Int));
+        v.push(mk(2_i, &mut n as *raw mut Int));
+
+        {
+            let g = v.index_mut(0_u); // B0 计数 2
+            let g2 = g;               // 拷贝句柄: 计数 3
+            assert_eq(v.ref_count() as UInt, 3_u);
+
+            v.push(mk(3_i, &mut n as *raw mut Int)); // COW: v 换到 B1, B0 只剩两个句柄
+            assert_eq(v.ref_count() as UInt, 1_u);
+            assert_eq(n, 0_i);
+
+            {
+                let g3 = g2; // 计数再 +1
+            } // g3 归还: 不是最后持有者, 不释放元素
+            assert_eq(n, 0_i);
+        }
+        // g / g2 全部归还: 最后一个归还时释放 B0 上的 2 个元素, 且只释放一次
+        // (若每个句柄都遍历, 这里会是 4; 若重复释放会崩溃)
+        assert_eq(n, 2_i);
+        assert_eq(v.len(), 3_u);
+    }
+    assert_eq(n, 5_i);
+
+    println("ok");
+}

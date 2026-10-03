@@ -1,0 +1,77 @@
+// 核心泄漏修复: 句柄存活期间容器 COW 换缓冲区, 句柄归还时必须负责析构旧缓冲区上的元素。
+//
+// 场景: v 独占 B0 -> 借出句柄 g (B0 计数 2) -> v.push 发现不是唯一所有者, 走共享 COW
+// 换到 B1, 并把 B0 上的 2 个元素 retain 复制过去, B0 计数降为 1 (只剩 g)。
+// g 归还时自己是 B0 最后一个强引用: B0 上那 2 个元素槽再没有别人负责析构, 必须由句柄
+// 调用 destruct_in_place 释放, 否则元素持有的堆内存 / 引用计数永远泄漏 (修复前就是如此)。
+// 同时 v 的 B1 副本必须完好, 最终每个元素恰好析构一次。
+use std::{assert, assert_eq};
+
+struct D {
+    id: Int,
+    p: *raw mut Int,
+}
+
+impl Drop for D {
+    fn drop(&mut self) {
+        unsafe { *self.p = *self.p + 1_i; }
+    }
+}
+
+fn mk(id: Int, q: *raw mut Int) -> D {
+    return { .id = id, .p = q }: D;
+}
+
+fn main() {
+    // A. ItemRefMut: get_mut / index_mut 句柄
+    let mut n = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(10_i, &mut n as *raw mut Int));
+        v.push(mk(11_i, &mut n as *raw mut Int));
+        assert_eq(n, 0_i);
+
+        {
+            let g = v.index_mut(0_u); // B0 计数 2 (v + g)
+            assert_eq(v.ref_count() as UInt, 2_u);
+
+            v.push(mk(12_i, &mut n as *raw mut Int)); // 共享 COW: v 换到 B1
+            assert_eq(v.ref_count() as UInt, 1_u);    // B1 归 v 独占
+            assert_eq(v.len(), 3_u);
+            assert_eq(n, 0_i);
+
+            // 句柄仍指向旧缓冲区 B0, 看到的是借出时的快照 (设计使然)
+            assert_eq(unsafe(*g.item).id, 10_i);
+        }
+        // 句柄归还: 它是 B0 的最后持有者, 析构 B0 上的 10 / 11 两个元素
+        assert_eq(n, 2_i);
+
+        // B1 完好: 3 个元素各一份, 内容正确
+        assert_eq(v.len(), 3_u);
+        assert_eq(unsafe(v.get_unchecked(0_u)).id, 10_i);
+        assert_eq(unsafe(v.get_unchecked(1_u)).id, 11_i);
+        assert_eq(unsafe(v.get_unchecked(2_u)).id, 12_i);
+    }
+    // v 析构 B1 上的 3 个元素; 总计 5 个, 每个恰好一次
+    assert_eq(n, 5_i);
+
+    // B. ItemRef: get / index 句柄走同一套释放规则
+    let mut m = 0_i;
+    {
+        let mut w = (type Vec<D>)::new();
+        w.push(mk(20_i, &mut m as *raw mut Int));
+        w.push(mk(21_i, &mut m as *raw mut Int));
+        {
+            let r = w.index(0_u); // B0 计数 2 (w + r)
+            assert_eq(w.ref_count() as UInt, 2_u);
+            w.push(mk(22_i, &mut m as *raw mut Int)); // COW: w 换到 B1
+            assert_eq(m, 0_i);
+            assert_eq(unsafe(*r.item).id, 20_i);
+        }
+        assert_eq(m, 2_i);
+        assert_eq(w.len(), 3_u);
+    }
+    assert_eq(m, 5_i);
+
+    println("ok");
+}

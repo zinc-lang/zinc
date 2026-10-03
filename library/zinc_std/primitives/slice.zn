@@ -132,15 +132,9 @@ impl<'s, T> Iterator for SliceIter<'s, T> {
 
 
 // 它直接具备修改能力，通过 DerefMut<T> 实现。copy on write 在 Vec 其它修改函数中做。
-//
-// ptr 字段是 ARC 指针 (*()): 构造句柄时读取容器缓冲区指针会让句柄 retain 一份强引用,
-// 句柄析构时编译器生成的 dtorfn 会对 ptr 做 release, 二者对称。
-// 因此这里不能再手写 Drop: 编译器已经为 ARC 字段生成 release, 再手写一个
-// set_strong_count(ptr, 2) 只会把计数硬编码成一个与"借出前的值"无关的数字
-// (只有借出前恰好是 1 时才碰巧对), 并和生成的 release 叠加, 记账彻底错位。
 pub struct ItemRefMut<'a, T> {
     ptr: *(),
-    size: UInt, // size 是有必要的，因为析构的时候需要释放 data 里面的数据
+    size: UInt, // 归还句柄时需要析构的元素个数; 0 表示不负责元素析构
     item: &'a mut T, // 这里也可以用裸指针，但是从使用的角度来看，借用更合理。 ItemRefMut 是携带隐式生命周期参数的类型
 }
 
@@ -160,10 +154,32 @@ impl<'a, T> DerefMut for ItemRefMut<'a, T> {
     }
 }
 
+impl<'a, T> Drop for ItemRefMut<'a, T> {
+    fn drop(&mut self) {
+        // 只有自己是最后一个强引用时才遍历元素; 否则 (count != 1) 容器/其它句柄还在用
+        // 这份缓冲区, 元素归它们负责。
+        if (::self::ptr::is_unique(&self.ptr)) {
+            unsafe {
+                // 缓冲区首地址就是元素基址 (Vec::ptr 指向元素区起点, 分配头在它之前),
+                // 元素个数用构造句柄时快照下来的 size (缓冲区冻结, 该值不变)。
+                let mut i: UInt = 0;
+                while (i < self.size) {
+                    let item: *raw mut T = (self.ptr as *raw () as *raw mut T) + i;
+                    ::self::intrinsic::destruct_in_place(item); // 析构, 包括间接内存释放
+                    i += 1;
+                }
+                self.size = 0;
+            }
+        }
+    }
+}
 
+// ItemRef 与 ItemRefMut 共享同一套"最后持有者负责释放元素"的规则, 只是句柄本身不可变。
+// 借用检查通常保证它不会成为最后持有者 (容器必须活得比借出的句柄长), 但经由 COW 换走
+// 缓冲区的路径同样可能发生, 所以这里的释放逻辑必须和 ItemRefMut 完全对称。
 pub struct ItemRef<'a, T> {
     ptr: *(),
-    size: UInt,
+    size: UInt, // 归还句柄时需要析构的元素个数; 0 表示不负责元素析构 (见 ItemRefMut)
     item: &'a T, // 这里也可以用裸指针，但是从使用的角度来看，借用更合理。 ItemRef 是携带隐式生命周期参数的类型
 }
 
@@ -172,5 +188,21 @@ impl<'a, T> Deref for ItemRef<'a, T> {
 
     fn deref(&self) -> &T {
         return unsafe(self.item as &T);
+    }
+}
+
+impl<'a, T> Drop for ItemRef<'a, T> {
+    fn drop(&mut self) {
+        if (::self::ptr::is_unique(&self.ptr)) {
+            unsafe {
+                let mut i: UInt = 0;
+                while (i < self.size) {
+                    let item: *raw mut T = (self.ptr as *raw () as *raw mut T) + i;
+                    ::self::intrinsic::destruct_in_place(item); // 析构, 包括间接内存释放
+                    i += 1;
+                }
+                self.size = 0;
+            }
+        }
     }
 }

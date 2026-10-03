@@ -1,0 +1,48 @@
+// 句柄与容器同时持有缓冲区时, 句柄归还绝不能析构元素:
+// 否则容器随后会读到已析构的元素 (use-after-free), 或者元素被双重析构。
+use std::{assert, assert_eq};
+
+struct D {
+    id: Int,
+    p: *raw mut Int,
+}
+
+impl Drop for D {
+    fn drop(&mut self) {
+        unsafe { *self.p = *self.p + 1_i; }
+    }
+}
+
+fn mk(id: Int, q: *raw mut Int) -> D {
+    return { .id = id, .p = q }: D;
+}
+
+fn main() {
+    let mut n = 0_i;
+    {
+        let mut v = (type Vec<D>)::new();
+        v.push(mk(1_i, &mut n as *raw mut Int));
+        v.push(mk(2_i, &mut n as *raw mut Int));
+
+        {
+            let g = v.index_mut(1_u); // B0 计数 2 (v + g)
+            assert_eq(v.ref_count() as UInt, 2_u);
+            assert_eq(unsafe(*g.item).id, 2_i);
+        }
+        // 句柄归还, 但 v 还持有 B0 -> 不是最后持有者, 元素绝不能被动
+        assert_eq(n, 0_i);
+        assert_eq(v.ref_count() as UInt, 1_u);
+
+        // 容器随后仍能正常读改
+        assert_eq(unsafe(v.get_unchecked(0_u)).id, 1_i);
+        assert_eq(unsafe(v.get_unchecked(1_u)).id, 2_i);
+        v.push(mk(3_i, &mut n as *raw mut Int)); // 独占: 原地追加
+        assert_eq(n, 0_i);
+        assert_eq(v.len(), 3_u);
+        assert_eq(unsafe(v.get_unchecked(2_u)).id, 3_i);
+    }
+    // 只有容器自己析构时才释放元素, 每个恰好一次
+    assert_eq(n, 3_i);
+
+    println("ok");
+}
