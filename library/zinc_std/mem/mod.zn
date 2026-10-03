@@ -21,7 +21,12 @@ pub fn swap<T>(lhs: &mut T, rhs: &mut T) {
 
 extern fn memcmp(p1: *raw (), p2: *raw (), size: UInt) -> Int32;
 
-pub fn mem_compare<T>(lhs: &T, rhs: &T) -> Bool {
+// 注意: 这是**裸字节比较** (memcmp 整个对象), 会把结构体里未初始化的 padding
+// 字节也比进去, 因此对"字段完全相同但 padding 不同"的两个值可能返回 false。
+// 当前 ZnTypeMeta 不携带字段布局信息 (字段数/偏移/类型), std 层无法实现逐字段比较。
+// 因为"padding 也必须逐字节相同"是调用方要保证的前提, 这里标成 unsafe, 避免把它
+// 误当成安全的值相等判断; 需要语义相等时请用类型自己的 PartialEq::eq。
+pub unsafe fn mem_compare<T>(lhs: &T, rhs: &T) -> Bool {
     unsafe {
         let pl = lhs as *raw T as *raw ();
         let pr = rhs as *raw T as *raw ();

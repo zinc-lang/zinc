@@ -100,6 +100,11 @@ impl Hash for F64 {
         let p = self as &F64 as *raw F64 as *raw UInt64;
 
         let mut bits: UInt64 = unsafe(*p);
+        // -0.0 == 0.0, 必须先把符号位清掉, 否则违反 Hash/Eq 契约
+        if (bits == 0x8000_0000_0000_0000_u64) {
+            bits = 0_u64;
+        }
+        // 负 NaN 也归一到正 NaN (本项目约定所有 NaN 视为同一个 key)
         if (bits == 0xfff8_0000_0000_0000_u64) {
             bits = 0x7ff8_0000_0000_0000_u64;
         }

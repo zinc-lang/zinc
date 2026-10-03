@@ -1,7 +1,8 @@
-// mem::mem_compare: 逐字节比较。
+// mem::mem_compare: 逐字节比较 (unsafe: 调用方要保证 padding 也逐字节一致)。
 //
 // 只在"没有 padding 的类型"上断言: 结构体如果有 padding, memcmp 会把未初始化的
-// padding 字节也比进去, 两个字段值完全相同的值会返回 false (已单独记为 bug)。
+// padding 字节也比进去, 两个字段值完全相同的值会返回 false。因为该前提只能由调用方
+// 保证, mem_compare 已经标成 unsafe; 语义相等请用 PartialEq::eq。
 use std::{assert, assert_eq};
 use std::mem::mem_compare;
 
@@ -21,43 +22,43 @@ fn main() {
     let a: Int = 7;
     let b: Int = 7;
     let c: Int = 8;
-    assert(mem_compare(&a, &b));
-    assert(!mem_compare(&a, &c));
+    assert(unsafe(mem_compare(&a, &b)));
+    assert(!unsafe(mem_compare(&a, &c)));
 
     let u: UInt64 = UInt64::max_value();
     let u2: UInt64 = UInt64::max_value();
-    assert(mem_compare(&u, &u2));
+    assert(unsafe(mem_compare(&u, &u2)));
 
     // 无 padding 的结构体 (两个 Int)
     let p1 = { .a = 1_i, .b = 2_i }: Pair;
     let p2 = { .a = 1_i, .b = 2_i }: Pair;
     let p3 = { .a = 1_i, .b = 3_i }: Pair;
-    assert(mem_compare(&p1, &p2));
-    assert(!mem_compare(&p1, &p3));
+    assert(unsafe(mem_compare(&p1, &p2)));
+    assert(!unsafe(mem_compare(&p1, &p3)));
 
     // 四个 Int64, 同样没有 padding
     let q1 = { .a = 1_i64, .b = 2_i64, .c = 3_i64, .d = 4_i64 }: Quad;
     let q2 = { .a = 1_i64, .b = 2_i64, .c = 3_i64, .d = 4_i64 }: Quad;
     let q3 = { .a = 1_i64, .b = 2_i64, .c = 3_i64, .d = 5_i64 }: Quad;
-    assert(mem_compare(&q1, &q2));
-    assert(!mem_compare(&q1, &q3));
+    assert(unsafe(mem_compare(&q1, &q2)));
+    assert(!unsafe(mem_compare(&q1, &q3)));
 
     // 数组
     let arr1 = [1_i, 2_i, 3_i];
     let arr2 = [1_i, 2_i, 3_i];
     let arr3 = [1_i, 2_i, 4_i];
-    assert(mem_compare(&arr1, &arr2));
-    assert(!mem_compare(&arr1, &arr3));
+    assert(unsafe(mem_compare(&arr1, &arr2)));
+    assert(!unsafe(mem_compare(&arr1, &arr3)));
 
     // 元组 (Int, Int) 是 16 字节, 无 padding
     let t1 = (1_i, 2_i);
     let t2 = (1_i, 2_i);
     let t3 = (1_i, 3_i);
-    assert(mem_compare(&t1, &t2));
-    assert(!mem_compare(&t1, &t3));
+    assert(unsafe(mem_compare(&t1, &t2)));
+    assert(!unsafe(mem_compare(&t1, &t3)));
 
     // 同一块内存和自己比
-    assert(mem_compare(&p1, &p1));
+    assert(unsafe(mem_compare(&p1, &p1)));
 
     println("mem compare ok");
 }

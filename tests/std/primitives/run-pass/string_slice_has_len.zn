@@ -1,0 +1,7 @@
+// 期望: StringSlice 可以直接取 len / is_empty (自身或经 Deref 到 Str)。
+fn main() {
+    let s = String::from_str("hello");
+    let v = s.as_str();
+    let n: UInt = v.len();
+    let e: Bool = v.is_empty();
+}

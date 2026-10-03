@@ -19,6 +19,11 @@ pub fn try_box<V>(v: V) -> Option<*V> {
     if unsafe(p as UInt == 0) {
         return None;
     } else {
-        return Some(unsafe(p as *raw V as *V));
+        // 必须把 v 搬进刚分配的内存; 对裸指针赋值只做内存搬运, 不触发析构/拷贝函数。
+        let mut slot: *raw mut V = unsafe(p as *raw mut V);
+        unsafe {
+            *slot = move v;
+        }
+        return Some(unsafe(slot as *raw V as *V));
     }
 }

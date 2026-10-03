@@ -105,7 +105,9 @@ impl<'a> Str<'a> {
     }
 
     pub fn sub_str(&self, start: UInt, length: UInt) -> Str<'a> {
-        if start > self.len() || start + length > self.len() {
+        // 先判断 start 再算 self.len() - start: 避免 `start + length` 先回绕，
+        // 那样会构造出长度接近 UInt::MAX 的越界视图，后续访问直接段错误。
+        if start > self.len() || length > self.len() - start {
             panic("Index out of bounds in Str::sub_str method.");
         }
         return {
@@ -138,6 +140,12 @@ impl<'a> Str<'a> {
             }
             i += 1;
         }
+        // 循环里只在遇到分隔符时 push, 最后一段 (含无分隔符的整段、以及以分隔符
+        // 结尾时的空段) 必须在这里补上, 否则 "abc" 会得到 0 段、"a," 会丢掉空尾段。
+        parts.push(String::from_str({
+            .pointer = unsafe((self.pointer as *raw UInt8 + start) as &'a UInt8),
+            .length = self.length - start,
+        }: Str));
         return parts;
     }
 }
@@ -177,14 +185,20 @@ impl<'a> PartialEq for Str<'a> {
 impl<'a> Eq for Str<'a> {}
 
 pub struct StrIter<'i> {
+    pointer: &'i UInt8,
+    length: UInt,
+    index: UInt,
+    // next() 返回的是 &Char, 需要一个稳定的落脚点存当前解码出来的字符
     value: Char = '\0',
 }
 
 impl<'a> Iterable for Str<'a> {
     type Iter<'i> = StrIter<'i>; // StrIter 不携带隐式生命周期参数
-    fn iter<'s>(&'s self) -> StrIter<'s> { // 返回的 VecIter 可以活得比 Vec 更长
+    fn iter<'s>(&'s self) -> StrIter<'s> { // 返回的迭代器借用 Str 的缓冲区
         return {
-            ...
+            .pointer = self.pointer,
+            .length = self.length,
+            .index = 0,
         }: StrIter<'s>;
     }
 }
@@ -192,7 +206,49 @@ impl<'a> Iterable for Str<'a> {
 impl<'s> Iterator for StrIter<'s> {
     type Item = Char;
 
+    // 按 UTF-8 字符产出元素; 非法/截断的序列退化成逐字节产出, 保证永远不越界读。
     fn next<'n>(&'n mut self) -> Option<&'n Char> {
-        return None;
+        if self.index >= self.length {
+            return None;
+        }
+        let p = self.pointer as *raw UInt8;
+        let b0 = unsafe(*(p + self.index));
+
+        // 根据首字节判断序列长度并取高位
+        let mut size: UInt = 1;
+        let mut cp: UInt32 = b0 as UInt32;
+        if b0 >= 0xC0_u8 && b0 < 0xE0_u8 {
+            cp = (b0 as UInt32).bit_and(0x1F_u32);
+            size = 2;
+        } else if b0 >= 0xE0_u8 && b0 < 0xF0_u8 {
+            cp = (b0 as UInt32).bit_and(0x0F_u32);
+            size = 3;
+        } else if b0 >= 0xF0_u8 && b0 <= 0xF4_u8 {
+            cp = (b0 as UInt32).bit_and(0x07_u32);
+            size = 4;
+        }
+
+        if size > self.length - self.index {
+            // 截断的多字节序列: 按单字节处理
+            size = 1;
+            cp = b0 as UInt32;
+        } else {
+            let mut k: UInt = 1;
+            while k < size {
+                let b = unsafe(*(p + self.index + k));
+                if b.bit_and(0xC0_u8) != 0x80_u8 {
+                    // 非法续字节: 回退成单字节
+                    size = 1;
+                    cp = b0 as UInt32;
+                    break;
+                }
+                cp = cp.bit_shl(6_u32).bit_or((b as UInt32).bit_and(0x3F_u32));
+                k += 1;
+            }
+        }
+
+        self.index += size;
+        self.value = cp as Char;
+        return Some(&self.value);
     }
 }

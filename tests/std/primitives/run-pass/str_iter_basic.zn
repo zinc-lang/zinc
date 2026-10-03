@@ -1,0 +1,14 @@
+use std::assert;
+// 期望: Str 的迭代器按字符产出元素。
+use std::iter::Iterable;
+use std::iter::Iterator;
+
+fn main() {
+    let s = "abc";
+    let mut it = s.iter();
+    if it.next() is Option::Some(c) {
+        assert(*c == 'a');
+    } else {
+        panic("StrIter yielded None");
+    }
+}

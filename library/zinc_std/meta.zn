@@ -47,7 +47,7 @@ impl Type {
         return unsafe(Str::from_cstr(self.rt_typemeta.name));
     }
 
-    // 忽略最后一个 :: 之前的所有内容
+    // 忽略最后一个 :: 之前的所有内容; 不含 :: 时返回完整名字
     pub fn short_name(&self) -> Str<'static> {
         let name = self.name();
         let len = name.len();
@@ -55,10 +55,11 @@ impl Type {
         while i > 0 {
             i -= 1;
             if name.index(i) == b':' {
-                break;
+                return name.sub_str(i+1);
             }
         }
-        return name.sub_str(i+1);
+        // 没有找到 ::, 整个 name 就是短名 (原来的写法会从 i+1 开始, 丢掉首字符)
+        return name;
     }
 }
 

@@ -1,7 +1,53 @@
 
+use ::self::cmp::{Eq, PartialEq};
+use ::self::hash::{Hash, Hasher};
+
 pub enum Result<T, E> {
     Ok(T), Err(E)
 }
+
+// 同 Option: 约束写在 where 里, 不放松类型检查。
+impl<T, E> PartialEq for Result<T, E> where T: PartialEq, E: PartialEq {
+    fn eq(&self, other: &Self) -> Bool {
+        match self {
+            Result::Ok(a) => {
+                match other {
+                    Result::Ok(b) => { return a.eq(&b); }
+                    Result::Err(_) => { return false; }
+                }
+            }
+            Result::Err(a) => {
+                match other {
+                    Result::Err(b) => { return a.eq(&b); }
+                    Result::Ok(_) => { return false; }
+                }
+            }
+        }
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl<T, E> Eq for Result<T, E> where T: Eq, E: Eq {}
+
+impl<T, E> Hash for Result<T, E> where T: Hash, E: Hash {
+    fn hash(&self, state: &mut Hasher) {
+        match self {
+            Result::Ok(v) => {
+                state.combine(0_u64);
+                v.hash(state);
+            }
+            Result::Err(e) => {
+                state.combine(1_u64);
+                e.hash(state);
+            }
+        }
+    }
+}
+
+// 说明: 没有实现 Clone (同 Option: 编译器在泛型 T 上调用 clone 会返回错值)。
 
 // 不需要 is_ok / is_err 函数，用关键字 is 比这两个函数好
 impl<T, E> Result<T, E> {

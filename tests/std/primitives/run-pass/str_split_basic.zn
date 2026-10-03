@@ -1,0 +1,19 @@
+// 期望: split 保留所有段 (含最后一个分隔符之后 / 无分隔符的整段)。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    let p: Vec<String> = "a,b,c".split(b',');
+    assert_eq(p.len(), 3_u);
+    assert(p.at(0_u).get_or_panic().as_str().deref().eq(&"a"));
+    assert(p.at(1_u).get_or_panic().as_str().deref().eq(&"b"));
+    assert(p.at(2_u).get_or_panic().as_str().deref().eq(&"c"));
+
+    let one: Vec<String> = "abc".split(b',');
+    assert_eq(one.len(), 1_u);
+    assert(one.at(0_u).get_or_panic().as_str().deref().eq(&"abc"));
+
+    let tail: Vec<String> = "a,".split(b',');
+    assert_eq(tail.len(), 2_u);
+    assert(tail.at(1_u).get_or_panic().is_empty());
+}

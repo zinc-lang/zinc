@@ -1,0 +1,17 @@
+// 等 bug4 修好后加入 tests/std/hash/run-pass/
+use std::{assert, assert_eq};
+use std::hash::{Hash, Hasher, default_hasher};
+
+fn hash_f64(v: F64) -> UInt64 { let mut h = default_hasher(); v.hash(&mut h); return h.finish(); }
+fn hash_f32(v: F32) -> UInt64 { let mut h = default_hasher(); v.hash(&mut h); return h.finish(); }
+
+fn main() {
+    let pz: F64 = 0.0;
+    let nz: F64 = -0.0;
+    assert(pz == nz);
+    assert_eq(hash_f64(pz), hash_f64(nz));
+    let pz32: F32 = 0.0;
+    let nz32: F32 = -0.0;
+    assert(pz32 == nz32);
+    assert_eq(hash_f32(pz32), hash_f32(nz32));
+}

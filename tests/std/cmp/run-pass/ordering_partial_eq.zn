@@ -1,0 +1,9 @@
+// 期望: cmp::Ordering 实现 PartialEq/Eq, 可以直接用于 assert_eq。
+use std::cmp::Ordering;
+use std::{assert, assert_eq};
+
+fn main() {
+    assert_eq('a'.cmp(&'a'), Ordering::Equal);
+    assert_eq('a'.cmp(&'b'), Ordering::Less);
+    assert_eq('b'.cmp(&'a'), Ordering::Greater);
+}

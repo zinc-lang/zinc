@@ -1,10 +1,56 @@
 
 
+use ::self::cmp::{Eq, PartialEq};
+use ::self::hash::{Hash, Hasher};
+
 pub enum Option<T> {
     None, Some(T)
 }
 
 unsafe impl<T> Send for Option<T> where T: Send {}
+
+// 约束写在 where 里, 不放松类型检查: T 不满足 PartialEq/Eq/... 时 Option<T> 也不会得到实现。
+impl<T> PartialEq for Option<T> where T: PartialEq {
+    fn eq(&self, other: &Self) -> Bool {
+        match self {
+            Option::None => {
+                // 用 match other 而不是 `*other is ...`, 避免整体拷贝带 payload 的 Option
+                match other {
+                    Option::None => { return true; }
+                    Option::Some(_) => { return false; }
+                }
+            }
+            Option::Some(a) => {
+                match other {
+                    Option::Some(b) => { return a.eq(&b); }
+                    Option::None => { return false; }
+                }
+            }
+        }
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl<T> Eq for Option<T> where T: Eq {}
+
+impl<T> Hash for Option<T> where T: Hash {
+    fn hash(&self, state: &mut Hasher) {
+        match self {
+            Option::None => { state.combine(0_u64); }
+            Option::Some(v) => {
+                state.combine(1_u64);
+                v.hash(state);
+            }
+        }
+    }
+}
+
+// 说明: 没有实现 Clone。`v.clone()` 在 T 是类型参数时会取到错误的接收者
+// (实测返回 0), 属于编译器的泛型 trait 方法调用 bug; 与其提供一个返回错值的
+// Clone, 不如先不提供。PartialEq/Eq/Hash 都不受影响。
 
 // 不需要 is_some / is_none 函数，用关键字 is 比这两个函数好
 impl<T> Option<T> {

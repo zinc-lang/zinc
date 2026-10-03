@@ -1,0 +1,12 @@
+// 等 bug3 修好后加入 tests/std/misc/run-pass/
+use std::{assert, assert_eq};
+use std::meta::Type;
+
+fn main() {
+    assert_eq(Type::of(<Int>).name(), "Int");
+    assert_eq(Type::of(<Int>).short_name(), "Int");
+    assert_eq(Type::of(<Bool>).short_name(), "Bool");
+    assert_eq(Type::of(<F64>).short_name(), "F64");
+    assert_eq(Type::of(<Int8>).short_name(), "Int8");
+    assert_eq(Type::of(<UInt64>).short_name(), "UInt64");
+}

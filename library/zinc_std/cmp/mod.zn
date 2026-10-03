@@ -1,10 +1,55 @@
 
+use ::self::hash::{Hash, Hasher};
+use ::self::primitives::clone::Clone;
+use ::self::primitives::default::Default;
+
 // 说明: 显式判别值 (Less = -1 之类) 编译器已经支持, 但 stage0 还是旧编译器 (会忽略判别值),
 // 用它编译出来的 std 产物与本编译器不一致。等 stage0 更新之后再改回带判别值的写法。
 pub enum Ordering {
     Less,
     Equal,
     Greater,
+}
+
+// Ordering 是 Ord::cmp 的返回值, 自身也应当可比较/可哈希, 否则
+// `assert_eq(a.cmp(&b), Ordering::Less)` 无法编译。
+impl PartialEq for Ordering {
+    fn eq(&self, other: &Self) -> Bool {
+        match self {
+            Ordering::Less => { return *other is Ordering::Less; }
+            Ordering::Equal => { return *other is Ordering::Equal; }
+            Ordering::Greater => { return *other is Ordering::Greater; }
+        }
+    }
+
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+impl Eq for Ordering {}
+
+impl Hash for Ordering {
+    fn hash(&self, state: &mut Hasher) {
+        // 判别值 (0/1/2) 由编译器按声明顺序分配; stage0 不支持显式判别值, 这里用 match 取。
+        match self {
+            Ordering::Less => { state.combine(0_u64); }
+            Ordering::Equal => { state.combine(1_u64); }
+            Ordering::Greater => { state.combine(2_u64); }
+        }
+    }
+}
+
+impl Clone for Ordering {
+    fn clone(&self) -> Ordering {
+        return *self;
+    }
+}
+
+impl Default for Ordering {
+    fn default() -> Ordering {
+        return Ordering::Equal;
+    }
 }
 
 // todo `other` 的类型应该是泛型参数，这样才能支持一个类型与多个不同类型的比较

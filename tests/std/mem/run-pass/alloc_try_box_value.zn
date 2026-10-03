@@ -1,0 +1,18 @@
+// 等 bug6 修好后加入 tests/std/mem/run-pass/ (或 tests/std/alloc/run-pass/)
+use std::{assert, assert_eq};
+use std::alloc::try_box;
+
+fn main() {
+    let p = try_box(42_i);
+    if p is Some(b) {
+        assert_eq(unsafe(*b), 42_i);
+    } else {
+        assert(false, "try_box 返回 None");
+    }
+    let q = try_box(1.5_f64);
+    if q is Some(b) {
+        assert(unsafe(*b) == 1.5_f64);
+    } else {
+        assert(false, "try_box 返回 None");
+    }
+}

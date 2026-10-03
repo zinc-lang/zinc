@@ -1,0 +1,47 @@
+// 探针: from_utf8 的边界 (overlong / 代理区 / 超出 U+10FFFF / 截断 / 孤立续字节)
+use std::{assert, assert_eq};
+use std::primitives::string::FromUtf8Error;
+
+fn from(b0: UInt8) -> Result<String, FromUtf8Error> {
+    let mut v = (type Vec<UInt8>)::new(); v.push(b0); return String::from_utf8(v);
+}
+fn from2(b0: UInt8, b1: UInt8) -> Result<String, FromUtf8Error> {
+    let mut v = (type Vec<UInt8>)::new(); v.push(b0); v.push(b1); return String::from_utf8(v);
+}
+fn from3(b0: UInt8, b1: UInt8, b2: UInt8) -> Result<String, FromUtf8Error> {
+    let mut v = (type Vec<UInt8>)::new(); v.push(b0); v.push(b1); v.push(b2); return String::from_utf8(v);
+}
+fn from4(b0: UInt8, b1: UInt8, b2: UInt8, b3: UInt8) -> Result<String, FromUtf8Error> {
+    let mut v = (type Vec<UInt8>)::new(); v.push(b0); v.push(b1); v.push(b2); v.push(b3); return String::from_utf8(v);
+}
+fn is_ok(r: Result<String, FromUtf8Error>) -> Bool {
+    match r { Result::Ok(_) => return true; Result::Err(_) => return false; }
+}
+
+fn main() {
+    // 合法
+    assert(is_ok(from2(0xC3_u8, 0xA9_u8)));                    // é
+    assert(is_ok(from3(0xE2_u8, 0x82_u8, 0xAC_u8)));           // €
+    assert(is_ok(from4(0xF0_u8, 0x9F_u8, 0x98_u8, 0x80_u8)));  // 😀
+    assert(is_ok(from(0x00_u8)));
+    assert(is_ok(from(0x7F_u8)));
+    // 非法: 孤立续字节 / 非法起始字节
+    assert(!is_ok(from(0x80_u8)));
+    assert(!is_ok(from(0xBF_u8)));
+    assert(!is_ok(from(0xC0_u8)));
+    assert(!is_ok(from(0xC1_u8)));
+    assert(!is_ok(from(0xFF_u8)));
+    // overlong
+    assert(!is_ok(from2(0xC0_u8, 0x80_u8)));
+    assert(!is_ok(from3(0xE0_u8, 0x80_u8, 0x80_u8)));
+    assert(!is_ok(from4(0xF0_u8, 0x80_u8, 0x80_u8, 0x80_u8)));
+    // 代理区 U+D800 = ED A0 80
+    assert(!is_ok(from3(0xED_u8, 0xA0_u8, 0x80_u8)));
+    // > U+10FFFF: F4 90 80 80
+    assert(!is_ok(from4(0xF4_u8, 0x90_u8, 0x80_u8, 0x80_u8)));
+    // 截断
+    assert(!is_ok(from2(0xC3_u8, 0x28_u8)));
+    assert(!is_ok(from3(0xE2_u8, 0x82_u8, 0x28_u8)));
+    assert(!is_ok(from4(0xF0_u8, 0x9F_u8, 0x98_u8, 0x28_u8)));
+    println("utf8 edges ok");
+}

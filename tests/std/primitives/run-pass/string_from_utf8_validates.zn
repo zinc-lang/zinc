@@ -1,0 +1,32 @@
+// 期望: from_utf8 拒绝非法 UTF-8, 返回 Err(FromUtf8Error)。
+use std::assert;
+use std::primitives::string::FromUtf8Error;
+
+fn main() {
+    let mut bad = (type Vec<UInt8>)::new();
+    bad.push(0xFF_u8);
+    let r: Result<String, FromUtf8Error> = String::from_utf8(bad);
+    match r {
+        Result::Ok(s) => { panic("invalid utf8 accepted"); }
+        Result::Err(_e) => { }
+    }
+
+    // 截断的多字节序列
+    let mut trunc = (type Vec<UInt8>)::new();
+    trunc.push(0xC3_u8);
+    let r2: Result<String, FromUtf8Error> = String::from_utf8(trunc);
+    match r2 {
+        Result::Ok(s) => { panic("truncated utf8 accepted"); }
+        Result::Err(_e) => { }
+    }
+
+    // 合法输入仍然 Ok
+    let mut ok = (type Vec<UInt8>)::new();
+    ok.push(104_u8);
+    ok.push(105_u8);
+    let r3: Result<String, FromUtf8Error> = String::from_utf8(ok);
+    match r3 {
+        Result::Ok(s) => { assert(s.eq(&String::from_str("hi"))); }
+        Result::Err(_e) => { panic("valid utf8 rejected"); }
+    }
+}

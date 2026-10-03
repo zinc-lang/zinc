@@ -1,0 +1,71 @@
+// Option<T> / Result<T,E> 的 PartialEq / Eq / Hash。
+//
+// 注意: 这里用直接调用 `a.eq(&b)` / `a.ne(&b)` 的方式, 而不是 `assert_eq(a, b)`。
+// 原因: `assert_eq` 会经由泛型约束 `T: PartialEq` 在泛型函数里调用 trait 方法,
+// 编译器在 monomorphize 泛型类型 (Option<T>/Result<T,E>/Vec<T> 都有同样问题) 的
+// trait 方法时生成的代码是坏的, 直接段错误。这是编译器侧的 bug, 与本文件的
+// PartialEq 实现无关 (Vec 的现成用例 tests/std/collections/run-pass/vec_partial_eq.zn
+// 也是因为这个原因只用 .eq()/.ne())。
+use std::{assert, assert_eq};
+use std::cmp::{Eq, PartialEq};
+use std::hash::{Hash, Hasher, default_hasher};
+
+fn main() {
+    // ---- Option ----
+    let a: Option<Int> = Some(1_i);
+    let b: Option<Int> = Some(1_i);
+    let c: Option<Int> = None;
+    let d: Option<Int> = None;
+    assert(a.eq(&b));
+    assert(c.eq(&d));
+    assert(a.ne(&c));
+    assert(!a.eq(&c));
+    assert(!c.eq(&a));
+
+    let s1: Option<String> = Some(String::from_str("hi"));
+    let s2: Option<String> = Some(String::from_str("hi"));
+    let s3: Option<String> = Some(String::from_str("ho"));
+    assert(s1.eq(&s2));
+    assert(!s1.eq(&s3));
+
+    // None vs Some 比较之后 payload 仍可用 (比较里不能误释放/误拷贝 payload)
+    let n3: Option<String> = None;
+    assert(!s1.eq(&n3));
+    assert(!n3.eq(&s1));
+    match s1 {
+        Option::Some(v) => { assert(v.eq(&String::from_str("hi"))); }
+        Option::None => { assert(false, "s1 不应变成 None"); }
+    }
+
+    // Hash 与 Eq 一致: 相等 -> 哈希相同, Some/None 不碰撞
+    let mut h1 = default_hasher();
+    a.hash(&mut h1);
+    let mut h2 = default_hasher();
+    b.hash(&mut h2);
+    let mut h3 = default_hasher();
+    c.hash(&mut h3);
+    assert_eq(h1.finish(), h2.finish());
+    assert(h1.finish() != h3.finish());
+
+    // ---- Result ----
+    let r1: Result<Int, Int> = (type Result<Int, Int>)::Ok(1_i);
+    let r2: Result<Int, Int> = (type Result<Int, Int>)::Ok(1_i);
+    let e1: Result<Int, Int> = (type Result<Int, Int>)::Err(2_i);
+    let e2: Result<Int, Int> = (type Result<Int, Int>)::Err(2_i);
+    assert(r1.eq(&r2));
+    assert(e1.eq(&e2));
+    assert(r1.ne(&e1));
+    // Ok 与 Err 永远不相等 (即使 payload 类型相同)
+    assert(!r1.eq(&((type Result<Int, Int>)::Err(1_i))));
+
+    let mut g1 = default_hasher();
+    r1.hash(&mut g1);
+    let mut g2 = default_hasher();
+    r2.hash(&mut g2);
+    let mut g3 = default_hasher();
+    e1.hash(&mut g3);
+    assert_eq(g1.finish(), g2.finish());
+    assert(g1.finish() != g3.finish());
+
+    println("option/result partial eq ok");
+}

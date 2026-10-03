@@ -99,6 +99,11 @@ impl Hash for F32 {
     fn hash(&self, state: &mut Hasher) {
         let p = self as &F32 as *raw F32 as *raw UInt32;
         let mut bits: UInt32 = unsafe(*p);
+        // -0.0 == 0.0, 必须先把符号位清掉, 否则违反 Hash/Eq 契约
+        if (bits == 0x8000_0000_u32) {
+            bits = 0_u32;
+        }
+        // 负 NaN 也归一到正 NaN (本项目约定所有 NaN 视为同一个 key)
         if (bits == 0xffc00000) {
             bits = 0x7fc00000;
         }
