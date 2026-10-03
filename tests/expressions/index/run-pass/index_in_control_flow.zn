@@ -1,0 +1,47 @@
+// 下标表达式出现在会生成 phi / 回边的结构里 (三元表达式 / && / || / 循环条件):
+// 边界检查会把基本块拆开, phi 的前驱必须指向拆分后的出口块, 跳转目标必须还是入口块
+use std::{assert, assert_eq};
+
+fn pick(a: [Int; 3], c: Bool) -> Int {
+    // 三元表达式: 两个分支里都有下标, 合并处有 phi
+    let x = if c then a[0] else a[2];
+    return x;
+}
+
+fn short_and(a: [Int; 3], c: Bool) -> Bool {
+    // && 短路: rhs 里有下标
+    return c && a[1] > 0_i;
+}
+
+fn short_or(a: [Int; 3], c: Bool) -> Bool {
+    // || 短路: rhs 里有下标
+    return c || a[1] > 100_i;
+}
+
+fn main() {
+    let a = [7_i, 8_i, 9_i];
+
+    assert_eq(pick(a, true), 7_i);
+    assert_eq(pick(a, false), 9_i);
+
+    assert(short_and(a, true));
+    assert(!short_and(a, false));
+    assert(short_or(a, true));
+    assert(!short_or(a, false));
+
+    // 循环条件里有下标: 回边要跳回块的开头 (重新做边界检查)
+    let mut i: UInt = 0_u;
+    let mut sum = 0_i;
+    while a[i] > 0_i {
+        sum += a[i];
+        i += 1_u;
+        if i >= 3_u {
+            break;
+        }
+    }
+    assert_eq(sum, 24_i);
+
+    // 边界的两个端点
+    assert_eq(a[0], 7_i);
+    assert_eq(a[2], 9_i);
+}

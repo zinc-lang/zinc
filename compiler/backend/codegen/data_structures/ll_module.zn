@@ -21,6 +21,7 @@ extern fn llds_get_const_array_gv(ds: Ptr, elems: *raw CgConst, len: UInt, llty:
 extern fn llds_get_ext_fn_in_core(ds: Ptr, name: Ptr, len: UInt) -> Ptr;
 extern fn llds_get_const_string(ds: Ptr, name: Ptr, len: UInt) -> Ptr;
 extern fn llds_dump_module_llir(ds: Ptr);
+extern fn codegen_bounds_check_fn(ds: Ptr) -> Ptr;
 
 impl LLDataStructures {
     fn new(name: Str) -> *LLDataStructures {
@@ -148,6 +149,17 @@ impl LLDataStructures {
         if ll_fn as UInt == 0 {
             let msg = f"BUG: get extern function '$(name)' failed";
             panic msg.as_str().deref();
+        }
+        return {
+            .llfn = ll_fn,
+        }: CgFunc;
+    }
+
+    // 数组下标越界检查的模块内 helper 函数 (internal + alwaysinline, 每个模块只生成一次)
+    fn get_bounds_check_fn(&self) -> CgFunc {
+        let ll_fn = unsafe(codegen_bounds_check_fn(self.ds));
+        if ll_fn as UInt == 0 {
+            panic "BUG: codegen bounds check function failed";
         }
         return {
             .llfn = ll_fn,

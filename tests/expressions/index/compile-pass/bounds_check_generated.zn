@@ -1,0 +1,13 @@
+// 下标表达式现在会在 codegen 里生成边界检查 (定长数组的长度编译期已知)。
+// 越界会调用运行期 panic; run-pass 用例要求退出码为 0, 所以这里只验证能正常编译
+// (读下标和写下标两条路径都会生成检查)。
+fn main() {
+    let a = [1_i, 2_i, 3_i];
+    let mut i: UInt = 0_u;
+    let x = a[i];
+    let mut m = [0_i; 3];
+    m[i] = x;
+    let n = m[2];
+    let nested = [[1_i, 2_i], [3_i, 4_i]];
+    let e = nested[1][0];
+}

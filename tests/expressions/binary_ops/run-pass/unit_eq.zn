@@ -1,0 +1,16 @@
+// unit 类型 () 的 == / != : 只有一个值, 结果永远是 true / false
+// (以前 codegen 会对空结构体生成 ICmp, 触发 LLVM 断言 + SIGABRT)
+use std::assert;
+
+fn main() {
+    let u = ();
+    let v = ();
+
+    assert(u == ());
+    assert(u == v);
+    assert(() == ());
+
+    assert(!(u != ()));
+    assert(!(u != v));
+    assert(!(() != ()));
+}

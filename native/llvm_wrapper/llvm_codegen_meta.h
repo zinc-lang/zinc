@@ -22,6 +22,9 @@ llvm::Function* empty_dtor_fn(LLVMDataStructures* llds);
 llvm::Function * codegen_tuple_array_sizefn(LLVMDataStructures* llds);
 llvm::Function * codegen_tuple_array_alignfn(LLVMDataStructures* llds);
 
+// 数组下标越界检查的模块内 helper 函数 (internal + alwaysinline)
+llvm::Function * codegen_bounds_check_fn(LLVMDataStructures* llds);
+
 #ifdef __cplusplus
 } // 结束 extern "C" 块
 #endif

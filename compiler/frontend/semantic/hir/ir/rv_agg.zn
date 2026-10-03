@@ -33,17 +33,24 @@ impl AggregateValue {
                     ordered.push(move init);
                 }
                 else if self.default_value is Some(dv) {
-                    // 从 dv 中获取成员的值
-                    let name_token = self.field_token.at(&name).get_or_panic();
+                    // 从 dv 中获取成员的值。
+                    // 写成 `{ ...p }: T` 时没有 .field 名字, 此时合成一个 invalid token,
+                    // span 用字段声明的位置。查找成员要用字段名 (short_name), 不能用 token 的文本。
+                    let field_span = field.var_node.span();
+                    let mut name_token = Token::invalid(field_span);
+                    if self.field_token.at(&name) is Some(t) {
+                        name_token = move t;
+                    }
                     let dv_field = FieldRValue::create(name_token.source_span, name_token, dv);
-                    
+
                     let mut mappings = TypeMapping::new();
                     mappings.unify(self.sty.type_symbol.to_sty(), self.sty);
-                    let vs = find_field(self.sty, name_token.raw_str());
+                    let vs = find_field(self.sty, field.short_name());
                     if vs is Some(var_sym) {
+                        dv_field.field_resolved = Some(var_sym);
                         dv_field.sty = mappings.subst(var_sym.stype);
                     } else {
-                        DiagnosticEngine::get().emit_name_not_found(name_token.raw_str(), name_token.source_span);
+                        DiagnosticEngine::get().emit_name_not_found(field.short_name(), field_span);
                     }
 
                     ordered.push(move dv_field as *RValue);
@@ -52,13 +59,13 @@ impl AggregateValue {
                     ordered.push(move i);
                 }
                 else {
+                    // 缺字段是编译错误, 不能 panic。压入 InvalidValue 保证 ordered 的长度
+                    // 和字段数一致, 后续的阶段会因为已有错误诊断而中止。
                     let struct_sty = self.sty.to_string();
-                    let msg = f"AggregateValue::ordered_init: missing value for field '$(name)' in $(struct_sty).";
-                    panic msg.as_str().deref();
+                    DiagnosticEngine::get().emit_missing_field_init(
+                        self.expr.span(), field.short_name(), struct_sty);
+                    ordered.push(InvalidValue::new(self.expr as *ExpressionNode) as *RValue);
                 }
-            }
-            if ordered.len() != struct_sym.fields.len() {
-                panic;
             }
         }
         else if self.sty.type_symbol is union_sym: *UnionSymbol {

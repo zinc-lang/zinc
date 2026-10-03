@@ -90,6 +90,7 @@ impl CodeGenerator {
             idx_lv: *IndexLValue => {
                 let mut base = self.cg_xvalue(idx_lv.base, ctx);
                 let base_sty = idx_lv.base.get_stype().canonical();
+                let stripped_base_sty = base_sty.strip_pointer();
                 base = self.load_to_single_ptr_level(base_sty, base);
 
                 let mut idx = self.cg_xvalue(idx_lv.index, ctx);
@@ -97,6 +98,10 @@ impl CodeGenerator {
 
                 // 目前只支持数组
                 if self.cgtype_of(idx_lv.sty) is Some(ty) {
+                    if stripped_base_sty.type_symbol is arr_sym: *ArraySymbol {
+                        let len = stripped_base_sty.args.ty_args.len();
+                        self.emit_index_bounds_check(ctx, idx, len, idx_lv.expr.span());
+                    }
                     return self.llds.create_gep(ty, base, idx);
                 } else {
                     panic;
@@ -233,6 +238,7 @@ impl CodeGenerator {
             idx_rv: *IndexRValue => {
                 let mut base = self.cg_xvalue(idx_rv.base, ctx);
                 let base_sty = idx_rv.base.get_stype().canonical();
+                let stripped_base_sty = base_sty.strip_pointer();
                 base = self.load_to_single_ptr_level(base_sty, base);
 
                 let mut idx = self.cg_xvalue(idx_rv.index, ctx);
@@ -240,6 +246,10 @@ impl CodeGenerator {
 
                 // 目前只支持数组
                 if self.cgtype_of(idx_rv.sty) is Some(ty) {
+                    if stripped_base_sty.type_symbol is arr_sym: *ArraySymbol {
+                        let len = stripped_base_sty.args.ty_args.len();
+                        self.emit_index_bounds_check(ctx, idx, len, idx_rv.expr.span());
+                    }
                     return self.llds.create_gep(ty, base, idx);
                 } else {
                     panic;
@@ -576,10 +586,10 @@ impl CodeGenerator {
                 for item in phi_rv.incoming {
                     let mut cgv = self.cg_xvalue(item.0, ctx);
                     let bb_int = item.1 as *raw BasicBlock as UInt;
+                    // phi 的前驱块就是 MIR 基本块对应的 LLVM 入口块 (bb_map 是按它建的)
                     if ctx.bb_map.at(&bb_int) is Some(cgbb) {
                         self.llds.phi_add_incoming(phi, cgv, cgbb);
                     } else {
-                        // phi 的前驱块必须出现在 cfg.basic_blocks 里 (bb_map 是按它建的)。
                         // 找不到说明 MIR 里有一个被合并/丢弃的块还被 phi 引用着。
                         let mut msg = String::new();
                         msg.push_str("BUG: a phi's incoming block bb");
@@ -1411,6 +1421,11 @@ impl CodeGenerator {
                     }
                 }
                 PunctuationKind::EqEq => {
+                    if lhs_sty.is_unit() || rhs_sty.is_unit() {
+                        // unit 类型 () 只有一个值, 比较永远是 true。
+                        // 不能对它生成 ICmp: 空结构体不是 LLVM 允许的整数比较操作数。
+                        return self.llds.get_const_int1(true).as_value();
+                    }
                     if lhs_sty.type_symbol is type *FloatSymbol ||
                             rhs_sty.type_symbol is type *FloatSymbol {
                         return self.llds.create_fcmp_eq(lhs, rhs);
@@ -1429,6 +1444,10 @@ impl CodeGenerator {
                     return self.cg_range_aggregate(binary_rv, lhs, rhs, ctx);
                 }
                 PunctuationKind::NotEq => {
+                    if lhs_sty.is_unit() || rhs_sty.is_unit() {
+                        // unit 类型 () 只有一个值, 比较永远是 false (见 EqEq 分支)
+                        return self.llds.get_const_int1(false).as_value();
+                    }
                     if lhs_sty.type_symbol is type *FloatSymbol ||
                             rhs_sty.type_symbol is type *FloatSymbol {
                         return self.llds.create_fcmp_ne(lhs, rhs);
@@ -3194,6 +3213,20 @@ impl CodeGenerator {
                 addr = self.llds.create_gep(self.llds.type_int8(), addr, fsize);
             }
         }
+    }
+
+    // 定长数组的下标越界检查: 只发一条对模块内 helper 函数 (zinc_bounds_check) 的调用,
+    // 比较和 panic 分支都在 helper 的 IR 里 (internal + alwaysinline), 由 LLVM 负责内联和优化。
+    fn emit_index_bounds_check(&mut self, ctx: *CgContext, idx: CgValue, len: UInt, span: SourceSpan) {
+        let len_val = self.llds.get_const_int64(len as UInt64).as_value();
+        let flc = SourceManager::get().file_line_column_of(span.end);
+        let file_cv = self.llds.get_const_string(flc.file.as_str().deref()).as_value();
+        let line_cv = self.llds.get_const_int64(flc.line as UInt64 + 1).as_value();
+        let msg = f"index out of bounds: the len is $(len)";
+        let msg_ptr = self.llds.get_const_string(msg.as_str().deref()).as_value();
+        let msg_len = self.llds.get_const_int64(msg.len() as UInt64).as_value();
+        let bounds_fn = self.llds.get_bounds_check_fn();
+        self.llds.create_call(bounds_fn, &[idx, len_val, file_cv, line_cv, msg_ptr, msg_len] as Slice<CgValue>);
     }
 
     fn adjust_to_direct(&mut self, sty: *SType, v: CgValue) -> CgValue {

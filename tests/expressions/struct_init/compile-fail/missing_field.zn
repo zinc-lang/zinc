@@ -1,0 +1,9 @@
+// 结构体初始化缺字段: 必须是编译错误 (不能是编译器 panic)
+struct P {
+    x: Int,
+    y: Int,
+}
+
+fn main() {
+    let p = { .x = 1_i }: P;
+}

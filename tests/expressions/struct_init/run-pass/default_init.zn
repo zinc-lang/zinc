@@ -1,0 +1,28 @@
+// 结构体字段声明默认值 + `...` 填充: 运行期能取到声明里的默认值
+use std::{assert, assert_eq};
+
+struct Config {
+    retries: Int = 3,
+    verbose: Bool = false,
+    name: Char = 'x',
+}
+
+fn main() {
+    // 所有字段都用声明里的默认值
+    let a: Config = { ... };
+    assert_eq(a.retries, 3_i);
+    assert(!a.verbose);
+    assert_eq(a.name, 'x');
+
+    // 部分具名字段 + `...` 补上剩下的默认值
+    let b = { .verbose = true, ... }: Config;
+    assert_eq(b.retries, 3_i);
+    assert(b.verbose);
+    assert_eq(b.name, 'x');
+
+    // 具名字段 + `... expr`: 从另一个值里取剩下的字段
+    let c = { .retries = 9_i, ...a }: Config;
+    assert_eq(c.retries, 9_i);
+    assert(!c.verbose);
+    assert_eq(c.name, 'x');
+}

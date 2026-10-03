@@ -1,0 +1,6 @@
+// goto 语句是预留功能: parser 和 validator 都会报"未实现特性",
+// HIR builder 里也不能再崩溃
+fn main() {
+    goto 'done;
+    'done: return;
+}

@@ -2787,6 +2787,23 @@ impl TypeCheckContext {
                     DiagnosticEngine::get().emit_name_not_found(name, init.expr_node().span());
                 }
             }
+
+            // 每个字段都必须有值: 显式初始化 / `... expr` 兜底 / 声明处默认值, 三者之一。
+            // 在类型检查阶段就报出来, 这样不会走到 MIR 阶段才发现缺字段。
+            for field in struct_sym.fields {
+                let field_name = field.short_name();
+                if agg_rv.named_init.at(&field_name) is Some(_) {
+                    continue;
+                }
+                if agg_rv.default_value is Some(_) {
+                    continue;
+                }
+                if field.init is Some(_) {
+                    continue;
+                }
+                DiagnosticEngine::get().emit_missing_field_init(
+                    agg_rv.expr.span(), field_name, struct_sym.short_name());
+            }
         }
         else if stripped_agg_sty.type_symbol is union_sym: *UnionSymbol {
             let named_init = agg_rv.named_init;

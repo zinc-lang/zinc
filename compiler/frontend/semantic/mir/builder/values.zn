@@ -115,7 +115,10 @@ impl CfgBuilder {
     fn do_trans_rvalue(&mut self, val: *RValue, bb: *BasicBlock) -> (*RValue, *BasicBlock) {
         match val {
             invalid: *InvalidValue => {
-                panic "CfgBuilder::trans_rvalue encounter InvalidValue.";
+                // 这里通常已经有错误诊断了 (例如结构体初始化缺字段)。
+                // 不再 panic, 让这些诊断能正常报出来。
+                bb.add_step(invalid as *XValue);
+                return (move invalid as *RValue, bb);
             }
 
             rv: *ReadValue => {

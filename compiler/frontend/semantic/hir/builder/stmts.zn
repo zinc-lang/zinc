@@ -458,11 +458,13 @@ impl StmtTransformer {
     }
 
     fn visit_goto_stmt(&mut self, stmt: *GotoStmt)  {
-        panic "goto is unimplemented";
+        // goto 是预留功能: validator 已经报过"未实现"错误, 这里安全地忽略,
+        // 避免校验阶段顺序变化时走到这里崩溃。
     }
 
     fn visit_label_stmt(&mut self, stmt: *LabelStmt)  {
-        panic "label is unimplemented";
+        // label 是预留功能: validator 已经报过"未实现"错误, 这里安全地忽略,
+        // 避免校验阶段顺序变化时走到这里崩溃。
     }
 }
 

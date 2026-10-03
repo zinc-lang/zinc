@@ -1,0 +1,12 @@
+// `...expr`: 用另一个同类型的值补上剩下的字段
+struct P {
+    a: Int,
+    b: Int,
+    c: Bool,
+}
+
+fn main() {
+    let base = { .a = 1_i, .b = 2_i, .c = true }: P;
+    let p = { .a = 9_i, ...base }: P;
+    let q = { ...base }: P;
+}

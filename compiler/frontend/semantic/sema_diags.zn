@@ -219,6 +219,16 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    // 结构体初始化时, 字段既没有显式初始化, 也没有声明默认值, 也没有用 `... expr` 兜底
+    fn emit_missing_field_init(&mut self, span: SourceSpan, field_name: String, struct_name: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"结构体 $(struct_name) 初始化时缺少字段 $(field_name) 的值",
+            .msg_en = f"missing value for field $(field_name) of struct $(struct_name) in struct initializer",
+        }: DiagItem);
+    }
+
     fn emit_overload_not_found(&mut self, span: SourceSpan, actual: UInt) {
         self.emit({
             .span = span,

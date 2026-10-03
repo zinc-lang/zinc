@@ -579,6 +579,8 @@ impl SyntaxVisitor for SyntaxValidator {
         return VisitResult::Continue;
     }
     fn visit_label_stmt(&mut self, node: *LabelStmt) -> VisitResult {
+        // 预留功能，暂时未实现
+        DiagnosticEngine::get().emit_unimplemented(node.span(), "label statement");
         return VisitResult::Continue;
     }
 
@@ -642,6 +644,7 @@ impl SyntaxVisitor for SyntaxValidator {
         // field 不能重复
         let mut field_names = (type HashSet<String>)::new();
 
+        // idx 是当前初始化项在整个列表中的下标, 用来判断默认值 (... ) 是不是最后一个
         let mut idx: UInt = 0;
         let field_count = node.fields_init.len();
         for field_init in node.fields_init {
@@ -664,6 +667,7 @@ impl SyntaxVisitor for SyntaxValidator {
                     }
                 }
             }
+            idx += 1;
         }
         return VisitResult::Continue;
     }

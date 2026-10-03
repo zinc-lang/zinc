@@ -161,6 +161,59 @@ llvm::Function * codegen_tuple_array_alignfn(LLVMDataStructures* llds) {
     return align_fn;
 }
 
+// 生成数组下标越界检查的模块内 helper 函数 (每个模块只生成一次):
+//   internal alwaysinline void zinc_bounds_check(i64 idx, i64 len, ptr file, i64 line, ptr msg, i64 msg_len)
+//   body: if (idx >= len) { zinc_core_panic(file, line, msg, msg_len); } ret
+// 调用点只发一条 call, 比较/分支留在 helper 里, 由 LLVM 内联和优化。
+llvm::Function * codegen_bounds_check_fn(LLVMDataStructures* llds) {
+    if (auto * f = llds->module->getFunction("zinc_bounds_check")) {
+        return f; // 已经生成了
+    }
+
+    llvm::FunctionType * bounds_fn_ty = llvm::FunctionType::get(
+        llds->builder->getVoidTy(),
+        {
+            llds->builder->getInt64Ty(),            // idx
+            llds->builder->getInt64Ty(),            // len
+            llvm::PointerType::get(*llds->ctx, 0),  // file
+            llds->builder->getInt64Ty(),            // line
+            llvm::PointerType::get(*llds->ctx, 0),  // msg
+            llds->builder->getInt64Ty(),            // msg_len
+        }, false);
+
+    std::string panic_fn_name = "zinc_core_panic";
+    llvm::Function * zinc_core_panic_fn = llds_get_ext_fn_in_core(llds, panic_fn_name.c_str(), panic_fn_name.size());
+
+    auto * bounds_fn = llvm::Function::Create(bounds_fn_ty, llvm::Function::InternalLinkage, "zinc_bounds_check", llds->module);
+    bounds_fn->addFnAttr(llvm::Attribute::AlwaysInline);
+    bounds_fn->addFnAttr(llvm::Attribute::NoUnwind);
+
+    // 基本块: check 比较 idx 和 len, 越界走 panic, 否则走 done
+    auto * check_bb = llvm::BasicBlock::Create(*llds->ctx, "check", bounds_fn);
+    auto * panic_bb = llvm::BasicBlock::Create(*llds->ctx, "panic", bounds_fn);
+    auto * done_bb = llvm::BasicBlock::Create(*llds->ctx, "done", bounds_fn);
+
+    llvm::IRBuilder<> builder{*llds->ctx};
+
+    builder.SetInsertPoint(check_bb);
+    llvm::Value * out_of_bounds = builder.CreateICmpUGE(bounds_fn->getArg(0), bounds_fn->getArg(1));
+    builder.CreateCondBr(out_of_bounds, panic_bb, done_bb);
+
+    builder.SetInsertPoint(panic_bb);
+    builder.CreateCall(zinc_core_panic_fn, {
+        bounds_fn->getArg(2), // file
+        bounds_fn->getArg(3), // line
+        bounds_fn->getArg(4), // msg
+        bounds_fn->getArg(5), // msg_len
+    });
+    builder.CreateRetVoid();
+
+    builder.SetInsertPoint(done_bb);
+    builder.CreateRetVoid();
+
+    return bounds_fn;
+}
+
 llvm::GlobalVariable* codegen_builtin_typemeta(LLVMDataStructures* llds, char *name, size_t len, size_t byte_size) {
     std::string type_name{name, len};
     std::string meta_name = std::string("zn.meta.") + type_name;

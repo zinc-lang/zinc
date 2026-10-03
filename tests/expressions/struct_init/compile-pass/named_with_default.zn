@@ -1,0 +1,18 @@
+// 具名字段 + `...`: 默认值初始化出现在最后是合法的
+// (之前 validator 里的下标从不自增, 会误报"默认值只能在最后一个")
+struct P {
+    a: Int,
+    b: Int = 100,
+    c: Bool = true,
+}
+
+struct AllDefault {
+    x: Int = 1,
+    y: Int = 2,
+}
+
+fn main() {
+    let p = { .a = 7_i, ... }: P;
+    let r = { .a = 1_i, .b = 2_i, ... }: P;
+    let q: AllDefault = { ... };
+}

@@ -1,0 +1,7 @@
+// label 语句 (`'label:`) 是预留功能: 应该报"未实现特性"的编译错误,
+// 而不是让编译器的 HIR builder 崩溃 (panic "label is unimplemented")
+fn main() {
+    'outer: while true {
+        break 'outer;
+    }
+}
