@@ -1,0 +1,59 @@
+// 浮点 NaN 的比较语义必须符合 IEEE 754:
+//   NaN == x   -> false
+//   NaN != x   -> true
+//   NaN <,>,<=,>= x -> false
+// 曾经的问题: 代码生成把 != 编译成 LLVM 的 fcmp one (ordered not-equal),
+// 任一操作数是 NaN 时它和 oeq 一样返回 false, 正确的表达是 fcmp une (= not(oeq))。
+use std::{assert, assert_eq};
+use std::cmp::PartialOrd;
+use std::cmp::Ordering;
+
+fn main() {
+    let zero: F64 = 0.0;
+    let nan = zero / zero;
+    let one: F64 = 1.0;
+    let two: F64 = 2.0;
+
+    assert(nan != nan);
+    assert(!(nan == nan));
+    assert(nan.is_nan());
+
+    // NaN 与普通数值
+    assert(nan != one);
+    assert(!(nan < one));
+    assert(!(nan > one));
+    assert(!(nan <= one));
+    assert(!(nan >= one));
+    assert(nan.partial_cmp(&one) is None);
+
+    // 通过 trait 方法走的 <= / >= 也必须是 false (不能是 !(... > ...) 这种写法)
+    assert(!(nan.le(&one)));
+    assert(!(nan.ge(&one)));
+    assert(!(nan.lt(&one)));
+    assert(!(nan.gt(&one)));
+
+    // F32 同样
+    let z32: F32 = 0.0_f32;
+    let nan32 = z32 / z32;
+    let one32: F32 = 1.0_f32;
+    assert(nan32 != nan32);
+    assert(!(nan32 == nan32));
+    assert(nan32.is_nan());
+    assert(!(nan32.le(&one32)));
+    assert(!(nan32.ge(&one32)));
+
+    // 普通值的行为不能被破坏
+    assert(one != two);
+    assert(!(one != one));
+    assert(one <= one);
+    assert(one >= one);
+    assert(one <= two);
+    assert(two >= one);
+    assert(one.le(&two));
+    assert(two.ge(&one));
+    assert(one.partial_cmp(&one) is Some(Ordering::Equal));
+    assert(one.partial_cmp(&two) is Some(Ordering::Less));
+    assert(two.partial_cmp(&one) is Some(Ordering::Greater));
+
+    println("nan compare ok");
+}

@@ -1,0 +1,63 @@
+// F64 / F32 的 ToString 必须把格式化结果真正写进 String。
+// 曾经的问题: to_string_inplace 调用了 C 的 zinc_core_float_to_string,
+// 但 C 只把字节写到缓冲区末尾, 不会更新 String 的长度, 于是 println 打印空行。
+// println 和字符串插值都走 to_string_inplace, 所以这里两种情况都覆盖。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    let a: F64 = 3.25;
+    let b = 1.5_f64;
+    let c: F32 = 1.5_f32;
+
+    // 字符串插值路径 (to_string_inplace)
+    assert_eq(f"$(a)", f"3.25");
+    assert_eq(f"$(b)", f"1.5");
+    assert_eq(f"$(c)", f"1.5");
+    assert_eq(f"v=$(a)", f"v=3.25");
+
+    // to_string 路径
+    assert_eq(a.to_string(), f"3.25");
+    assert_eq(c.to_string(), f"1.5");
+
+    // 零 / 负数 / 整数值浮点
+    assert_eq(f"$(0.0_f64)", f"0");
+    assert_eq(f"$(-0.5_f64)", f"-0.5");
+    assert_eq(f"$(2.0_f64)", f"2");
+    assert_eq(f"$(-2.5_f64)", f"-2.5");
+    assert_eq(f"$(0.0_f32)", f"0");
+    assert_eq(f"$(-1.25_f32)", f"-1.25");
+
+    // 追加到已有内容之后: 长度必须从原来的 size 继续推进, 不能覆盖也不能丢失
+    let mut s = String::new();
+    s.push_str("v=");
+    a.to_string_inplace(&mut s);
+    assert_eq(s, f"v=3.25");
+    assert_eq(s.len(), 6_u);
+
+    // 连续追加两个浮点
+    let mut t = String::new();
+    a.to_string_inplace(&mut t);
+    t.push_str(",");
+    b.to_string_inplace(&mut t);
+    assert_eq(t, f"3.25,1.5");
+
+    // NaN / 无穷也要有输出, 不能是空串
+    let zero: F64 = 0.0;
+    let nan = zero / zero;
+    let inf = 1.0 / zero;
+    assert_eq(f"$(nan)", f"nan");
+    assert_eq(f"$(inf)", f"inf");
+    assert_eq(f"$(-inf)", f"-inf");
+
+    // 真正走一遍 println, 保证不 panic / 不崩溃 (内容已由上面的比对保证)
+    println(a);
+    println(b);
+    println(c);
+    println(f"v=$(a)");
+    println(0.0_f64);
+    println(-0.5_f64);
+    println(2.0_f64);
+    println(nan);
+    println(inf);
+}

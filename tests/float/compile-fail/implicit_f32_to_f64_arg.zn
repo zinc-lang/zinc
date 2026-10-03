@@ -1,0 +1,12 @@
+// F32 不能隐式当成 F64 用, 必须显式 `as F64`。
+// 这条规则保证了不会有 float 值被直接当成 double 传参 (C ABI 不匹配,
+// 之前在 F32 路径上见过 fptrunc float to double 的非法 LLVM IR)。
+fn takes_f64(x: F64) -> F64 {
+    return x;
+}
+
+fn main() {
+    let c: F32 = 1.5_f32;
+    let d = takes_f64(c);
+    println(d);
+}

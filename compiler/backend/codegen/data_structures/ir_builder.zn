@@ -558,10 +558,12 @@ impl LLDataStructures {
     }
 
     fn create_fcmp_ne(&self, lhs: CgValue, rhs: CgValue) -> CgValue {
-        unsafe {
-            let v = llds_create_fcmp_one(self.ds, lhs.value, rhs.value);
-            return { .value = v, .indirect = false, }: CgValue;
-        }
+        // IEEE 语义要求 NaN != x 为 true。
+        // LLVM 的 fcmp one (ordered not-equal) 在任一操作数是 NaN 时返回 false,
+        // 和 oeq 一样; 正确表达是 fcmp une (unordered or not-equal)。
+        // 而 une 恰好等于 not(oeq), 所以这里用取反实现, 不用新增 LLVM 绑定。
+        let eq = self.create_fcmp_eq(lhs, rhs);
+        return self.create_bit_not(eq);
     }
 
     fn create_fcmp_oge(&self, lhs: CgValue, rhs: CgValue) -> CgValue {

@@ -1,0 +1,53 @@
+// 浮点运算 / 转换的回归用例。
+// 这些断言在当前编译器上都是成立的 (它们是报告里"同一批浮点异常"的复现表达式,
+// 那些异常已经被之前的提交修掉, 这里钉住行为, 防止回归)。
+use std::{assert, assert_eq};
+
+fn main() {
+    // 浮点相等比较 (曾经报告为 false)
+    assert(1.0_f64 + 1.0_f64 == 2.0_f64);
+
+    // Float -> Int 截断 (曾经报告 2 / 3 / 5)
+    assert_eq((1.0_f64 + 1.0_f64) as Int, 2);
+    assert_eq((0.5_f64 + 0.5_f64) as Int, 1);
+    assert_eq((1.5_f64 * 2.0_f64) as Int, 3);
+    assert_eq((3.0_f64 - 1.25_f64) as Int, 1);
+    assert_eq((7.0_f64 / 2.0_f64) as Int, 3);
+    assert_eq(1.5_f64 as Int, 1);
+    assert_eq(1.999_f64 as Int, 1);
+    assert_eq(-1.5_f64 as Int, -1);
+    assert_eq(-0.5_f64 as Int, 0);
+
+    // Int -> F64 (曾经报告 3_i as F64 == 3.0_f64 为 false)
+    assert(3_i as F64 == 3.0_f64);
+    assert_eq(3_i as F64 as Int, 3);
+    assert(0_i as F64 == 0.0_f64);
+    assert(-7_i as F64 == -7.0_f64);
+    assert_eq(-7_i as F64 as Int, -7);
+
+    // F32 <-> F64 显式转换 (F32 升宽必须是 fpext, 不能把 float 当 double 用)
+    let c: F32 = 1.5_f32;
+    let d: F64 = c as F64;
+    assert(d == 1.5_f64);
+    let e: F32 = 3.25_f64 as F32;
+    assert((e as F64) == 3.25_f64);
+
+    // 上下文推导的浮点字面量 (不带后缀) 取值必须正确
+    let a: F64 = 1.0;
+    let b: F64 = 1.0;
+    assert(a + b == 2.0);
+    assert_eq((a + b) as Int, 2);
+    let f: F64 = 0.1;
+    assert(f > 0.099999);
+    assert(f < 0.100001);
+    let g: F64 = 3.14159265358979;
+    assert(g > 3.14159);
+    assert(g < 3.14160);
+
+    // F32 运算
+    let h: F32 = 2.5_f32;
+    assert(h + h == 5.0_f32);
+    assert((h + h) as F64 == 5.0_f64);
+
+    println("arith convert ok");
+}

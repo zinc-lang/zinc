@@ -1,0 +1,15 @@
+// F32 <-> F64 必须显式转换; 显式升宽 (F32 -> F64) 会生成 fpext。
+// 和 compile-fail/implicit_f32_to_f64_arg.zn 配对, 说明正确写法。
+use std::assert;
+
+fn takes_f64(x: F64) -> F64 {
+    return x;
+}
+
+fn main() {
+    let c: F32 = 1.5_f32;
+    let d = takes_f64(c as F64);
+    let e: F32 = d as F32;
+    assert(d == 1.5_f64);
+    assert(e == 1.5_f32);
+}

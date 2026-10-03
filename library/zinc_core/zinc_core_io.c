@@ -46,7 +46,12 @@ void zinc_core_println_int(long long x) {
 }
 
 int zinc_core_float_to_string(double num, char * buf, size_t size) {
-    return snprintf(buf, size, "%f", num);
+    // 用 %g 而不是 %f:
+    //   * %f 固定输出 6 位小数 (3.25 -> "3.250000"), 而 %g 输出最短有意义形式 (3.25 -> "3.25")
+    //   * %f 对大数值会输出几百个字符, 会撑爆调用方预留的缓冲区
+    // 返回值是 snprintf 语义: 需要的字符数 (不含结尾 '\0'), 出错时是负数。
+    // 调用方 (f32.zn / f64.zn) 依赖这个返回值来推进 String 的长度。
+    return snprintf(buf, size, "%g", num);
 }
 
 int zinc_core_errno() {

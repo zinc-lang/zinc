@@ -19,7 +19,16 @@ impl ToString for F32 {
     fn to_string_inplace(&self, buf: &mut String) {
         buf.reserve(32_u);
         let end = (buf.data.ptr as *raw Shared<UInt8> as *raw mut Byte) + buf.data.size;
-        unsafe(zinc_core_float_to_string(*self as F64, end, 32_u));
+        let mut n = unsafe(zinc_core_float_to_string(*self as F64, end, 32_u));
+        // C 侧把结果写到了缓冲区末尾, 但不会更新 String 长度;
+        // 这里不更新长度的话 String 仍然是空的 (println 会打印空行)。
+        if (n < 0) {
+            n = 0;
+        } else if (n > 31) {
+            // snprintf 缓冲区不够时返回"需要的长度", 实际只写了 31 字节 + '\0'
+            n = 31;
+        }
+        buf.data.size = buf.data.size + (n as UInt);
     }
 
     fn to_string(&self) -> String {
@@ -61,13 +70,28 @@ impl PartialOrd for F32 {
         return self.partial_cmp(other) is Some(Ordering::Less);
     }
     fn le(&self, other: &Self) -> Bool {
-        return !(self.partial_cmp(other) is Some(Ordering::Greater));
+        // 注意不能写成 !(... is Some(Greater)): NaN 的 partial_cmp 是 None,
+        // 那样会得到 true, 而 IEEE 规定 NaN <= x 为 false。
+        if (self.partial_cmp(other) is Some(Ordering::Less)) {
+            return true;
+        }
+        if (self.partial_cmp(other) is Some(Ordering::Equal)) {
+            return true;
+        }
+        return false;
     }
     fn gt(&self, other: &Self) -> Bool {
         return self.partial_cmp(other) is Some(Ordering::Greater);
     }
     fn ge(&self, other: &Self) -> Bool {
-        return !(self.partial_cmp(other) is Some(Ordering::Less));
+        // 同 le: NaN >= x 必须是 false
+        if (self.partial_cmp(other) is Some(Ordering::Greater)) {
+            return true;
+        }
+        if (self.partial_cmp(other) is Some(Ordering::Equal)) {
+            return true;
+        }
+        return false;
     }
 }
 
