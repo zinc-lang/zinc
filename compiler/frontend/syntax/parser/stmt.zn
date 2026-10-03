@@ -152,7 +152,7 @@ impl FileParser {
 
             return stmt;
         } else {
-            let then_branch = self.parse_block();
+            let then_branch = self.expect_block(f"if");
 
             let stmt = box {
                 .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
@@ -174,7 +174,7 @@ impl FileParser {
                     stmt.else_branch = Some(else_if_stmt as *StatementNode);
                     return stmt;
                 } else {
-                    let else_block = self.parse_block();
+                    let else_block = self.expect_block(f"else");
                     stmt.else_branch = Some(else_block as *StatementNode);
                     return stmt;
                 }
@@ -186,7 +186,7 @@ impl FileParser {
     fn parse_while_stmt(&mut self) -> *WhileStmt {
         let kw_while = self.lexer.next();
         let cond = self.parse_expression();
-        let body = self.parse_block();
+        let body = self.expect_block(f"while");
         return box {
             .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
             .kw_while = kw_while,
@@ -197,7 +197,7 @@ impl FileParser {
 
     fn parse_dowhile_stmt(&mut self) -> *DoWhileStmt {
         let kw_do = self.lexer.next();
-        let body = self.parse_block();
+        let body = self.expect_block(f"do");
         let kw_while = self.expect_token(TokenKind::Keyword(KeywordKind::KW_WHILE));
         let cond = self.parse_expression();
         let semi = self.expect_token(TokenKind::Punctuation(PunctuationKind::Semi));
@@ -263,7 +263,7 @@ impl FileParser {
         let pat = self.parse_pattern();
         let kw_in = self.expect_token(TokenKind::Keyword(KeywordKind::KW_IN));
         let iterable = self.parse_expression();
-        let body = self.parse_block();
+        let body = self.expect_block(f"for");
         return box {
             .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
             .kw_for = kw_for,
@@ -357,6 +357,17 @@ impl FileParser {
             .label = lifetime,
             .semicolon = semi,
         }: GotoStmt;
+    }
+
+    // 解析一个必须以 `{` 开始的语句块。if/while/for 的语句体用这个入口:
+    // 缺 `{` 时 parse_block 会把后面的代码当成块内容, 一路级联到 <eof> 才报错,
+    // 这里先给出明确的 "期望 {" 提示, 位置也更准确。
+    fn expect_block(&mut self, keyword: String) -> *BlockStmt {
+        let t = self.lexer.peek(0);
+        if !(t.token_kind is TokenKind::Punctuation(PunctuationKind::LBrace)) {
+            DiagnosticEngine::get().emit_expected_block(t.span(), keyword);
+        }
+        return self.parse_block();
     }
 
     fn parse_block(&mut self) -> *BlockStmt {

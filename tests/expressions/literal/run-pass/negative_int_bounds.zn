@@ -1,0 +1,37 @@
+// 负整数边界值: -128_i8 是 Int8 的最小值, 合法; 127_i8 是最大值, 合法。
+// 越界的 -129_i8 / 128_i8 / 负的无符号字面量 -1_u8 见同目录 compile-fail/。
+use std::{assert, assert_eq};
+
+fn neg(v: Int) -> Int {
+    return 0_i - v;
+}
+
+fn main() {
+    let min = -128_i8;
+    let max = 127_i8;
+    assert_eq(min as Int, -128_i);
+    assert_eq(max as Int, 127_i);
+    assert(min < max);
+
+    // 常见的负字面量
+    assert_eq(-1_i8 as Int, -1_i);
+    assert_eq(-1_i as Int, -1_i);
+
+    // 与减法/一元负号不冲突: 前面能结束表达式时 `-` 是减号
+    let x = 10_i;
+    assert_eq(x - 1_i, 9_i);
+    assert_eq(x -1_i, 9_i);   // 没有空格也是减号
+    assert_eq(x * -1_i, -10_i); // 乘号后面是负号
+    assert_eq(- 1_i, -1_i);     // 负号与数字之间有空格, 仍然是一元负号
+
+    // 函数实参位置的负字面量
+    assert_eq(neg(-5_i), 5_i);
+
+    // 在赋值右侧、括号里、数组下标里的负字面量
+    let mut y = 0_i;
+    y = -3_i;
+    assert_eq(y, -3_i);
+    assert_eq((-4_i), -4_i);
+    let arr = [0_i, -7_i];
+    assert_eq(arr[1], -7_i);
+}

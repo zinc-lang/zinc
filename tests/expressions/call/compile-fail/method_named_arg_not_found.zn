@@ -1,0 +1,14 @@
+// 方法调用里写了不存在的参数名: 报"命名参数 b 没有对应的形参"
+struct P { x: Int }
+
+impl P {
+    fn f(&self, a: Int) -> Int {
+        return a + self.x;
+    }
+}
+
+fn main() {
+    let p = { .x = 1_i }: P;
+    let r = p.f(.b = 2_i);
+    println(r);
+}

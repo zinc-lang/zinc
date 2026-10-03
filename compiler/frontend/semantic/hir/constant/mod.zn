@@ -19,7 +19,7 @@ trait ConstValue {
 fn const_value_from_rvalue(rv: *RValue) -> Option<*ConstValue> {
     match rv {
         lit_rv: *LiteralValue => {
-            return const_value_from_lit_token(lit_rv.expr.token);
+            return const_value_of_literal(lit_rv);
         }
         // 字符串插值不是编译期可求值的 (调用方会报 emit_not_const_expr)
         interp_rv: *InterpolationValue => {
@@ -165,6 +165,39 @@ fn const_value_from_lit_token(t: Token) -> Option<*ConstValue> {
         }
     }
     return None;
+}
+
+// 字面量的编译期常量值。lexer 不再把 `-` 并进字面量, 负号由 HIR builder 折叠成
+// LiteralValue.negated; 这里统一把该标志作用到常量上, 这样下游 (常量求值、枚举判别值、
+// 数组长度、范围检查、codegen) 只见到一种 "带符号" 的表示。
+fn const_value_of_literal(lit_rv: *LiteralValue) -> Option<*ConstValue> {
+    let cv = const_value_from_lit_token(lit_rv.expr.token);
+    if lit_rv.negated {
+        if cv is Some(c) {
+            if c is icv: *IntegerCValue {
+                icv.sign = !icv.sign;
+            } else if c is fcv: *FloatCValue {
+                fcv.value = 0.0 - fcv.value;
+            }
+        }
+    }
+    return cv;
+}
+
+// 整数字面量的常量值 (负号已折叠)。调用方保证 token 是 LIT_INT。
+fn int_const_value_of_literal(lit_rv: *LiteralValue) -> *IntegerCValue {
+    if const_value_of_literal(lit_rv) is Some(c) && c is icv: *IntegerCValue {
+        return icv;
+    }
+    panic "BUG: literal is not an integer constant";
+}
+
+// 浮点字面量的常量值 (负号已折叠)。调用方保证 token 是 LIT_FLOAT。
+fn float_const_value_of_literal(lit_rv: *LiteralValue) -> *FloatCValue {
+    if const_value_of_literal(lit_rv) is Some(c) && c is fcv: *FloatCValue {
+        return fcv;
+    }
+    panic "BUG: literal is not a float constant";
 }
 
 struct IntegerCValue {

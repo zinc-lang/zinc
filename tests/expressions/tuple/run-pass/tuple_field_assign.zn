@@ -1,0 +1,43 @@
+// 元组字段赋值 t.0 = v: 读路径本来就支持 t.0, 写路径现在也支持。
+// 写元组字段要求 t 是 mut 绑定的 (见 compile-fail/tuple_field_assign_immutable.zn)。
+//
+// 已知词法限制 (不改词法器): `n.0.1` 会被词法器切成 `n.0` 和浮点字面量 `0.1`,
+// 所以嵌套的元组访问/赋值必须写成 `(n.0).1`, 用括号把下标隔开。
+use std::{assert, assert_eq};
+
+fn main() {
+    // 读改写
+    let mut t = (1_i, 2_i, 3_i);
+    t.0 = 10_i;
+    t.2 = 30_i;
+    assert_eq(t.0, 10_i);
+    assert_eq(t.1, 2_i);
+    assert_eq(t.2, 30_i);
+
+    // 嵌套元组: 用括号隔开下标
+    let mut n = ((1_i, 2_i), (3_i, 4_i));
+    n.0 = (5_i, 6_i);
+    (n.0).1 = 60_i;
+    (n.1).0 = 70_i;
+    assert_eq((n.0).0, 5_i);
+    assert_eq((n.0).1, 60_i);
+    assert_eq((n.1).0, 70_i);
+    assert_eq((n.1).1, 4_i);
+
+    // 循环里改元组字段
+    let mut p = (0_i, 100_i);
+    let mut i = 0_i;
+    while i < 5_i {
+        p.0 = p.0 + i;
+        i = i + 1_i;
+    }
+    assert_eq(p.0, 10_i);
+    assert_eq(p.1, 100_i);
+
+    // 元素类型不要求是同一种; 写完后仍然可以整体读出来
+    let mut mixed = (1_i, true);
+    mixed.0 = 2_i;
+    let read_back = mixed;
+    assert_eq(read_back.0, 2_i);
+    assert(read_back.1);
+}

@@ -86,6 +86,12 @@ impl FloatCValue {
             }
         }
 
+        // 防御性处理: 如果 token 本身带前导 `-` (现在 lexer 不会再产出这种 token,
+        // 负号由语义阶段折叠成 LiteralValue.negated), 把符号作用到数值上。
+        if !sign {
+            num = 0.0 - num;
+        }
+
         return {
             .token = move t,
             .value = move num,

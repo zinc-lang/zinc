@@ -13,13 +13,27 @@ impl ConstValue for IntegerCValue {
 
     fn structural_eq(&self, other: &ConstValue) -> Bool {
         if other is o: &IntegerCValue {
-            return self.value == o.value;
+            // sign 也要比较: 负号被语义阶段折进常量后, `-1` 和 `1` 的 value 相同但符号不同
+            if self.value != o.value {
+                return false;
+            }
+            if self.sign {
+                return o.sign;
+            }
+            return !o.sign;
         } else {
             return false;
         }
     }
 
     fn to_string(&self) -> String {
+        // 负号在语义阶段被折进 sign, 这里输出带符号的形式
+        if !self.sign {
+            let mut res = String::new();
+            res.push_str("-");
+            res.push_str(self.value.to_string().as_str().deref());
+            return res;
+        }
         return self.value.to_string();
     }
 }
@@ -28,7 +42,7 @@ impl IntegerCValue {
     fn new(t: Token) -> Self {
         let mut tok_str = t.raw_str().as_str().deref();
 
-        // 处理负号
+        // 防御性处理前导负号 (lexer 不再产出带 `-` 的字面量, 负号由语义阶段折进 sign)
         let mut sign = true;
         if tok_str.starts_with("-") {
             sign = false;

@@ -1,0 +1,41 @@
+// 负号由语义阶段折叠 (lexer 里 `-` 永远是标点, 数字永远是无符号字面量)。
+// 覆盖: 常量 (static) 上下文、括号穿透、空格形式、嵌套负号, 以及非字面量的运行期取负。
+use std::{assert, assert_eq};
+
+static X: Int = -1_i;
+
+fn main() {
+    // static 初始化也能用负字面量 (折叠后是带符号的 LiteralValue)
+    assert_eq(X, -1_i);
+
+    // 空格 / 括号 / 嵌套负号
+    assert_eq(- 1_i, -1_i);
+    assert_eq((-4_i), -4_i);
+    assert_eq(-(-1_i), 1_i);
+    assert_eq(-(-(-1_i)), -1_i);
+
+    // 括号穿透: -(128_i8) 与 -128_i8 的边界行为一致 (都是 Int8 最小值)
+    let p = -(128_i8);
+    assert_eq(p as Int, -128_i);
+    assert_eq(-128_i8 as Int, -128_i);
+    assert_eq(127_i8 as Int, 127_i);
+
+    // 与减法/乘法不冲突
+    let a = 3_i;
+    assert_eq(a - 1_i, 2_i);
+    assert_eq(a-1_i, 2_i);
+    assert_eq(a -1_i, 2_i);
+    assert_eq(a * -1_i, -3_i);
+
+    // 非字面量操作数保持运行期取负
+    let v = 9_i;
+    assert_eq(-v, -9_i);
+    assert_eq(-(v + 1_i), -10_i);
+
+    // 浮点负字面量
+    let g = -1.5_f64;
+    assert_eq(g, -1.5_f64);
+    assert_eq(-g, 1.5_f64);
+
+    println(X);
+}

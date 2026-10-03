@@ -534,7 +534,7 @@ impl TypeCheckContext {
                             return sty;
                         }
                         LiteralKind::LIT_INT => {
-                            let cint = IntegerCValue::new(lit_rv.expr.token);
+                            let cint = int_const_value_of_literal(lit_rv);
                             let sty = cint.stype_from_suffix();
                             // 字面量自身带后缀时, 直接按后缀类型检查数值范围
                             if sty.type_symbol is int_sym: *IntegerSymbol {
@@ -546,7 +546,7 @@ impl TypeCheckContext {
                             return sty;
                         }
                         LiteralKind::LIT_FLOAT => {
-                            let sty = FloatCValue::new(lit_rv.expr.token).stype_from_suffix();
+                            let sty = float_const_value_of_literal(lit_rv).stype_from_suffix();
                             Resolver::import_builtin_impls(sty.type_symbol);
                             return sty;
                         }
@@ -627,7 +627,12 @@ impl TypeCheckContext {
                         lit.expr.token.token_kind is TokenKind::Literal(k) &&
                         k is LiteralKind::LIT_INT {
 
-                        let cint = IntegerCValue::new(lit.expr.token);
+                        let cint = int_const_value_of_literal(lit);
+                        // 数组长度必须是正的常量: 负的常量 (`-1` 折叠成带符号字面量) 不能当长度
+                        if !cint.sign {
+                            DiagnosticEngine::get().emit_unimplemented(repeat_lit.len.expr_node().span(), "non-literal array length");
+                            return SType::sty_invalid(repeat_lit.expr.span());
+                        }
                         let mut args = GenericArgs::new();
                         let mut i: UInt = 0;
                         while i < cint.value as UInt {
@@ -1110,7 +1115,7 @@ impl TypeCheckContext {
                             expect_type_eq(csty, IntegerSymbol::new(IntegerKind::U8).to_sty(), lit_rv.expr.span());
                         }
                         LiteralKind::LIT_INT => {
-                            let cint = IntegerCValue::new(lit_rv.expr.token);
+                            let cint = int_const_value_of_literal(lit_rv);
                             let lit_ty = cint.stype_from_suffix();
                             if !(csty.type_symbol is type *IntegerSymbol) {
                                 DiagnosticEngine::get().emit_type_mismatch(csty.to_string(), f"integer", lit_rv.expr.span());
@@ -1126,7 +1131,7 @@ impl TypeCheckContext {
                             }
                         }
                         LiteralKind::LIT_FLOAT => {
-                            let lit_ty = FloatCValue::new(lit_rv.expr.token).stype_from_suffix();
+                            let lit_ty = float_const_value_of_literal(lit_rv).stype_from_suffix();
                             if !(csty.type_symbol is type *FloatSymbol) {
                                 DiagnosticEngine::get().emit_type_mismatch(csty.to_string(), f"float", lit_rv.expr.span());
                                 return;
@@ -1204,7 +1209,12 @@ impl TypeCheckContext {
                     lit.expr.token.token_kind is TokenKind::Literal(k) &&
                     k is LiteralKind::LIT_INT {
 
-                    let cint = IntegerCValue::new(lit.expr.token);
+                    let cint = int_const_value_of_literal(lit);
+                    // 负数不是合法的数组长度
+                    if !cint.sign {
+                        DiagnosticEngine::get().emit_unimplemented(repeat_lit.len.expr_node().span(), "non-literal array length");
+                        return;
+                    }
                     if cint.value as UInt != sty.args.ty_args.len() {
                         DiagnosticEngine::get().emit_array_elem_count_mismatch(
                             sty.args.ty_args.len(), cint.value as UInt, repeat_lit.expr.span()
@@ -2588,7 +2598,13 @@ impl TypeCheckContext {
     // 位置参数仍然按顺序绑定到最前面的形参; 命名参数必须写在位置参数后面 (validator 已保证)。
     // 这个函数是幂等的: 已经排好序的实参再调用一次结果不变。
     fn bind_named_fn_args(&mut self, fn_call: *FnCallValue, params: &Vec<*VarSymbol>) -> Bool {
-        let arg_count = fn_call.fn_args.len();
+        return self.bind_named_args(&mut fn_call.fn_args, fn_call.expr.span(), params);
+    }
+
+    // bind_named_fn_args 的通用版本: 函数调用和方法调用共用同一套实参重排逻辑,
+    // 区别只在形参列表 (方法调用要先把 receiver 去掉) 和诊断用的 span。
+    fn bind_named_args(&mut self, args: &mut Vec<FnArgValue>, span: SourceSpan, params: &Vec<*VarSymbol>) -> Bool {
+        let arg_count = args.len();
         let param_count = params.len();
         if arg_count == 0 || arg_count != param_count {
             return true;
@@ -2598,7 +2614,7 @@ impl TypeCheckContext {
         let mut pos_count: UInt = 0;
         let mut k: UInt = 0;
         while k < arg_count {
-            let arg = fn_call.fn_args.at(k).get_or_panic();
+            let arg = args.at(k).get_or_panic();
             if arg.named.token_kind is TokenKind::Identifier {
                 has_named = true;
             } else {
@@ -2621,7 +2637,7 @@ impl TypeCheckContext {
         // 每个命名参数都必须能找到一个同名形参
         let mut ai: UInt = 0;
         while ai < arg_count {
-            let arg = fn_call.fn_args.at(ai).get_or_panic();
+            let arg = args.at(ai).get_or_panic();
             if arg.named.token_kind is TokenKind::Identifier {
                 let name = arg.named.raw_str();
                 let mut exists = false;
@@ -2647,14 +2663,14 @@ impl TypeCheckContext {
         let mut i: UInt = 0;
         while i < param_count {
             if i < pos_count {
-                let arg = fn_call.fn_args.at(i).get_or_panic();
+                let arg = args.at(i).get_or_panic();
                 ordered.push(move arg);
             } else {
                 let name = param_names.at(i).get_or_panic();
                 let mut found: Option<FnArgValue> = None;
                 let mut sj: UInt = 0;
                 while sj < arg_count {
-                    let arg = fn_call.fn_args.at(sj).get_or_panic();
+                    let arg = args.at(sj).get_or_panic();
                     if arg.named.token_kind is TokenKind::Identifier &&
                         arg.named.raw_str().eq(&name) {
                         found = Some(move arg);
@@ -2665,13 +2681,16 @@ impl TypeCheckContext {
                 if found is Some(arg) {
                     ordered.push(move arg);
                 } else {
-                    DiagnosticEngine::get().emit_named_arg_missing(name, fn_call.expr.span());
+                    DiagnosticEngine::get().emit_named_arg_missing(name, span);
                     return false;
                 }
             }
             i += 1;
         }
-        fn_call.fn_args = move ordered;
+        args.clear();
+        for a in ordered {
+            args.push(move a);
+        }
         return true;
     }
 
@@ -2852,6 +2871,19 @@ impl TypeCheckContext {
             for p in method_sym.params {
                 if is_first { is_first = false; continue; }
                 params_ty.push(mappings.subst(p.stype));
+            }
+
+            // 命名参数: receiver 之外的实参按形参名绑定, 与书写位置无关
+            // (位置参数仍然对应最前面的几个形参, 命名参数必须写在位置参数后面, 由 validator 保证)。
+            // 复用函数调用的 bind_named_args, 只是形参列表要跳过 receiver。
+            let mut value_params = (type Vec<*VarSymbol>)::new();
+            let mut vpi: UInt = 1;
+            while vpi < method_sym.params.len() {
+                value_params.push(method_sym.params.at(vpi).get_or_panic());
+                vpi += 1;
+            }
+            if !self.bind_named_args(&mut method_call.fn_args, method_call.expr.span(), &value_params) {
+                return SType::sty_invalid(method_call.expr.span());
             }
 
             // 检查函数参数类型

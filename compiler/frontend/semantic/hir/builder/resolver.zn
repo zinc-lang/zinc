@@ -608,6 +608,11 @@ impl Resolver {
                     k is LiteralKind::LIT_INT  {
 
                     let cint = IntegerCValue::new(lit.token);
+                    // 数组长度必须是正的常量。`-1` 这类负长度在语法上是一元负号 (不是 LiteralExpr),
+                    // 根本不会进这个分支, 会在下面返回 None 被拒绝; 这里保留 sign 检查作为防御。
+                    if !cint.sign {
+                        return None;
+                    }
                     let mut args = GenericArgs::new();
                     let mut i: UInt = 0;
                     while i < cint.value as UInt {

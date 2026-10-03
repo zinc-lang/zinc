@@ -7,7 +7,7 @@ fn main() {
     assert_eq(0xFF_i, 255_i);
     assert_eq(0x10_u, 16_u);
     assert_eq(1_000_000_i, 1000000_i);
-    // 负数 (一元负号作用在字面量上)
+    // 负数: 负号与数字会合成一个带符号的字面量 (边界见 negative_int_bounds.zn)
     assert_eq(-7_i, 0_i - 7_i);
     // 后缀不改变数值, 只改变类型
     assert_eq(5_i8 as Int, 5_i);

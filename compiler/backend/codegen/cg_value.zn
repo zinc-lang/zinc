@@ -259,7 +259,8 @@ impl CodeGenerator {
                 panic; // 在 mir 阶段已经解糖了, 此处执行不到
             }
             lit_rv: *LiteralValue => {
-                if const_value_from_lit_token(lit_rv.expr.token) is Some(cv) {
+                // 负号可能被折进 LiteralValue.negated, 统一走 const_value_of_literal 拿到真实数值
+                if const_value_of_literal(lit_rv) is Some(cv) {
                     return self.cg_const_value(move cv, lit_rv.sty).as_value();
                 } else {
                     panic;

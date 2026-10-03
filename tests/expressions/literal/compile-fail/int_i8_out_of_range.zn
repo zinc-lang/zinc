@@ -1,0 +1,5 @@
+// 正的 Int8 越界: 127_i8 合法, 128_i8 非法
+fn main() {
+    let a = 128_i8;
+    println(a);
+}

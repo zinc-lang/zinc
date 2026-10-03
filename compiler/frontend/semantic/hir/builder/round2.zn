@@ -14,6 +14,7 @@ use ::self::frontend::source_code::{SourceSpan, SourceLoc, SourceManager};
 
 use super::resolver::*;
 use super::stmts::StmtTransformer;
+use super::exprs::*;
 use super::super::checker::type_utils::*;
 
 struct TopLevelAstVisitor2 {
@@ -199,6 +200,11 @@ impl TopLevelAstVisitor2 {
     }
 
     fn create_const_expr(&mut self, init: *ExpressionNode, ctx: ResolveContext) -> Option<*RValue> {
+        // 数值字面量: 一元负号已经折进 LiteralValue (见 exprs::fold_num_literal_node),
+        // 常量上下文里的 `-1_i` / `-(-1_i)` / `-(1_i)` 都在这里统一成带符号字面量。
+        if fold_num_literal_node(init, false) is Some(lit) {
+            return Some(move lit as *RValue);
+        }
         if init is e: *LiteralExpr {
             if e.token.token_kind is TokenKind::Literal(LiteralKind::LIT_STR_INTERPOLATION) {
                 DiagnosticEngine::get().emit_not_const_expr(e.token.source_span);
@@ -973,7 +979,9 @@ fn eval_enum_discriminant(ev: *EnumVariantDecl, tag_out: &mut UInt64) -> Bool {
             if lit.token.token_kind is TokenKind::Literal(LiteralKind::LIT_INT) {
                 let cv = const_value_from_lit_token(lit.token);
                 if cv is Some(c) && c is icv: *IntegerCValue {
-                    if negate {
+                    // 负号有两种来源: 一元负号运算符 (`- 1`), 或者 lexer 直接合并出来的
+                    // 带符号字面量 (`-1`, 此时 icv.sign 为 false)。
+                    if negate || !icv.sign {
                         // 二补码, 和运行期 int64 tag 保持一致
                         *tag_out = (0_i as UInt64) - icv.value;
                     } else {

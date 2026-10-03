@@ -173,6 +173,17 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    // 语句体/条件分支必须是语句块: 在真正去解析块之前先给出明确提示,
+    // 否则解析器会把后面的代码当成块的开头, 一路级联到 <eof> 才报 "非预期的词元"
+    fn emit_expected_block(&mut self, span: SourceSpan, keyword: String) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"$(keyword) 后面期望是语句块, 需要以花括号开始",
+            .msg_en = f"expected a block after $(keyword), which must start with a brace",
+        }: DiagItem);
+    }
+
     fn emit_unexpected_qualifier(&mut self, span: SourceSpan, decl: String, qualifier: String) {
         self.emit({
             .span = span,

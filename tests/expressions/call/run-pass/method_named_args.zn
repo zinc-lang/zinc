@@ -1,0 +1,31 @@
+// 方法调用的命名参数: receiver (self) 之外的实参按形参名绑定, 与书写顺序无关。
+// 位置参数仍然按顺序绑定到最前面的形参; 命名参数必须写在位置参数之后 (validator 保证)。
+use std::{assert, assert_eq};
+
+struct P { x: Int, y: Int }
+
+impl P {
+    fn mix(&self, a: Int, b: Int, c: Int) -> Int {
+        return a * 100_i + b * 10_i + c + self.x;
+    }
+    fn sum(&self, a: Int, b: Int) -> Int {
+        return a + b + self.y;
+    }
+}
+
+fn main() {
+    let p = { .x = 1_i, .y = 2_i }: P;
+
+    // 全部乱序: 按名字绑定, 结果与书写顺序无关
+    assert_eq(p.mix(.c = 3_i, .b = 2_i, .a = 1_i), 124_i);
+    assert_eq(p.mix(.a = 1_i, .b = 2_i, .c = 3_i), 124_i);
+
+    // 位置参数 + 命名参数混用
+    assert_eq(p.mix(1_i, .c = 3_i, .b = 2_i), 124_i);
+    assert_eq(p.mix(1_i, 2_i, .c = 3_i), 124_i);
+    assert_eq(p.mix(1_i, 2_i, 3_i), 124_i);
+
+    // receiver 是 self, 不参与命名参数绑定
+    assert_eq(p.sum(.b = 20_i, .a = 10_i), 32_i);
+    assert_eq(p.sum(.a = 1_i, .b = 1_i), 4_i);
+}

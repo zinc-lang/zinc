@@ -1,0 +1,41 @@
+// 结构体和 Str 的 `==` 依赖运算符重载, 当前编译器还没有实现
+// (见同目录 compile-fail/unsupported_operator.zn), 所以 `a == b` 会报"类型不支持运算符"。
+//
+// 正确做法是直接调用 PartialEq 提供的成员方法:
+//     a.eq(&b)  等价于 a == b
+//     a.ne(&b)  等价于 a != b
+// 注意实参要取引用 (&b), 因为 trait 里写的是 fn eq(&self, other: &Self)。
+use std::{assert, assert_eq};
+use std::cmp::PartialEq;
+
+struct S { v: Int }
+
+impl PartialEq for S {
+    fn eq(&self, other: &Self) -> Bool {
+        return self.v == other.v;
+    }
+    fn ne(&self, other: &Self) -> Bool {
+        return self.v != other.v;
+    }
+}
+
+fn main() {
+    let a = { .v = 1_i }: S;
+    let b = { .v = 1_i }: S;
+    let c = { .v = 2_i }: S;
+
+    // 结构体: 用成员方法比较
+    assert(a.eq(&b));
+    assert(!(a.eq(&c)));
+    assert(a.ne(&c));
+    assert(!(a.ne(&b)));
+
+    // Str 已经在标准库里实现了 PartialEq, 同样用 .eq(&other) 而不是 ==
+    let x = "zinc";
+    let y = "zinc";
+    let z = "rust";
+    assert(x.eq(&y));
+    assert(!(x.eq(&z)));
+    assert(x.ne(&z));
+    assert_eq(x.len(), 4_u);
+}

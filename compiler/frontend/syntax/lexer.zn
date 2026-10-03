@@ -311,11 +311,6 @@ impl Lexer {
     fn lex_number(&mut self) -> Token {
         let begin = self.cur_index;
         let mut ch = self.peek_byte(0);
-        
-        if ch == b'-' {
-            self.cur_index += 1;
-            ch = self.peek_byte(0);
-        }
 
         // 处理 0b 0o 0x 前缀
         if ch == b'0' {

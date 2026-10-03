@@ -9,6 +9,7 @@ impl LiteralValue {
             .expr = move e,
             .parent_node = None,
             .sty = SType::sty_invalid(span),
+            .negated = false,
         }: LiteralValue;
     }
 }
