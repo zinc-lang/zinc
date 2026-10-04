@@ -1,12 +1,10 @@
 // Option<T> / Result<T,E> 的 PartialEq / Eq / Hash。
 //
-// 注意: 这里用直接调用 `a.eq(&b)` / `a.ne(&b)` 的方式, 而不是 `assert_eq(a, b)`。
-// 原因: `assert_eq` 会经由泛型约束 `T: PartialEq` 在泛型函数里调用 trait 方法,
-// 编译器在 monomorphize 泛型类型 (Option<T>/Result<T,E>/Vec<T> 都有同样问题) 的
-// trait 方法时生成的代码是坏的, 直接段错误。这是编译器侧的 bug, 与本文件的
-// PartialEq 实现无关 (Vec 的现成用例 tests/std/collections/run-pass/vec_partial_eq.zn
-// 也是因为这个原因只用 .eq()/.ne())。
-use std::{assert, assert_eq};
+// Option/Result 都是泛型类型定义, 它们的 impl 只有在运行期实例化的时候被登记进
+// TypeMeta.impls, 才能被 `T: PartialEq` 约束下的方法调用查到。assert_eq/assert_ne
+// 走的正是这条运行期派发路径 (泛型类型的 impl 曾经因为 trait_fn 为 NULL 被跳过,
+// find_impl 返回 NULL 直接段错误)。这里优先用 assert_eq/assert_ne。
+use std::{assert, assert_eq, assert_ne};
 use std::cmp::{Eq, PartialEq};
 use std::hash::{Hash, Hasher, default_hasher};
 
@@ -16,25 +14,28 @@ fn main() {
     let b: Option<Int> = Some(1_i);
     let c: Option<Int> = None;
     let d: Option<Int> = None;
-    assert(a.eq(&b));
-    assert(c.eq(&d));
-    assert(a.ne(&c));
+    assert_eq(a, b);
+    assert_eq(c, d);
+    assert_ne(a, c);
+    assert_ne(c, a);
     assert(!a.eq(&c));
     assert(!c.eq(&a));
 
     let s1: Option<String> = Some(String::from_str("hi"));
     let s2: Option<String> = Some(String::from_str("hi"));
     let s3: Option<String> = Some(String::from_str("ho"));
-    assert(s1.eq(&s2));
-    assert(!s1.eq(&s3));
+    assert_eq(s1, s2);
+    assert_ne(s1, s3);
 
     // None vs Some 比较之后 payload 仍可用 (比较里不能误释放/误拷贝 payload)
+    let s4: Option<String> = Some(String::from_str("hi"));
     let n3: Option<String> = None;
-    assert(!s1.eq(&n3));
-    assert(!n3.eq(&s1));
-    match s1 {
+    assert_ne(s4, n3);
+    assert_ne(n3, s4);
+    assert(!s4.eq(&n3));
+    match s4 {
         Option::Some(v) => { assert(v.eq(&String::from_str("hi"))); }
-        Option::None => { assert(false, "s1 不应变成 None"); }
+        Option::None => { assert(false, "s4 不应变成 None"); }
     }
 
     // Hash 与 Eq 一致: 相等 -> 哈希相同, Some/None 不碰撞
@@ -52,10 +53,11 @@ fn main() {
     let r2: Result<Int, Int> = (type Result<Int, Int>)::Ok(1_i);
     let e1: Result<Int, Int> = (type Result<Int, Int>)::Err(2_i);
     let e2: Result<Int, Int> = (type Result<Int, Int>)::Err(2_i);
-    assert(r1.eq(&r2));
-    assert(e1.eq(&e2));
-    assert(r1.ne(&e1));
+    assert_eq(r1, r2);
+    assert_eq(e1, e2);
+    assert_ne(r1, e1);
     // Ok 与 Err 永远不相等 (即使 payload 类型相同)
+    assert_ne(r1, (type Result<Int, Int>)::Err(1_i));
     assert(!r1.eq(&((type Result<Int, Int>)::Err(1_i))));
 
     let mut g1 = default_hasher();

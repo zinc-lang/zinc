@@ -720,6 +720,42 @@ impl CodeGenerator {
         return res;
     }
 
+    // 生成一个 impl 的 trait_fn (存进 %ZnTraitImpl 的第 5 个字段)。
+    //
+    // 契约 (见 library/zinc_core/zinc_core_typemeta.c 的 do_instantiate):
+    //     ZnTypeMeta* trait_fn(uint8_t ty_argc, ZnTypeMeta* ty_argv[])
+    // 返回 "这个 impl 对应的那个 trait" 的 ZnTypeMeta*。运行期实例化泛型 target
+    // (比如 impl<T> PartialEq for Vec<T> 实例化成 Vec<Int>) 时, 只有拿到这个 key,
+    // 才能把 impl 登记进 Vec<Int>.impls, 让 T: PartialEq 的调用点查得到虚表。
+    //
+    // trait 声明目前不允许带类型泛型 (validator 里直接报 "trait declaration with generics"),
+    // 所以 trait 的类型实参一定为空: 不管传进来的实参是什么, 返回的都是同一个
+    // `zn.meta.<trait>` 全局量。同一个 component 内同一个 trait 的所有 impl 共用一个 thunk。
+    //
+    // 注意: 运行期还保留了一条 "trait_fn == NULL 时退回 impl->trait_def" 的兼容路径
+    // (老编译器生成的 bc/zno 里 trait_fn 恒为 NULL)。两条路径给出的 key 必须相同,
+    // 否则同一个 impl 会以两个不同的 key 被登记, find_impl 仍然查不到。
+    fn cg_trait_fn_thunk(&mut self, trait_sym: *TypeSymbol, trait_def: CgGlobal) -> CgFunc {
+        let mut name = f"zn.trait_fn.";
+        name.push_str(self.comp_name.as_str().deref());
+        name.push_str(".");
+        name.push_str(trait_sym.export_key().as_str().deref());
+
+        let fn_ty = self.llds.type_function_traitfn();
+        let func = self.llds.create_fn(fn_ty, name.as_str().deref());
+        if !func.is_empty() {
+            return func; // 已经生成过
+        }
+
+        let llbb = self.llds.create_bb("entry", func);
+        let saved_insert_point = self.llds.save_ip();
+        self.llds.set_insert_point(llbb);
+        self.llds.create_ret(trait_def.as_value());
+        self.llds.verify_function(func);
+        self.llds.restore_ip(saved_insert_point);
+        return func;
+    }
+
     fn do_cg_impl_typemeta(&mut self, isym: *ImplSymbol) -> CgGlobal {
         if isym.trait_sty is None {
             return { .value = unsafe(0_u as Ptr) }: CgGlobal;
@@ -751,19 +787,22 @@ impl CodeGenerator {
             ll_fields.push(target_def.as_const());
         }
 
+        let mut trait_fn: CgConst = self.llds.get_const_null();
         if isym.trait_sty is Some(trait_sty) {
             if trait_sty.args.ty_args.is_empty() {
                 let trait_def = self.get_typemeta_global(trait_sty.type_symbol);
                 ll_fields.push(trait_def.as_const());
+                // 非泛型 trait: trait_fn 不管实参是什么都返回 trait_def 本身
+                trait_fn = self.cg_trait_fn_thunk(trait_sty.type_symbol, trait_def).as_const();
             } else {
                 let trait_def = self.cg_generic_typemeta(trait_sty.type_symbol);
                 ll_fields.push(trait_def.as_const());
+                // 泛型 trait 还没实现 (前端会拒绝), 留 NULL 让运行期走 trait_def 回退
             }
         } else {
             panic;
         }
 
-        let trait_fn = self.llds.get_const_null(); // todo 暂时还没支持泛型 trait
         ll_fields.push(trait_fn);
         let assoc_types_fn = self.llds.get_const_null(); // todo 暂时还没支持泛型 GAT
         ll_fields.push(assoc_types_fn);

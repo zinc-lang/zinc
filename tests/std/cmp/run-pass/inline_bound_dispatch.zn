@@ -1,0 +1,45 @@
+// 泛型形参上"内联"写的 trait 约束 <T: PartialEq> 也要参与方法解析。
+//
+// 回归: round1 的 build_generics 完全忽略了 GenericTypeParamDecl.upper_bounds,
+// 于是函数体里对 T 调用 .eq()/.ne() 时 checker 在 GenericConstraints 里找不到任何
+// 约束, 报 "重载函数没有匹配成功, 实际参数个数为 2"。现在内联约束与 where 子句
+// 一样会被解析进 GenericConstraints。这里同时覆盖泛型 target (Vec<Int>) 与
+// 非泛型 target (Int)。
+use std::{assert, assert_eq, assert_ne};
+use std::cmp::{Eq, PartialEq};
+
+fn my_eq<T: PartialEq>(l: T, r: T) -> Bool { return l.eq(&r); }
+fn my_ne<T: PartialEq>(l: T, r: T) -> Bool { return l.ne(&r); }
+
+// 多个内联约束
+fn my_eq_strict<T: PartialEq + Eq>(l: T, r: T) -> Bool { return l.eq(&r); }
+
+// 内联约束 + 返回泛型 target
+fn max_eq<T: PartialEq>(l: T, r: T) -> Bool { return !l.ne(&r); }
+
+fn main() {
+    // 非泛型 target (Int)
+    assert(my_eq(1_i, 1_i));
+    assert(!my_eq(1_i, 2_i));
+    assert(my_ne(1_i, 2_i));
+    assert(my_eq_strict(3_i, 3_i));
+    assert(max_eq(4_i, 4_i));
+
+    // 泛型 target (Vec<Int>)
+    let mut a = (type Vec<Int>)::new();
+    a.push(1_i);
+    let mut b = (type Vec<Int>)::new();
+    b.push(1_i);
+    assert(my_eq(a, b));
+    assert(!my_ne(a, b));
+    assert(my_eq_strict(a, b));
+    assert_eq(a, b);
+
+    let mut c = (type Vec<Int>)::new();
+    c.push(2_i);
+    assert_ne(a, c);
+    assert(!my_eq(a, c));
+    assert(my_ne(a, c));
+
+    println("inline bound dispatch ok");
+}

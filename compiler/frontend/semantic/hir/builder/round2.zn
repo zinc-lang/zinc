@@ -67,9 +67,9 @@ impl TopLevelAstVisitor2 {
         parent_sym.sym_table().add_child(sym);
     }
 
-    fn build_constraints(&mut self, ctx: ResolveContext, conds: &Vec<*WhereCondDecl>) -> GenericConstraints {
+    fn build_constraints(&mut self, ctx: ResolveContext, generics: &GenericParams, conds: &Vec<*WhereCondDecl>) -> GenericConstraints {
         let resolver = self.resolver();
-        return resolve_constraints(&resolver, ctx, conds);
+        return resolve_constraints(&resolver, ctx, generics, conds);
     }
     
     // 遍历完成后对每个 trait 执行检查，禁止出现递归继承
@@ -366,7 +366,7 @@ impl SyntaxVisitor for TopLevelAstVisitor2 {
                 .path_scope = f_sym as *ScopeSymbol,
                 .self_sty = None,
             }: ResolveContext;
-            f_sym.generics.constraints = self.build_constraints(ctx1, &node.where_conds);
+            f_sym.generics.constraints = self.build_constraints(ctx1, &f_sym.generics, &node.where_conds);
 
             let mut scope: Option<*ScopeSymbol> = None;
             let mut upper_self_sty: Option<*SType> = None;
@@ -544,7 +544,7 @@ impl SyntaxVisitor for TopLevelAstVisitor2 {
                 }
             }
 
-            isym.generics.constraints = self.build_constraints(ctx, &node.where_conds);
+            isym.generics.constraints = self.build_constraints(ctx, &isym.generics, &node.where_conds);
 
             let send_key = "::std::marker::Send";
             let sync_key = "::std::marker::Sync";
@@ -621,7 +621,7 @@ impl SyntaxVisitor for TopLevelAstVisitor2 {
                 }
             }
 
-            st_sym.generics.constraints = self.build_constraints(ctx, &node.where_conds);
+            st_sym.generics.constraints = self.build_constraints(ctx, &st_sym.generics, &node.where_conds);
 
         } else {
             panic "BUG: symbol of StructDecl is not StructSymbol";
@@ -690,7 +690,7 @@ impl SyntaxVisitor for TopLevelAstVisitor2 {
                 }
             }
 
-            e_sym.generics.constraints = self.build_constraints(ctx, &node.where_conds);
+            e_sym.generics.constraints = self.build_constraints(ctx, &e_sym.generics, &node.where_conds);
 
         } else {
             panic "BUG: symbol of EnumDecl is not EnumSymbol";
@@ -768,7 +768,7 @@ impl SyntaxVisitor for TopLevelAstVisitor2 {
                 impl_sym.associated_types.insert(t_sym.short_name(), t_sym);
             }
 
-            t_sym.generics.constraints = self.build_constraints(ctx, &node.where_conds);
+            t_sym.generics.constraints = self.build_constraints(ctx, &t_sym.generics, &node.where_conds);
         }
         else if tsym is type *ExternTypeSymbol {
 
@@ -814,7 +814,7 @@ impl SyntaxVisitor for TopLevelAstVisitor2 {
                 }
             }
 
-            a_sym.generics.constraints = self.build_constraints(ctx, &node.where_conds);
+            a_sym.generics.constraints = self.build_constraints(ctx, &a_sym.generics, &node.where_conds);
 
         } else {
             panic "BUG: symbol of AssociatedTypeDecl is not AssociatedTypeSymbol";
@@ -851,7 +851,7 @@ impl SyntaxVisitor for TopLevelAstVisitor2 {
             }
 
             // 添加 constraints
-            t_sym.generics.constraints = self.build_constraints(ctx, &node.where_conds);
+            t_sym.generics.constraints = self.build_constraints(ctx, &t_sym.generics, &node.where_conds);
 
         } else {
             panic "BUG: symbol of TraitDecl is not TraitSymbol";
@@ -914,8 +914,8 @@ impl SyntaxVisitor for TopLevelAstVisitor2 {
     }
 }
 
-// 解析 where 子句, 供顶层声明和闭包共用
-pub fn resolve_constraints(resolver: &Resolver, ctx: ResolveContext, conds: &Vec<*WhereCondDecl>) -> GenericConstraints {
+// 解析 where 子句 + 泛型形参上内联写的 upper bound, 供顶层声明和闭包共用
+pub fn resolve_constraints(resolver: &Resolver, ctx: ResolveContext, generics: &GenericParams, conds: &Vec<*WhereCondDecl>) -> GenericConstraints {
     let mut constraints = GenericConstraints::new();
     for cond in conds {
         let lhs = resolver.resolve_type_node(ctx, cond.lhs);
@@ -949,6 +949,19 @@ pub fn resolve_constraints(resolver: &Resolver, ctx: ResolveContext, conds: &Vec
             }
         } else {
             DiagnosticEngine::get().emit_invalid_type_node(cond.lhs.to_string(), cond.lhs.span());
+        }
+    }
+
+    for tps in generics.ty_params {
+        if tps.type_param_node is decl: *GenericTypeParamDecl {
+            for upper in decl.upper_bounds {
+                let rhs = resolver.resolve_type_node(ctx, upper);
+                if rhs is Some(rhs_sty) {
+                    constraints.add(tps, move rhs_sty);
+                } else {
+                    DiagnosticEngine::get().emit_invalid_type_node(upper.to_string(), upper.span());
+                }
+            }
         }
     }
     return constraints;

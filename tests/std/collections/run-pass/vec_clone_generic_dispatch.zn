@@ -1,0 +1,40 @@
+// 泛型函数里通过 `T: Clone` 调用 clone (运行期 vtable 派发), T = Vec<Int>/Vec<String>。
+//
+// 回归: 泛型 target (Vec<T>) 的 impl 没有在实例化时登记进 impls 表, 运行期
+// find_impl 返回 NULL, 读它的虚表字段直接段错误。这里同一个泛型函数被实例化两次
+// (不同 T), 覆盖多次实例化的情况。
+//
+// 注意: Vec 是 24 字节, clone 的调用点与 impl 都按 sret 返回, ABI 一致;
+// 8 字节的 Int 调用 clone 还有另一个"返回 Self 的 trait 方法 ABI 不一致"的 bug
+// (会打印出 0), 不在本用例覆盖范围内。
+use std::primitives::clone::Clone;
+use std::{assert, assert_eq};
+
+fn dup<T>(v: T) -> T where T: Clone { return v.clone(); }
+
+fn main() {
+    let mut v = (type Vec<Int>)::new();
+    v.push(7_i);
+    v.push(8_i);
+    let d = dup(v);
+    assert_eq(d.len(), 2_u);
+    assert_eq(d.at(0_u).get_or_panic(), 7_i);
+    assert_eq(d.at(1_u).get_or_panic(), 8_i);
+
+    // 同一个泛型函数的第二次实例化 (不同 T)
+    let mut w = (type Vec<String>)::new();
+    w.push(String::from_str("a"));
+    w.push(String::from_str("b"));
+    let dw = dup(w);
+    assert_eq(dw.len(), 2_u);
+
+    // 嵌套: Vec<Vec<Int>>
+    let mut inner = (type Vec<Int>)::new();
+    inner.push(1_i);
+    let mut outer = (type Vec<Vec<Int>>)::new();
+    outer.push(inner);
+    let douter = dup(outer);
+    assert_eq(douter.len(), 1_u);
+
+    println("vec clone generic dispatch ok");
+}

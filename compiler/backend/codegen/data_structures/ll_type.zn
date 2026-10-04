@@ -196,4 +196,11 @@ impl LLDataStructures {
         let ret = self.type_int64();
         return self.type_function(ret, &[self.type_thin_ptr()] as Slice<CgType>);
     }
+
+    // ZnTypeMeta* trait_fn(uint8_t ty_argc, ZnTypeMeta* ty_argv[])
+    // 与 library/zinc_core/zinc_core_typemeta.h 里的 CalculateTypeMeta 一致
+    fn type_function_traitfn(&self) -> CgFuncType {
+        let ret = self.type_thin_ptr();
+        return self.type_function(ret, &[self.type_int8(), self.type_thin_ptr()] as Slice<CgType>);
+    }
 }

@@ -1,0 +1,36 @@
+// 对临时的枚举单元 variant 取引用 (例如 &Ordering::Equal)。
+//
+// 这类右值在 MIR 里不是 place, codegen 必须为它物化一块临时内存, 再把"这块内存的
+// 地址"当成结果值。回归: AddressofValue 的 else 分支新建 alloca 后忘了把
+// indirect 标回 false, 后面的参数传递于是又 load 了一次, 把 enum 的判别值 (1)
+// 当成指针传给了被调函数 -> SIGSEGV。receiver 位置和实参位置都要覆盖。
+use std::{assert, assert_eq};
+use std::cmp::{PartialEq, Ordering};
+
+fn is_less(o: &Ordering) -> Bool { return (*o).eq(&Ordering::Less); }
+
+fn main() {
+    // receiver 与实参都是临时值
+    assert(Ordering::Less.eq(&Ordering::Less));
+    assert(!Ordering::Less.eq(&Ordering::Equal));
+    assert(Ordering::Greater.ne(&Ordering::Less));
+
+    // receiver 是局部量, 实参是临时值
+    let o = Ordering::Less;
+    assert(!o.eq(&Ordering::Equal));
+    assert(o.eq(&Ordering::Less));
+
+    // receiver 是临时值, 实参是局部量
+    let p = Ordering::Equal;
+    assert(!Ordering::Less.eq(&p));
+    assert(p.eq(&Ordering::Equal));
+
+    // 临时值作为函数实参, 被调函数内部再对它取引用
+    assert(is_less(&Ordering::Less));
+    assert(!is_less(&Ordering::Greater));
+
+    // 临时 enum 值按值传给泛型函数 (T = Ordering, 非泛型 target)
+    assert_eq(Ordering::Less, Ordering::Less);
+
+    println("enum variant ref temp ok");
+}

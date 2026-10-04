@@ -371,8 +371,8 @@ impl ExprTransformer {
             }
         }
 
-        // where 约束
-        lsym.generics.constraints = resolve_constraints(&self.resolver, inner_ctx, &e.where_conds);
+        // where 约束 + 泛型形参上内联的 upper bound
+        lsym.generics.constraints = resolve_constraints(&self.resolver, inner_ctx, &lsym.generics, &e.where_conds);
 
         // 捕获列表
         self.resolve_lambda_captures(e, lsym);

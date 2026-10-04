@@ -57,7 +57,9 @@ impl TopLevelAstVisitor1 {
         return None;
     }
 
-    // todo 需要处理 upper_bounds
+    // 泛型形参上内联写的 upper bound (<T: PartialEq>) 不在这里解析: round1 还没有
+    // resolver。它在 round2 的 resolve_constraints 里和 where 子句一起被解析进
+    // GenericConstraints (fn/impl/struct/enum/trait/typealias/关联类型/闭包都覆盖)。
     fn build_generics(&mut self, params: &Vec<*GenericTypeParamDecl>, parent_scope: *ScopeSymbol) -> GenericParams {
         let gp = build_generics_in_scope(params, parent_scope);
         // 顶层声明需要把泛型参数记录到 syntax -> symbol 映射里

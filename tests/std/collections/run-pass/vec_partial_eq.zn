@@ -1,5 +1,10 @@
 // Vec 的 PartialEq/Eq: 长度不同 / 元素不同 / 空表, 以及 eq 与 ne 的一致性。
-use std::{assert, assert_eq};
+//
+// assert_eq/assert_ne 内部是 `T: PartialEq` 约束下的泛型调用, 会走运行期的
+// TypeMeta/impls vtable 派发 (`T` 是泛型 target 时, impl 必须在实例化时被登记,
+// 否则 find_impl 返回 NULL -> 段错误)。前半段用直接调用覆盖 Vec 的实现,
+// 后半段用 assert_eq/assert_ne 覆盖泛型派发。
+use std::{assert, assert_eq, assert_ne};
 
 fn main() {
     let mut a = (type Vec<Int>)::new();
@@ -15,6 +20,8 @@ fn main() {
     // 内容相同
     assert(a.eq(&b));
     assert(!a.ne(&b));
+    assert_eq(a, b);
+    assert(!a.ne(&b));
 
     // 长度不同
     b.push(4_i);
@@ -28,11 +35,13 @@ fn main() {
     assert_eq(b.len(), 3_u);
     assert(!a.eq(&b));
     assert(a.ne(&b));
+    assert_ne(a, b);
 
     // 空表互等
     let e1 = (type Vec<Int>)::new();
     let e2 = (type Vec<Int>)::new();
     assert(e1.eq(&e2));
+    assert_eq(e1, e2);
 
     // 单个元素
     let mut s1 = (type Vec<Int>)::new();
@@ -40,10 +49,13 @@ fn main() {
     let mut s2 = (type Vec<Int>)::new();
     s2.push(5_i);
     assert(s1.eq(&s2));
+    assert_eq(s1, s2);
     s2.pop();
     s2.push(6_i);
     assert(!s1.eq(&s2));
+    assert_ne(s1, s2);
 
     // 自己等于自己
     assert(a.eq(&a));
+    assert_eq(a, a);
 }

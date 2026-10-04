@@ -482,8 +482,12 @@ impl CodeGenerator {
                     return op;
                 } else {
                     if self.cgtype_of(addr_rv.operand.get_stype()) is Some(cgty) {
-                        let alloca = self.llds.create_alloca_sized(cgty);
+                        let mut alloca = self.llds.create_alloca_sized(cgty);
                         self.llds.create_store(op, alloca);
+                        // create_alloca_sized 返回的是"这块内存的地址"(indirect = true),
+                        // 但对 &operand 来说这个地址本身就是结果值, 要标成 direct。
+                        // 否则后面 adjust_to_direct 会再 load 一次, 把对象内容当成指针用。
+                        alloca.indirect = false;
                         return alloca;
                     } else {
                         panic;

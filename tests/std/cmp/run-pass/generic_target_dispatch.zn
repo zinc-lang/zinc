@@ -1,0 +1,84 @@
+// 泛型 target 的 impl 必须参与运行期派发。
+//
+// `T: PartialEq` 约束下调用 trait 方法 (l.eq(&r), assert_eq/assert_ne) 时, 运行期拿
+// T 的 TypeMeta 去查 impls 表 (zinc_core_find_impl)。泛型类型定义 (Vec<T>/Option<T>/
+// 用户自己的 Pair<T>) 的 impl 是在类型实例化时才登记进去的, 之前编译器生成的
+// ZnTraitImpl.trait_fn 恒为 NULL, 实例化时这个 impl 被整个跳过, find_impl 返回 NULL,
+// 之后读空指针的虚表 -> 段错误。这里同时覆盖 std 泛型类型与用户自定义泛型类型。
+use std::{assert, assert_eq, assert_ne};
+use std::cmp::PartialEq;
+
+struct Pair<T> {
+    first: T,
+    second: T,
+}
+
+impl<T> PartialEq for Pair<T> where T: PartialEq {
+    fn eq(&self, other: &Self) -> Bool {
+        if !self.first.eq(&other.first) { return false; }
+        return self.second.eq(&other.second);
+    }
+    fn ne(&self, other: &Self) -> Bool {
+        return !self.eq(other);
+    }
+}
+
+// 泛型函数: 这里对 T 上的方法调用只能走运行期 vtable
+fn generic_eq<T>(l: T, r: T) -> Bool where T: PartialEq { return l.eq(&r); }
+fn generic_ne<T>(l: T, r: T) -> Bool where T: PartialEq { return l.ne(&r); }
+
+fn main() {
+    // ---- 用户自定义泛型 target ----
+    let p1 = { .first = 1_i, .second = 2_i }: Pair<Int>;
+    let p2 = { .first = 1_i, .second = 2_i }: Pair<Int>;
+    let p3 = { .first = 1_i, .second = 3_i }: Pair<Int>;
+    assert_eq(p1, p2);
+    assert_ne(p1, p3);
+    assert(generic_eq(p1, p2));
+    assert(generic_ne(p1, p3));
+
+    // ---- Vec<Int> ----
+    let mut v1 = (type Vec<Int>)::new();
+    v1.push(1_i);
+    let mut v2 = (type Vec<Int>)::new();
+    v2.push(1_i);
+    assert_eq(v1, v2);
+    assert(generic_eq(v1, v2));
+    assert(!generic_ne(v1, v2));
+    v2.push(2_i);
+    assert_ne(v1, v2);
+    assert(generic_ne(v1, v2));
+
+    // ---- Option<Int> / Result<Int, Int> ----
+    let o1: Option<Int> = Some(5_i);
+    let o2: Option<Int> = Some(5_i);
+    let o3: Option<Int> = None;
+    assert_eq(o1, o2);
+    assert_ne(o1, o3);
+    assert(generic_eq(o1, o2));
+
+    let r1: Result<Int, Int> = (type Result<Int, Int>)::Ok(5_i);
+    let r2: Result<Int, Int> = (type Result<Int, Int>)::Ok(5_i);
+    let r3: Result<Int, Int> = (type Result<Int, Int>)::Err(5_i);
+    assert_eq(r1, r2);
+    assert_ne(r1, r3);
+    assert(generic_eq(r1, r2));
+
+    // ---- 嵌套泛型 target: Pair<Vec<Int>> ----
+    let mut a1 = (type Vec<Int>)::new();
+    a1.push(1_i);
+    let mut a2 = (type Vec<Int>)::new();
+    a2.push(1_i);
+    let q1 = { .first = a1, .second = a2 }: Pair<Vec<Int>>;
+
+    let mut b1 = (type Vec<Int>)::new();
+    b1.push(1_i);
+    let mut b2 = (type Vec<Int>)::new();
+    b2.push(2_i);
+    let q2 = { .first = b1, .second = b2 }: Pair<Vec<Int>>;
+
+    assert_ne(q1, q2);
+    assert(generic_ne(q1, q2));
+
+    println("generic target dispatch ok");
+}

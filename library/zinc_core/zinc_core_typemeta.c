@@ -101,12 +101,23 @@ static void* do_instantiate(void* a) {
             if (where_cond_fn && !where_cond_fn(arg->ty_argc, arg->ty_argv)) {
                 continue;
             } else {
+                // trait_fn 用来算 "这个 impl 对应的 trait" 的 TypeMeta, 它同时是
+                // impls 这张表的 key。新编译器会给每个 impl 生成 trait_fn;
+                // 老编译器 (以及手写的 zno) 里 trait_fn 恒为 NULL, 这时
+                // trait_def 本身就是 trait 的 ZnTypeMeta, 直接拿它当 key
+                // (与 component_init 里非泛型 target 那条路径完全一致)。
                 CalculateTypeMeta trait_fn = (CalculateTypeMeta)impl->trait_fn;
-                if (trait_fn) {
-                    ZnTypeMeta* trait_ty = trait_fn(arg->ty_argc, arg->ty_argv);
-                    zinc_core_map_put(&ty_meta->impls, trait_ty, impl);
+                ZnTypeMeta* trait_ty = NULL;
+                if (trait_fn != NULL) {
+                    trait_ty = trait_fn(arg->ty_argc, arg->ty_argv);
                 } else {
-                    // todo 这是 bug
+                    // 只有非泛型 trait 才能这样回退: trait_def 是 ZnTypeMeta 而不是
+                    // ZnGenericTypeMeta。泛型 trait (trait TR<A>) 前端目前还不允许声明,
+                    // 等支持之后必须由编译器生成 trait_fn, 不能依赖这条回退。
+                    trait_ty = (ZnTypeMeta*)impl->trait_def;
+                }
+                if (trait_ty != NULL) {
+                    zinc_core_map_put(&ty_meta->impls, trait_ty, impl);
                 }
             }
         }
@@ -238,8 +249,17 @@ static void map_iter_callback(void* k, void* v, void* _extra) {
         if (where_cond_fn && !where_cond_fn(extra->ty_argc, extra->ty_argv)) {
             return;
         }
+        // 与 do_instantiate 里的回退保持一致 (trait_fn == NULL 时用 trait_def 当 key)
         CalculateTypeMeta trait_fn = (CalculateTypeMeta)extra->impl->trait_fn;
-        ZnTypeMeta* trait_ty = trait_fn(extra->ty_argc, extra->ty_argv);
+        ZnTypeMeta* trait_ty = NULL;
+        if (trait_fn != NULL) {
+            trait_ty = trait_fn(extra->ty_argc, extra->ty_argv);
+        } else {
+            trait_ty = (ZnTypeMeta*)extra->impl->trait_def;
+        }
+        if (trait_ty == NULL) {
+            return;
+        }
         ZnTypeMeta* target_ty = (ZnTypeMeta*)v;
         zinc_core_map_put(&target_ty->impls, trait_ty, extra->impl);
         return;
@@ -250,7 +270,8 @@ static void map_iter_callback(void* k, void* v, void* _extra) {
     for(uint8_t i = 0; i < extra->ty_argc; i++) {
         new_ty_argv[i] = extra->ty_argv[i];
     }
-    new_ty_argv[new_ty_argc] = (ZnTypeMeta*)k;
+    // k 是这一层的 key, 也就是第 extra->ty_argc 个泛型实参 (写 new_ty_argc 会越界一格)
+    new_ty_argv[extra->ty_argc] = (ZnTypeMeta*)k;
 
     HashMapPtr new_map = (HashMapPtr) v;
     struct MapIterExtra new_extra = {
