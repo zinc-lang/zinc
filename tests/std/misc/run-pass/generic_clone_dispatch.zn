@@ -1,0 +1,71 @@
+// 类型参数上的 `T: Clone` 调用 (运行期 vtable 派发) 必须返回正确的值。
+//
+// 回归: trait 声明 `Clone::clone(&self) -> Self` 里 `Self` 的大小编译期未知,
+// signature_of_fsym 会给调用点加一个隐藏的 CgParam::SRet; 而 impl 里的具体方法
+// 按自己的具体类型返回 (Int::clone 直接返回 i64, 只有两个参数)。vtable 条目原来
+// 直连 impl 方法, callee 就把 sret 槽当成了自己的 `$typemeta` 参数, 返回值留在
+// 寄存器里被丢掉, 调用方从被 memset 成 0 的 sret 槽里读到 0。
+// 现在 vtable 条目按 trait 声明的 ABI 生成一层适配 thunk, 内部再按 impl 的
+// 原生 ABI 调用并把结果写回 sret 槽。
+//
+// 覆盖两类:
+//   - 8 字节具体类型 (Int / 用户小结构体): trait 声明按 sret, impl 按值返回, 走 thunk;
+//   - 本来就按 sret 返回的大类型 (24 字节 Big / Vec<Int> / String): ABI 一致, 直连。
+use std::primitives::clone::Clone;
+use std::{assert, assert_eq};
+
+struct Small { x: Int }
+
+impl Clone for Small {
+    fn clone(&self) -> Self { return { .x = self.x }: Small; }
+}
+
+struct Big { a: Int, b: Int, c: Int }
+
+impl Clone for Big {
+    fn clone(&self) -> Self { return { .a = self.a, .b = self.b, .c = self.c }: Big; }
+}
+
+fn dup<T>(v: T) -> T where T: Clone { return v.clone(); }
+
+fn main() {
+    // Int: impl 按值返回 i64, 修前这里会拿到 0
+    let i = 42_i;
+    let di = dup(i);
+    assert_eq(di, 42_i);
+
+    // 用户小结构体 (8 字节)
+    let s = { .x = 7_i }: Small;
+    let ds = dup(s);
+    assert_eq(ds.x, 7_i);
+
+    // 大结构体 (24 字节): impl 本来就按 sret 返回, 不得回归
+    let b = { .a = 11_i, .b = 22_i, .c = 33_i }: Big;
+    let db = dup(b);
+    assert_eq(db.a, 11_i);
+    assert_eq(db.b, 22_i);
+    assert_eq(db.c, 33_i);
+
+    // Vec<Int> (24 字节, 泛型 target 的 impl)
+    let mut v = (type Vec<Int>)::new();
+    v.push(1_i);
+    v.push(2_i);
+    let dv = dup(v);
+    assert_eq(dv.len(), 2_u);
+    assert_eq(dv.at(0_u).get_or_panic(), 1_i);
+    assert_eq(dv.at(1_u).get_or_panic(), 2_i);
+
+    // String (24 字节)
+    let text = String::from_str("hello");
+    let dtext = dup(text);
+    assert_eq(dtext.len(), 5_u);
+    assert(dtext.eq(&String::from_str("hello")));
+
+    // 同一个泛型函数被多次实例化 (不同 T), 每次都查自己的 vtable
+    let di2 = dup(ds.x);
+    assert_eq(di2, 7_i);
+    let dtext2 = dup(String::from_str("xy"));
+    assert_eq(dtext2.len(), 2_u);
+
+    println("generic clone dispatch ok");
+}

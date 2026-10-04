@@ -2,6 +2,7 @@
 
 use ::self::cmp::{Eq, PartialEq};
 use ::self::hash::{Hash, Hasher};
+use ::self::primitives::clone::Clone;
 
 pub enum Option<T> {
     None, Some(T)
@@ -48,9 +49,17 @@ impl<T> Hash for Option<T> where T: Hash {
     }
 }
 
-// 说明: 没有实现 Clone。`v.clone()` 在 T 是类型参数时会取到错误的接收者
-// (实测返回 0), 属于编译器的泛型 trait 方法调用 bug; 与其提供一个返回错值的
-// Clone, 不如先不提供。PartialEq/Eq/Hash 都不受影响。
+// Clone: 和 PartialEq 一样把 T: Clone 约束写在 where 里, 不放松类型检查。
+// 逐元素 clone 需要 T 的 Clone 在运行期派发到具体类型上 (曾经因为
+// "返回 Self 的 trait 方法 ABI 不一致" 而返回错值, 所以一直没有实现)。
+impl<T> Clone for Option<T> where T: Clone {
+    fn clone(&self) -> Self {
+        match self {
+            Option::None => { return None; }
+            Option::Some(v) => { return Some(v.clone()); }
+        }
+    }
+}
 
 // 不需要 is_some / is_none 函数，用关键字 is 比这两个函数好
 impl<T> Option<T> {

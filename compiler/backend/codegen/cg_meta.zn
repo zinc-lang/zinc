@@ -808,9 +808,18 @@ impl CodeGenerator {
         ll_fields.push(assoc_types_fn);
 
         let mut vtable_elems: Vec<CgConst> = Vec::new();
-        for f in isym.collect_methods_table() {
-            let f_cg = self.cg_func_decl(f);
-            vtable_elems.push(f_cg.as_const());
+        for pair in isym.collect_methods_table_with_decls() {
+            // pair.0 是 trait 里声明的方法 (调用点的 ABI 取自它),
+            // pair.1 是 impl 里真正实现它的方法 (默认实现时两者是同一个符号)
+            let decl_fn = pair.0;
+            let impl_fn = pair.1;
+            if self.vtable_entry_needs_thunk(decl_fn, impl_fn) {
+                // ABI 不一致 (典型: trait 声明 `-> Self` 走 sret, impl 按具体类型按值返回):
+                // 填一个按 trait 声明 ABI 调用、内部适配 impl 原生 ABI 的 thunk
+                vtable_elems.push(self.cg_vtable_thunk(decl_fn, impl_fn).as_const());
+            } else {
+                vtable_elems.push(self.cg_func_decl(impl_fn).as_const());
+            }
         }
         let gv_fn_array = self.llds.cg_const_array_gv(self.llds.type_thin_ptr(), vtable_elems.as_slice().deref());
         ll_fields.push(gv_fn_array);

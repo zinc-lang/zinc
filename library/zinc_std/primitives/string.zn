@@ -4,6 +4,7 @@ use ::self::iter::Iterator;
 use ::self::collections::vec::Shared;
 use ::self::cmp::{Eq, PartialEq};
 use ::self::hash::{Hash, Hasher};
+use ::self::primitives::clone::Clone;
 
 pub struct String {
     data: Vec<UInt8>
@@ -334,6 +335,14 @@ impl PartialEq for String {
 }
 
 impl Eq for String {}
+
+impl Clone for String {
+    // String 是 24 字节 (Vec<UInt8>), 和 trait 声明 `-> Self` 一样按 sret 返回,
+    // 所以 vtable 上直连这个方法即可 (codegen 会自动判断 ABI 是否一致)。
+    fn clone(&self) -> Self {
+        return { .data = self.data.clone() }: String;
+    }
+}
 
 impl Hash for String {
     fn hash(&self, state: &mut Hasher) {

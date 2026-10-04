@@ -1,0 +1,29 @@
+// 参数侧的 ABI 差异也要由 vtable 的适配 thunk 处理:
+// trait 声明里参数类型写 `Self` 时编译期不知道大小, 调用点按"指针"传;
+// impl 里是具体的小类型 (16 字节) 时按"值"传。修前 thunk 不存在, impl 会把
+// 指针当成结构体值读, 结果错误; 现在 thunk 会先 load 成值再传给 impl 方法。
+use std::{assert, assert_eq};
+
+trait Take {
+    fn take(&self, x: Self) -> Int;
+}
+
+struct P { a: Int, b: Int }
+
+impl Take for P {
+    fn take(&self, x: P) -> Int { return x.a + x.b; }
+}
+
+fn go<T: Take>(v: T, x: T) -> Int { return v.take(x); }
+
+fn main() {
+    let p = { .a = 11_i, .b = 22_i }: P;
+    let q = { .a = 1_i, .b = 2_i }: P;
+    assert_eq(go(p, q), 3_i);
+
+    // 具体类型接收者上的直接调用 (不走 vtable)
+    let s = { .a = 4_i, .b = 5_i }: P;
+    assert_eq(p.take(s), 9_i);
+
+    println("vtable param abi dispatch ok");
+}

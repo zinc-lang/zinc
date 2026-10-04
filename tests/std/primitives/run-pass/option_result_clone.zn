@@ -1,0 +1,70 @@
+// Option<T> / Result<T,E> 的 Clone (泛型 target 上的"返回 Self"的 trait 方法)。
+//
+// 这两个 impl 以前因为编译器在泛型 T 上调用 clone 返回错值而一直没有提供
+// (见 option.zn/result.zn 的旧注释); 修好 vtable 的 ABI 适配 thunk 之后补上。
+// 这里覆盖 None/Some、Ok/Err、嵌套的 Option<Vec<Int>> 与 Option<String>,
+// 以及泛型函数 `T: Clone` 派发和直接的 `.clone()` 两种调用方式。
+use std::primitives::clone::Clone;
+use std::{assert, assert_eq};
+
+fn dup<T>(v: T) -> T where T: Clone { return v.clone(); }
+
+fn main() {
+    let a: Option<Int> = Some(5_i);
+    let da = dup(a);
+    if da is Some(x) {
+        assert_eq(x, 5_i);
+    } else {
+        assert(false, "dup(Some(5)) 不是 Some");
+    }
+
+    let n: Option<Int> = None;
+    let dn = dup(n);
+    assert(dn is None);
+
+    // 嵌套泛型 target
+    let mut vec = (type Vec<Int>)::new();
+    vec.push(9_i);
+    let ov: Option<Vec<Int>> = Some(vec);
+    let dov = dup(ov);
+    if dov is Some(v) {
+        assert_eq(v.len(), 1_u);
+        assert_eq(v.at(0_u).get_or_panic(), 9_i);
+    } else {
+        assert(false, "dup(Some(Vec)) 不是 Some");
+    }
+
+    let os: Option<String> = Some(String::from_str("abc"));
+    let dos = dup(os);
+    if dos is Some(s) {
+        assert_eq(s.len(), 3_u);
+    } else {
+        assert(false, "dup(Some(String)) 不是 Some");
+    }
+
+    let r: Result<Int, Int> = (type Result<Int, Int>)::Ok(3_i);
+    let dr = dup(r);
+    if dr is Result::Ok(x) {
+        assert_eq(x, 3_i);
+    } else {
+        assert(false, "dup(Ok(3)) 不是 Ok");
+    }
+
+    let e: Result<Int, Int> = (type Result<Int, Int>)::Err(4_i);
+    let de = dup(e);
+    if de is Result::Err(y) {
+        assert_eq(y, 4_i);
+    } else {
+        assert(false, "dup(Err(4)) 不是 Err");
+    }
+
+    // 具体类型接收者上的直接调用 (不走泛型函数)
+    let direct = a.clone();
+    if direct is Some(dx) {
+        assert_eq(dx, 5_i);
+    } else {
+        assert(false, "Some(5).clone() 不是 Some");
+    }
+
+    println("option result clone ok");
+}

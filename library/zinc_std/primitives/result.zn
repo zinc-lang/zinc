@@ -1,6 +1,7 @@
 
 use ::self::cmp::{Eq, PartialEq};
 use ::self::hash::{Hash, Hasher};
+use ::self::primitives::clone::Clone;
 
 pub enum Result<T, E> {
     Ok(T), Err(E)
@@ -47,7 +48,15 @@ impl<T, E> Hash for Result<T, E> where T: Hash, E: Hash {
     }
 }
 
-// 说明: 没有实现 Clone (同 Option: 编译器在泛型 T 上调用 clone 会返回错值)。
+// Clone: 同 PartialEq, 约束写在 where 里 (见 option.zn 的说明)。
+impl<T, E> Clone for Result<T, E> where T: Clone, E: Clone {
+    fn clone(&self) -> Self {
+        match self {
+            Result::Ok(v) => { return Result::Ok(v.clone()); }
+            Result::Err(e) => { return Result::Err(e.clone()); }
+        }
+    }
+}
 
 // 不需要 is_ok / is_err 函数，用关键字 is 比这两个函数好
 impl<T, E> Result<T, E> {

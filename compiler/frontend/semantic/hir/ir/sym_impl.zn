@@ -71,7 +71,25 @@ impl ImplSymbol {
         return res;
     }
 
-    fn override_method_of(&self, f: *FuncSymbol) -> *FuncSymbol {
+    // 与 collect_methods_table 顺序完全一致, 但把"trait 里的声明"也带出来:
+    // 元素是 (trait 声明的方法, impl 里真正实现它的方法)。codegen 需要前者
+    // (调用点的 ABI 取自 trait 声明) 来判断 vtable 条目要不要加适配 thunk。
+    pub fn collect_methods_table_with_decls(&self) -> Vec<(*FuncSymbol, *FuncSymbol)> {
+
+        let mut res: Vec<(*FuncSymbol, *FuncSymbol)> = (type Vec<(*FuncSymbol, *FuncSymbol)>)::new();
+        if self.trait_sty is Some(trait_sty) {
+            if trait_sty.type_symbol is trait_sym: *TraitSymbol {
+                let trait_methods = trait_sym.methods_of_total();
+                for f in trait_methods {
+                    let o = self.override_method_of(f, );
+                    res.push((move f, move o));
+                }
+            }
+        }
+        return res;
+    }
+
+    pub fn override_method_of(&self, f: *FuncSymbol) -> *FuncSymbol {
         if f.parent_sym is Some(trsym: *TraitSymbol) {
             for isym in self.target_sty.type_symbol.related_impls() {
                 if isym.trait_sty is Some(tr) && tr.type_symbol is trsym2: *TraitSymbol {

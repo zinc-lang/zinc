@@ -5,8 +5,8 @@
 // (不同 T), 覆盖多次实例化的情况。
 //
 // 注意: Vec 是 24 字节, clone 的调用点与 impl 都按 sret 返回, ABI 一致;
-// 8 字节的 Int 调用 clone 还有另一个"返回 Self 的 trait 方法 ABI 不一致"的 bug
-// (会打印出 0), 不在本用例覆盖范围内。
+// 8 字节的 Int 那种"调用点按 sret、impl 按值返回"的不一致由 vtable 的适配 thunk
+// 处理, 用例见 tests/std/misc/run-pass/generic_clone_dispatch.zn。
 use std::primitives::clone::Clone;
 use std::{assert, assert_eq};
 

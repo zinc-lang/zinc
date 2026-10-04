@@ -2783,6 +2783,295 @@ impl CodeGenerator {
         return thunk;
     }
 
+    // 判断某个 vtable 条目能不能直接指向 impl 方法:
+    // trait 声明的方法与 impl 里的具体方法 ABI 完全一致 (参数种类、LLVM 类型、返回类型)
+    // 时可以直接用函数地址; 不一致时必须用 cg_vtable_thunk 适配。
+    fn vtable_entry_needs_thunk(&mut self, trait_fsym: *FuncSymbol, impl_fsym: *FuncSymbol) -> Bool {
+        if trait_fsym as *raw FuncSymbol as UInt == impl_fsym as *raw FuncSymbol as UInt {
+            // impl 没覆盖, 用的是 trait 里的默认实现 —— 两者本来就是同一个函数
+            return false;
+        }
+        // 签名算不出来 (返回/参数里是还没绑定的关联类型, 见下面的说明) 的 trait 方法
+        // 根本不可能被运行期派发到: 调用点算同一个签名时会先崩。保持直连 (老行为)。
+        if !self.trait_decl_sig_is_computable(trait_fsym) {
+            return false;
+        }
+        let trait_sig = self.signature_of_fsym(trait_fsym);
+        let impl_sig = self.signature_of_fsym(impl_fsym);
+        if !self.sig_same_abi(trait_sig, impl_sig) {
+            return true;
+        }
+        let trait_fnty = self.functype_of_sig(trait_sig);
+        let impl_fnty = self.functype_of_sig(impl_sig);
+        return trait_fnty.llfnty as UInt != impl_fnty.llfnty as UInt;
+    }
+
+    // cgtype_of 对 InvalidSymbol 直接 panic (cg_type.zn:40)。trait 声明里的方法如果
+    // 返回/参数类型是**还没绑定的命名关联类型** (GAT 还没实现, target_sty 仍是
+    // InvalidSymbol), signature_of_fsym / functype_of_sig 就会 panic。
+    // 老代码只对 impl 里的具体方法调 cg_func_decl (trait 里没有函数体的声明会被
+    // cg_func_decl 提前返回 null, 从不计算签名), 所以以前不会碰到这些声明。
+    fn sty_may_panic_cgtype(&self, sty: *SType) -> Bool {
+        if sty.type_symbol is type *InvalidSymbol {
+            return true;
+        }
+        if sty.type_symbol is assoc: *AssociatedTypeSymbol {
+            // calc_cgtype_of 对关联类型只消费 target_sty (不做 canonical 替换)
+            return self.sty_may_panic_cgtype(assoc.target_sty);
+        }
+        if sty.type_symbol is alias: *TypeAliasSymbol {
+            return self.sty_may_panic_cgtype(alias.target_sty);
+        }
+        // 泛型实参是内联在类型里的 (Option<Self::Item> 这种)
+        for a in sty.args.ty_args {
+            if self.sty_may_panic_cgtype(a) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // trait 声明的方法签名能不能安全地算出来 (算不出来说明它做不了运行期派发)。
+    fn trait_decl_sig_is_computable(&mut self, decl_fsym: *FuncSymbol) -> Bool {
+        if decl_fsym.return_sty is Some(rsty) {
+            if self.sty_may_panic_cgtype(rsty) {
+                return false;
+            }
+        }
+        for p in decl_fsym.params {
+            if self.sty_may_panic_cgtype(p.stype) {
+                return false;
+            }
+        }
+        // functype_of_sig 对"按值接收者"要求 cgtype_of 成功 (trait 里按值收 Self 会失败)
+        if decl_fsym.has_receiver() {
+            let r = *decl_fsym.params.index(0_u).deref();
+            if !(r.stype.type_symbol is type *PointerLikeSymbol) {
+                if self.cgtype_of(r.stype) is None {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    // 生成 vtable 条目的"适配 thunk"。
+    //
+    // 调用点 (cg_dispatch_method_call 的场景一/二/三) 一律按 **trait 声明** 的签名
+    // `fnty = functype_of_sig(signature_of_fsym(trait 里声明的方法))` 发起间接调用:
+    // trait 声明里 `-> Self` / 关联类型的大小编译期未知, signature_of_fsym 会给它加
+    // CgParam::SRet。而 impl 里的具体方法按自己的具体类型返回 (比如 `Int::clone`
+    // 直接返回 i64, 只有两个参数)。两者不一致时, 把 impl 方法直接填进 vtable 的话,
+    // callee 会把 sret 槽当成自己的 `$typemeta` 参数, 返回值留在寄存器里被丢掉,
+    // 调用方从被 memset 成 0 的 sret 槽里读到 0。
+    //
+    // thunk 对外签名 = trait 声明的签名 (和调用点一致), 内部按 impl 方法的原生签名
+    // 调用, 再适配参数与返回值:
+    //   - 返回: trait 走 sret 而 impl 按值返回 -> store 进调用方的 sret 槽;
+    //           trait 按值返回而 impl 走 sret -> 在 thunk 里 alloca 再 load 出来;
+    //           两边都走 sret -> 把调用方的 sret 指针直接转交给 impl。
+    //   - 参数: 按值 <-> 按指针 的差异通过 alloca / load 适配 (Self / 关联类型出现在
+    //           参数位置上时也会不一致)。
+    //   - TypeMeta 与泛型实参的 TypeMeta: 原样转发 (调用点传进来的就是具体类型的 meta,
+    //           impl 作为成员方法要的也是它)。
+    // thunk 只由 (impl 方法, trait 声明方法) 决定, 所以名字用两者的 mangle name 拼出来并缓存。
+    fn cg_vtable_thunk(&mut self, trait_fsym: *FuncSymbol, impl_fsym: *FuncSymbol) -> CgFunc {
+        let mut thunk_name = f"zn.vtable_thunk.";
+        thunk_name.push_str(self.comp_name.as_str().deref());
+        thunk_name.push_str(".");
+        thunk_name.push_str(impl_fsym.mangle_name().as_str().deref());
+        thunk_name.push_str("#");
+        thunk_name.push_str(trait_fsym.mangle_name().as_str().deref());
+        if self.llds.get_function(thunk_name.as_str().deref()) is Some(f) {
+            return f;
+        }
+
+        let trait_sig = self.signature_of_fsym(trait_fsym);
+        let impl_sig = self.signature_of_fsym(impl_fsym);
+        let fnty = self.functype_of_sig(trait_sig);
+        let thunk = self.llds.create_fn(fnty, thunk_name.as_str().deref());
+
+        // 先记录 trait 签名 (调用方) 这一侧每个 CgParam 对应的 LLVM 参数下标。
+        // functype_of_sig 对每个 CgParam 恰好压一个 LLVM 参数, 所以下标就是位置。
+        let mut has_sret = false;
+        let mut sret_in_idx: UInt = 0;
+        let mut tm_in_idx: UInt = 0;
+        let mut receiver_in_idx: UInt = 0;
+        let mut receiver_in_is_ref = false;
+        let mut receiver_in_cgty = self.llds.type_thin_ptr();
+        let mut src_to_in = (type HashMap<UInt, UInt>)::new();
+        let mut src_in_is_ref = (type HashMap<UInt, Bool>)::new();
+        let mut src_in_cgty = (type HashMap<UInt, Ptr>)::new();
+        let mut gen_in_idxs: Vec<UInt> = (type Vec<UInt>)::new();
+        let mut in_llvm_idx: UInt = 0;
+        for p in trait_sig.params {
+            if p is CgParam::SRet {
+                has_sret = true;
+                sret_in_idx = in_llvm_idx;
+            }
+            if p is CgParam::TypeMeta {
+                tm_in_idx = in_llvm_idx;
+            }
+            if p is CgParam::GenericArg(_, _) {
+                gen_in_idxs.push(in_llvm_idx);
+            }
+            if p is CgParam::Receiver(r) {
+                receiver_in_idx = in_llvm_idx;
+                if r.stype.type_symbol is type *PointerLikeSymbol {
+                    receiver_in_is_ref = true;
+                    receiver_in_cgty = self.llds.type_thin_ptr();
+                } else {
+                    receiver_in_cgty = self.cgtype_of(r.stype).get_or_panic();
+                }
+            }
+            if p is CgParam::FnArgVal(i, _, t) {
+                src_to_in.insert(i, in_llvm_idx);
+                src_in_is_ref.insert(i, false);
+                src_in_cgty.insert(i, t.llty);
+            }
+            if p is CgParam::FnArgRef(i, _, t) {
+                src_to_in.insert(i, in_llvm_idx);
+                src_in_is_ref.insert(i, true);
+                src_in_cgty.insert(i, t.llty);
+            }
+            in_llvm_idx += 1;
+        }
+
+        let entry_bb = self.llds.create_bb("entry", thunk);
+        let saved_ip = self.llds.save_ip();
+        self.llds.set_insert_point(entry_bb);
+        self.llds.create_do_nothing();
+
+        let mut args = (type Vec<CgValue>)::new();
+        let mut impl_has_sret = false;
+        let mut impl_sret_slot: Option<CgValue> = None;
+        let mut gen_k: UInt = 0;
+        for param in impl_sig.params {
+            match param {
+                CgParam::Receiver(r) => {
+                    let in_val = self.llds.get_arg(thunk, receiver_in_idx);
+                    let want_is_ref = r.stype.type_symbol is type *PointerLikeSymbol;
+                    let mut want_cgty = self.llds.type_thin_ptr();
+                    if !want_is_ref {
+                        want_cgty = self.cgtype_of(r.stype).get_or_panic();
+                    }
+                    let v = self.thunk_adjust_arg(in_val, receiver_in_is_ref, receiver_in_cgty, want_is_ref, want_cgty);
+                    args.push(v);
+                }
+                CgParam::SRet => {
+                    impl_has_sret = true;
+                    if has_sret {
+                        // 两边都走 sret: 把调用方的槽位直接转交给 impl, 它会把结果写进去
+                        let v = self.llds.get_arg(thunk, sret_in_idx);
+                        args.push(v);
+                        impl_sret_slot = Some(v);
+                    } else {
+                        // trait 声明按值返回 (<=16B) 但 impl 按 sret 返回:
+                        // 在 thunk 里开一块槽, 调用之后 load 出来按值返回
+                        let ret_sty = impl_fsym.return_sty.get_or_panic();
+                        let ret_ty = self.cgtype_of(ret_sty).get_or_panic();
+                        let slot = self.llds.create_alloca_sized(ret_ty);
+                        args.push(slot);
+                        impl_sret_slot = Some(slot);
+                    }
+                }
+                CgParam::TypeMeta => {
+                    let v = self.llds.get_arg(thunk, tm_in_idx);
+                    args.push(v);
+                }
+                CgParam::GenericArg(_, _) => {
+                    let idx = *gen_in_idxs.index(gen_k).deref();
+                    gen_k += 1;
+                    let v = self.llds.get_arg(thunk, idx);
+                    args.push(v);
+                }
+                CgParam::FnArgVal(i, _, t) => {
+                    let in_idx = src_to_in.at(&i).get_or_panic();
+                    let in_val = self.llds.get_arg(thunk, in_idx);
+                    let in_is_ref = src_in_is_ref.at(&i).get_or_panic();
+                    let in_cgty = {
+                        .llty = src_in_cgty.at(&i).get_or_panic(),
+                    }: CgType;
+                    let v = self.thunk_adjust_arg(in_val, in_is_ref, in_cgty, false, t);
+                    args.push(v);
+                }
+                CgParam::FnArgRef(i, _, _) => {
+                    let in_idx = src_to_in.at(&i).get_or_panic();
+                    let in_val = self.llds.get_arg(thunk, in_idx);
+                    let in_is_ref = src_in_is_ref.at(&i).get_or_panic();
+                    let in_cgty = {
+                        .llty = src_in_cgty.at(&i).get_or_panic(),
+                    }: CgType;
+                    let v = self.thunk_adjust_arg(in_val, in_is_ref, in_cgty, true, self.llds.type_thin_ptr());
+                    args.push(v);
+                }
+            }
+        }
+
+        let callee = self.cg_func_decl(impl_fsym);
+        let call = self.llds.create_call(callee, args.as_slice().deref());
+        let void_ty = self.llds.type_void();
+        if has_sret {
+            if impl_has_sret {
+                // impl 已经把结果写进调用方的 sret 槽位了
+                self.llds.create_retvoid();
+            } else if impl_sig.ret.llty as UInt == void_ty.llty as UInt {
+                self.llds.create_retvoid();
+            } else {
+                let dst = self.llds.get_arg(thunk, sret_in_idx);
+                self.llds.create_store(call, dst);
+                self.llds.create_retvoid();
+            }
+        } else if impl_has_sret {
+            let slot = impl_sret_slot.get_or_panic();
+            let v = self.llds.create_load(trait_sig.ret, slot);
+            self.llds.create_ret(v);
+        } else if trait_sig.ret.llty as UInt == void_ty.llty as UInt {
+            self.llds.create_retvoid();
+        } else if trait_sig.ret.llty as UInt == impl_sig.ret.llty as UInt {
+            self.llds.create_ret(call);
+        } else {
+            // 两边都按值返回, 但 LLVM 类型不同 (Self 替换成不同类型): 通过内存转一手
+            let slot = self.llds.create_alloca_sized(impl_sig.ret);
+            self.llds.create_store(call, slot);
+            let v = self.llds.create_load(trait_sig.ret, slot);
+            self.llds.create_ret(v);
+        }
+
+        self.llds.verify_function(thunk);
+        self.llds.restore_ip(saved_ip);
+        return thunk;
+    }
+
+    // cg_vtable_thunk 内部: 把调用方按 in 的 ABI 传进来的一参数, 转成 impl 方法
+    // 要求的 want ABI。按值 <-> 按指针的差异用 alloca / load 适配。
+    fn thunk_adjust_arg(
+        &mut self,
+        in_val: CgValue,
+        in_is_ref: Bool,
+        in_cgty: CgType,
+        want_is_ref: Bool,
+        want_cgty: CgType,
+    ) -> CgValue {
+        if in_is_ref {
+            if want_is_ref {
+                return in_val;
+            }
+            return self.llds.create_load(want_cgty, in_val);
+        }
+        if want_is_ref {
+            let slot = self.llds.create_alloca_sized(in_cgty);
+            self.llds.create_store(in_val, slot);
+            return slot;
+        }
+        if in_cgty.llty as UInt == want_cgty.llty as UInt {
+            return in_val;
+        }
+        let slot = self.llds.create_alloca_sized(in_cgty);
+        self.llds.create_store(in_val, slot);
+        return self.llds.create_load(want_cgty, slot);
+    }
+
     // 找 base_sty 这个类型对 trait_sym 的 impl 里, 跟 fsym 同名、参数个数相同的方法。
     // 用于"限定路径写的是 trait 名字"且接收者是具体类型的情况。
     // 查不到说明该类型没有实现这个 trait —— checker 目前只按签名匹配, 没有检查这一点
