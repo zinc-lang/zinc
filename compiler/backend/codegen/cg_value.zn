@@ -2105,6 +2105,17 @@ impl CodeGenerator {
                     }
                 }
 
+                // 无接收者的关联函数 `T::assoc_fn(...)`: 具体类型上的调用 checker 已经
+                // 换成 impl 方法了 (走下面的直接调用); 类型参数上的 trait 方法没有 receiver,
+                // 但仍有隐藏的 `$typemeta` 参数, 需要按 T 的运行期 TypeMeta 查 vtable 再间接调用。
+                if !fsym.has_receiver() && fsym.parent_sym is Some(trait_sym: *TraitSymbol) {
+                    if qp_rv.qualified_ty is Some(qty) {
+                        if qty.canonical().type_symbol is type *TypeParamSymbol {
+                            return self.cg_dispatch_assoc_fn_call(fsym, trait_sym, qty, fn_call, ctx);
+                        }
+                    }
+                }
+
                 return self.cg_direct_fn_call(fn_call, fsym, ctx);
             }
             if qp_rv.symbol is evsym: *EnumVariantSymbol {
@@ -3324,6 +3335,61 @@ impl CodeGenerator {
         }
     }
 
+    // 无接收者关联函数的运行期派发: `T::assoc_fn(args...)`, T 是类型参数。
+    // 和 cg_dispatch_method_call 的场景二一样, 按 T 的运行期 TypeMeta 找到 impl 的
+    // vtable, 再按 **trait 声明的签名** 间接调用 (vtable 条目已经由 cg_vtable_thunk
+    // 适配过 ABI)。区别只是参数里没有 receiver: 隐藏的 `$typemeta` 参数 (成员方法都有)
+    // 放在 SRet 之后, 传的是 T 自己的 TypeMeta。
+    fn cg_dispatch_assoc_fn_call(
+        &mut self,
+        fsym: *FuncSymbol,
+        trait_sym: *TraitSymbol,
+        base_sty: *SType,
+        fn_call: *FnCallValue,
+        ctx: *CgContext,
+    ) -> CgValue {
+        let signature = self.signature_of_fsym(fsym);
+        let fnty = self.functype_of_sig(signature);
+        let di_loc = self.debug_loc(ctx.ll_func, fn_call.expr.span().start);
+
+        let obj_typemeta = self.rt_typemeta_of(base_sty, ctx);
+        let trait_ty = self.rt_typemeta_of(trait_sym.to_sty(), ctx);
+        let find_impl = self.llds.get_ext_fn_in_core("zinc_core_find_impl");
+        let found_impl = self.llds.create_call(find_impl, &[obj_typemeta, trait_ty] as Slice<CgValue>);
+        let method = self.access_impl_vtable(found_impl, trait_sym.index_of_method(fsym).get_or_panic());
+
+        let mut sret_ptr: Option<CgValue> = None;
+        let mut args: Vec<CgValue> = Vec::new();
+        // sret (trait 声明里按值返回的关联类型 / 具体类型未知大小)
+        if signature.index_of_sret() is Some(_) {
+            if self.cgtype_of(fn_call.sty) is Some(ret_ty) {
+                let ret_ptr = self.llds.create_alloca_sized(ret_ty);
+                args.push(ret_ptr);
+                sret_ptr = Some(ret_ptr);
+            } else {
+                let size_val = self.size_of_stype(fn_call.sty, ctx);
+                let ret_ptr = self.llds.create_alloca_unsized(size_val);
+                args.push(ret_ptr);
+                sret_ptr = Some(ret_ptr);
+            }
+        }
+        // typemeta: 传 T 自己的 TypeMeta (成员方法的隐藏参数)
+        args.push(obj_typemeta);
+
+        self.cg_method_call_args(fsym, &fn_call.desugared_args, &fn_call.generic_args, 0_u, &mut args, ctx);
+
+        self.llds.set_di_loc(di_loc);
+        let call = self.llds.create_call(fnty, method, args.as_slice().deref());
+        self.llds.reset_di_loc();
+
+        if sret_ptr is Some(r) {
+            return r;
+        } else {
+            return call;
+        }
+    }
+
+
     fn cg_method_call_args(
         &mut self,
         fsym: *FuncSymbol,
@@ -3346,8 +3412,12 @@ impl CodeGenerator {
                 CgParam::TypeMeta => {
                     continue;
                 }
-                CgParam::GenericArg(_, ga_idx) => {
-                    let ga_sty = *generic_args.ty_args.index(ga_idx).deref();
+                CgParam::GenericArg(tp, _) => {
+                    // CgParam::GenericArg 的第二个字段是这个参数在 LLVM 形参里的下标,
+                    // 不能用来索引 fn_call.generic_args (那是按类型形参顺序排的)。
+                    // 按类型形参在 fsym 里的顺序取, 和 cg_direct_fn_call 一致。
+                    let idx = fsym.generics.index_of_typaram(tp).get_or_panic();
+                    let ga_sty = *generic_args.ty_args.index(idx).deref();
                     let tm = self.rt_typemeta_of(move ga_sty, ctx);
                     args.push(tm);
                 }

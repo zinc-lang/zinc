@@ -609,6 +609,47 @@ fn bind_trait_method_generics(
     }
 }
 
+// `Type::assoc_fn` 里的 `Type` 能不能当作 trait 签名里 `Self` 的绑定目标:
+//   - 类型参数 (T)   : 能, 运行期 vtable 派发;
+//   - 具体类型       : 能, 编译期解析到 impl 方法;
+//   - impl 上下文里的 `Self`: 能 (canonical 之后就是 impl 的目标类型);
+//   - trait 声明 / trait 对象里的 `Self`: 不能, 此时 Self 仍未确定
+//     (`Default::default()` 这种要靠上下文类型先确定 Self)。
+fn is_assoc_fn_self_ty(sty: *SType) -> Bool {
+    let c = sty.canonical();
+    if c.type_symbol is type *TraitSymbol {
+        return false;
+    }
+    if c.type_symbol is assoc: *AssociatedTypeSymbol {
+        if assoc.is_self_ty() {
+            return false;
+        }
+    }
+    return true;
+}
+
+// `Default::default()` 这种"只写了 trait 名字、Self 还没确定"的关联函数调用:
+// 从上下文类型 (let 的类型标注 / return 的返回类型 / 形参类型) 把 Self 绑到目标类型。
+// checker 的 infer 没有期望类型传播, 所以在调用 infer 之前先把限定路径的类型补上。
+// 已经写了具体类型或类型参数 (`T::default()`) 的不会被覆盖。
+fn prebind_assoc_fn_self(v: *XValue, expected: *SType) {
+    if expected.is_invalid() {
+        return;
+    }
+    if v is fc: *FnCallValue {
+        if fc.callee is qpv: *QualifiedPathValue {
+            if qpv.symbol is fsym: *FuncSymbol {
+                if fsym.parent_sym is Some(tr: *TraitSymbol) && !fsym.has_receiver() {
+                    if qpv.qualified_ty is Some(qt) && is_assoc_fn_self_ty(qt) {
+                        return;
+                    }
+                    qpv.qualified_ty = Some(expected.canonical());
+                }
+            }
+        }
+    }
+}
+
 // 限定路径 Type::method(recv, ...) 的解析与检查。
 //
 // callee 是 trait 里的方法 (parent 是 trait) 而接收者是**具体类型**时, 实际要调用的是

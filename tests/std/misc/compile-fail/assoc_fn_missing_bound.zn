@@ -1,0 +1,10 @@
+// 类型参数上没有相应约束时调用 `T::assoc_fn()` 必须是编译错误, 不能走到
+// 运行期 vtable 查询再对 NULL 解引用 (段错误)。
+use std::primitives::default::Default;
+
+fn g<T>() -> T { return T::default(); }
+
+fn main() {
+    let x: Int = g();
+    println(x);
+}

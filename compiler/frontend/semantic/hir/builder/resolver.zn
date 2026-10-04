@@ -892,6 +892,17 @@ impl Resolver {
                                     }
                                 }
                                 return None;
+                            } else if sym is tps: *TypeParamSymbol {
+                                // `T::assoc_fn`: 在 T 的 upper bound (where 子句 / 内联
+                                // `<T: Trait>`) 指向的 trait 里找同名方法。返回的是 trait
+                                // 里的声明 (parent 是 trait), 由 checker 决定是编译期解析到
+                                // impl 方法 (具体类型) 还是运行期 vtable 派发 (类型参数)。
+                                if parts.len() != 2 {
+                                    return None;
+                                }
+                                let second = *parts.index(1).deref();
+                                let member = second.to_string();
+                                return self.lookup_method_in_tp_bounds(tps, &member);
                             } else {
                                 return None;
                             }
@@ -916,6 +927,81 @@ impl Resolver {
                 return self.resolve_segmented_part(move ctx, move first);
             }
             _ => return None;
+        }
+        return None;
+    }
+
+    // 收集声明 `tps` 的类型参数的那个泛型上下文里的约束 (where 子句 + 内联 upper bound)。
+    // TypeParamSymbol 的 parent_sym 就是声明它的作用域: 函数/impl/struct/enum/trait/闭包,
+    // 和 checker 的 find_method 用的是同一套合并规则 (函数本身 + 它所在的 impl)。
+    fn type_param_constraints(&self, tps: *TypeParamSymbol) -> GenericConstraints {
+        let mut constraints = GenericConstraints::new();
+        if tps.parent_sym is Some(ps) {
+            if ps is fsym: *FuncSymbol {
+                constraints.merge(&fsym.generics.constraints);
+                if fsym.parent_sym is Some(isym: *ImplSymbol) {
+                    constraints.merge(&isym.generics.constraints);
+                }
+            } else if ps is isym: *ImplSymbol {
+                constraints.merge(&isym.generics.constraints);
+            } else if ps is lsym: *LambdaSymbol {
+                constraints.merge(&lsym.generics.constraints);
+            } else if ps is tsym: *TraitSymbol {
+                constraints.merge(&tsym.generics.constraints);
+            } else if ps is ssym: *StructSymbol {
+                constraints.merge(&ssym.generics.constraints);
+            } else if ps is esym: *EnumSymbol {
+                constraints.merge(&esym.generics.constraints);
+            }
+        }
+        return constraints;
+    }
+
+    // `T::method` 在 T 的 upper bound 里找同名的方法 (只按名字, 参数个数由 checker 校验)。
+    fn lookup_method_in_tp_bounds(&self, tps: *TypeParamSymbol, member: &String) -> Option<SymOrType> {
+        let constraints = self.type_param_constraints(tps);
+        let key = tps as *raw TypeParamSymbol as UInt;
+        for b in constraints.upper_bounds(&key) {
+            if b.type_symbol is tr: *TraitSymbol {
+                let r = tr.find_method_by_name(member);
+                if r is Some(f) {
+                    return Some(SymOrType::Sym(f as *Symbol));
+                }
+            }
+        }
+        return None;
+    }
+
+    // `Type::member` 这种分段名的前缀如果解析成一个类型, 返回它 (否则 None)。
+    // 用于记录 `T::assoc_fn()` / `MyType::assoc_fn()` 的 Self 类型: 无接收者的关联函数
+    // 没有实参可以当接收者, checker 只能靠这个类型来绑定 trait 签名里的 Self。
+    fn resolve_path_qualifier_type(&self, ctx: ResolveContext, name: *SegmentedName) -> Option<*SType> {
+        if name.names.len() < 2 {
+            return None;
+        }
+        let first: *SegmentedPart = *name.names.index(0).deref();
+        let res = self.resolve_segmented_part(ctx, move first);
+        if res is Some(st) {
+            match st {
+                SymOrType::Sym(s) => {
+                    // 前缀是普通 Ident, 没有写泛型实参
+                    if s is ts: *TypeSymbol {
+                        // `Wrap::method` 里的 Wrap 如果是泛型类型又没写实参, 这个类型是不完整
+                        // 的 (拿到的是声明处的形参, 不是 impl/使用处的类型), 不能当 Self
+                        // 类型用: checker 会把它和实际类型互相绑定, 形成类型映射环。
+                        let origin = ts.to_sty();
+                        if origin.args.ty_args.len() > 0 {
+                            return None;
+                        }
+                        return Some(ts.to_sty());
+                    }
+                    return None;
+                }
+                SymOrType::Type(sty) => {
+                    // 来自 `Wrap<Int>` 这种写全了泛型实参的分段名
+                    return Some(sty);
+                }
+            }
         }
         return None;
     }
@@ -1019,7 +1105,9 @@ impl Resolver {
 
     fn resolve_qualified_path(&self, ctx: ResolveContext, path: *QualifiedPathExpr) -> Option<SymOrType> {
         let sty_opt = self.resolve_type_node(ctx, path.ty);
-        if sty_opt is Some(sty) && sty.type_symbol is ss: *ScopeSymbol {
+        if sty_opt is Some(sty) {
+            // `(type TR as TT)::method`: 先到 TR 对 TT 的 impl 里找, impl 没覆盖时
+            // 再回到 trait 声明里找 (默认实现 / 只有声明的无接收者关联函数)。
             if path.trait_ty is Some(trait_ty) {
                 let trait_sty_opt = self.resolve_type_node(ctx, trait_ty);
                 if trait_sty_opt is Some(trait_sty) {
@@ -1029,17 +1117,51 @@ impl Resolver {
                             
                             let mut new_ctx = ctx;
                             new_ctx.path_scope = isym as *ScopeSymbol;
-                            return self.resolve_segmented_name(new_ctx, path.rest_parts);
+                            let r = self.resolve_segmented_name(new_ctx, path.rest_parts);
+                            if r is Some(_) {
+                                return r;
+                            }
+                            break; // impl 里没有这个方法, 去 trait 声明里找
                         }
+                    }
+                    if trait_sty.type_symbol is tr: *TraitSymbol {
+                        let mut new_ctx = ctx;
+                        new_ctx.path_scope = tr as *ScopeSymbol;
+                        return self.resolve_segmented_name(new_ctx, path.rest_parts);
                     }
                 } else {
                     DiagnosticEngine::get().emit_invalid_type(trait_ty.span());
-                    return None;
                 }
-            } else {
+                return None;
+            }
+
+            // 没写 trait: 类型参数到它的约束里找
+            if sty.type_symbol is tps: *TypeParamSymbol {
+                if path.rest_parts.names.len() == 1 {
+                    let member = (*path.rest_parts.names.index(0).deref()).to_string();
+                    return self.lookup_method_in_tp_bounds(tps, &member);
+                }
+                return None;
+            }
+            // 类型的成员作用域 (struct/enum/impl/trait/mod...)
+            if sty.type_symbol is ss: *ScopeSymbol {
                 let mut new_ctx = ctx;
                 new_ctx.path_scope = ss;
                 return self.resolve_segmented_name(new_ctx, path.rest_parts);
+            }
+            // 内建类型 (Int/Char/Bool/F32.../指针/数组/元组) 不是 ScopeSymbol:
+            // 到它所有 impl 的符号表里找静态成员函数 (和 `Int::default` 那条路一致)
+            if is_builtin_type_symbol(sty.type_symbol) {
+                if path.rest_parts.names.len() == 1 {
+                    let name = (*path.rest_parts.names.index(0).deref()).to_string();
+                    for isym in sty.type_symbol.related_impls() {
+                        let r = isym.symbol_table.lookup(&name);
+                        if r is Some(s) {
+                            return Some(SymOrType::Sym(move s));
+                        }
+                    }
+                }
+                return None;
             }
         }
         return None;

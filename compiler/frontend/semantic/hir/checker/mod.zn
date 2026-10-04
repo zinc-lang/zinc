@@ -84,6 +84,9 @@ impl TypeCheckContext {
                     // 局部变量 (和字段/参数一样) 不允许 unsized 类型: 裸 trait / Fn / FnMut / extern type
                     self.disallow_unsized_type(lhs_ty, ls.local.sym_var.var_node.span());
                     if ensure_type_valid(lhs_ty, ls.local.sym_var.var_node.span()) {
+                        // `let x: Int = Default::default();` 这种没有写 Self 的关联函数
+                        // 调用: 先用标注类型把 Self 补上, infer 才能解析到 impl 方法。
+                        prebind_assoc_fn_self(init as *XValue, lhs_ty);
                         let rhs = self.infer(init as *XValue);
                         if rhs.is_invalid() {
                             self.check_value(move init, lhs_ty);
@@ -139,6 +142,9 @@ impl TypeCheckContext {
                 if self.lambda_sym is Some(lsym) {
                     // return 的目标是当前闭包
                     if br_ret.value is Some(ret_val) {
+                        if lsym.return_sty is Some(ret_sty) {
+                            prebind_assoc_fn_self(ret_val as *XValue, ret_sty);
+                        }
                         let value_sty = self.infer(ret_val as *XValue);
                         if lsym.return_sty is Some(ret_sty) {
                             if value_sty.is_invalid() {
@@ -163,6 +169,7 @@ impl TypeCheckContext {
                     let ret_sty = fsym.return_sty.get_or_panic();
 
                     if br_ret.value is Some(ret_val) {
+                        prebind_assoc_fn_self(ret_val as *XValue, ret_sty);
                         let value_sty = self.infer(ret_val as *XValue);
                         if value_sty.is_invalid() {
                             self.check_value(ret_val, ret_sty);
@@ -2015,8 +2022,9 @@ impl TypeCheckContext {
                             let arg: *RValue = fnarg.value;
                             let arg_ty: *SType = self.infer(arg as *XValue);
                             if !arg_ty.is_invalid() {
-                                if i == 0_u {
+                                if i == 0_u && callee_fsym.has_receiver() {
                                     // 限定路径 TR::method(recv, ...) 里第一个实参就是接收者
+                                    // (无接收者的关联函数 `T::assoc_fn(args)` 的实参都是普通参数)
                                     receiver_ty = Some(arg_ty.strip_pointer());
                                 }
                                 let param = callee_fsym.params.at(i).get_or_panic();
@@ -2027,6 +2035,27 @@ impl TypeCheckContext {
                                 }
                             }
                             i += 1;
+                        }
+
+                        // 无接收者的关联函数 `Type::assoc_fn()` / `T::assoc_fn()`: 没有实参
+                        // 可以当接收者, 用限定路径里写的类型当 Self。具体类型会在下面解析到
+                        // impl 方法, 类型参数则保持 trait 方法符号走运行期 vtable 派发。
+                        // (trait 对象 / 未确定的 `Trait::assoc_fn()` 不能当接收者)
+                        if receiver_ty is None && !callee_fsym.has_receiver() {
+                            if qpv.qualified_ty is Some(qty) {
+                                if is_assoc_fn_self_ty(qty) {
+                                    // 闭包的代码生成上下文里没有外层函数的类型参数 (闭包的
+                                    // 签名不含 GenericArg), 运行期取 $typemeta 会 ICE。
+                                    // 这里提前给出明确诊断。
+                                    if self.lambda_sym is Some(_) &&
+                                        qty.canonical().type_symbol is type *TypeParamSymbol {
+                                        DiagnosticEngine::get().emit_unsupported(fn_call.expr.span(),
+                                            "在闭包里调用类型参数上的关联函数");
+                                        return SType::sty_invalid(fn_call.expr.span());
+                                    }
+                                    receiver_ty = Some(qty);
+                                }
+                            }
                         }
 
                         // trait 方法: 把 trait 的 Self / 泛型参数按接收者绑定
@@ -2048,6 +2077,12 @@ impl TypeCheckContext {
                                 let argc = fn_call.fn_args.len();
                                 if resolve_trait_method_call(callee_fsym, rt, argc, fn_call.expr.span()) is Some(target) {
                                     qpv.symbol = target as *Symbol;
+                                    if !callee_fsym.has_receiver() {
+                                        // bind_trait_method_generics 只对类型参数做 Self 替换,
+                                        // 具体类型这里补上 (无接收者的关联函数靠它得到返回类型)。
+                                        mappings.unify(trsym.self_ty.to_sty(), rt);
+                                        fn_call.member_of = Some(rt);
+                                    }
                                 } else {
                                     return SType::sty_invalid(fn_call.expr.span());
                                 }
@@ -2377,6 +2412,8 @@ impl TypeCheckContext {
     }
 
     fn check_fn_call(&mut self, fn_call: *FnCallValue, return_ty: *SType) {
+        // `Default::default()` 在期望类型已知时先确定 Self
+        prebind_assoc_fn_self(fn_call as *XValue, return_ty);
         // 先判断 callee 的类型, 目前只处理了 fn/enum variant, 后续补上 lambda 以及函数类型的变量 fn Fn FnMut
         let mut params_ty = (type Vec<*SType>)::new();
         let mut formal_return_ty = SType::sty_unit();
@@ -2415,6 +2452,33 @@ impl TypeCheckContext {
                         if qpv.qualified_ty is Some(actual_self_ty) {
                             // impl 处的 type param 和 实际类型参数的映射
                             mappings.unify(isym.target_sty, actual_self_ty);
+                        }
+                    }
+                    // 无接收者的关联函数 `Type::assoc_fn()`: 没有实参可以当接收者,
+                    // 用限定路径里写的类型当 Self (具体类型解析到 impl 方法, 类型参数
+                    // 保持 trait 方法符号走运行期 vtable 派发)。
+                    else if callee_fsym.parent_sym is Some(trsym: *TraitSymbol) &&
+                        !callee_fsym.has_receiver() {
+                        if qpv.qualified_ty is Some(qty) && is_assoc_fn_self_ty(qty) {
+                            let self_ty = qty.canonical();
+                            // 闭包里取不到外层类型参数的 $typemeta, 提前诊断 (见 infer_fn_call)
+                            if self.lambda_sym is Some(_) && self_ty.type_symbol is type *TypeParamSymbol {
+                                DiagnosticEngine::get().emit_unsupported(fn_call.expr.span(),
+                                    "在闭包里调用类型参数上的关联函数");
+                                return;
+                            }
+                            bind_trait_method_generics(&mut mappings, trsym, self_ty, self.fsym, self.lambda_sym);
+                            mappings.unify(trsym.self_ty.to_sty(), self_ty);
+                            if resolve_trait_method_call(callee_fsym, self_ty, fn_call.fn_args.len(), fn_call.expr.span()) is Some(target) {
+                                qpv.symbol = target as *Symbol;
+                                if self_ty.type_symbol is type *TypeParamSymbol {
+                                    qpv.symbol = callee_fsym as *Symbol;
+                                } else {
+                                    fn_call.member_of = Some(self_ty);
+                                }
+                            } else {
+                                return;
+                            }
                         }
                     }
 
@@ -2714,9 +2778,10 @@ impl TypeCheckContext {
         let mut j: UInt = 0;
         while j < args.len() {
             let arg: *RValue = *args.index(j).deref();
-            let arg_ty: *SType = self.infer(arg as *XValue);
-
             let param_ty: *SType = *stys.index(j).deref();
+            // `f(Default::default())`: 从形参类型先确定 Self
+            prebind_assoc_fn_self(arg as *XValue, param_ty);
+            let arg_ty: *SType = self.infer(arg as *XValue);
 
             if arg_ty.is_invalid() {
                 self.check_value(arg, param_ty);
@@ -2949,6 +3014,8 @@ impl TypeCheckContext {
 
                 if struct_sym.find_field(&name) is Some(field) {
                     let field_sty = mappings.subst(field.stype);
+                    // `{ .v = Default::default() }`: 从字段类型先确定 Self
+                    prebind_assoc_fn_self(init as *XValue, field_sty);
                     let init_sty = self.infer(init as *XValue);
                     if init_sty.is_invalid() {
                         self.check_value(init, field_sty);
@@ -2988,6 +3055,7 @@ impl TypeCheckContext {
 
                 if union_sym.find_field(&name) is Some(field) {
                     let field_sty = field.stype;
+                    prebind_assoc_fn_self(init as *XValue, field_sty);
                     let init_sty = self.infer(init as *XValue);
                     if init_sty.is_invalid() {
                         self.check_value(init, field_sty);

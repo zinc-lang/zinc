@@ -1,0 +1,103 @@
+// 无接收者的关联函数 `Type::assoc_fn(...)` / `T::assoc_fn(...)`。
+//
+// 具体类型上的限定路径 (`Int::default()`) 在编译期直接解析到 impl 方法;
+// 类型参数上的 (`T::default()`, `T: Default`) 走运行期 vtable 派发, 复用
+// TypeMeta -> zinc_core_find_impl -> func_table 这条路径 (和 `T: Clone` 的
+// `.clone()` 一样)。trait 声明里返回 `Self` 的方法在 vtable 里已经由
+// cg_vtable_thunk 适配过 ABI (见 generic_clone_dispatch.zn)。
+//
+// 覆盖: where 约束与内联 `<T: Default>`; 8 字节具体类型 (vtable 里是适配 thunk)、
+// 用户小结构体、24 字节大类型 (trait 与 impl 都按 sret, vtable 直连 impl);
+// 带参数的关联函数; 具体类型上的限定路径; `Default::default()` 的 Self 由上下文确定。
+use std::primitives::default::Default;
+use std::{assert, assert_eq};
+
+struct Small { x: Int }
+impl Default for Small {
+    fn default() -> Self { return { .x = 7_i }: Small; }
+}
+
+// 24 字节: trait 声明与 impl 都按 sret 返回, ABI 一致
+struct Big { a: Int, b: Int, c: Int }
+impl Default for Big {
+    fn default() -> Self { return { .a = 11_i, .b = 22_i, .c = 33_i }: Big; }
+}
+
+// 用户自定义 trait: 无接收者且带参数的关联函数
+trait Make { fn make(seed: Int) -> Self; }
+
+struct MadeA { v: Int }
+impl Make for MadeA { fn make(seed: Int) -> Self { return { .v = seed + 1 }: MadeA; } }
+
+struct MadeB { x: Int, y: Int, z: Int }
+impl Make for MadeB { fn make(seed: Int) -> Self { return { .x = seed, .y = seed + 1, .z = seed + 2 }: MadeB; } }
+
+fn make_one<T>() -> T where T: Default { return T::default(); }
+fn make_inline<T: Default>() -> T { return T::default(); }
+fn build<T>(seed: Int) -> T where T: Make { return T::make(seed); }
+// 全限定路径 `(type X as Trait)::assoc_fn()`
+fn make_qualified<T>() -> T where T: Default { return (type T as Default)::default(); }
+
+fn main() {
+    // 8 字节具体类型: 调用点按 trait 声明的 sret 调用, vtable 里是适配 thunk
+    let i: Int = make_one();
+    assert_eq(i, 0_i);
+    let i2: Int = make_inline();
+    assert_eq(i2, 0_i);
+
+    // 用户小结构体 (8 字节)
+    let s: Small = make_one();
+    assert_eq(s.x, 7_i);
+
+    // 24 字节大类型: 本来就按 sret 返回, 不得回归
+    let b: Big = make_one();
+    assert_eq(b.a, 11_i);
+    assert_eq(b.b, 22_i);
+    assert_eq(b.c, 33_i);
+
+    // 同一个泛型函数被多个具体类型实例化, 每次查各自的 vtable
+    let i3: Int = make_one();
+    assert_eq(i3, 0_i);
+    let s3: Small = make_one();
+    assert_eq(s3.x, 7_i);
+
+    // 带参数的关联函数: 运行期派发 + sret
+    let ma: MadeA = build(10_i);
+    assert_eq(ma.v, 11_i);
+    let mb: MadeB = build(20_i);
+    assert_eq(mb.x, 20_i);
+    assert_eq(mb.y, 21_i);
+    assert_eq(mb.z, 22_i);
+
+    // 具体类型上的限定路径: 编译期直接解析到 impl 方法 (不经过 vtable), 不得回归
+    let ci = Int::default();
+    assert_eq(ci, 0_i);
+    let cs = Small::default();
+    assert_eq(cs.x, 7_i);
+    let ca = MadeA::make(100_i);
+    assert_eq(ca.v, 101_i);
+
+    // `Default::default()`: 只写了 trait 名字, Self 由上下文类型确定
+    let an: Int = Default::default();
+    assert_eq(an, 0_i);
+    let ab: Bool = Default::default();
+    assert(!ab);
+
+    // 全限定路径 `(type X as Trait)::assoc_fn()`: 具体类型编译期解析, 类型参数运行期派发
+    let qi = (type Int as Default)::default();
+    assert_eq(qi, 0_i);
+    let qs = (type Small as Default)::default();
+    assert_eq(qs.x, 7_i);
+    let qq: Int = make_qualified();
+    assert_eq(qq, 0_i);
+    let qb: Big = make_qualified();
+    assert_eq(qb.a, 11_i);
+    assert_eq(qb.b, 22_i);
+    assert_eq(qb.c, 33_i);
+
+    // 结构体字段初始化: Self 由字段类型确定
+    let fld = { .x = Default::default() }: Small;
+    assert_eq(fld.x, 0_i);
+
+    println("assoc fn dispatch ok");
+}

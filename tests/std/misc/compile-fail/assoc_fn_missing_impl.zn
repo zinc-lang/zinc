@@ -1,0 +1,12 @@
+// 泛型函数上写了约束, 但调用点传入的具体类型没有实现该 trait 时必须是编译错误
+// (checker 的 check_requires_constraint), 不能生成一个运行期查不到 impl 的调用。
+trait Make { fn make() -> Self; }
+
+struct NoImpl { v: Int }
+
+fn build<T>() -> T where T: Make { return T::make(); }
+
+fn main() {
+    let x: NoImpl = build();
+    println(x.v);
+}

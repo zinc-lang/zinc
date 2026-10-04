@@ -704,8 +704,18 @@ impl ExprTransformer {
                         return QualifiedPathValue::new(qpe, move qualified_ty, move qualified_trait, move fsym as *Symbol);
                     } else {
                         let qpv = QualifiedPathValue::create(e as *ExpressionNode, move fsym as *Symbol);
-                        if e is sne: *SegmentedNameExpr && sne.name.starts_with_self_upper() {
-                            qpv.qualified_ty = self.get_ctx().self_sty;
+                        if e is sne: *SegmentedNameExpr {
+                            if sne.name.starts_with_self_upper() {
+                                qpv.qualified_ty = self.get_ctx().self_sty;
+                            } else if sne.name.names.len() > 1 {
+                                // `Type::assoc_fn` / `T::assoc_fn`: 记下限定路径前缀的类型。
+                                // 无接收者的关联函数没有实参可以当接收者, checker 需要靠它
+                                // 把 trait 签名里的 Self 绑定到具体类型或类型参数。
+                                let qty = self.resolver.resolve_path_qualifier_type(self.get_ctx(), sne.name);
+                                if qty is Some(t) {
+                                    qpv.qualified_ty = Some(move t);
+                                }
+                            }
                         }
                         return qpv;
                     }
