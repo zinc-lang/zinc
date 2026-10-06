@@ -1,0 +1,53 @@
+// 一般化验证: "返回类型里的生命周期来自接收者类型自身" 不止 std 的 Deref 一个形态。
+// 这里用一个自定义 trait + impl<'a> 复刻同一种声明形态:
+//     trait ViewOf { type V<'t>; fn view_of<'s>(&'s self) -> Self::V<'s>; }
+//     impl<'a> ViewOf for Wrap<'a> { type V<'t> = Str<'t>; fn view_of(&self) -> Str<'a> }
+// 接收者形参在 HIR 里记成 `&Self`, 只有透过 Self 才能看到 "返回类型 Str<'a> 的 'a
+// 出现在接收者类型 Wrap<'a> 上", 从而把接收者临时量记进返回值的 origin。
+//
+// 三层链: String 临时量 A -> StringSlice 临时量 B -> Str -> Wrap 临时量 C -> Str
+// A/B/C 都要被延长 (传递闭包), 否则 C 之后 A 仍然会先析构。
+use std::assert;
+use std::primitives::string::String;
+use std::primitives::str::Str;
+
+trait ViewOf {
+    type V<'t>;
+
+    fn view_of<'s>(&'s self) -> Self::V<'s>;
+}
+
+struct Wrap<'a> {
+    inner: Str<'a>,
+    tag: String,
+}
+
+impl<'a> ViewOf for Wrap<'a> {
+    type V<'t> = Str<'t>;
+
+    fn view_of(&self) -> Str<'a> {
+        return self.inner;
+    }
+}
+
+fn mkstr() -> String {
+    return String::from_str("hello-world");
+}
+
+fn mkwrap<'s>(s: Str<'s>) -> Wrap<'s> {
+    return { .inner = s, .tag = String::from_str("tag") }: Wrap;
+}
+
+fn main() {
+    let v = mkwrap(mkstr().as_str().deref()).view_of();
+    assert(v.len() == 11_u);
+    assert(v.starts_with("hello"));
+    assert(v.ends_with("world"));
+
+    // 语句结束后再用一次 (确认缓冲区内容没被 String::new() 之类的复用清零)
+    let n = v.sub_str(6_u);
+    assert(n.starts_with("world"));
+    assert(n.len() == 5_u);
+
+    println("ok");
+}

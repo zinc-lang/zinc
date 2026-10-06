@@ -1,0 +1,48 @@
+// "方法返回借用接收者自身存储" 的视图链必须把整条临时量链一起延长到语句之外。
+//   mkstr()      -> String 临时量 A (拥有堆缓冲)
+//   .as_str()    -> StringSlice 临时量 B (借用 A; B 的类型自带生命周期 'a)
+//   .deref()     -> Str (借用 B, 即最终借用 A 的缓冲; 返回类型 Str<'a> 里的 'a
+//                   来自接收者类型 StringSlice<'a> 自身, 而不是 &self 的借用生命周期)
+// 以前 origin 只把 B 记进返回值的来源 (只延长 B), A 仍在语句末尾被析构,
+// Str 于是悬垂; 现在 A/B 都出现在 origin 链上, 都会被标成 extended ([skipped])。
+use std::assert;
+use std::primitives::string::String;
+use std::primitives::str::Str;
+
+fn mkstr() -> String {
+    return String::from_str("hello-world");
+}
+
+fn str_len(s: Str) -> UInt {
+    return s.len();
+}
+
+fn main() {
+    // 语句结束后继续使用视图
+    let t = mkstr().as_str().deref();
+    assert(t.len() == 11_u);
+    assert(t.starts_with("hello"));
+    assert(t.ends_with("world"));
+
+    // 同一个形态的另一个方法: impl<'a> Str<'a> { fn sub_str(&self, ..) -> Str<'a> }
+    // (返回类型里的 'a 同样来自接收者类型 Str<'a>)
+    let sub = t.sub_str(6_u);
+    assert(sub.len() == 5_u);
+    assert(sub.starts_with("world"));
+
+    // 视图作为实参按值传递
+    let v = mkstr().as_str().deref();
+    assert(str_len(v) == 11_u);
+
+    // 三层: 最里层的方法返回视图, 外层方法继续返回借用它的视图
+    let w = mkstr().as_str().deref().sub_str(0_u);
+    assert(w.len() == 11_u);
+    assert(w.starts_with("hello"));
+
+    // 先有具名绑定, 再取视图 (底层拥有型是具名变量而非临时量)
+    let s = mkstr();
+    let x = s.as_str().deref();
+    assert(x.starts_with("hello"));
+
+    println("ok");
+}

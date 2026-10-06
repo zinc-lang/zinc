@@ -3601,7 +3601,7 @@ impl CodeGenerator {
         if self.cgtype_of(sty) is Some(ty) {
             return self.llds.create_load(ty, v);
         } else {
-            panic "type must be accessed by pointer";
+            return v;
         }
     }
 

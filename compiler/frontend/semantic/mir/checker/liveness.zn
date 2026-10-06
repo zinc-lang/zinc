@@ -23,9 +23,107 @@ impl LivenessChecker {
         return {
             .cfg = move cfg,
             .alive_locals_at_point = (type HashMap<LivePoint, UIntSet>)::new(),
+            .may_alive_locals_at_point = (type HashMap<LivePoint, UIntSet>)::new(),
             .local_liveness = (type HashMap<UInt, UIntSet>)::new(),
             .origin_in_states = (type HashMap<UInt, HashMap<UInt, OriginSet>>)::new(),
         }: LivenessChecker;
+    }
+
+    // "可能还活着" (may-alive) 的数据流: 汇合点取**并集**, 迭代到不动点。
+    // 与 alive_locals_at_point ("确定存活", 交集) 相对。
+    // origin 是 may 分析, 判断"引用是不是悬垂"时只有在一个来源于所有路径上都不再
+    // 存活时才能报错: 例如一个临时量只在 if 的 then 分支上创建, 汇合点的
+    // "确定存活"集合 (交集) 里没有它, 但它的析构点其实还在使用点之后。
+    fn determine_may_liveness(&mut self) {
+        let mut in_states = (type HashMap<UInt, UIntSet>)::new();
+        for bb in self.cfg.basic_blocks {
+            let mut s = UIntSet::new();
+            if bb.index == 0 {
+                for param in self.cfg.params() {
+                    s.insert(param as *raw VarSymbol as UInt);
+                }
+                if self.cfg.sym is lsym: *LambdaSymbol {
+                    for c in lsym.captures {
+                        s.insert(c.outer_var as *raw VarSymbol as UInt);
+                        s.insert(c.local_var as *raw VarSymbol as UInt);
+                    }
+                }
+            }
+            in_states.insert(bb as *raw BasicBlock as UInt, move s);
+        }
+
+        let first = *self.cfg.basic_blocks.index(0).deref();
+        let mut work = (type Vec<*BasicBlock>)::new();
+        work.push(first);
+        while !work.is_empty() {
+            let bb = work.pop().get_or_panic();
+            let bb_key = bb as *raw BasicBlock as UInt;
+            let entry = in_states.at(&bb_key).get_or_panic();
+            let out_state = self.may_alive_out(bb, &entry);
+            if bb.terminator is Some(term) {
+                for succ in term.successors() {
+                    let succ_key = succ as *raw BasicBlock as UInt;
+                    if in_states.get_mut(&succ_key) is Some(mut succ_in) {
+                        if !succ_in.deref().is_superset_of(&out_state) {
+                            succ_in.deref_mut().union_set(&out_state);
+                            work.push(succ);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 用收敛后的入口状态在块内重放, 记录每个程序点上的集合
+        for bb in self.cfg.basic_blocks {
+            let bb_key = bb as *raw BasicBlock as UInt;
+            let mut cur = UIntSet::new();
+            cur.union_set(&in_states.at(&bb_key).get_or_panic());
+            let mut step_idx: UInt = 0;
+            for step in bb.steps {
+                self.may_alive_locals_at_point.insert(LivePoint::new(bb.index, step_idx), cur);
+                self.may_apply(step.value, &mut cur);
+                step_idx += 1;
+            }
+            self.may_alive_locals_at_point.insert(LivePoint::new(bb.index, step_idx), move cur);
+        }
+    }
+
+    // 一条指令对 may-alive 集合的影响 (与 visit_bb 里对 alived 的更新一致)
+    fn may_apply(&self, value: *XValue, set: &mut UIntSet) {
+        if value is w: *WriteValue {
+            if extract_local(w.dst as *XValue) is Some(vs) {
+                set.insert(vs as *raw VarSymbol as UInt);
+            }
+        } else if value is d: *DtorValue {
+            // 被取消的"语句末析构"完全失效, 变量继续存活
+            if !d.skipped {
+                if extract_local(d.src as *XValue) is Some(vs) {
+                    set.remove(vs as *raw VarSymbol as UInt);
+                }
+            }
+        } else if value is m: *MovedValue {
+            if extract_local(m.src as *XValue) is Some(vs) {
+                set.remove(vs as *raw VarSymbol as UInt);
+            }
+        }
+    }
+
+    fn may_alive_out(&self, bb: *BasicBlock, in_state: &UIntSet) -> UIntSet {
+        let mut state = UIntSet::new();
+        state.union_set(in_state);
+        for step in bb.steps {
+            self.may_apply(step.value, &mut state);
+        }
+        return state;
+    }
+
+    // 查询某个程序点上"可能存活"的变量集合
+    fn may_alive_at(&self, bb_idx: UInt, step_idx: UInt) -> UIntSet {
+        let p = LivePoint::new(bb_idx, step_idx);
+        if self.may_alive_locals_at_point.at(&p) is Some(s) {
+            return s;
+        }
+        return UIntSet::new();
     }
 
     // 注意: 需要第二轮遍历, 确保循环的时候 use after move 可以报错

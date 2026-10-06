@@ -261,9 +261,11 @@ impl CfgBuilder {
                 let bb = self.new_bb();
                 if br_ret.value is Some(v) {
                     let (rv, rv_end) = self.trans_rvalue(v, bb);
+                    let direct_rv = LoadValue::create(rv);
+                    rv_end.add_step(direct_rv as *XValue);
                     rv_end.terminator = Some(
                         box {
-                            .ret_val = Some(rv)
+                            .ret_val = Some(direct_rv as *RValue)
                         }: BrRet as *Terminator
                     );
 

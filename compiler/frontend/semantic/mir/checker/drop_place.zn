@@ -1,6 +1,7 @@
 use super::*;
 use super::liveness::*;
 use super::loan::*;
+use super::uint_set::*;
 
 impl LivenessChecker {
     fn place_temp_drops(&mut self) {
@@ -23,14 +24,41 @@ impl LivenessChecker {
                             // 写进了一个生命周期超过当前语句的位置:
                             // 源值可能指向的临时变量都要延长
                             let origins = self.origin_of(w.src as *XValue, &state);
-                            for o in origins.locals {
-                                if self.cfg.temp_map.at(&o) is Some(t) {
-                                    t.extended = true;
-                                }
-                            }
+                            self.extend_origin_chain(&origins, &state);
                         }
                     }
                     self.apply_write_origin(w, &mut state);
+                }
+            }
+        }
+    }
+
+    // 把 origin 集合沿"来源本身也是视图"的关系做传递闭包, 并延长其中的临时量。
+    // 例: `mkstr().as_str().deref()` 里临时量 TempSlice 的 origin 是 TempString,
+    // 返回的 Str 借用 TempSlice 的存储, 而 TempSlice 的内容又指向 TempString 的
+    // 堆缓冲 —— 两者都要活到语句之外, 只延长 TempSlice 会留下悬垂引用。
+    // visited 用来兜住自引用/环。
+    fn extend_origin_chain(&self, base: &OriginSet, state: &HashMap<UInt, OriginSet>) {
+        let mut visited = UIntSet::new();
+        let mut work = (type Vec<UInt>)::new();
+        for o in base.locals {
+            work.push(o);
+        }
+        while !work.is_empty() {
+            let cur: UInt = work.pop().get_or_panic();
+            if visited.contains(cur) {
+                continue;
+            }
+            visited.insert(cur);
+            if self.cfg.temp_map.at(&cur) is Some(t) {
+                t.extended = true;
+            }
+            // 这个来源自己也是视图时, 它借用的存储也必须一起延长
+            if state.at(&cur) is Some(sub) {
+                for o2 in sub.locals {
+                    if !visited.contains(o2) {
+                        work.push(o2);
+                    }
                 }
             }
         }

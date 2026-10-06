@@ -65,8 +65,13 @@ impl LivenessChecker {
         let d = vs as *raw VarSymbol as UInt;
         if state.at(&d) is Some(os) {
             let alive = self.alive_at(bb_idx, step_idx);
+            // origin 是 may 分析 (汇合点取并集), 所以只有当一个来源在**所有**路径上
+            // 都已经不再存活时, 才能断定这里悬垂。典型的漏报点: 一个临时量只在
+            // `if` 的某个分支上被创建, "确定存活" (交集) 里没有它, 但它其实还活着
+            // (它的析构点在更后面)。这类临时量由 mark_extended_temps 负责延长。
+            let may_alive = self.may_alive_at(bb_idx, step_idx);
             for o in os.locals {
-                if !alive.contains(o) {
+                if !alive.contains(o) && !may_alive.contains(o) {
                     if !reported.contains(d) {
                         reported.insert(d);
                         let mut span = self.cfg.name_span();
@@ -466,13 +471,32 @@ impl LivenessChecker {
         }
         let mut idx: UInt = 0;
         for p in fsym.params {
-            let mut param_lts = UIntSet::new();
-            collect_lifetimes(p.stype, &mut param_lts);
-            param_lts.intersect_set(&ret_lts);
-            if param_lts.len() > 0 {
-                if idx < actual_args.len() {
-                    let arg: *RValue = *actual_args.index(idx).deref();
+            // 形参类型里出现在**顶层**的生命周期, 是借用形参 `&'x T` 的 `'x` 本身。
+            // 返回类型带着它, 说明返回值借用的是"形参指向的那块存储" —— 如果那块
+            // 存储是一个临时量 (例如 `mkstr().as_str()` 里的 String), 它必须被延长,
+            // 所以这里取 call_arg_origin (对临时量取它自己的栈槽)。
+            let mut top_lts = UIntSet::new();
+            top_level_lifetimes(p.stype, &mut top_lts);
+            top_lts.intersect_set(&ret_lts);
+
+            // 出现在形参**内部**的生命周期 (T 自身的泛型实参, 以及透过 Self / 关联类型
+            // 看到的接收者类型, 例如 `impl<'a> Deref for StringSlice<'a>` 的
+            // `fn deref(&self) -> Str<'a>`): 返回值借用的是形参内容所指向的存储,
+            // 而不是形参的栈槽 —— 所以取形参内容的 origin, 不要把形参临时量本身
+            // 当成被借用的对象 (否则 `s = x.as_str().deref()` 这种在内层块里取的
+            // 视图, 会因为 StringSlice 临时量在内层块结束时析构而被误判成悬垂)。
+            let mut inner_lts = UIntSet::new();
+            inner_lifetimes(p.stype, &mut inner_lts);
+            inner_lts.intersect_set(&ret_lts);
+
+            if idx < actual_args.len() {
+                let arg: *RValue = *actual_args.index(idx).deref();
+                if top_lts.len() > 0 {
                     let o = self.call_arg_origin(arg, state);
+                    res.union_with(&o);
+                }
+                if inner_lts.len() > 0 {
+                    let o = self.call_arg_contents_origin(arg, state);
                     res.union_with(&o);
                 }
             }
@@ -490,13 +514,27 @@ impl LivenessChecker {
             if type_contains_pointer(addr.operand.get_stype()) {
                 // 如果被借用的是一个临时变量, 要保证活着的就是它自己:
                 // 它内部包裹的数据 (堆对象等) 也归它所有, 例如 make().method() 返回的借用。
+                // 但只在这个位置**真的**落在临时量的栈槽上时成立: 如果到达这个字段/元素
+                // 必须穿过一个指针 (例如 `tmp.name`, tmp 是 `*LifetimeSymbol` 的拷贝),
+                // 那么被借用的存储在那个指针指向的对象里, 不属于临时量。
                 if root_local(addr.operand as *XValue) is Some(vs) {
-                    if self.cfg.temp_map.at(&(vs as *raw VarSymbol as UInt)) is Some(_) {
+                    if self.cfg.temp_map.at(&(vs as *raw VarSymbol as UInt)) is Some(_) &&
+                        !through_pointer(addr.operand as *XValue) {
                         return OriginSet::from_local(vs);
                     }
                 }
                 return self.origin_of(addr.operand as *XValue, state);
             }
+        }
+        return self.origin_of(arg as *XValue, state);
+    }
+
+    // 实参"内容所指向"的存储的来源: 用于生命周期来自形参类型内部的情形
+    // (`&self` 里 Self 类型自身的生命周期)。`&x` 的内容来源就是 x 的来源,
+    // 而不是 x 的栈槽 —— 所以这里不看临时量, 一律取 operand 的 origin。
+    fn call_arg_contents_origin(&self, arg: *RValue, state: &HashMap<UInt, OriginSet>) -> OriginSet {
+        if arg is addr: *AddressofValue {
+            return self.origin_of(addr.operand as *XValue, state);
         }
         return self.origin_of(arg as *XValue, state);
     }
@@ -792,13 +830,51 @@ fn collect_all_vars(cfg: *CFG) -> HashMap<UInt, *VarSymbol> {
 
 // 递归收集一个类型里出现的所有生命周期形参
 fn collect_lifetimes(sty: *SType, set: &mut UIntSet) {
+    collect_lifetimes_at(sty, set, 0_u);
+}
+
+// 只收集类型**顶层**的生命周期: 对 `&'x T` 就是借用自身的 `'x`
+fn top_level_lifetimes(sty: *SType, set: &mut UIntSet) {
     for l in sty.args.lt_args {
         if l.resolved is Some(sym) {
             set.insert(sym as *raw LifetimeSymbol as UInt);
         }
     }
+}
+
+// 收集类型**内部** (泛型实参 / 透过 Self 看到的接收者类型) 的生命周期, 不含顶层
+fn inner_lifetimes(sty: *SType, set: &mut UIntSet) {
+    let ts = sty.type_symbol;
+    if ts is assoc: *AssociatedTypeSymbol && assoc.is_self_ty() {
+        collect_lifetimes(assoc.target_sty, set);
+    }
     for a in sty.args.ty_args {
         collect_lifetimes(a, set);
+    }
+}
+
+// depth 只用来兜底: 类型可能是递归的 (impl 的 Self 目标类型里理论上还能再出现 Self)
+fn collect_lifetimes_at(sty: *SType, set: &mut UIntSet, depth: UInt) {
+    if depth > 32_u {
+        return;
+    }
+    for l in sty.args.lt_args {
+        if l.resolved is Some(sym) {
+            set.insert(sym as *raw LifetimeSymbol as UInt);
+        }
+    }
+    // `Self` (impl / trait 里的关联类型) 本身不带生命周期实参, 但它的目标类型就是
+    // impl 的接收者类型。接收者形参的类型被记成 `&Self`, 所以像
+    //   impl<'a> Deref for StringSlice<'a> { fn deref(&self) -> Str<'a> }
+    // 这种"返回类型里的 'a 来自接收者类型自身"的方法, 只有透过 Self 才能把
+    // 返回类型和接收者形参用 'a 关联起来 (trait 上下文里的 Self 目标是 Invalid,
+    // 收集不到东西, 不会误关联)。
+    let ts = sty.type_symbol;
+    if ts is assoc: *AssociatedTypeSymbol && assoc.is_self_ty() {
+        collect_lifetimes_at(assoc.target_sty, set, depth + 1_u);
+    }
+    for a in sty.args.ty_args {
+        collect_lifetimes_at(a, set, depth + 1_u);
     }
 }
 

@@ -173,13 +173,93 @@ impl CfgBuilder {
         self.temp_map.insert(var_sym as *raw VarSymbol as UInt, move temp);
 
         let local = LocalVar::create(v.expr_node().span(), var_sym);
-        if has_copy_fn(sty) {
+        if has_copy_fn(sty) && !self.rvalue_owns_value(v) {
             let copy = CopyValue::create(v.expr_node(), v);
             bb.add_step(move copy as *XValue);
         }
 
         bb.add_step(WriteValue::create(v, local as *LValue));
         return local;
+    }
+
+    // 判据: 源右值是否"自己已经持有一份强引用"。
+    fn rvalue_owns_value(&self, v: *RValue) -> Bool {
+        match v {
+            // 拥有型: 结果自带一次强引用
+            type *FnCallValue => return true;
+            type *MethodCallValue => return true;
+            type *AggregateValue => return true;
+            type *TupleValue => return true;
+            type *ArrayLiteralValue => return true;
+            type *RepeatValue => return true;
+            type *BinaryExprValue => return true;
+            type *UnaryExprValue => return true;
+            type *MovedValue => return true;
+
+            // 视图型: 只读已有存储, 读本身不 retain
+            type *ReadValue => return false;
+            type *FieldRValue => return false;
+            type *IndexRValue => return false;
+            type *TupleAccessRValue => return false;
+            type *DerefRValue => return false;
+            type *VariantPayloadValue => return false;
+            type *LiteralValue => return false;
+            type *AddressofValue => return false;
+            type *ReBorrowValue => return false;
+
+            // 透明: 所有权在操作数/内层上
+            ctx_rv: *ContextValue => return self.rvalue_owns_value(ctx_rv.inner);
+            ty_asc_rv: *TypeAscriptionValue => return self.rvalue_owns_value(ty_asc_rv.inner);
+            alloca_rv: *AllocaValue => return self.rvalue_owns_value(alloca_rv.src);
+            load_rv: *LoadValue => return self.rvalue_owns_value(load_rv.src);
+
+            cast_rv: *CastValue => {
+                match cast_rv.resolved_kind {
+                    ResolvedCastKind::Err => return true;
+                    ResolvedCastKind::GenericFunctionToFnLower => return true;
+                    ResolvedCastKind::CaptureLambdaToFnLower => return true;
+                    ResolvedCastKind::MutCaptureLambdaToFn => return true;
+                    ResolvedCastKind::OwnedFnUpperErasesLifetime => return true;
+                    ResolvedCastKind::OwnedTraitObjectErasesLifetime => return true;
+
+                    ResolvedCastKind::SameType => return self.rvalue_owns_value(cast_rv.operand);
+                    ResolvedCastKind::BoolToInt => return false;
+                    ResolvedCastKind::IntToInt => return false;
+                    ResolvedCastKind::IntToFloat => return false;
+                    ResolvedCastKind::EnumToInt => return false;
+                    ResolvedCastKind::FloatExt => return false;
+                    ResolvedCastKind::FloatTrunc => return false;
+                    ResolvedCastKind::FloatToInt => return false;
+                    ResolvedCastKind::CharToUInt32 => return false;
+                    ResolvedCastKind::UInt32ToChar => return false;
+                    ResolvedCastKind::ArrayRefToSlice => return false;
+                    ResolvedCastKind::FunctionToFnLower => return false;
+                    ResolvedCastKind::FunctionToFnUpperBorrow => return false;
+                    ResolvedCastKind::FnLowerToFnUpperBorrow => return false;
+                    ResolvedCastKind::LambdaToFnLower => return false;
+                    ResolvedCastKind::LambdaToFnUpperPtr => return false;
+                    ResolvedCastKind::MutBorrowToImmut => return false;
+                    ResolvedCastKind::PointerSafeToUnsafe => return false;
+
+                    ResolvedCastKind::ArcToWeak => return true;
+                    ResolvedCastKind::TypedPtrToUnitPtr => return true;
+                    ResolvedCastKind::PointerUnsafeToSafe => return true;
+                    ResolvedCastKind::UnsafePointerToUnsafePointer => return false;
+                    ResolvedCastKind::UnsafePointerToUInt => return false;
+                    ResolvedCastKind::UIntToUnsafePointer => return false;
+                    ResolvedCastKind::ThinPtrUpToFatPtr => return true;
+                    ResolvedCastKind::FatPtrDownToThinPtr => return true;
+                    ResolvedCastKind::FatPtrToFatPtr => return true;
+                    ResolvedCastKind::DerefCast(_) => return true;
+                    ResolvedCastKind::DerefMutCast(_) => return true;
+                    ResolvedCastKind::LifetimeCast => return self.rvalue_owns_value(cast_rv.operand);
+                    _ => return self.rvalue_owns_value(cast_rv.operand);
+                }
+            }
+            // 保守回退 (PhiValue / SelectValue / 未列出): 当作需要 copy
+            _ => return false;
+        }
+        return false;
     }
 
     fn nearest_block(&self) -> *BlockSentence {
@@ -384,10 +464,6 @@ impl CfgBuilder {
     }
 
 }
-
-
-
-
 
 impl BasicBlockChunk {
 
