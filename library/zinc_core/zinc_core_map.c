@@ -28,7 +28,7 @@ _Static_assert(offsetof(Table, kv) % _Alignof(KeyValue) == 0, "KeyValue 必须�
 // cg_meta.zn 里把 HashMap 的初始值硬编码成 56 字节的全零数组 (sizeof(HashMap)),
 // 结构大小变化时必须同步修改那边。
 #if defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 8
-_Static_assert(sizeof(HashMap) == 56, "HashMap 大小改变后需要同步修改 cg_meta.zn 中的 56");
+_Static_assert(sizeof(HashMap) == 56, "HashMap 大小改变后需要同步修改 cg_meta.zn 中的 56, 以及 std::intrinsic::RtTypeMeta 类型定义");
 #endif
 
 // 保护 map 的惰性初始化。不能用 map->mutex: 它本身可能还没初始化,
