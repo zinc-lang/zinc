@@ -116,7 +116,13 @@ impl CodeGenerator {
                     return v;
                 }
 
-                let mut var_name = local_var.sym_var.short_name().as_str().deref();
+                // 所有权推理: short_name() 返回拥有型 String (自带一次 +1)。原来直接在
+                // 表达式里取视图 `...short_name().as_str().deref()`, 那个临时量的生命周期
+                // 只到本语句为止; 先绑成具名局部量, 让这次 +1 有确定的归宿 (活到本块结束),
+                // 视图 Str 借用该局部量而不是临时量。这一族 (成片的 X.method().as_str().deref())
+                // 是"视图站点"修法的样板。
+                let var_name_storage = local_var.sym_var.short_name();
+                let mut var_name = var_name_storage.as_str().deref();
                 if var_name.is_empty() {
                     var_name = "<empty>";
                 }
@@ -125,7 +131,8 @@ impl CodeGenerator {
                 panic msg.as_str().deref();
             }
             static_var: *StaticVar => {
-                let name = static_var.sym_var.mangle_name().as_str().deref();
+                let static_name_storage = static_var.sym_var.mangle_name();
+                let name = static_name_storage.as_str().deref();
                 let ty = self.cgtype_of(static_var.sym_var.stype).get_or_panic();
                 return self.llds.get_or_insert_global(name, ty).as_value();
             }
@@ -362,7 +369,8 @@ impl CodeGenerator {
                     let tag = self.llds.get_const_int64(evsym.tag_num() as UInt64).as_value();
                     if self.cgtype_of(qp_rv.sty) is Some(cgty) {
                         let agg = self.llds.get_null_value_of(cgty).as_value();
-                        if evsym.mangle_name().as_str().deref().eq(&"::std::primitives::option::Option::None/0") {
+                        let evsym_name_storage = evsym.mangle_name();
+                        if evsym_name_storage.as_str().deref().eq(&"::std::primitives::option::Option::None/0") {
                             return agg;
                         } else {
                             // 保存 tag
@@ -379,7 +387,8 @@ impl CodeGenerator {
                 }
                 else if qp_rv.symbol is vsym: *VarSymbol {
                     if vsym.is_static() || vsym.is_const() {
-                        let name = vsym.mangle_name().as_str().deref();
+                        let vsym_name_storage = vsym.mangle_name();
+                        let name = vsym_name_storage.as_str().deref();
                         let cgty = self.cgtype_of(vsym.stype).get_or_panic();
                         return self.llds.get_or_insert_global(name, cgty).as_value();
                     }
@@ -452,7 +461,8 @@ impl CodeGenerator {
                 }
 
                 // Option 类型特殊处理
-                if enum_sty.type_symbol.export_key().as_str().deref().eq(&"::std::primitives::option::Option") {
+                let enum_sty_key_storage = enum_sty.type_symbol.export_key();
+                if enum_sty_key_storage.as_str().deref().eq(&"::std::primitives::option::Option") {
                     let mut payload = self.extract_option_payload(enum_value, enum_sty, ctx);
                     return payload;
                 }
@@ -496,7 +506,8 @@ impl CodeGenerator {
             }
             read_rv: *ReadValue => {
                 if read_rv.sym_var.is_static() || read_rv.sym_var.is_const() {
-                    let name = read_rv.sym_var.mangle_name().as_str().deref();
+                    let read_name_storage = read_rv.sym_var.mangle_name();
+                    let name = read_name_storage.as_str().deref();
                     let cgty = self.cgtype_of(read_rv.sym_var.stype).get_or_panic();
                     return self.llds.get_or_insert_global(name, cgty).as_value();
                 }
@@ -793,7 +804,8 @@ impl CodeGenerator {
             }
             enum_cv: *EnumCValue => {
                 let cgtype = self.cgtype_of(sty).get_or_panic();
-                if enum_cv.enum_variant.mangle_name().as_str().deref().eq(&"::std::primitives::option::Option::None/0") {
+                let enum_variant_name_storage = enum_cv.enum_variant.mangle_name();
+                if enum_variant_name_storage.as_str().deref().eq(&"::std::primitives::option::Option::None/0") {
                     return self.llds.get_null_value_of(cgtype);
                 }
                 return self.llds.get_const_int64(enum_cv.enum_variant.tag_num() as UInt64);
@@ -1563,7 +1575,8 @@ impl CodeGenerator {
                         }
                     }
                     let enum_sty = op_sty.strip_pointer().canonical();
-                    if enum_sty.type_symbol.export_key().as_str().deref().eq(&"::std::primitives::option::Option") {
+                    let enum_sty_key_storage2 = enum_sty.type_symbol.export_key();
+                    if enum_sty_key_storage2.as_str().deref().eq(&"::std::primitives::option::Option") {
                         let option_arg = enum_sty.args.ty_arg(0);
                         if self.can_option_niche_opt(option_arg) {
                             if option_arg.is_fat_pointer() {
@@ -1714,7 +1727,8 @@ impl CodeGenerator {
                 }
 
                 let enum_sty = op_sty.strip_pointer().canonical();
-                if ev_pat.enum_ctor_sym.export_key().as_str().deref().eq(&"::std::primitives::option::Option::None/0") {
+                let ev_pat_key_storage = ev_pat.enum_ctor_sym.export_key();
+                if ev_pat_key_storage.as_str().deref().eq(&"::std::primitives::option::Option::None/0") {
                     let option_arg = enum_sty.args.ty_arg(0);
                     if self.can_option_niche_opt(option_arg) {
                         if option_arg.is_fat_pointer() {

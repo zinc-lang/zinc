@@ -1,0 +1,155 @@
+// "拥有型右值处处物化" 下**元组字面量**的消费点覆盖 (Phase D)。
+//
+// 元组字面量是拥有型右值, "拥有型 + 有析构"即物化 (分档位掩码已删除)。这个用例用
+// 析构计数把元组在各类消费点上的释放责任钉住:
+//   - 表达式语句丢弃       -> 物化成隐式局部量, 语句末析构两个元素; 循环里每轮一次;
+//   - 具名绑定             -> 块退出析构;
+//   - 按值实参             -> 形参接手, callee 退出析构;
+//   - 返回元组字面量       -> 调用点接手, callee 侧不析构;
+//   - 具名局部量 move-out  -> callee 侧不析构;
+//   - 解构绑定 `let (x, y) = f()` -> 源元组 + 两个绑定各持一份 (当前会复制字段),
+//                            合计 2 次/元素; 这里只钉住"不泄漏 (>=1) 且不多释放 (>2 即为双释放)";
+//   - place: 元组写进结构体字段 -> 结构体析构时元素各析构一次;
+//   - box 消费路径         -> box 出来的拥有型指针在作用域末释放一次。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+// 非平凡类型 (带 String 成员), 避免 "成员都是位拷贝却实现 Drop" 的共享释放问题。
+struct D {
+    p: *raw mut Int,
+    s: String,
+}
+
+impl Drop for D {
+    fn drop(&mut self) {
+        unsafe { *self.p = *self.p + 1_i; }
+    }
+}
+
+fn mk(q: *raw mut Int) -> D {
+    return { .p = q, .s = String::from_str("d") }: D;
+}
+
+// 按值形参: 只借用成员, 不在 callee 内复制形参 (对照 transfer_sites.zn 的 sink_owned)。
+fn sink2(t: (D, D)) {
+    let _n = t.0.s.len();
+    let _m = t.1.s.len();
+}
+
+// 直接返回元组字面量: callee 侧不析构。
+fn ret_tuple(a: *raw mut Int, b: *raw mut Int) -> (D, D) {
+    return (mk(a), mk(b));
+}
+
+// 具名局部量元组 move-out 返回: callee 侧不析构。
+fn ret_tuple_local(a: *raw mut Int, b: *raw mut Int) -> (D, D) {
+    let t = (mk(a), mk(b));
+    return t;
+}
+
+// 元组字段的持有者: 析构时元组的两个元素各析构一次。
+struct Holder {
+    t: (D, D),
+}
+
+fn main() {
+    // 1) 表达式语句丢弃元组: 物化并在语句末析构两个元素
+    let mut a = 0_i;
+    let mut b = 0_i;
+    {
+        (mk(&mut a as *raw mut Int), mk(&mut b as *raw mut Int));
+    }
+    assert_eq(a, 1_i);
+    assert_eq(b, 1_i);
+
+    // 2) 具名绑定: 块退出时析构两个元素
+    let mut c = 0_i;
+    let mut d = 0_i;
+    {
+        let t = (mk(&mut c as *raw mut Int), mk(&mut d as *raw mut Int));
+        assert_eq(c, 0_i);
+        assert_eq(d, 0_i);
+        let _ = t;
+    }
+    assert_eq(c, 1_i);
+    assert_eq(d, 1_i);
+
+    // 3) 元组按值实参: 形参接手
+    let mut e = 0_i;
+    let mut f = 0_i;
+    sink2((mk(&mut e as *raw mut Int), mk(&mut f as *raw mut Int)));
+    assert_eq(e, 1_i);
+    assert_eq(f, 1_i);
+
+    // 4) 返回元组字面量: 调用点接手, 块退出析构
+    let mut g = 0_i;
+    let mut h = 0_i;
+    {
+        let t = ret_tuple(&mut g as *raw mut Int, &mut h as *raw mut Int);
+        assert_eq(g, 0_i);
+        assert_eq(h, 0_i);
+        let _ = t;
+    }
+    assert_eq(g, 1_i);
+    assert_eq(h, 1_i);
+
+    // 5) 具名局部量元组 move-out 返回
+    let mut i = 0_i;
+    let mut j = 0_i;
+    {
+        let t = ret_tuple_local(&mut i as *raw mut Int, &mut j as *raw mut Int);
+        assert_eq(i, 0_i);
+        let _ = t;
+    }
+    assert_eq(i, 1_i);
+    assert_eq(j, 1_i);
+
+    // 6) 解构绑定 `let (x, y) = f()` (verify.zn 用的形态)。
+    //    调用结果那个元组临时量必须活过两条 LetSentence; 修好 mark_extended_temps 的
+    //    临时量延长后, 两个绑定和源元组都活到块末, 块内计数仍为 0。
+    //    当前实现给每个绑定复制一份字段, 所以块退出时源元组 + 两个绑定各析构一次 = 2。
+    //    这里只断言"至少一次 (不泄漏) 且不超过两次 (不双释放)"。
+    let mut k = 0_i;
+    let mut l = 0_i;
+    {
+        let (x, y) = ret_tuple(&mut k as *raw mut Int, &mut l as *raw mut Int);
+        assert_eq(k, 0_i);
+        assert_eq(l, 0_i);
+        let _ = x;
+        let _ = y;
+    }
+    assert(k >= 1_i);
+    assert(k <= 2_i);
+    assert(l >= 1_i);
+    assert(l <= 2_i);
+
+    // 7) 循环体内的元组临时量: 每轮迭代各析构一次 (作用域是"每轮迭代"而不是整条循环)
+    let mut m = 0_i;
+    let mut it = 0_i;
+    while it < 3_i {
+        (mk(&mut m as *raw mut Int), mk(&mut m as *raw mut Int));
+        it += 1_i;
+    }
+    assert_eq(m, 6_i);
+
+    // 8) place: 元组写进结构体字段, 结构体析构时元素各析构一次
+    let mut n = 0_i;
+    let mut o = 0_i;
+    {
+        let mut holder = { .t = (mk(&mut n as *raw mut Int), mk(&mut o as *raw mut Int)) }: Holder;
+        assert_eq(n, 0_i);
+        assert_eq(o, 0_i);
+        let _z = holder.t.0.s.len();
+    }
+    assert_eq(n, 1_i);
+    assert_eq(o, 1_i);
+
+    // 9) box 消费路径: box 出来的拥有型指针在作用域退出时释放一次
+    let mut q = 0_i;
+    {
+        let b = box { .p = &mut q as *raw mut Int, .s = String::from_str("d") }: D;
+        assert_eq(q, 0_i);
+        let _z = b.s.len();
+    }
+    assert_eq(q, 1_i);
+}

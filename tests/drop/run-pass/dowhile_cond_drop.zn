@@ -1,0 +1,72 @@
+// do-while 条件里的临时量与模式绑定必须每轮析构 (与 while 的 LoopIteration 一致)。
+//
+// 历史 bug: do-while 条件的模式绑定只在整条语句结束时析构一次; 循环多轮时前面几轮
+// 绑定的 ARC 句柄会泄漏。这里用外层 Vec 的强引用计数把"每轮释放"钉住。
+//
+// 约定: 把待测构造放进块里, 块退出后量外层 Vec<Vec<Int>> 的强引用数, 期望 1。
+use std::{assert, assert_eq};
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn base() -> Vec<Vec<Int>> {
+    let mut v = (type Vec<Vec<Int>>)::new();
+    v.push(mk(1_i));
+    v.push(mk(2_i));
+    return v;
+}
+
+fn rc(v: &Vec<Vec<Int>>) -> UInt {
+    return v.ref_count() as UInt;
+}
+
+fn main() {
+    // 1) 简单的模式匹配条件 (新路径: 绑定写在 cond_true, 每轮 body 出口析构)。
+    //    条件用 v.get(i): 先命中, 最后未命中退出; 每轮的条件临时量都要释放。
+    {
+        let mut v = base();
+        let mut i: UInt = 0_u;
+        do {
+            i += 1_u;
+        } while v.get(i) is Some(x);
+        assert_eq(i, 2_u);          // 1 命中, 2 未命中
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 2) 条件里用上绑定, 多轮
+    {
+        let mut v = base();
+        let mut i: UInt = 0_u;
+        do {
+            i += 1_u;
+        } while v.get(0_u) is Some(x) && x.item.len() > 0_u && i < 3_u;
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 3) 条件临时量在 body 里 break 提前退出时也要释放
+    {
+        let mut v = base();
+        let mut i: UInt = 0_u;
+        do {
+            i += 1_u;
+            if i >= 2_u { break; }
+        } while v.get(0_u) is Some(x) && x.item.len() > 0_u;
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 4) 条件只求值一次为假 (do-while 仍然执行了一轮 body)
+    {
+        let mut v = base();
+        let mut i: UInt = 0_u;
+        let mut n: UInt = 0_u;
+        do {
+            i += 1_u;
+            n += 1_u;
+        } while v.get(0_u) is Some(x) && i < 1_u;
+        assert_eq(n, 1_u);
+        assert_eq(rc(&v), 1_u);
+    }
+}

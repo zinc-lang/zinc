@@ -7,6 +7,7 @@ mod drop_place;
 mod liveness;
 mod loan;
 mod uint_set;
+mod verify;
 
 use liveness::*;
 use uint_set::*;
@@ -46,9 +47,14 @@ impl CFG {
     fn check_liveness(*self) {
         let mut liveness_checker = LivenessChecker::new(self);
         liveness_checker.determine_origins();
+        // 唯一的析构插入点
         liveness_checker.place_temp_drops();
         liveness_checker.determine_local_liveness();
-        liveness_checker.determine_may_liveness();
+        // 所有权自检 (防回归): 漏析构 / 重复析构 / use-after-drop / 右值层所有权
+        let drop_counts = liveness_checker.verify_drops();
+        liveness_checker.verify_rvalue_ownership(&drop_counts);
+        // 外部接手方 (实参/返回值/写目标基址) 核对
+        liveness_checker.verify_transfers();
         liveness_checker.check_lifetime();
     }
 }
@@ -67,7 +73,7 @@ struct OriginSet {
 struct LivenessChecker {
     cfg: *CFG,
     alive_locals_at_point: HashMap<LivePoint, UIntSet>, // 通过 LivePoint 查找哪些 *VarSymbol 在这里是活的
-    may_alive_locals_at_point: HashMap<LivePoint, UIntSet>, // 同上, 但汇合点取并集 ("可能活着")
+    may_alive_locals_at_point: HashMap<LivePoint, UIntSet>, // 同上, 但取并集 (may)
     local_liveness: HashMap<UInt, UIntSet>, // 通过 *VarSymbol 查找它在哪些 LivePoint 上是活的
     origin_in_states: HashMap<UInt, HashMap<UInt, OriginSet>>, // bb -> (局部变量 -> 它可能指向的来源)
 }

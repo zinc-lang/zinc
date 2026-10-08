@@ -29,7 +29,8 @@ impl ConstValue for FloatCValue {
 
 impl FloatCValue {
     fn new(t: Token) -> Self {
-        let mut tok_str = t.raw_str().as_str().deref();
+        let raw_tok_str = t.raw_str();
+        let mut tok_str = raw_tok_str.as_str().deref();
 
         // 处理负号
         let mut sign = true;

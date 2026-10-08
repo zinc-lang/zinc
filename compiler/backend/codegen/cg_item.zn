@@ -128,7 +128,7 @@ impl CodeGenerator {
         ll_fields.push(gv_name);
 
         let mut all_typemeta: Vec<CgConst> = (type Vec<CgConst>)::new();
-        for tm in self.all_typemeta {
+        for tm in self.all_typemeta_order {
             let c = { .value = unsafe(tm as Ptr) }: CgConst;
             all_typemeta.push(c);
         }
@@ -136,7 +136,7 @@ impl CodeGenerator {
         ll_fields.push(all_typemeta_arr);
 
         let mut all_generic_typemeta: Vec<CgConst> = (type Vec<CgConst>)::new();
-        for tm in self.all_generic_typemeta {
+        for tm in self.all_generic_typemeta_order {
             let c = { .value = unsafe(tm as Ptr) }: CgConst;
             all_generic_typemeta.push(c);
         }
@@ -144,7 +144,7 @@ impl CodeGenerator {
         ll_fields.push(all_generic_typemeta_arr);
 
         let mut all_impl_typemeta: Vec<CgConst> = (type Vec<CgConst>)::new();
-        for tm in self.all_impl_typemeta {
+        for tm in self.all_impl_typemeta_order {
             let c = { .value = unsafe(tm as Ptr) }: CgConst;
             all_impl_typemeta.push(c);
         }

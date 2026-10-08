@@ -1,6 +1,7 @@
 use super::*;
 use ::self::frontend::syntax::ast::*;
 use ::self::frontend::syntax::ast::decl::*;
+use ::self::frontend::source_code::*;
 
 impl ImplSymbol {
     pub fn new(node: *ImplDecl) -> *Self {
@@ -110,15 +111,68 @@ impl ImplSymbol {
     }
 }
 
+fn impl_sig_text(node: *ImplDecl) -> String {
+    let mut res = String::new();
+    if node.trait_ty is Some(tt) {
+        let t = SourceManager::get().source_piece_of(tt.span());
+        res.push_str(t.as_str().deref());
+    } else {
+        res.push_str("<inherent>");
+    }
+    res.push_str(" for ");
+    let ty = SourceManager::get().source_piece_of(node.target_ty.span());
+    res.push_str(ty.as_str().deref());
+    return res;
+}
+
+// 在同一个父语法节点下, 声明顺序位于 node 之前且签名文本相同的 impl 个数.
+// 纯语法计算, 幂等: 同一个声明在任何时刻都得到同一个序号.
+fn impl_sig_rank(node: *ImplDecl, parent_node: *SyntaxNode) -> UInt {
+    let span = node.span();
+    let sig = impl_sig_text(node);
+    let mut n: UInt = 0;
+    for ch in parent_node.children() {
+        if ch is other: *ImplDecl {
+            if other as *raw ImplDecl as UInt != node as *raw ImplDecl as UInt &&
+                other.span().start.offset < span.start.offset &&
+                impl_sig_text(other).eq(&sig) {
+                n += 1;
+            }
+        }
+    }
+    return n;
+}
+
 impl Symbol for ImplSymbol {
     fn syntax_node(&self) -> *SyntaxNode {
         return self.impl_node as *SyntaxNode;
     }
 
-    // 指定一个当前进程唯一的值即可，因为这个值不会导出到 zno 里面去
+    // short_name 只当作 SymbolTable 的 key 用 (impl 不按名字查找, 见
+    // SymbolTable::add_child 的注释), 这个值也不会导出到 zno 里面去。
+    //
+    // 历史上这里用过"对象地址串"(随 ASLR 漂移)和"文件路径 + 起始字节偏移"(对注释/
+    // 空白过敏). 现在改成**语义稳定键**:
+    //   - 与偏移/行号/注释/空白无关: 只取语法结构 (文件路径 + trait/目标类型语法文本
+    //     + 同父同签名的声明序号), 不取任何 raw 文本偏移;
+    //   - 跨运行稳定: 不含地址, 不含 HashMap 迭代序, 不含时间;
+    //   - 进程内唯一: 同文件同签名按声明序号区分, 不同文件路径不同, 因此不会互相
+    //     误报冲突 (真冲突时 add_child 依旧按重名报错, 不会静默合并);
+    //   - round1 阶段就可用: 只读 AST 语法, 不依赖 export_key/mangle_name —— round1
+    //     建符号时 target_sty/trait_sty 还是 Invalid, 用它们会让所有 impl 撞成同一个 key.
     fn short_name(&self) -> String {
-        let addr = self as &ImplSymbol as *raw ImplSymbol as UInt;
-        return addr.to_string();
+        let span = self.impl_node.span();
+        let mut res = SourceManager::get().file_path_of(span.start.file_id);
+        res.push_str("@");
+        res.push_str(impl_sig_text(self.impl_node).as_str().deref());
+        res.push_str("#");
+        let mut rank: UInt = 0;
+        if self.parent_sym is Some(psym) {
+            rank = impl_sig_rank(self.impl_node, psym.syntax_node());
+        }
+        let rank_str = rank.to_string();
+        res.push_str(rank_str.as_str().deref());
+        return res;
     }
 
     fn mangle_name(&self) -> String {

@@ -1,0 +1,199 @@
+// 拥有型右值的析构作用域不变量 (回归保护)。
+//
+// 历史 bug: 带析构函数、但没有具名局部量接收的右值 (表达式语句丢弃的值、
+// if/match/&&/|| 的 scrutinee、元组/数组/结构体临时量、循环体里的调用结果)
+// 从来不产生 DtorValue, ARC 强引用静默泄漏。
+//
+// 测量约定: 把待测构造放进块里, 块退出后量外层 Vec<Vec<Int>> 的强引用数, 期望 1。
+use std::{assert, assert_eq};
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn base() -> Vec<Vec<Int>> {
+    let mut v = (type Vec<Vec<Int>>)::new();
+    v.push(mk(1_i));
+    v.push(mk(2_i));
+    return v;
+}
+
+fn rc(v: &Vec<Vec<Int>>) -> UInt {
+    return v.ref_count() as UInt;
+}
+
+fn irc(v: &mut Vec<Vec<Int>>) -> UInt {
+    let g = v.get(0_u);
+    if g is Some(x) { return x.item.ref_count() as UInt; }
+    return 0_u;
+}
+
+fn sink_item<T>(o: Option<T>) {
+}
+
+struct HolderV {
+    o: Option<Vec<Int>>,
+}
+
+fn main() {
+    // 1) 表达式语句 / let _ 丢弃的拥有型右值
+    {
+        let mut v = base();
+        v.get(0_u);
+        let _ = v.get(0_u);
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 2) if / match / 三元 / 短路链的 scrutinee
+    {
+        let mut v = base();
+        if v.get(0_u) is Some(x) { let _n = x.item.len(); }
+        assert_eq(rc(&v), 1_u);
+
+        if v.get(0_u) is Some(_) { }
+        assert_eq(rc(&v), 1_u);
+
+        match v.get(0_u) {
+            Some(x) => { let _n = x.item.len(); }
+            None => {}
+        }
+        assert_eq(rc(&v), 1_u);
+
+        let _n = if v.get(0_u) is Some(x) then x.item.len() else 0_u;
+        assert_eq(rc(&v), 1_u);
+
+        if v.get(0_u) is Some(x) && x.item.len() > 0_u { }
+        assert_eq(rc(&v), 1_u);
+
+        if v.get(0_u) is Some(x) && v.get(1_u) is Some(y) {
+            let _n = x.item.len() + y.item.len();
+        }
+        assert_eq(rc(&v), 1_u);
+
+        // || 两个 scrutinee 都会求值
+        if v.get(0_u) is None || v.get(0_u) is None { }
+        assert_eq(rc(&v), 1_u);
+
+        // 短路: 只执行到的那个才需要析构 (另一侧是未初始化路径)
+        if v.get(0_u) is Some(_) || v.get(1_u) is Some(_) { }
+        assert_eq(rc(&v), 1_u);
+
+        if v.get(9_u) is Some(_) && v.get(0_u) is Some(_) { }
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 3) 元组 / 数组 / 结构体临时量
+    {
+        let mut v = base();
+        (v.get(0_u), 1_u);
+        assert_eq(rc(&v), 1_u);
+
+        [v.get(0_u), v.get(0_u)];
+        assert_eq(rc(&v), 1_u);
+
+        let _ = (v.get(0_u), 1_u);
+        assert_eq(rc(&v), 1_u);
+
+        ({ .o = v.at(0_u) }: HolderV);
+        assert_eq(rc(&v), 1_u);
+
+        let _ = ({ .o = v.at(0_u) }: HolderV);
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 4) 调用链的接收者临时量。
+    //    R2 (已修): 接收者临时量从"复制 (+1)" 改成接手源值自带的那次强引用 (move),
+    //    源值那次 +1 由临时量析构释放, 所以这两种写法都不再泄漏 (rc = 1)。
+    //    详细修法与 verifier: 见 out/scratch/arc_leak/REPORT_FIX.md。
+    {
+        let mut v = base();
+        v.get(0_u).get_or_panic();
+        assert_eq(rc(&v), 1_u);
+    }
+    {
+        let mut v = base();
+        {
+            let x = v.get(0_u).get_or_panic();
+            let _n = x.item.len();
+        }
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 5) while 条件: 每轮迭代都要析构条件临时量与模式绑定
+    {
+        let mut v = base();
+        let mut i: UInt = 0_u;
+        while v.get(0_u) is Some(x) {
+            let _n = x.item.len();
+            i += 1_u;
+            if i >= 2_u { break; }
+        }
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 6) 具名量 + while 条件绑定: 2 轮
+    {
+        let mut v = base();
+        {
+            let g = v.get(0_u);
+            let mut i: UInt = 0_u;
+            while g is Some(x) {
+                let _n = x.item.len();
+                i += 1_u;
+                if i >= 2_u { break; }
+            }
+        }
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 7) 循环体里的表达式语句: 每轮一个
+    {
+        let mut v = base();
+        let mut i: UInt = 0_u;
+        while i < 2_u {
+            v.get(i);
+            i += 1_u;
+        }
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 8) for 循环体
+    {
+        let mut v = base();
+        for i in 0_u..<2_u {
+            v.get(0_u);
+        }
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 9) 所有权移交给实参的路径本来就正确, 不能回归
+    {
+        let mut v = base();
+        sink_item(v.get(0_u));
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 10) Option<T> 值拷贝 (Vec::at) 的临时量形式
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        v.at(0_u);
+        assert_eq(irc(&mut v), 1_u);
+        if v.at(0_u) is Some(x) { let _n = x.len(); }
+        assert_eq(irc(&mut v), 1_u);
+        // R2 (已修): 同上, Vec::at 的接收者临时量也不再多 retain
+        v.at(0_u).get_or_panic();
+        assert_eq(irc(&mut v), 1_u);
+    }
+
+    // 11) 未命中路径 (不 retain, 不能多析构)
+    {
+        let mut v = base();
+        v.get(9_u);
+        assert_eq(rc(&v), 1_u);
+        if v.get(9_u) is Some(_) { }
+        assert_eq(rc(&v), 1_u);
+    }
+}

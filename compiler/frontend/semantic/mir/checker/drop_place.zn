@@ -3,14 +3,48 @@ use super::liveness::*;
 use super::loan::*;
 use super::uint_set::*;
 
+// 析构点放置。
+//
+// lowering 只做两件事: 把拥有型值登记到某个 DropScope, 以及登记"离开作用域"的事件。
+// 本文件是**唯一**决定在哪里插入 DtorValue 的地方:
+//
+//   1. mark_extended_temps: 借用活得比语句长的临时量, 把归属提升到最近的
+//      块 / 循环迭代 / 函数 作用域 (否则借用会指向已析构的存储);
+//   2. insert_scope_drops: 遍历作用域退出记录, 在每个出口基本块上插入析构。
+//
+// 归属规则 (一句话版):
+//   - 普通右值 -> 所在语句;
+//   - if/match 的 scrutinee -> 整条语句 (body 之后才析构), 模式绑定同一条语句;
+//   - while 的条件 -> 每轮迭代 (含模式绑定, 挂到循环体块);
+//   - 具名局部量 -> 所在块;
+//   - return/break/continue -> 沿路径退出, 返回/尾表达式是 move-out 不析构。
 impl LivenessChecker {
     fn place_temp_drops(&mut self) {
         self.mark_extended_temps();
-        self.cancel_extended_temp_drops();
+        self.insert_scope_drops();
     }
 
-    // 标记生命周期需要延长的临时变量
+    // 借用活得比语句长的临时量: 把它的归属提升到最近的"生存期超过一条语句"的作用域。
     fn mark_extended_temps(&self) {
+        // 先建一张"临时量 -> 定义它的右值"表, 供借用闭包传递用。
+        // 仅靠 origin 数据流在"返回类型里的生命周期来自接收者类型自身"的视图链上给不出
+        // 起点 (例: `impl<'a> Deref for StringSlice<'a> { fn deref(&self) -> Str<'a> }`
+        // —— 返回的 'a 出现在接收者类型 StringSlice<'a> 上, 而不是 &self 的借用生命周期,
+        // 所以 call_return_origin 匹配不到)。这时沿"这个临时量是怎么算出来的"继续向上
+        // 收集 place 投影里的临时量, 整条视图链 (String -> StringSlice -> Str) 一起延长。
+        let mut temp_def = (type HashMap<UInt, *XValue>)::new();
+        for bb in self.cfg.basic_blocks {
+            for step in bb.steps {
+                if step.value is w: *WriteValue {
+                    if root_local(w.dst as *XValue) is Some(dst_vs) {
+                        let dst_key = dst_vs as *raw VarSymbol as UInt;
+                        if self.cfg.temp_map.at(&dst_key) is Some(_) {
+                            temp_def.insert(dst_key, w.src as *XValue);
+                        }
+                    }
+                }
+            }
+        }
         for bb in self.cfg.basic_blocks {
             let bb_key = bb as *raw BasicBlock as UInt;
             // 在基本块内逐条指令重放 origin 状态 (临时变量的写和它的使用常常在同一个 bb 里,
@@ -23,8 +57,44 @@ impl LivenessChecker {
                         if self.cfg.temp_map.at(&dst_key) is None {
                             // 写进了一个生命周期超过当前语句的位置:
                             // 源值可能指向的临时变量都要延长
+                            // PHASE_D_TEMP_LIFETIME
+                            // 需要延长的临时量: src 明确借用的存储 (origin) + src 里沿
+                            // place 投影直接读到的临时量 (元组/字段/下标/解引用解构),
+                            // 再对它们做传递闭包 (被借用的临时量内部还引用别的临时量,
+                            // 例如 StringSlice -> String, 那些存储也必须活到借用之后)。
+                            let mut roots = UIntSet::new();
                             let origins = self.origin_of(w.src as *XValue, &state);
-                            self.extend_origin_chain(&origins, &state);
+                            for o in origins.locals {
+                                roots.insert(o);
+                            }
+                            self.collect_projection_temps(w.src as *XValue, &mut roots);
+                            // 视图写进哪个存储, 宿主临时量就要活到那个存储的作用域末
+                            // (dst_storage_scope), 而不是只活到临时量自己最近的块。
+                            // 目的地是 static/const (全局存储) 时无法延长 -> 交给 loan 诊断。
+                            let mut dst_key = 0_u;
+                            if root_local(w.dst as *XValue) is Some(dv) {
+                                dst_key = dv as *raw VarSymbol as UInt;
+                                if dv.is_static() || dv.is_const() {
+                                    if self.has_owned_temp_root(w.src as *XValue) {
+                                        DiagnosticEngine::get().emit_lives_not_longer_enough(dv.var_node.span());
+                                    }
+                                }
+                            }
+                            // 可复现性: 借用闭包在这里只收集"需要延长"的临时量集合,
+                            // 真正的登记 (extend_temp_scope -> blk.add_local_for_drop)
+                            // 统一按 cfg.temps 的创建序号执行。集合的遍历顺序 / 递归
+                            // 访问顺序都与指针地址有关, 若在此处直接登记, 块内局部量的
+                            // 登记顺序 (进而析构逆序) 会随 ASLR/堆布局变化。
+                            let mut need = UIntSet::new();
+                            for o in roots {
+                                self.collect_temp_closure(o, &state, &temp_def, &mut need);
+                            }
+                            for t in self.cfg.temps {
+                                let tk = t.sym as *raw VarSymbol as UInt;
+                                if need.contains(tk) {
+                                    self.extend_temp_scope(t, dst_key);
+                                }
+                            }
                         }
                     }
                     self.apply_write_origin(w, &mut state);
@@ -33,48 +103,281 @@ impl LivenessChecker {
         }
     }
 
-    // 把 origin 集合沿"来源本身也是视图"的关系做传递闭包, 并延长其中的临时量。
-    // 例: `mkstr().as_str().deref()` 里临时量 TempSlice 的 origin 是 TempString,
-    // 返回的 Str 借用 TempSlice 的存储, 而 TempSlice 的内容又指向 TempString 的
-    // 堆缓冲 —— 两者都要活到语句之外, 只延长 TempSlice 会留下悬垂引用。
-    // visited 用来兜住自引用/环。
-    fn extend_origin_chain(&self, base: &OriginSet, state: &HashMap<UInt, OriginSet>) {
-        let mut visited = UIntSet::new();
-        let mut work = (type Vec<UInt>)::new();
-        for o in base.locals {
-            work.push(o);
+    // 沿作用域树向上找到最近的"非语句"作用域 (块 / 循环迭代 / 函数)
+    fn nearest_non_statement_scope(&self, from: UInt) -> UInt {
+        let mut sid = from;
+        while true {
+            let sc = *self.cfg.drop_scopes.index(sid).deref();
+            if !(sc.kind is DropScopeKind::Statement) {
+                return sid;
+            }
+            if sc.parent is Some(p) {
+                sid = p;
+            } else {
+                return sid;
+            }
         }
-        while !work.is_empty() {
-            let cur: UInt = work.pop().get_or_panic();
-            if visited.contains(cur) {
-                continue;
+        return sid;
+    }
+
+    // 目的地存储所在的作用域: 沿临时量的作用域树向上找最近的、在 local_vars 里
+    // 声明了 dst 的块作用域。视图指向的存储由宿主临时量持有, 所以宿主必须活到
+    // "接收这个视图的变量"死去为止 —— 而不是只活到临时量自己最近的块。
+    // 例: 三元/元组把视图绑到本块局部量; 在 if 体里把视图写进外层局部量。
+    fn dst_storage_scope(&self, from: UInt, dst_key: UInt) -> UInt {
+        if dst_key != 0_u {
+            let mut sid = from;
+            while true {
+                let sc = *self.cfg.drop_scopes.index(sid).deref();
+                if sc.blk is Some(blk) {
+                    let mut i: UInt = 0;
+                    while i < blk.local_vars.len() {
+                        if *blk.local_vars.index(i).deref() as *raw VarSymbol as UInt == dst_key {
+                            return sid;
+                        }
+                        i += 1_u;
+                    }
+                }
+                if sc.parent is Some(p) {
+                    sid = p;
+                } else {
+                    break;
+                }
             }
-            visited.insert(cur);
-            if self.cfg.temp_map.at(&cur) is Some(t) {
-                t.extended = true;
+        }
+        // 目的地不是块级局部量 (形参/循环绑定/未知): 退回原来的行为
+        return self.nearest_non_statement_scope(from);
+    }
+
+    fn extend_temp_scope(&self, t: *TempVar, dst_key: UInt) {
+        let target = self.dst_storage_scope(t.scope, dst_key);
+        t.scope = target;
+        // 提升到更外层的块后, 必须把符号登记进那个块的 local_vars: 块作用域的析构
+        // 按 local_vars 逆序发出 (insert_scope_drops), 不在列表里就不会有析构指令
+        // (变成泄漏)。内层块里的旧登记因 scope 不匹配会被跳过, 不会重复析构。
+        let sc = *self.cfg.drop_scopes.index(target).deref();
+        if sc.blk is Some(blk) {
+            let key = t.sym as *raw VarSymbol as UInt;
+            let mut i: UInt = 0;
+            let mut found = false;
+            while i < blk.local_vars.len() {
+                if *blk.local_vars.index(i).deref() as *raw VarSymbol as UInt == key {
+                    found = true;
+                    break;
+                }
+                i += 1_u;
             }
-            // 这个来源自己也是视图时, 它借用的存储也必须一起延长
-            if state.at(&cur) is Some(sub) {
-                for o2 in sub.locals {
-                    if !visited.contains(o2) {
-                        work.push(o2);
+            if !found {
+                blk.add_local_for_drop(t.sym);
+            }
+        }
+    }
+
+    // 传递地收集一个临时量以及它内部引用到的临时量 (借用闭包)。只做集合收集,
+    // 不做任何登记: 登记顺序必须与地址无关, 由调用方按 cfg.temps 的创建序号执行。
+    // 两条传递边: (1) origin 数据流里它引用到的存储; (2) 它自己的定义右值里
+    // 沿 place 投影读到的临时量 (origin 给不出起点时用, 见 mark_extended_temps)。
+    fn collect_temp_closure(&self, k: UInt, state: &HashMap<UInt, OriginSet>, temp_def: &HashMap<UInt, *XValue>, need: &mut UIntSet) {
+        if need.contains(k) {
+            return;
+        }
+        need.insert(k);
+        if state.at(&k) is Some(os) {
+            for o in os.locals {
+                self.collect_temp_closure(o, state, temp_def, need);
+            }
+        }
+        if temp_def.at(&k) is Some(def) {
+            let mut more = UIntSet::new();
+            self.collect_projection_temps(def, &mut more);
+            for o in more {
+                self.collect_temp_closure(o, state, temp_def, need);
+            }
+        }
+    }
+
+    // 收集 src 里"沿 place 投影直接读到"的临时量: 读元组/字段/下标/解引用得到的值,
+    // 它的存储依赖被投影的那个临时量。写进生命周期更长的局部量时, 这些临时量必须一起延长。
+    fn collect_projection_temps(&self, xv: *XValue, res: &mut UIntSet) {
+        match xv {
+            rv: *ReadValue => {
+                let k = rv.sym_var as *raw VarSymbol as UInt;
+                if self.cfg.temp_map.at(&k) is Some(_) {
+                    res.insert(k);
+                }
+            }
+            lv: *LocalVar => {
+                let k = lv.sym_var as *raw VarSymbol as UInt;
+                if self.cfg.temp_map.at(&k) is Some(_) {
+                    res.insert(k);
+                }
+            }
+            tup: *TupleAccessRValue => {
+                self.collect_projection_temps(tup.base as *XValue, res);
+            }
+            fld: *FieldRValue => {
+                self.collect_projection_temps(fld.base as *XValue, res);
+            }
+            idx: *IndexRValue => {
+                self.collect_projection_temps(idx.base as *XValue, res);
+            }
+            dr: *DerefRValue => {
+                self.collect_projection_temps(dr.operand as *XValue, res);
+            }
+            cp: *CopyValue => {
+                self.collect_projection_temps(cp.src as *XValue, res);
+            }
+            mv: *MovedValue => {
+                self.collect_projection_temps(mv.src as *XValue, res);
+            }
+            ta: *TypeAscriptionValue => {
+                self.collect_projection_temps(ta.inner as *XValue, res);
+            }
+            ctx: *ContextValue => {
+                self.collect_projection_temps(ctx.inner as *XValue, res);
+            }
+            al: *AllocaValue => {
+                self.collect_projection_temps(al.src as *XValue, res);
+            }
+            ld: *LoadValue => {
+                self.collect_projection_temps(ld.src as *XValue, res);
+            }
+            // `&(Temp)` / `&mut (Temp)`: 取地址的目标存储就是这个临时量本身。
+            // 视图链 `mkstr().as_str().deref()` 的每一层接收者都是这种形态, 而返回类型里的
+            // 生命周期未必能和接收者类型对上 (HIR 里会是 `Str<'_>`, origin 数据流因此给不出
+            // 起点)。这里直接沿 `&` 投影收集临时量, 再由 extend_temp_closure 沿借用闭包把
+            // 底层拥有型临时量 (String) 一起延长 —— 不依赖生命周期匹配, 是结构性的。
+            addr: *AddressofValue => {
+                self.collect_projection_temps(addr.operand as *XValue, res);
+            }
+            // `&*p` 重借用: 被借用的存储是重借用的源 (ARC 指针的临时量在同一地址上)。
+            reb: *ReBorrowValue => {
+                self.collect_projection_temps(reb.src as *XValue, res);
+            }
+            // 生命周期/同类型等"保持指针"的转换对存储透明: 沿操作数继续收集。
+            // (例如 `mkwrap(mkstr().as_str().deref())` 实参外的 LifetimeCast)
+            cast: *CastValue => {
+                if cast_keeps_pointer(cast.resolved_kind) {
+                    self.collect_projection_temps(cast.operand as *XValue, res);
+                }
+            }
+            mcall: *MethodCallValue => {
+                if mcall.desugared_receiver is Some(recv) {
+                    self.collect_projection_temps(recv as *XValue, res);
+                }
+                for a in mcall.desugared_args {
+                    self.collect_projection_temps(a as *XValue, res);
+                }
+            }
+            call: *FnCallValue => {
+                for a in call.desugared_args {
+                    self.collect_projection_temps(a as *XValue, res);
+                }
+            }
+            // 三元/if-else 在 MIR 里汇合成 Phi: 每个 incoming 是包裹分支视图的
+            // AllocaValue。视图的宿主临时量必须沿**所有分支**一起收集, 否则
+            // `let t = if c then mkstr().view() else "x";` 的宿主不会被延长
+            // (origin 在返回类型生命周期省略/来自接收者类型时给不出起点)。
+            phi: *PhiValue => {
+                for item in phi.incoming {
+                    self.collect_projection_temps(item.0 as *XValue, res);
+                }
+            }
+            // 复合字面量把视图包在元素/字段/载荷里: 拆开继续收集, 否则宿主漏延长。
+            tupv: *TupleValue => {
+                for e in tupv.elements {
+                    self.collect_projection_temps(e as *XValue, res);
+                }
+            }
+            agg: *AggregateValue => {
+                for f in agg.transformed_init {
+                    self.collect_projection_temps(f as *XValue, res);
+                }
+            }
+            arr: *ArrayLiteralValue => {
+                for e in arr.elements {
+                    self.collect_projection_temps(e as *XValue, res);
+                }
+            }
+            rep: *RepeatValue => {
+                self.collect_projection_temps(rep.element as *XValue, res);
+            }
+            pmv: *PatternMatchValue => {
+                self.collect_projection_temps(pmv.operand as *XValue, res);
+            }
+            vpv: *VariantPayloadValue => {
+                self.collect_projection_temps(vpv.enum_value as *XValue, res);
+            }
+            _ => {}
+        }
+    }
+
+    // src 的结构性视图链里是否真的有"本函数拥有、且会被析构"的宿主临时量?
+    // ownership 已 Moved 的临时量 (值被搬走, 不会析构) 不算; 形参/未知来源也不算。
+    // 用于"视图逃出块"的判定: 宿主注定在本函数返回前析构 -> 不能延长 -> 应当报错。
+    fn has_owned_temp_root(&self, src: *XValue) -> Bool {
+        let mut roots = UIntSet::new();
+        self.collect_projection_temps(src, &mut roots);
+        for k in roots {
+            if self.cfg.temp_map.at(&k) is Some(t) {
+                if t.ownership is Ownership::Owned {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // 唯一的析构插入点。
+    fn insert_scope_drops(&mut self) {
+        for ex in self.cfg.drop_exits {
+            let ex_scope = ex.scope;
+            let sc = *self.cfg.drop_scopes.index(ex_scope).deref();
+            if sc.blk is Some(blk) {
+                // 块作用域: 按 local_vars 的逆序析构 (与局部量的声明逆序一致)
+                let mut i: UInt = blk.local_vars.len();
+                while i > 0 {
+                    let vs: *VarSymbol = *blk.local_vars.index(i - 1).deref();
+                    i -= 1;
+                    if self.should_drop_at(vs, ex_scope, ex.except, true) {
+                        self.emit_drop(vs, ex.bb);
+                    }
+                }
+            } else {
+                let vars = sc.vars;
+                let mut i: UInt = vars.len();
+                while i > 0 {
+                    let vs: *VarSymbol = *vars.index(i - 1).deref();
+                    i -= 1;
+                    if self.should_drop_at(vs, ex_scope, ex.except, false) {
+                        self.emit_drop(vs, ex.bb);
                     }
                 }
             }
         }
     }
 
-    // 生命周期需要延长的临时变量: 把语句结束时插入的那条析构标记作废 (skipped),
-    // 只保留语句块退出时的析构。
-    // 这里不直接改 steps 列表, 而是给指令打标记: 后续的存活分析和代码生成都会忽略 skipped。
-    fn cancel_extended_temp_drops(&self) {
-        for t in self.cfg.temps {
-            if !t.extended {
-                continue;
-            }
-            if t.drop_step is Some(dtor) {
-                dtor.skipped = true;
-            }
+    // 这个局部量在离开 scope_id 时是否还需要析构?
+    fn should_drop_at(&self, vs: *VarSymbol, scope_id: UInt, except_i: UInt, is_block: Bool) -> Bool {
+        let key = vs as *raw VarSymbol as UInt;
+        if except_i != 0 && key == except_i {
+            return false;
         }
+        if self.cfg.temp_map.at(&key) is Some(t) {
+            // 临时量: 只有仍持有所有权、且归属正好是这个作用域时才析构。
+            // (ownership 为 Moved 表示所有权已随 move-out 交给别处)
+            return (t.ownership is Ownership::Owned) && t.scope == scope_id;
+        }
+        // 具名局部量: 被更内层作用域接管过的 (if 条件绑定等) 由那一层负责
+        if is_block && self.cfg.claimed_vars.contains(&key) {
+            return false;
+        }
+        return true;
+    }
+
+    fn emit_drop(&mut self, vs: *VarSymbol, bb: *BasicBlock) {
+        // 没有析构函数的类型也会生成一条 is_trivial 的指令:
+        // 它依然承担"变量存储期到此结束"的语义, 存活分析依赖它判断变量的死亡点。
+        bb.add_step(make_dtor_value(vs) as *XValue);
     }
 }

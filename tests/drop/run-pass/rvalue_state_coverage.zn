@@ -1,0 +1,104 @@
+// 显式右值所有权状态 (RValueOwnership) 的覆盖用例。
+//
+// 每个右值结果在生产点显式声明"这个表达式是否刚刚让某个强引用由本结果负责释放":
+//   - 读一个 ARC 局部量/字段/解引用 = BorrowsValue (read 不 emit retain, 消费方自己 CopyValue);
+//   - 调用结果/聚合体/元组/数组/运算符结果 = OwnsValue (自带一次强引用, 必须被接手或物化);
+//   - `as` 转换 = BorrowsValue (所有权透明)。
+// 本用例用 rc / 析构次数把这些状态钉住。
+use std::{assert, assert_eq};
+
+struct Pair {
+    a: Vec<Int>,
+    b: Vec<Int>,
+}
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn base() -> Vec<Vec<Int>> {
+    let mut v = (type Vec<Vec<Int>>)::new();
+    v.push(mk(1_i));
+    v.push(mk(2_i));
+    return v;
+}
+
+fn rc(v: &Vec<Vec<Int>>) -> UInt {
+    return v.ref_count() as UInt;
+}
+
+fn pair() -> Pair {
+    return { .a = mk(1_i), .b = mk(2_i) }: Pair;
+}
+
+fn main() {
+    // 1) 读一个拥有型聚合体的 ARC 字段: 读是借用 (BorrowsValue), 消费方要保存必须自己复制
+    {
+        let p = pair();
+        assert_eq(p.a.ref_count() as UInt, 1_u);
+        {
+            let a = p.a;
+            assert_eq(a.ref_count() as UInt, 2_u);
+        }
+        assert_eq(p.a.ref_count() as UInt, 1_u);
+    }
+
+    // 2) 聚合体字面量把 ARC 字段搬进来: 元素由 insert_copy_if_needed 接手 (move, 不多 retain)
+    {
+        let p = { .a = mk(3_i), .b = mk(4_i) }: Pair;
+        assert_eq(p.a.ref_count() as UInt, 1_u);
+        assert_eq(p.b.ref_count() as UInt, 1_u);
+    }
+
+    // 3) 嵌套 deref: 读 &Vec 再解引用 (DerefRValue 是 BorrowsValue)
+    {
+        let v = mk(5_i);
+        let r = &v;
+        let w = *r;
+        assert_eq(w.ref_count() as UInt, 2_u);
+    }
+
+    // 4) as 转换对所有权透明: 拥有型右值 (调用结果) 经 as 再消费, 强引用不多不少
+    {
+        let mut v = base();
+        {
+            let x = v.at(0_u) as Option<Vec<Int>>;
+            if x is Some(inner) { let _n = inner.len(); }
+        }
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 5) 拥有型右值经 &expr 借用: 借用不吞掉它自带的强引用, 也不多 retain
+    {
+        let mut v = base();
+        {
+            let _p = &(v.get(0_u));
+        }
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 6) 调用链 get_or_panic / at: 调用结果必须被接手 (move), 块退出后 rc 回到 1
+    {
+        let mut v = base();
+        {
+            let x = v.get(0_u).get_or_panic();
+            let _n = x.item.len();
+        }
+        assert_eq(rc(&v), 1_u);
+        {
+            let x = v.at(0_u).get_or_panic();
+            let _n = x.len();
+        }
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 7) 拥有型右值当作 place 基址 (字段链): canonical 风格的调用结果必须有归宿
+    {
+        let p = pair();
+        let n = p.a.len();
+        assert_eq(n as Int, 1_i);
+        assert_eq(p.a.ref_count() as UInt, 1_u);
+    }
+}

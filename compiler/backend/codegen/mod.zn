@@ -39,6 +39,14 @@ pub struct CodeGenerator {
     all_typemeta: HashSet<UInt>,
     all_generic_typemeta: HashSet<UInt>,
     all_impl_typemeta: HashSet<UInt>,
+
+    // 可复现性: 上面三个集合的 key 是全局量的地址 (随 ASLR/堆布局变化), HashSet 的遍历
+    // 顺序因而逐次不同; 而 cg_component_meta 是"按遍历顺序"生成 typemeta 常量数组的,
+    // 于是同一输入两次编译得到的 .bc 只有顺序不同。这里为每个集合额外记一份插入序,
+    // 发射时只遍历这份向量, 让顺序只由编译流程 (确定性的 Vec 遍历) 决定。
+    all_typemeta_order: Vec<UInt>,
+    all_generic_typemeta_order: Vec<UInt>,
+    all_impl_typemeta_order: Vec<UInt>,
 }
 
 pub struct CgContext {
@@ -79,6 +87,10 @@ impl CodeGenerator {
             .all_typemeta = (type HashSet<UInt>)::new(),
             .all_generic_typemeta = (type HashSet<UInt>)::new(),
             .all_impl_typemeta = (type HashSet<UInt>)::new(),
+
+            .all_typemeta_order = (type Vec<UInt>)::new(),
+            .all_generic_typemeta_order = (type Vec<UInt>)::new(),
+            .all_impl_typemeta_order = (type Vec<UInt>)::new(),
         }: CodeGenerator;
     }
 

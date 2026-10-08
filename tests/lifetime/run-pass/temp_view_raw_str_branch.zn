@@ -1,0 +1,44 @@
+// if-else 分支里的"拥有型临时量 -> Str 视图"形态, 也就是 common.zn:379 的原始写法:
+//
+//     let s = if is_named() then token_text().raw_str().as_str().deref() else "'_";
+//     res.push_str(s);            // 下一条语句才读这个视图
+//
+// raw_str()/token_text() 返回拥有型 String, 视图指向它的堆缓冲区。宿主临时量的寿命必须
+// 被延长到接收视图的局部量所在块的末尾 (checker/drop_place.zn 的 dst_storage_scope +
+// collect_projection_temps); 否则临时量在语句末析构, 下一行的 String::push_str
+// (-> Vec::extend_from_slice -> mem_copy) 读到已释放内存。
+// 旧编译器: valgrind Invalid read + 内容串味/断言失败; 新编译器: 0 errors。
+use std::assert;
+use std::primitives::string::String;
+use std::primitives::str::Str;
+
+fn is_named() -> Bool {
+    return 1_i == 1_i;
+}
+
+fn is_anon() -> Bool {
+    return 1_i == 2_i;
+}
+
+fn token_text() -> String {
+    return String::from_str("Named");
+}
+
+fn main() {
+    // 走 then 分支: 视图的宿主是分支里 token_text() 的临时量。
+    let s = if is_named() then token_text().as_str().deref() else "'_";
+    // 关键: 下一条语句才读它, 且经由 String::push_str 的读写路径。
+    let mut buf = String::new();
+    buf.push_str(s);
+    assert(buf.len() == 5_u);
+    assert(buf.starts_with("Named"));
+
+    // 走 else 分支: 视图来自字面量, 不涉及临时量 (确保两条路径都编译/运行)。
+    let t = if is_anon() then token_text().as_str().deref() else "'_";
+    let mut buf2 = String::new();
+    buf2.push_str(t);
+    assert(buf2.len() == 2_u);
+    assert(buf2.starts_with("'_"));
+
+    println("ok");
+}

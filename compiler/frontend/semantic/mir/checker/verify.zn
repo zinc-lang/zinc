@@ -1,0 +1,831 @@
+use super::*;
+use ::self::frontend::diagnostic::*;
+use ::self::frontend::source_code::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
+use std::collections::hashset::HashSet;
+
+// 所有权自检 (verifier)。
+//
+// 要守的不变量: "每条路径上, 仍持有所有权的局部量恰好被析构一次, 或者被 move-out",
+// 以及 no-use-after-drop。完整的路径敏感验证代价很高, 这里做一组保守但能拦住绝大多数
+// 回归的检查 —— 它们正好覆盖本次重构最容易犯的两种错: 漏插析构 (泄漏) 与重复插析构。
+//
+//   V1. 在可达基本块里被写入过、仍然为 Owned 的临时量, 至少要有一条真实析构指令。
+//   V2. 同一个基本块里, 同一个局部量的析构之后不能再析构 (赋值先析构旧值再写入是合法的)。
+//   V3. 不允许对 ownership == Moved 的临时量插入析构。
+//   V5. use-after-drop: 由 liveness 的 emit_use_after_dead 负责 (既有机制, 这里不重复)。
+//   V6. 右值层, 归宿 (路径敏感): 所有权直接交给一个具名局部量 (MovedToPlace + dst) 时,
+//       从函数入口到每个 return 的**每条**路径上, 那个局部量都必须被析构或移出。
+//       must 数据流, 见 local_handled_on_all_returns。
+//   V7. 右值层: 给临时量做复制 (CopyValue.from_temp_init) 时, 被复制的拥有型右值必须
+//       已经有归宿 —— 否则源值那次强引用没有任何析构点, 就是 R2 泄漏的形状。
+//   V8. 右值层, 产出侧全量: 每个流经 lowering 的、带析构函数的右值结果都必须在产出时
+//       登记显式所有权状态。状态是 Unspecified 就是产出方漏调 set_rvalue_ownership ——
+//       直接 ICE, 不会静默当成"不拥有"。
+//   V9. 右值层, 消费侧双向: 记了账 (move / 接手) 的右值必须确实是 OwnsValue。
+//       BorrowsValue/Unspecified 的右值被当成可接手, 就会吞掉别处的 retain。
+//   V10. 右值层, 生产点全量消费完整性: 每个 OwnsValue 的右值必须恰好被消费一次
+//       (账本里恰好一条 MovedToPlace/MovedToTemp)。没有被接手也没有被物化 = 泄漏。
+//   V11. 外部接手: 按值实参。形参在 callee 侧会被析构 (V12) 时, 调用点必须交一次 +1
+//       (隐式 move / 物化临时量的 move-out / 复制)。值本身不携带 +1 时不要求
+//       (`Option::None` 这类空变体有析构类型但没有 +1)。
+//   V12. 外部接手: 形参归宿 (callee 侧)。每个带析构函数的形参必须在**每条** return
+//       路径上被析构或 move-out。V6 一直假设"参数在入口已拥有", 这一条把假设落实。
+//   V13. 外部接手: 返回值。每个 return 位置都必须登记接手方 (具名局部量的 move-out
+//       或 MovedToReturn); 返回的临时量必须已经 move-out (ownership == Moved)。
+//       有 +1 的返回值必须有 MovedToReturn 的账目 (位置 -> 账目 双向核对)。
+//   V14. 外部接手: 写目标基址 (place 语义)。写目标的基址不得被物化/当值消费 ——
+//       写入不搬走基址所有权, 物化会在语句末析构一个并不由本语句拥有的引用。
+//
+// 负向验证 (人为回归, 每一类都实测到对应判据报 ICE; 实验后源码已还原):
+//   * [NEG-V11] consume_as_arg 不调 insert_copy_if_needed_as (按值实参不交出 +1):
+//     x.py build1 在 stage1 编 std 阶段报 30 次 V11 —— 11 次
+//     "实参携带 +1 但没有接手方账目 (漏登记接手方)" + 19 次
+//     "按值实参交给会析构的形参, 但没有交出 +1 (会少 retain) arg=0/1/2"
+//     (另有 11 次 V10 "拥有型右值没有任何归宿")。证据 out/scratch/arc_leak/log_negA.txt。
+//   * [NEG-V14] 写目标基址改调 as_place_base (物化):
+//     **std 里没有"拥有型右值作写目标基址"的代码** —— 它只在编译器源码里
+//     (`Importer::get().component_name = ...`)。所以 build1 看不到, 要用 NEG 版 stage1
+//     对 ./compiler/zinc.zn 跑 --check-only: 4 次 V14 全落在
+//     hir/builder/mod.zn(34:9)/(35:9), 每个站点两条
+//     "写目标基址被当值消费/物化 (会在语句末过释放)" +
+//     "写目标基址没有登记为 place 语义 (WrittenToPlace)"。
+//     证据 out/scratch/arc_leak/log_negA2.txt。
+//   * [NEG-V12] build() 不登记形参 (它就不会在退出路径上被析构):
+//     build1 在 stage1 编 std 阶段报 21 次 V12
+//     "形参在某条 return 路径上没有析构/移出 (会少释放) [V12] fn=... param=... why=bbN"。
+//   * [NEG-V13] BranchReturn 整段不登记接手方 (不 move-out / 不 consume):
+//     build1 报 965 次 V13 "return 位置没有登记接手方 (move-out / MovedToReturn 丢失)"。
+//     V12/V13 证据 out/scratch/arc_leak/log_negB.txt。
+//   V10 在 V11/V13 的回归里也大量出现 —— 它是"拥有型右值必须有归宿"的兜底,
+//   与新判据互补 (新判据覆盖"归宿存在但接手方不对/没释放")。
+//
+// 注意 V1/V8/V10 只看"可达/登记过"的右值: 死代码 (panic/return 之后的语句) 里物化出来的
+// 临时量不会被消费, 也不需要析构, 不能在编译期误报。
+//
+// 负向验证 (本提交实测, 两次都立刻在 stage1 编 std 阶段报出来, 不会静默进入自举;
+// 实验后源码已还原, 证据在 out/scratch/arc_leak/log_neg_v8.txt / log_neg_v10.txt):
+//   * 去掉 FnCallValue 的 set_rvalue_ownership(..., OwnsValue) ->
+//     V8 "右值结果没有显式所有权状态 (产出方漏设)", 报在每个有析构的调用结果上。
+//   * 让 insert_copy_if_needed 对拥有型右值直接 return (不做 mark_rvalue_consumed) ->
+//     V10 "拥有型右值没有任何归宿 (没有被接手, 也没有被物化析构)"。
+impl LivenessChecker {
+    fn verify_drops(&self) -> HashMap<UInt, UInt> {
+        let mut count: HashMap<UInt, UInt> = HashMap::new();   // 真实析构点个数
+        let mut written: HashSet<UInt> = HashSet::new();       // 可达块里被写入过的局部量
+        for bb in self.cfg.basic_blocks {
+            // 本基本块里"当前已经析构、还没有重新初始化"的局部量。
+            // 赋值语句会先析构旧值再写入 (drop_lvalue + WriteValue), 所以只有
+            // "析构之后没有再写入又析构一次"才是真正的 double drop。
+            let mut dead_in_bb: HashSet<UInt> = HashSet::new();
+            for s in bb.steps {
+                if s.value is w: *WriteValue {
+                    if w.dst is local: *LocalVar {
+                        let vs = local.sym_var;
+                        if !vs.is_const() && !vs.is_static() {
+                            let key = vs as *raw VarSymbol as UInt;
+                            dead_in_bb.remove(&key);
+                            written.insert(key);
+                        }
+                    }
+                } else if s.value is d: *DtorValue {
+                    if d.is_trivial || d.skipped {
+                        continue;
+                    }
+                    if d.src is local: *LocalVar {
+                        let vs = local.sym_var;
+                        if vs.is_const() || vs.is_static() {
+                            continue;
+                        }
+                        let key = vs as *raw VarSymbol as UInt;
+                        if dead_in_bb.contains(&key) {
+                            self.ice(vs, "同一个基本块里同一局部量被析构了两次 (double drop)");
+                        }
+                        dead_in_bb.insert(key);
+                        if count.at(&key) is Some(c) {
+                            count.insert(key, c + 1);
+                        } else {
+                            count.insert(key, 1_u);
+                        }
+                    }
+                    // 注意: 赋值语句为覆盖旧值产生的析构, 目标可能是字段/解引用访问,
+                    // 不属于"局部量所有权"的范畴, 这里不检查。
+                }
+            }
+        }
+
+        // V1 / V3: 拥有型临时量必须有归宿, 已 move-out 的不能有析构
+        for t in self.cfg.temps {
+            if t.sym.is_const() || t.sym.is_static() {
+                continue;
+            }
+            let key = t.sym as *raw VarSymbol as UInt;
+            let dropped = count.at(&key) is Some(_);
+            if t.ownership is Ownership::Moved {
+                if dropped {
+                    self.ice(t.sym, "已经被 move-out 的临时量仍然被析构");
+                }
+                continue;
+            }
+            if !has_destructor(t.sym.stype) {
+                continue;
+            }
+            // 块以 panic 结尾时没有正常出口: panic 终止进程, 不需要析构
+            let sc = *self.cfg.drop_scopes.index(t.scope).deref();
+            if sc.no_exit {
+                continue;
+            }
+            // 死代码里物化出来的临时量: 没有任何可达引用, 也没有值需要释放
+            if !written.contains(&key) {
+                continue;
+            }
+            if !dropped {
+                let fname = self.cfg.sym.mangle_name();
+                let sid: UInt = t.scope;
+                let kind = self.scope_kind_name(sid);
+                let msg = f"拥有所有权的临时量没有任何析构点 (会泄漏) [fn=$(fname) scope=$(sid) kind=$(kind)]";
+                self.ice(t.sym, msg.as_str().deref());
+            }
+        }
+        return count;
+    }
+
+    // V6 / V7 / V8 / V9 / V10: 右值层的所有权核对 (状态表见 RValueState, 账本见 RValueAccount)。
+    fn verify_rvalue_ownership(&self, drop_counts: &HashMap<UInt, UInt>) {
+        let mut accounted: HashSet<UInt> = HashSet::new();
+        for acc in self.cfg.rvalue_accounts {
+            if accounted.contains(&acc.rv_id) {
+                self.ice_span(acc.span, "同一个拥有型右值被消费了两次 (double move)");
+                continue;
+            }
+            accounted.insert(acc.rv_id);
+
+            // V9: 消费侧双向 —— 被接手的必须确实是产出方声明为 OwnsValue 的右值。
+            let mut owned = false;
+            let mut has_dtor = false;
+            if self.cfg.rvalue_state_map.at(&acc.rv_id) is Some(st) {
+                if st.ownership is RValueOwnership::OwnsValue {
+                    owned = true;
+                    has_dtor = st.has_dtor;
+                }
+            }
+            if !owned {
+                self.ice_span(acc.span, "把不拥有所有权的右值当成了可接手 (会吞掉别处的 retain) [V9]");
+                continue;
+            }
+            // 没有析构函数的类型没有任何 +1 需要释放: 不需要归宿检查
+            // (账本本身也不该为它建立, rv_owns 已按 has_copy_fn/has_destructor 过滤)
+            if !has_dtor {
+                continue;
+            }
+
+            if acc.consumption is RValueConsumption::MovedToTemp {
+                if acc.temp == 0_u {
+                    self.ice_span(acc.span, "拥有型右值的所有权交给临时量, 但没有记录临时量");
+                    continue;
+                }
+                if self.cfg.temp_map.at(&acc.temp) is None {
+                    self.ice_span(acc.span, "拥有型右值的所有权交给了一个不存在的临时量");
+                    continue;
+                }
+                if !self.temp_home_is_accounted(acc.temp, drop_counts) {
+                    self.ice_span(acc.span, "接手拥有型右值的临时量没有被析构/移出 (会泄漏)");
+                }
+            } else {
+                // V6: 所有权直接落进某个位置。目标是具名局部量时做路径敏感的归宿检查;
+                // 目标是字段/索引/解引用时所有权属于容器 (容器的账目覆盖); dst 为 None 时
+                // 是实参/返回值/聚合体元素这类"外部"归宿 (由被调用方/容器/调用者接手)。
+                if acc.dst is Some(lv) {
+                    self.verify_place_home(acc, lv, drop_counts);
+                }
+            }
+        }
+
+        // V8: 产出侧全量 —— 带析构函数的结果必须有显式状态。
+        for st in self.cfg.rvalue_states {
+            if !st.has_dtor {
+                continue;
+            }
+            if st.ownership is RValueOwnership::Unspecified {
+                self.ice_span(st.span, "右值结果没有显式所有权状态 (产出方漏设) [V8]");
+            }
+        }
+
+        // V10: 生产点全量消费完整性 —— OwnsValue 必须恰好一次被接手。
+        for st in self.cfg.rvalue_states {
+            if !st.has_dtor {
+                continue;
+            }
+            if st.ownership is RValueOwnership::OwnsValue {
+                if !accounted.contains(&st.rv_id) {
+                    self.ice_span(st.span, "拥有型右值没有任何归宿 (没有被接手, 也没有被物化析构) [V10]");
+                }
+            }
+        }
+
+        // V7: 复制拥有型右值进临时量时, 源值必须已经有归宿。
+        for bb in self.cfg.basic_blocks {
+            for s in bb.steps {
+                if s.value is cv: *CopyValue {
+                    if !cv.from_temp_init {
+                        continue;
+                    }
+                    let key = cv.src as *raw RValue as UInt;
+                    if self.cfg.rvalue_state_map.at(&key) is Some(st) {
+                        if st.ownership is RValueOwnership::OwnsValue {
+                            if !accounted.contains(&key) {
+                                self.ice_span(
+                                    cv.src.expr_node().span(),
+                                    "拥有型右值被复制进临时量, 但源值的那次强引用没有归宿 (R2 回归) [V7]",
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // V11/V12/V13/V14: "外部接手方"核对 (实参 / 形参 / 返回值 / 写目标基址)。
+    // 这三类消费点的 dst 都是 None —— 以前只能靠外部信任 "接手方会自己释放"。
+    // 现在每一类都有显式账目 (RValueTransfer) 与可执行的判据。
+    fn verify_transfers(&self) {
+        // 每类的账目 rv_id 集合: 用于双向核对 (账目的 kind 必须出现在对应位置)
+        let mut arg_ids: HashSet<UInt> = HashSet::new();
+        let mut ret_ids: HashSet<UInt> = HashSet::new();
+        let mut place_ids: HashSet<UInt> = HashSet::new();
+        // 登记过接手方的 return 基本块 (V13 用它核对每个 return 位置)
+        let mut ret_bbs: HashSet<UInt> = HashSet::new();
+
+        for tr in self.cfg.rvalue_transfers {
+            if tr.kind is TransferKind::ByValueArg {
+                // V11: 形参会释放 => 调用点必须交出一次 +1
+                if tr.receiver_has_dtor && tr.value_owns_dtor && !tr.transfers_ownership {
+                    let idx = tr.index;
+                    let msg = f"按值实参交给会析构的形参, 但没有交出 +1 (会少 retain) [V11] arg=$(idx)";
+                    self.ice_span(tr.span, msg.as_str().deref());
+                }
+                if tr.rv_id != 0 {
+                    arg_ids.insert(tr.rv_id);
+                    // 实参位置不该出现 place 语义
+                    if self.account_is_place(tr.rv_id) {
+                        self.ice_span(tr.span, "实参被当成了写目标 (place 语义) 消费 [V11]");
+                    }
+                }
+            } else if tr.kind is TransferKind::ReturnValue {
+                // V13: 有 +1 的返回值必须有归宿 (move-out / MovedToReturn / 复制)
+                ret_bbs.insert(tr.bb);
+                if tr.value_owns_dtor && !tr.transfers_ownership {
+                    self.ice_span(tr.span, "返回值带析构但没有任何一次 move-out/复制 (会少 retain) [V13]");
+                }
+                if tr.rv_id != 0 {
+                    ret_ids.insert(tr.rv_id);
+                    if self.account_is_place(tr.rv_id) {
+                        self.ice_span(tr.span, "返回值被当成了写目标 (place 语义) 消费 [V13]");
+                    }
+                }
+            } else {
+                // V14: 写目标基址是 place 语义: 不接手所有权, 不得物化
+                if tr.transfers_ownership {
+                    self.ice_span(
+                        tr.span, "写目标基址被当值消费/物化 (会在语句末过释放) [V14]");
+                }
+                if tr.rv_id != 0 {
+                    place_ids.insert(tr.rv_id);
+                    if !self.account_is_place(tr.rv_id) {
+                        self.ice_span(
+                            tr.span, "写目标基址没有登记为 place 语义 (WrittenToPlace) [V14]");
+                    }
+                }
+            }
+        }
+
+        // 双向核对: 账目的 kind 必须与它所在的位置一致
+        for acc in self.cfg.rvalue_accounts {
+            if acc.consumption is RValueConsumption::MovedToArg {
+                if !arg_ids.contains(&acc.rv_id) {
+                    self.ice_span(acc.span, "按值实参的账目没有对应的实参位置 [V11]");
+                }
+            } else if acc.consumption is RValueConsumption::MovedToReturn {
+                if !ret_ids.contains(&acc.rv_id) {
+                    self.ice_span(acc.span, "返回值的账目没有对应的 return 位置 [V13]");
+                }
+            } else if acc.consumption is RValueConsumption::WrittenToPlace {
+                if !place_ids.contains(&acc.rv_id) {
+                    self.ice_span(acc.span, "place 语义的账目没有对应的写目标基址 [V14]");
+                }
+            }
+        }
+
+        // 双向的另一半: 位置 -> 账目。实参/返回值位置上一旦有"携带 +1"的值, 就必须有
+        // 对应接手方的账目 —— 这样即使某个消费点整段被删掉 (没有登记 transfer),
+        // 也能被查出来。
+        for bb in self.cfg.basic_blocks {
+            for s in bb.steps {
+                if s.value is fc: *FnCallValue {
+                    for a in fc.desugared_args {
+                        self.check_arg_site(a);
+                    }
+                } else if s.value is mc: *MethodCallValue {
+                    if mc.desugared_receiver is Some(r) {
+                        self.check_arg_site(r);
+                    }
+                    for a in mc.desugared_args {
+                        self.check_arg_site(a);
+                    }
+                }
+            }
+            if bb.terminator is Some(t) {
+                if t is ret: *BrRet {
+                    if ret.ret_val is Some(rv) {
+                        self.check_ret_site(rv);
+                    }
+                }
+            }
+        }
+
+        // V12: 形参归宿 (callee 侧)。V6 假设"参数在入口已拥有", 这里把假设变成可核对的:
+        // 每个带析构函数的形参在每条 return 路径上都必须被析构或 move-out。
+        for p in self.cfg.params() {
+            if !has_destructor(p.stype) {
+                continue;
+            }
+            let key = p as *raw VarSymbol as UInt;
+            let (ok, why) = self.local_handled_on_all_returns(key);
+            if !ok {
+                let fname = self.cfg.sym.mangle_name();
+                let pname = p.short_name();
+                let msg = f"形参在某条 return 路径上没有析构/移出 (会少释放) [V12] fn=$(fname) param=$(pname) why=$(why)";
+                self.ice(p, msg.as_str().deref());
+            }
+        }
+
+        // V13: return 的值不能在返回块里被析构; 返回的临时量必须已经 move-out。
+        for bb in self.cfg.basic_blocks {
+            if bb.terminator is None {
+                continue;
+            }
+            let t = bb.terminator.get_or_panic();
+            if !(t is type *BrRet) {
+                continue;
+            }
+            if t is ret: *BrRet {
+                if ret.ret_val is Some(rv) {
+                    // (a) 每个 return 位置都必须登记过接手方 (move-out 或 MovedToReturn)。
+                    //     少了这一条 = 返回路径的 move-out 被删掉 (调用点拿到没有归宿的值)。
+                    let bkey = bb as *raw BasicBlock as UInt;
+                    if !ret_bbs.contains(&bkey) {
+                        self.ice_span(
+                            rv.expr_node().span(),
+                            "return 位置没有登记接手方 (move-out / MovedToReturn 丢失) [V13]",
+                        );
+                    }
+                    let key = returned_local_key(rv);
+                    if key != 0 {
+                        // (b) 返回的临时量必须已经 move-out。
+                        //     (具名局部量不查这一条: 插值缓冲这类块局部量走的是"复制一份再
+                        //      结束自己的存储期", ret_val 读的仍是那块存储, 对引用计数类型
+                        //      是正确的; 对不可复制的 Drop 类型由 move-out 登记那条兜住。)
+                        if self.cfg.temp_map.at(&key) is Some(tv) {
+                            if has_destructor(tv.sym.stype) && !(tv.ownership is Ownership::Moved) {
+                                self.ice_span(
+                                    rv.expr_node().span(),
+                                    "return 的临时量没有被 move-out (会 use after free/重复释放) [V13]",
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn account_is_place(&self, rv_id: UInt) -> Bool {
+        if self.cfg.rvalue_account_map.at(&rv_id) is Some(acc) {
+            return acc.consumption is RValueConsumption::WrittenToPlace;
+        }
+        return false;
+    }
+
+    // 这个"值"是否携带一次需要有人释放的 +1 (与 CfgBuilder::value_carries_plus_one 一致)。
+    fn rvalue_carries_plus_one(&self, v: *RValue) -> Bool {
+        // 返回值/尾表达式被提成 LoadValue step (见 builder 的 return 处理) 时,
+        // "携带 +1"的性质取决于被读取的原右值 —— 看穿这一层再判断。
+        if v is l: *LoadValue {
+            return self.rvalue_carries_plus_one(l.src as *RValue);
+        }
+        let key = v as *raw RValue as UInt;
+        if self.cfg.rvalue_state_map.at(&key) is Some(st) {
+            if st.ownership is RValueOwnership::OwnsValue {
+                let sty = v.get_stype();
+                if has_copy_fn(sty) || has_destructor(sty) {
+                    return true;
+                }
+            }
+        }
+        if v is rd: *ReadValue {
+            let tkey = rd.sym_var as *raw VarSymbol as UInt;
+            if self.cfg.temp_map.at(&tkey) is Some(t) {
+                return t.home_rv != 0 && t.ownership is Ownership::Owned;
+            }
+        }
+        if v is type *MovedValue {
+            return true;
+        }
+        return false;
+    }
+
+    // V11 位置 -> 账目: 实参位置上的 +1 必须有 MovedToArg 的接手方账目
+    fn check_arg_site(&self, a: *RValue) {
+        // 显式 `move x`: +1 由 MovedValue 自己带走 (源局部量已被标成 Moved), 没有账目
+        if value_is_moved(a) {
+            return;
+        }
+        let key = a as *raw RValue as UInt;
+        if self.cfg.rvalue_account_map.at(&key) is Some(acc) {
+            if acc.consumption is RValueConsumption::MovedToArg {
+                return;
+            }
+            // 漏斗先把值物化 (MovedToTemp), 再在实参处 move-out: 仍然交出了 +1
+            if acc.consumption is RValueConsumption::MovedToTemp {
+                return;
+            }
+            self.ice_span(a.expr_node().span(), "实参的账目不是 MovedToArg (被当成别的消费点) [V11]");
+            return;
+        }
+        if self.rvalue_carries_plus_one(a) {
+            self.ice_span(a.expr_node().span(), "实参携带 +1 但没有接手方账目 (漏登记接手方) [V11]");
+        }
+    }
+
+    // V13 位置 -> 账目: return 位置上的 +1 必须有 MovedToReturn 的接手方账目
+    fn check_ret_site(&self, rv: *RValue) {
+        if value_is_moved(rv) {
+            return;
+        }
+        // 返回具名局部量/临时量: 是 move-out, 由 V13 的"返回块不得析构"那一半检查
+        if returned_local_key(rv) != 0 {
+            return;
+        }
+        // 返回值的读取被提成 LoadValue step (见 builder 的 BranchReturn/尾表达式):
+        // 接手方账目登记在**被读取的原右值**上, 这里看穿 LoadValue 再核对。
+        let mut site: *RValue = rv;
+        if site is l: *LoadValue {
+            site = l.src as *RValue;
+        }
+        let key = site as *raw RValue as UInt;
+        if self.cfg.rvalue_account_map.at(&key) is Some(acc) {
+            if acc.consumption is RValueConsumption::MovedToReturn {
+                return;
+            }
+            if acc.consumption is RValueConsumption::MovedToTemp {
+                return;
+            }
+            self.ice_span(rv.expr_node().span(), "返回值的账目不是 MovedToReturn (被当成别的消费点) [V13]");
+            return;
+        }
+        if self.rvalue_carries_plus_one(rv) {
+            self.ice_span(rv.expr_node().span(), "返回值携带 +1 但没有接手方账目 (漏登记接手方) [V13]");
+        }
+    }
+
+    // V6: 所有权落进的目标位置是否有归宿。
+    fn verify_place_home(&self, acc: *RValueAccount, lv: *LValue, drop_counts: &HashMap<UInt, UInt>) {
+        if lv is local: *LocalVar {
+            let vs = local.sym_var;
+            if vs.is_const() || vs.is_static() {
+                return;
+            }
+            let key = vs as *raw VarSymbol as UInt;
+            if self.cfg.temp_map.at(&key) is Some(_) {
+                // 临时量: 走临时的归宿检查 (析构 >=1 或移出)
+                if !self.temp_home_is_accounted(key, drop_counts) {
+                    self.ice_span(acc.span, "所有权移进临时量, 但临时量没有归宿 (会泄漏) [V6]");
+                }
+                return;
+            }
+            // 具名局部量: 路径敏感 —— 到每个 return 的每条路径都要析构或移出
+            let (ok, why) = self.local_handled_on_all_returns(key);
+            if !ok {
+                let (nd, nm) = self.count_handled_ops(key);
+                let nret = self.count_ret_blocks();
+                let fname = self.cfg.sym.mangle_name();
+                let msg = f"所有权移进的具名局部量在某条 return 路径上没有析构/移出 (泄漏路径) [V6] fn=$(fname) dtors=$(nd) moves=$(nm) rets=$(nret) why=$(why)";
+                self.ice(vs, msg.as_str().deref());
+            }
+            return;
+        }
+        // 字段/索引/解引用/元组访问: 所有权落进容器, 由容器的析构负责。
+        return;
+    }
+
+    // V6 的核心: must 数据流。对局部量 key 计算"块末尾是否已经处理掉 (析构或移出)"。
+    //   entry[b] = AND(preds 的 out)   (入口块 false)
+    //   out[b]   = 在 entry[b] 基础上顺序扫描 b: WriteValue 清零, DtorValue/MovedValue 置位
+    // 取最大不动点 (初值全 true), 然后要求每个可达的 BrRet 块 out 为 true。
+    // panic 终止进程, 不需要处理。
+    fn local_handled_on_all_returns(&self, key: UInt) -> (Bool, String) {
+        // 函数参数在入口就已经持有所有权; 具名局部量在入口还不存在 (没有东西要释放)。
+        // 这个区别很重要: 参数必须在每条出口析构/移出, 而局部量只需要在"它被写入之后"
+        // 的每条路径上被处理 —— 声明之前的 return 显然不需要析构它。
+        let start_handled = !self.var_is_param(key);
+        let mut out_handled: HashSet<UInt> = (type HashSet<UInt>)::new();
+        // 初值: 全部块视为已处理 (最大不动点)
+        for bb in self.cfg.basic_blocks {
+            out_handled.insert(bb as *raw BasicBlock as UInt);
+        }
+        let start = *self.cfg.basic_blocks.index(0).deref();
+        let start_key = start as *raw BasicBlock as UInt;
+        if !start_handled {
+            out_handled.remove(&start_key);
+        }
+
+        let mut changed = true;
+        let mut rounds: UInt = 0_u;
+        let limit = self.cfg.basic_blocks.len() + 2_u;
+        while changed && rounds < limit {
+            changed = false;
+            rounds += 1_u;
+            for bb in self.cfg.basic_blocks {
+                let mut entry = true;
+                if (bb as *raw BasicBlock as UInt) == start_key {
+                    entry = start_handled;
+                } else {
+                    for p in bb.incomings {
+                        let pk = p as *raw BasicBlock as UInt;
+                        if !out_handled.contains(&pk) {
+                            entry = false;
+                            break;
+                        }
+                    }
+                }
+                let h = self.block_end_handled(bb, entry, key);
+                let bk = bb as *raw BasicBlock as UInt;
+                let was = out_handled.contains(&bk);
+                if h {
+                    if !was {
+                        out_handled.insert(bk);
+                        changed = true;
+                    }
+                } else {
+                    if was {
+                        out_handled.remove(&bk);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        for bb in self.cfg.basic_blocks {
+            if bb.terminator is Some(t) {
+                if t is type *BrRet {
+                    if !out_handled.contains(&(bb as *raw BasicBlock as UInt)) {
+                        let bidx = bb.index;
+                        let bdbg = bb.debug_string;
+                        let why = f"bb$(bidx)/$(bdbg)";
+                        return (false, move why);
+                    }
+                }
+            }
+        }
+        return (true, String::new());
+    }
+
+    // 这个局部量是不是函数参数 (参数在函数入口就持有所有权)
+    fn var_is_param(&self, key: UInt) -> Bool {
+        for p in self.cfg.params() {
+            if (p as *raw VarSymbol as UInt) == key {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn count_ret_blocks(&self) -> UInt {        let mut n: UInt = 0_u;
+        for bb in self.cfg.basic_blocks {
+            if bb.terminator is Some(t) {
+                if t is type *BrRet {
+                    n += 1_u;
+                }
+            }
+        }
+        return n;
+    }
+
+    // 顺序扫描一个块, 返回块末尾 "key 已经被析构/移出" 是否为真。
+    fn block_end_handled(&self, bb: *BasicBlock, entry_handled: Bool, key: UInt) -> Bool {
+        let mut h = entry_handled;
+        for s in bb.steps {
+            if s.value is w: *WriteValue {
+                if w.dst is local: *LocalVar {
+                    if (local.sym_var as *raw VarSymbol as UInt) == key {
+                        h = false;
+                    }
+                }
+            } else if s.value is d: *DtorValue {
+                if d.src is local: *LocalVar {
+                    if (local.sym_var as *raw VarSymbol as UInt) == key {
+                        h = true;
+                    }
+                }
+            } else if s.value is m: *MovedValue {
+                if m.src is rd: *ReadValue {
+                    if (rd.sym_var as *raw VarSymbol as UInt) == key {
+                        h = true;
+                    }
+                }
+            }
+        }
+        // return 具名局部量本身是 move-out (register_path_exit 把它从析构里排除,
+        // 不额外发 MovedValue): 这条路径上它也被处理掉了。
+        // 与 returned_local 一样, return 的值可能被 Cast/Context/类型标注/MovedValue 包着。
+        if bb.terminator is Some(t) {
+            if t is ret: *BrRet {
+                if ret.ret_val is Some(rv) {
+                    if rvalue_is_local_read(rv, key) {
+                        h = true;
+                    }
+                }
+            }
+        }
+        return h;
+    }
+
+    // 诊断辅助: 这个局部量在整个 CFG 里的析构/移出指令条数
+    fn count_handled_ops(&self, key: UInt) -> (UInt, UInt) {
+        let mut nd: UInt = 0_u;
+        let mut nm: UInt = 0_u;
+        for bb in self.cfg.basic_blocks {
+            for s in bb.steps {
+                if s.value is d: *DtorValue {
+                    if d.src is local: *LocalVar {
+                        if (local.sym_var as *raw VarSymbol as UInt) == key {
+                            nd += 1_u;
+                        }
+                    }
+                } else if s.value is m: *MovedValue {
+                    if m.src is rd: *ReadValue {
+                        if (rd.sym_var as *raw VarSymbol as UInt) == key {
+                            nm += 1_u;
+                        }
+                    }
+                }
+            }
+        }
+        return (nd, nm);
+    }
+
+    // 接手某个右值所有权的临时量是否已经"结清":
+    //   - 类型没有析构函数: 没有任何 +1 需要释放, 视为结清;
+    //   - 写它的指令不在任何可达块里 (死代码), 或所在作用域以 panic 结尾:
+    //     没有值需要释放 / 进程会终止, 视为结清;
+    //   - 临时量被 move-out (ownership == Moved): 必须有一条 MovedValue;
+    //   - 否则至少要有一条真实析构指令 (0 条 = 泄漏)。
+    // 不要求"全局恰好 1 条": 同一个 Statement 作用域的临时量可能在语句出口和 return
+    // 提前退出路径上各有一条析构, 那是不同路径上的同一份所有权 (重复析构由 V2 按基本块拦)。
+    fn temp_home_is_accounted(&self, key: UInt, drop_counts: &HashMap<UInt, UInt>) -> Bool {
+        let t = self.cfg.temp_map.at(&key).get_or_panic();
+        if !has_destructor(t.sym.stype) {
+            return true;
+        }
+        let sc = *self.cfg.drop_scopes.index(t.scope).deref();
+        if sc.no_exit {
+            return true;
+        }
+        let mut written = false;
+        for bb in self.cfg.basic_blocks {
+            for s in bb.steps {
+                if s.value is w: *WriteValue {
+                    if w.dst is local: *LocalVar {
+                        if (local.sym_var as *raw VarSymbol as UInt) == key {
+                            written = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !written {
+            return true;
+        }
+        if t.ownership is Ownership::Moved {
+            for bb in self.cfg.basic_blocks {
+                for s in bb.steps {
+                    if s.value is m: *MovedValue {
+                        if m.src is rd: *ReadValue {
+                            if (rd.sym_var as *raw VarSymbol as UInt) == key {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+        let mut n: UInt = 0;
+        if drop_counts.at(&key) is Some(c) {
+            n = c;
+        }
+        return n >= 1;
+    }
+
+    fn ice_span(&self, span: SourceSpan, msg: Str) {
+        DiagnosticEngine::get().emit({
+            .span = move span,
+            .severity = Severity::ICE,
+            .msg_zn = f"所有权自检失败: $(msg)",
+            .msg_en = f"ownership verifier failed: $(msg)",
+        }: DiagItem);
+    }
+
+    fn scope_kind_name(&self, sid: UInt) -> Str {
+        let sc = *self.cfg.drop_scopes.index(sid).deref();
+        if sc.kind is DropScopeKind::Statement {
+            return "Statement";
+        }
+        if sc.kind is DropScopeKind::Function {
+            return "Function";
+        }
+        if sc.kind is DropScopeKind::LoopIteration {
+            return "LoopIteration";
+        }
+        return "Block";
+    }
+
+    fn ice(&self, vs: *VarSymbol, msg: Str) {
+        DiagnosticEngine::get().emit({
+            .span = vs.var_node.span(),
+            .severity = Severity::ICE,
+            .msg_zn = f"所有权自检失败: $(msg)",
+            .msg_en = f"ownership verifier failed: $(msg)",
+        }: DiagItem);
+    }
+}
+
+// return 的值是不是"某个具名局部量本身" (move-out)。
+// 与 CfgBuilder::returned_local 的展开保持一致: Cast/Context/类型标注/MovedValue 都要穿透。
+fn rvalue_is_local_read(v: *RValue, key: UInt) -> Bool {
+    // 返回值被提成 LoadValue step (见 builder 的 return 处理): 看穿读取层。
+    if v is l: *LoadValue {
+        return rvalue_is_local_read(l.src as *RValue, key);
+    }
+    if v is rd: *ReadValue {
+        return (rd.sym_var as *raw VarSymbol as UInt) == key;
+    }
+    if v is c: *CastValue {
+        return rvalue_is_local_read(c.operand, key);
+    }
+    if v is c: *ContextValue {
+        return rvalue_is_local_read(c.inner, key);
+    }
+    if v is t: *TypeAscriptionValue {
+        return rvalue_is_local_read(t.inner, key);
+    }
+    if v is m: *MovedValue {
+        return rvalue_is_local_read(m.src, key);
+    }
+    return false;
+}
+
+// 这个值是不是显式 `move x` 的结果 (可能被 Context/类型标注/同类型转换包着)。
+// `move x` 自带那次 +1, 源局部量被标成 Moved, 所以它不需要"接手方账目"。
+fn value_is_moved(v: *RValue) -> Bool {
+    if v is type *MovedValue {
+        return true;
+    }
+    if v is c: *ContextValue {
+        return value_is_moved(c.inner);
+    }
+    if v is t: *TypeAscriptionValue {
+        return value_is_moved(t.inner);
+    }
+    if v is c: *CastValue {
+        if c.resolved_kind is ResolvedCastKind::SameType {
+            return value_is_moved(c.operand);
+        }
+    }
+    return false;
+}
+
+// return 的值"是哪一块存储"(具名局部量或临时量); 0 表示不是存储读取。
+fn returned_local_key(v: *RValue) -> UInt {
+    // 返回值被提成 LoadValue step (见 builder 的 return 处理): 看穿读取层。
+    if v is l: *LoadValue {
+        return returned_local_key(l.src as *RValue);
+    }
+    if v is rd: *ReadValue {
+        return rd.sym_var as *raw VarSymbol as UInt;
+    }
+    if v is c: *CastValue {
+        return returned_local_key(c.operand);
+    }
+    if v is c: *ContextValue {
+        return returned_local_key(c.inner);
+    }
+    if v is t: *TypeAscriptionValue {
+        return returned_local_key(t.inner);
+    }
+    if v is m: *MovedValue {
+        return returned_local_key(m.src);
+    }
+    return 0_u;
+}
