@@ -73,7 +73,7 @@ LLVM_LIBS = [
 
 STAGE0_URL = os.environ.get(
     "ZINC_STAGE0_URL",
-    "https://github.com/zinc-lang/zinc/releases/download/v0.0.4/stage0.zip",
+    "https://github.com/zinc-lang/zinc/releases/download/v0.0.5/stage0.zip",
 )
 
 # Zinc's codegen shells out to these binaries at out/llvm/bin/{opt,llc}.
