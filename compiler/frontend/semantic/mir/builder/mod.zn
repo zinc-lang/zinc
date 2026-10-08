@@ -8,6 +8,7 @@ use ::self::frontend::semantic::hir::builder::resolver::*;
 use ::self::frontend::semantic::hir::checker::type_cast::*;
 use ::self::frontend::syntax::ast::*;
 use ::self::frontend::syntax::token::*;
+use ::self::frontend::source_code::*;
 use std::collections::hashset::HashSet;
 
 struct CfgBuilder {
@@ -16,17 +17,56 @@ struct CfgBuilder {
     sym: *Symbol, // FuncSymbol 或者 LambdaSymbol
     basic_blocks: Vec<*BasicBlock>,
     block_stack: Vec<*BlockSentence>,
-    // 当前语句产生的临时变量 (语句结束时由 record_temps_drop_point 登记析构点后移出)
-    temps: Vec<*TempVar>,
     // 本函数所有临时变量, 以及按符号查找的表
     all_temps: Vec<*TempVar>,
     temp_map: HashMap<UInt, *TempVar>,
     cached_lvalue: HashMap<UInt, *LValue>,
     cached_rvalue: HashMap<UInt, *RValue>,
+    // 已经物化过的右值 -> 读它的 ReadValue。物化必须幂等:
+    // match 的 scrutinee 节点会在 BranchMultiple 和每个 arm 的
+    // PatternMatchValue 里被翻译到同一个 MIR 值, 不能建两个临时量
+    // (否则源值的那次强引用被两个析构点释放)。
+    materialized: HashMap<UInt, *RValue>,
 
     // 循环开始的地方和结束的地方, key 是 *LoopSentence
     loop_start: HashMap<UInt, *BasicBlock>,
     loop_end: HashMap<UInt, *BasicBlock>,
+    // 循环 -> 离开循环体块时应该退出的作用域 (break / continue 用)
+    loop_body_scope: HashMap<UInt, UInt>,
+    loop_continue_scope: HashMap<UInt, UInt>,
+    // 循环 -> 循环条件所在的"每轮迭代"作用域
+    loop_iter_scope: HashMap<UInt, UInt>,
+    // 块 -> 它的析构作用域
+    block_scope: HashMap<UInt, UInt>,
+
+    // 析构作用域树 (lowering 只登记, 析构指令由 checker 统一插入)
+    drop_scopes: Vec<*DropScope>,
+    drop_scope_stack: Vec<UInt>,
+    drop_exits: Vec<*DropExit>,
+    // 已被更内层作用域接管的具名局部量 (块退出时跳过)
+    claimed_vars: HashSet<UInt>,
+    // 右值产出时登记的显式所有权状态 (见 RValueState)。消费侧只查这张表。
+    rvalue_states: Vec<*RValueState>,
+    rvalue_state_map: HashMap<UInt, *RValueState>,
+    // 右值消费账本 (见 RValueAccount)。
+    // 右值自带的那次强引用必须有唯一的归宿, 这里显式登记每一次"消费"。
+    rvalue_accounts: Vec<*RValueAccount>,
+    rvalue_account_map: HashMap<UInt, *RValueAccount>,
+    // 外部接手账本 (见 RValueTransfer): 实参 / 返回值 / 写目标基址。
+    rvalue_transfers: Vec<*RValueTransfer>,
+    rv_depth: UInt,
+    suppress_depth: UInt,
+}
+
+// insert_copy_if_needed 的结果: 这次"按值消费"到底发生了什么。
+// 三个字段正好是外部接手判据 (实参/返回值) 的输入。
+struct TransferOutcome {
+    // 是否真的交出了一次 +1 (隐式 move / 物化临时量的 move-out / 复制)
+    transferred: Bool,
+    // 被记账的拥有型右值 (指针); 没有则为 0
+    rv_id: UInt,
+    // 是否发出了一条 CopyValue
+    copied: Bool,
 }
 
 struct BasicBlockChunk {
@@ -42,13 +82,28 @@ impl CfgBuilder {
             .sym = move sym,
             .basic_blocks = (type Vec<*BasicBlock>)::new(),
             .block_stack = (type Vec<*BlockSentence>)::new(),
-            .temps = (type Vec<*TempVar>)::new(),
             .all_temps = (type Vec<*TempVar>)::new(),
             .temp_map = (type HashMap<UInt, *TempVar>)::new(),
             .cached_lvalue = (type HashMap<UInt, *LValue>)::new(),
             .cached_rvalue = (type HashMap<UInt, *RValue>)::new(),
+            .materialized = (type HashMap<UInt, *RValue>)::new(),
             .loop_start = (type HashMap<UInt, *BasicBlock>)::new(),
             .loop_end = (type HashMap<UInt, *BasicBlock>)::new(),
+            .loop_body_scope = (type HashMap<UInt, UInt>)::new(),
+            .loop_continue_scope = (type HashMap<UInt, UInt>)::new(),
+            .loop_iter_scope = (type HashMap<UInt, UInt>)::new(),
+            .block_scope = (type HashMap<UInt, UInt>)::new(),
+            .drop_scopes = (type Vec<*DropScope>)::new(),
+            .drop_scope_stack = (type Vec<UInt>)::new(),
+            .drop_exits = (type Vec<*DropExit>)::new(),
+            .claimed_vars = (type HashSet<UInt>)::new(),
+            .rvalue_states = (type Vec<*RValueState>)::new(),
+            .rvalue_state_map = (type HashMap<UInt, *RValueState>)::new(),
+            .rvalue_accounts = (type Vec<*RValueAccount>)::new(),
+            .rvalue_account_map = (type HashMap<UInt, *RValueAccount>)::new(),
+            .rvalue_transfers = (type Vec<*RValueTransfer>)::new(),
+            .rv_depth = 0_u,
+            .suppress_depth = 0_u,
         }: CfgBuilder;
     }
 
@@ -68,18 +123,13 @@ impl CfgBuilder {
                 return None;
             }
             let body = fsym.body.get_or_panic();
-            let bb_pair = self.trans_block(body);
-            self.flush_all_temps(bb_pair.end);
-            // drop params
+            let fn_scope = self.push_drop_scope(DropScopeKind::Function);
             for p in self.params() {
-                self.drop_var_sym(move p, bb_pair.end);
+                self.register_owned_var(p);
             }
-            return Some(box {
-                .sym = self.sym,
-                .basic_blocks = bb_pair.topological_order(),
-                .temps = self.all_temps,
-                .temp_map = self.temp_map,
-            }: CFG);
+            let bb_pair = self.trans_block(body);
+            self.pop_drop_scope(fn_scope, bb_pair.end);
+            return Some(self.finish_cfg(bb_pair));
         }
 
         if self.sym is lsym: *LambdaSymbol {
@@ -88,49 +138,202 @@ impl CfgBuilder {
             }
             let body = lsym.body_block.get_or_panic();
 
+            let fn_scope = self.push_drop_scope(DropScopeKind::Function);
+            for p in self.params() {
+                self.register_owned_var(p);
+            }
+
             if lsym.body_expr is Some(expr) {
                 // 表达式体: 翻译成"块的末尾隐式 return 这个表达式"。
                 // 仍然把 body_block 压栈, 这样产生的临时变量会挂在它上面,
                 // 供代码生成阶段分配局部变量。
                 self.block_stack.push(body);
+                let body_scope = self.push_block_scope(body);
                 let bb = self.new_bb();
                 let (rv, end_bb) = self.trans_rvalue(expr, bb);
+                // 尾表达式是 move-out (等价于 return), 不是 drop:
+                // 沿路径退出所有作用域, 但不析构被返回的那个局部量。
+                let mut except_vs: Option<*VarSymbol> = self.returned_local(expr);
+                if except_vs is Some(vs) {
+                    self.record_return_move_out(vs, end_bb);
+                } else {
+                    self.consume_as_return(rv, end_bb);
+                }
+                self.register_path_exit((type Option<UInt>)::None, end_bb, except_vs);
+                // 尾表达式等价于 return: 返回值读取同样必须提成一条 step, 排在 checker
+                // 追加的 DtorValue 之前 (否则 `&*mk()` 这类借用临时量的尾表达式会读到
+                // 已析构的存储)。与 sentences.zn 的 BranchReturn 是同一处修复。
+                let direct_rv = LoadValue::create(rv);
+                end_bb.add_step(direct_rv as *XValue);
                 end_bb.terminator = Some(box {
-                    .ret_val = Some(rv)
+                    .ret_val = Some(direct_rv as *RValue)
                 }: BrRet as *Terminator);
-                self.flush_all_temps(end_bb);
+                self.close_drop_scope(body_scope);
                 self.block_stack.pop();
+                self.close_drop_scope(fn_scope);
 
                 let bb_pair = { .start = move bb, .end = move end_bb }: BasicBlockChunk;
-                for p in self.params() {
-                    self.drop_var_sym(move p, bb_pair.end);
-                }
-                return Some(box {
-                    .sym = self.sym,
-                    .basic_blocks = bb_pair.topological_order(),
-                    .temps = self.all_temps,
-                    .temp_map = self.temp_map,
-                }: CFG);
+                return Some(self.finish_cfg(bb_pair));
             }
 
             let bb_pair = self.trans_block(body);
-            self.flush_all_temps(bb_pair.end);
-            for p in self.params() {
-                self.drop_var_sym(move p, bb_pair.end);
-            }
-            return Some(box {
-                .sym = self.sym,
-                .basic_blocks = bb_pair.topological_order(),
-                .temps = self.all_temps,
-                .temp_map = self.temp_map,
-            }: CFG);
+            self.pop_drop_scope(fn_scope, bb_pair.end);
+            return Some(self.finish_cfg(bb_pair));
         }
 
         return None;
     }
 
-    fn new_bb(&mut self) -> *BasicBlock {
-        let bb = box {
+    fn finish_cfg(&mut self, bb_pair: BasicBlockChunk) -> *CFG {
+        return box {
+            .sym = self.sym,
+            .basic_blocks = bb_pair.topological_order(),
+            .temps = self.all_temps,
+            .temp_map = self.temp_map,
+            .drop_scopes = self.drop_scopes,
+            .drop_exits = self.drop_exits,
+            .claimed_vars = self.claimed_vars,
+            .rvalue_states = self.rvalue_states,
+            .rvalue_state_map = self.rvalue_state_map,
+            .rvalue_accounts = self.rvalue_accounts,
+            .rvalue_account_map = self.rvalue_account_map,
+            .rvalue_transfers = self.rvalue_transfers,
+        }: CFG;
+    }
+
+    // ---------- 析构作用域树 ----------
+    // lowering 只在这里登记"拥有型值 + 它的作用域归属"; 真正的 DtorValue 由
+    // checker 里的 insert_scope_drops 统一插入 (决定析构的地方只有那一处)。
+
+    fn push_drop_scope(&mut self, kind: DropScopeKind) -> UInt {
+        let mut parent: Option<UInt> = None;
+        if !self.drop_scope_stack.is_empty() {
+            let len = self.drop_scope_stack.len();
+            parent = Some(*self.drop_scope_stack.index(len-1).deref());
+        }
+        let id = self.drop_scopes.len();
+        let sc = box {
+            .kind = move kind,
+            .parent = move parent,
+            .vars = (type Vec<*VarSymbol>)::new(),
+            .blk = (type Option<*BlockSentence>)::None,
+            .no_exit = false,
+        }: DropScope;
+        self.drop_scopes.push(move sc);
+        self.drop_scope_stack.push(id);
+        return id;
+    }
+
+    // 块作用域: 析构顺序按 blk.local_vars 逆序 (与局部量声明的逆序一致)
+    fn push_block_scope(&mut self, blk: *BlockSentence) -> UInt {
+        let id = self.push_drop_scope(DropScopeKind::Block);
+        let sc = *self.drop_scopes.index(id).deref();
+        sc.blk = Some(blk);
+        self.block_scope.insert(blk as *raw BlockSentence as UInt, id);
+        return id;
+    }
+
+    // 只关栈, 不登记退出点 (块里含 panic: 正常出口不可达, 而 panic 会终止进程)
+    fn close_drop_scope(&mut self, id: UInt) {
+        let popped = self.drop_scope_stack.pop().get_or_panic();
+        if popped != id {
+            panic "BUG: drop scope stack is unbalanced";
+        }
+    }
+
+    // 标记这个作用域没有正常出口 (块以 panic 结尾): verifier 不对它的局部量要求析构点
+    fn mark_scope_no_exit(&mut self, id: UInt) {
+        let sc = *self.drop_scopes.index(id).deref();
+        sc.no_exit = true;
+    }
+
+    fn current_drop_scope(&self) -> UInt {
+        if self.drop_scope_stack.is_empty() {
+            panic "BUG: drop_scope_stack is empty in CfgBuilder::current_drop_scope.";
+        }
+        let len = self.drop_scope_stack.len();
+        return *self.drop_scope_stack.index(len-1).deref();
+    }
+
+    fn add_owned_var_to_scope(&mut self, scope_id: UInt, vs: *VarSymbol) {
+        let sc = *self.drop_scopes.index(scope_id).deref();
+        sc.vars.push(vs);
+    }
+
+    // 登记一个"当前作用域拥有"的局部量 (临时量 / 模式绑定)
+    fn register_owned_var(&mut self, vs: *VarSymbol) {
+        let sid = self.current_drop_scope();
+        self.add_owned_var_to_scope(sid, vs);
+    }
+
+    // 具名局部量被更内层的作用域接管: 块退出时不再重复析构
+    fn claim_var(&mut self, vs: *VarSymbol) {
+        self.claimed_vars.insert(vs as *raw VarSymbol as UInt);
+    }
+
+    // 关闭作用域: 在 bb 上登记一次"离开这个作用域"
+    fn pop_drop_scope(&mut self, id: UInt, bb: *BasicBlock) {
+        self.add_scope_exit(id, bb);
+        let popped = self.drop_scope_stack.pop().get_or_panic();
+        if popped != id {
+            panic "BUG: drop scope stack is unbalanced";
+        }
+    }
+
+    // 只登记退出点, 不关栈 (循环迭代作用域每轮都要退出多次)。
+    // 同一个作用域在同一个 bb 上只需要登记一次: return 会同时被"路径退出"和
+    // "语句/函数作用域正常关闭"登记, 两条记录产生的析构序列完全相同, 去重后
+    // 就不会有重复的析构指令 (verifier 对同一 bb 的重复析构会报错)。
+    fn add_scope_exit(&mut self, id: UInt, bb: *BasicBlock) {
+        let bb_i = bb as *raw BasicBlock as UInt;
+        for e in self.drop_exits {
+            if e.scope == id && (e.bb as *raw BasicBlock as UInt) == bb_i {
+                return;
+            }
+        }
+        let ex = box {
+            .scope = id,
+            .bb = bb,
+            .except = 0_u,
+        }: DropExit;
+        self.drop_exits.push(move ex);
+    }
+
+    // 提前离开 (return/break/continue): 从最内层作用域一路退出到 target (含 target)。
+    // target 为 None 表示退出到函数作用域 (return)。except 是被 move-out 的局部量。
+    fn register_path_exit(&mut self, target: Option<UInt>, bb: *BasicBlock, except_vs: Option<*VarSymbol>) {
+        let mut except_i: UInt = 0;
+        if except_vs is Some(v) {
+            except_i = v as *raw VarSymbol as UInt;
+        }
+        let mut target_id: UInt = 0;
+        let mut has_target = false;
+        if target is Some(t) {
+            target_id = t;
+            has_target = true;
+        }
+        let mut i = self.drop_scope_stack.len();
+        let mut reached = false;
+        while i > 0 {
+            let sid = *self.drop_scope_stack.index(i-1).deref();
+            let ex = box {
+                .scope = sid,
+                .bb = bb,
+                .except = except_i,
+            }: DropExit;
+            self.drop_exits.push(move ex);
+            if has_target && sid == target_id {
+                reached = true;
+                return;
+            }
+            i -= 1;
+        }
+        if has_target && !reached {
+            panic "BUG: target drop scope is not on the scope stack";
+        }
+    }
+
+    fn new_bb(&mut self) -> *BasicBlock {        let bb = box {
             .index = 0_u,
             .debug_string = String::new(),
             .outside_block = self.nearest_block(),
@@ -154,6 +357,17 @@ impl CfgBuilder {
     }
 
     fn new_temp(&mut self, v: *RValue, bb: *BasicBlock) -> *LocalVar {
+        return self.new_temp_impl(v, bb, true);
+    }
+
+    // 只在"这个值没有别的归宿"的物化点使用: 直接把源值的所有权搬进临时量, 不复制。
+    // 适用于 ExprSentence 丢弃的结果、if/match/while 的 scrutinee —— 这些位置的值
+    // 不会流向别处, 而它自带的那次强引用必须有人释放 (否则就是泄漏)。
+    fn new_owned_temp(&mut self, v: *RValue, bb: *BasicBlock) -> *LocalVar {
+        return self.new_temp_impl(v, bb, false);
+    }
+
+    fn new_temp_impl(&mut self, v: *RValue, bb: *BasicBlock, copy: Bool) -> *LocalVar {
 
         let sty = v.get_stype();
         if sty.is_invalid() {
@@ -162,24 +376,171 @@ impl CfgBuilder {
         let var_sym = VarSymbol::create(v.expr_node().span(), sty);
         self.nearest_block().add_local(var_sym);
 
-        // 登记临时变量: 默认在语句结束时析构 (析构标记由 record_temps_drop_point 插入)
+        // 登记临时变量: 归属当前语句作用域, 析构指令由 checker 的 insert_scope_drops 统一插入
+        let scope_id = self.current_drop_scope();
         let temp = box {
             .sym = var_sym,
-            .drop_step = (type Option<*DtorValue>)::None,
-            .extended = false,
+            .ownership = Ownership::Owned,
+            .scope = scope_id,
+            .home_rv = 0_u,
         }: TempVar;
-        self.temps.push(temp);
+        self.add_owned_var_to_scope(scope_id, var_sym);
         self.all_temps.push(temp);
         self.temp_map.insert(var_sym as *raw VarSymbol as UInt, move temp);
 
         let local = LocalVar::create(v.expr_node().span(), var_sym);
-        if has_copy_fn(sty) {
-            let copy = CopyValue::create(v.expr_node(), v);
-            bb.add_step(move copy as *XValue);
+        // 注意: 复制路径下必须复制一份给临时量 (源值本身的 +1 由它自己的持有者负责)。
+        // 哪个源值可以直接 move (它的 +1 没有别的归宿) 由调用方查显式状态 (rv_owns /
+        // mark_rvalue_consumed): 只有"状态是 OwnsValue 且第一次被消费"才走 move。
+        // 复制出来的指令带上 from_temp_init 标记, 供 verifier 的 V7 核对源值是否有归宿。
+        if copy && has_copy_fn(sty) {
+            let mut c = CopyValue::create(v.expr_node(), v);
+            c.from_temp_init = true;
+            bb.add_step(move c as *XValue);
         }
 
         bb.add_step(WriteValue::create(v, local as *LValue));
         return local;
+    }
+
+    fn set_rvalue_ownership(&mut self, v: *RValue, ownership: RValueOwnership) {
+        let key = v as *raw RValue as UInt;
+        if self.rvalue_state_map.at(&key) is Some(_) {
+            // 产出只发生一次 (trans_rvalue 有缓存); 重复登记保留第一次的结论
+            return;
+        }
+        let st = box {
+            .rv_id = key,
+            .span = v.expr_node().span(),
+            .ownership = move ownership,
+            .has_dtor = has_destructor(v.get_stype()),
+        }: RValueState;
+        self.rvalue_states.push(st);
+        self.rvalue_state_map.insert(key, move st);
+    }
+
+    fn rvalue_ownership(&self, v: *RValue) -> RValueOwnership {
+        let key = v as *raw RValue as UInt;
+        if self.rvalue_state_map.at(&key) is Some(st) {
+            return st.ownership;
+        }
+        // 没有登记: 交给 verifier 的 V8 报 ICE, 这里按"不拥有"保守处理 (绝不吞掉所有权)
+        return RValueOwnership::Unspecified;
+    }
+
+    // 这个右值结果是否自带一次需要有人接手/释放的强引用。
+    // 这就是原来 rvalue_owns_value 的唯一替代品: 只查显式状态, 不看种类。
+    fn rv_owns(&self, v: *RValue) -> Bool {
+        if !(self.rvalue_ownership(v) is RValueOwnership::OwnsValue) {
+            return false;
+        }
+        // 没有 copyfn/析构的类型没有所有权可谈 (例如 UInt 的 `i + 1`);
+        // 这一条与旧 rvalue_owns_value 开头的前置判断等价。
+        let sty = v.get_stype();
+        return has_copy_fn(sty) || has_destructor(sty);
+    }
+
+    // 登记一次"拥有型右值被消费"。返回值:
+    //   true  —— 这是第一次消费, 该右值自带的那次强引用归消费者所有 (调用方可以直接 move);
+    //   false —— 这个右值已经被消费过, 第二个消费者必须自己复制一份。
+    // 非 OwnsValue 的右值不记账, 直接返回 true (没有所有权可谈) —— 但 verifier 的 V9 会
+    // 核对"记了账的右值必须是 OwnsValue", 所以这里不会把 BorrowsValue 当成可接手。
+    fn mark_rvalue_consumed(&mut self, v: *RValue, how: RValueConsumption) -> Bool {
+        return self.mark_rvalue_consumed_ex(v, move how, 0_u, 0_u);
+    }
+
+    // 带接手方信息的版本: receiver 是接手形参 (*VarSymbol) 的 key (0 = 无/外部),
+    // index 是实参下标 (仅用于诊断)。
+    fn mark_rvalue_consumed_ex(&mut self, v: *RValue, how: RValueConsumption, receiver: UInt, index: UInt) -> Bool {
+        if !self.rv_owns(v) {
+            return true;
+        }
+        let key = v as *raw RValue as UInt;
+        if self.rvalue_account_map.at(&key) is Some(_) {
+            return false;
+        }
+        let acc = box {
+            .rv_id = key,
+            .span = v.expr_node().span(),
+            .consumption = move how,
+            .temp = 0_u,
+            .dst = (type Option<*LValue>)::None,
+            .receiver = move receiver,
+            .index = move index,
+        }: RValueAccount;
+        self.rvalue_accounts.push(acc);
+        self.rvalue_account_map.insert(key, move acc);
+        return true;
+    }
+
+    // 记录"接手这个右值所有权的临时量", verifier 的 V6 用它核对临时量恰好析构/移出一次
+    fn set_rvalue_temp_home(&mut self, v: *RValue, vs: *VarSymbol) {
+        let key = v as *raw RValue as UInt;
+        if self.rvalue_account_map.at(&key) is Some(acc) {
+            acc.temp = vs as *raw VarSymbol as UInt;
+        }
+        // 反向边: 临时量 -> 被物化进来的右值。消费点 (实参/返回值) 在这里 move-out 时
+        // 能追溯到原右值的账目 (见 insert_copy_if_needed_as 的 TransferOutcome)。
+        let tkey = vs as *raw VarSymbol as UInt;
+        if self.temp_map.at(&tkey) is Some(t) {
+            t.home_rv = key;
+        }
+    }
+
+    // 记录一条"外部接手"的账目 (实参 / 返回值 / 写目标基址), 见 RValueTransfer。
+    fn record_transfer(
+        &mut self,
+        span: SourceSpan,
+        kind: TransferKind,
+        rv_id: UInt,
+        receiver: UInt,
+        index: UInt,
+        bb: *BasicBlock,
+        value_owns_dtor: Bool,
+        receiver_has_dtor: Bool,
+        transfers_ownership: Bool,
+    ) {
+        let tr = box {
+            .span = move span,
+            .kind = move kind,
+            .rv_id = move rv_id,
+            .receiver = move receiver,
+            .index = move index,
+            .bb = bb as *raw BasicBlock as UInt,
+            .value_owns_dtor = move value_owns_dtor,
+            .receiver_has_dtor = move receiver_has_dtor,
+            .transfers_ownership = move transfers_ownership,
+        }: RValueTransfer;
+        self.rvalue_transfers.push(move tr);
+    }
+
+    // 记录"所有权直接落进的目标位置 (let/赋值/字段...)", verifier 的 V6 做路径敏感的归宿检查。
+    // 值可能是"物化了某个拥有型右值"的临时量 (home_rv != 0): 这时归宿属于那个原右值的账目
+    // (临时量只是它的一跳), 否则漏斗物化会让 V6 的路径敏感检查落空。
+    fn set_rvalue_place_home(&mut self, v: *RValue, lv: *LValue) {
+        let key = self.rvalue_home_key(v);
+        if self.rvalue_account_map.at(&key) is Some(acc) {
+            acc.dst = Some(lv);
+        }
+    }
+
+    // 一个"值"最终的账目 key: 物化临时量的读取 -> 原右值; 其它 -> 自己。
+    fn rvalue_home_key(&self, v: *RValue) -> UInt {
+        if v is rd: *ReadValue {
+            let key = rd.sym_var as *raw VarSymbol as UInt;
+            if self.temp_map.at(&key) is Some(t) {
+                if t.home_rv != 0 {
+                    return t.home_rv;
+                }
+            }
+        }
+        if v is c: *ContextValue {
+            return self.rvalue_home_key(c.inner);
+        }
+        if v is t: *TypeAscriptionValue {
+            return self.rvalue_home_key(t.inner);
+        }
+        return v as *raw RValue as UInt;
     }
 
     fn nearest_block(&self) -> *BlockSentence {
@@ -206,70 +567,6 @@ impl CfgBuilder {
         }
     }
 
-    fn drop_var_sym(&mut self, vs: *VarSymbol, bb: *BasicBlock) {
-        // 没有析构函数的类型也会生成一条 is_trivial 的指令:
-        // 它依然承担"变量存储期到此结束"的语义, 存活分析依赖它判断变量的死亡点。
-        bb.add_step(make_dtor_value(vs) as *XValue);
-    }
-
-    fn drop_locals_when_exit_block(&mut self, blk: *BlockSentence, bb: *BasicBlock) {
-        // 如果 block 包含 return/panic 则不需要执行了
-        if blk.contains_return_or_panic() {
-            return;
-        }
-        // 逆序遍历
-        let mut i: UInt = blk.local_vars.len();
-        while i > 0 {
-            let var: *VarSymbol = *blk.local_vars.index(i - 1).deref();
-            self.drop_var_sym(move var, bb);
-            i -= 1;
-        }
-    }
-
-    fn drop_locals_until_exit_block(&mut self, blk: UInt, bb: *BasicBlock) {
-        // 逆序遍历
-        let mut i: UInt = self.block_stack.len();
-        while i > 0 {
-            let block: *BlockSentence = *self.block_stack.index(i - 1).deref();
-            self.drop_locals_when_exit_block(block, bb);
-            if block as *raw BlockSentence as UInt == blk {
-                return;
-            }
-            i -= 1;
-        }
-        panic "BUG: [drop_locals_until_exit_block] target block does not found in block_stack";
-    }
-
-    fn drop_all_except(&mut self, except_var: Option<*VarSymbol>, bb: *BasicBlock) {
-
-        let mut except_var_i: UInt = 0;
-        if except_var is Some(v) {
-            except_var_i = v as *raw VarSymbol as UInt;
-        }
-        // 逆序遍历
-        let mut i: UInt = self.block_stack.len();
-        while i > 0 {
-            let block: *BlockSentence = *self.block_stack.index(i - 1).deref();
-
-            let mut j: UInt = block.local_vars.len();
-            while j > 0 {
-                let var: *VarSymbol = *block.local_vars.index(j - 1).deref();
-                let var_int = var as *raw VarSymbol as UInt;
-                if var_int != except_var_i {
-                    self.drop_var_sym(var, bb);
-                }
-                j -= 1;
-            }
-            i -= 1;
-        }
-
-        for p in self.params() {
-            if p as *raw VarSymbol as UInt != except_var_i {
-                self.drop_var_sym(move p, bb);
-            }
-        }
-    }
-
     fn insert_copy(&mut self, rval: *RValue, bb: *BasicBlock) {
         if !has_copy_fn(rval.get_stype()) {
             return;
@@ -278,109 +575,283 @@ impl CfgBuilder {
         bb.add_step(move copy as *XValue);
     }
 
+    // 一个右值被"消费"(所有权进入另一个值/返回值/闭包环境)时调用:
+    // 拥有型临时量在这里 move-out, 之后不再析构; 拥有型右值在这里记账 (它的 +1 归消费者)。
+    fn move_out_if_temp(&mut self, v: *RValue, bb: *BasicBlock) {
+        if v is rd: *ReadValue {
+            let key = rd.sym_var as *raw VarSymbol as UInt;
+            if self.temp_map.at(&key) is Some(t) {
+                if t.ownership is Ownership::Owned {
+                    t.ownership = Ownership::Moved;
+                    let mv = MovedValue::create(v.expr_node(), v);
+                    bb.add_step(mv as *XValue);
+                }
+            }
+        } else if self.rv_owns(v) {
+            // 运算符 / box / 转换 / move 的操作数: 它的 +1 被这个操作消费
+            self.mark_rvalue_consumed(v, RValueConsumption::MovedToPlace);
+        }
+    }
+
     fn insert_copy_if_needed(&mut self, rval: *RValue, bb: *BasicBlock) {
-        if !has_copy_fn(rval.get_stype()) {
-            return;
+        let _ = self.insert_copy_if_needed_as(rval, bb, RValueConsumption::MovedToPlace, 0_u, 0_u);
+    }
+
+    // 这个"值"本身是否携带一次需要有人释放的 +1:
+    //   - 拥有型右值 (状态 OwnsValue);
+    //   - 物化了拥有型右值的临时量的读取 (home_rv != 0, 且还没被 move-out);
+    //   - 显式 `move x` 的结果。
+    // 注意与"类型有析构"的区别: `Option::None` / 空枚举变体的类型有析构, 但不携带 +1。
+    fn value_carries_plus_one(&self, v: *RValue) -> Bool {
+        if self.rv_owns(v) {
+            return true;
+        }
+        if v is rd: *ReadValue {
+            let key = rd.sym_var as *raw VarSymbol as UInt;
+            if self.temp_map.at(&key) is Some(t) {
+                return t.home_rv != 0 && t.ownership is Ownership::Owned;
+            }
+        }
+        if v is type *MovedValue {
+            return true;
+        }
+        return false;
+    }
+
+    // 按值消费一个右值, 并返回"这次到底交出了一次 +1 没有"。
+    // how/receiver/index 只用于拥有型右值的账目 (见 RValueAccount): 实参是 MovedToArg
+    // (+ 接手形参), 返回值是 MovedToReturn, 其它是 MovedToPlace。
+    fn insert_copy_if_needed_as(
+        &mut self, rval: *RValue, bb: *BasicBlock,
+        how: RValueConsumption, receiver: UInt, index: UInt,
+    ) -> TransferOutcome {
+        let mut oc = { .transferred = false, .rv_id = 0_u, .copied = false }: TransferOutcome;
+        // 拥有型右值被当作值消费 (写进另一个位置/实参/聚合体/作为 return 值):
+        // 第一个消费者直接接手它自带的那次强引用 (隐式 move), 不需要任何指令。
+        // 已经被消费过的才需要复制一份。这一步与"类型有没有 copyfn"无关 ——
+        // 所有权移交不需要复制, 所以必须在 has_copy_fn 的判断之前。
+        // 判定只看产出方登记的显式状态 (rv_owns), 不看右值种类。
+        if self.rv_owns(rval) {
+            let key = rval as *raw RValue as UInt;
+            if self.mark_rvalue_consumed_ex(rval, move how, move receiver, move index) {
+                oc.transferred = true;
+                oc.rv_id = key;
+                return oc;
+            }
+            if !has_copy_fn(rval.get_stype()) {
+                return oc;
+            }
+            let copy = CopyValue::create(rval.expr_node(), rval);
+            bb.add_step(move copy as *XValue);
+            oc.transferred = true;
+            oc.copied = true;
+            oc.rv_id = key;
+            return oc;
         }
 
-        // 临时变量是不需要 copy 的
+        // 拥有型临时量被当作"值"消费 (写进另一个位置/实参/聚合体/作为 return 值):
+        // 这是 move-out, 所有权交给消费者, 临时量不再析构。
+        // 这一步与"类型有没有 copyfn"无关 —— 所有权移交不需要复制。
+        if rval is read_rv: *ReadValue {
+            let key = read_rv.sym_var as *raw VarSymbol as UInt;
+            if self.temp_map.at(&key) is Some(temp) {
+                if temp.ownership is Ownership::Owned {
+                    temp.ownership = Ownership::Moved;
+                    let mv = MovedValue::create(read_rv.expr_node(), rval);
+                    bb.add_step(mv as *XValue);
+                    oc.transferred = true;
+                    // 物化出来的临时量: 把这次转移归到原右值头上 (实参/返回值核对要用)
+                    oc.rv_id = temp.home_rv;
+                    return oc;
+                }
+                // 已经被 move 过的临时量: 第二个消费者需要自己的一份
+                if !has_copy_fn(rval.get_stype()) {
+                    return oc;
+                }
+                bb.add_step(CopyValue::create(rval.expr_node(), rval) as *XValue);
+                oc.transferred = true;
+                oc.copied = true;
+                return oc;
+            }
+        }
+
+        if !has_copy_fn(rval.get_stype()) {
+            return oc;
+        }
+
+        // 需要一份自己的所有权 (借用/已消费的值) 时要复制
         match rval {
             cast_rv: *CastValue => {
                 match cast_rv.resolved_kind {
                     // 这些都不需要做 拷贝
-                    ResolvedCastKind::ArcToWeak => return;
-                    ResolvedCastKind::BoolToInt => return;
-                    ResolvedCastKind::IntToInt => return;
-                    ResolvedCastKind::IntToFloat => return;
-                    ResolvedCastKind::EnumToInt => return;
-                    ResolvedCastKind::FloatExt => return;
-                    ResolvedCastKind::FloatTrunc => return;
-                    ResolvedCastKind::FloatToInt => return;
-                    ResolvedCastKind::CharToUInt32 => return;
-                    ResolvedCastKind::UInt32ToChar => return;
-                    ResolvedCastKind::ArrayRefToSlice => return;
-                    ResolvedCastKind::MutBorrowToImmut => return;
-                    ResolvedCastKind::PointerSafeToUnsafe => return;
-                    ResolvedCastKind::PointerUnsafeToSafe => return;
-                    ResolvedCastKind::UnsafePointerToUnsafePointer => return;
-                    ResolvedCastKind::UnsafePointerToUInt => return;
-                    ResolvedCastKind::UIntToUnsafePointer => return;
-                    ResolvedCastKind::DerefCast(_) => return;
-                    ResolvedCastKind::DerefMutCast(_) => return;
-                    ResolvedCastKind::ArcToWeak => {
-                        let copy = CopyValue::create(rval.expr_node(), rval);
-                        bb.add_step(move copy as *XValue);
-                        return;
-                    }
+                    ResolvedCastKind::ArcToWeak => { return oc; }
+                    ResolvedCastKind::BoolToInt => { return oc; }
+                    ResolvedCastKind::IntToInt => { return oc; }
+                    ResolvedCastKind::IntToFloat => { return oc; }
+                    ResolvedCastKind::EnumToInt => { return oc; }
+                    ResolvedCastKind::FloatExt => { return oc; }
+                    ResolvedCastKind::FloatTrunc => { return oc; }
+                    ResolvedCastKind::FloatToInt => { return oc; }
+                    ResolvedCastKind::CharToUInt32 => { return oc; }
+                    ResolvedCastKind::UInt32ToChar => { return oc; }
+                    ResolvedCastKind::ArrayRefToSlice => { return oc; }
+                    ResolvedCastKind::MutBorrowToImmut => { return oc; }
+                    ResolvedCastKind::PointerSafeToUnsafe => { return oc; }
+                    ResolvedCastKind::PointerUnsafeToSafe => { return oc; }
+                    ResolvedCastKind::UnsafePointerToUnsafePointer => { return oc; }
+                    ResolvedCastKind::UnsafePointerToUInt => { return oc; }
+                    ResolvedCastKind::UIntToUnsafePointer => { return oc; }
+                    ResolvedCastKind::DerefCast(_) => { return oc; }
+                    ResolvedCastKind::DerefMutCast(_) => { return oc; }
                     _ => {
-                        self.insert_copy_if_needed(cast_rv.operand, bb);
-                        return;
+                        oc = self.insert_copy_if_needed_as(
+                            cast_rv.operand, bb, move how, move receiver, move index);
+                        return oc;
                     }
                 }
             }
-            type *QualifiedPathValue => return;
-            type *LambdaValue => return;
-            type *WriteValue => return;
-            type *LiteralValue => return;
-            type *AggregateValue => return;
-            type *TupleValue => return;
-            type *ArrayLiteralValue => return;
-            type *RepeatValue => return;
-            type *BinaryExprValue => return;
-            type *UnaryExprValue => return;
-            type *AddressofValue => return;
-            type *PatternMatchValue => return;
-            type *FnCallValue => return;
-            type *MethodCallValue => return;
-            type *InterpolationValue => return;
-            type *CompileTimeValue => return;
-            type *DtorValue => return;
-            type *CopyValue => return;
-            type *ReBorrowValue => return;
-            type *MovedValue => return;
-            ctx_rv: *ContextValue => return self.insert_copy_if_needed(ctx_rv.inner, bb);
-            ty_asc_rv: *TypeAscriptionValue => return self.insert_copy_if_needed(ty_asc_rv.inner, bb);
+            type *QualifiedPathValue => { return oc; }
+            type *LambdaValue => { return oc; }
+            type *WriteValue => { return oc; }
+            type *LiteralValue => { return oc; }
+            type *AggregateValue => { return oc; }
+            type *TupleValue => { return oc; }
+            type *ArrayLiteralValue => { return oc; }
+            type *RepeatValue => { return oc; }
+            type *BinaryExprValue => { return oc; }
+            type *UnaryExprValue => { return oc; }
+            type *AddressofValue => { return oc; }
+            type *PatternMatchValue => { return oc; }
+            type *FnCallValue => { return oc; }
+            type *MethodCallValue => { return oc; }
+            type *InterpolationValue => { return oc; }
+            type *CompileTimeValue => { return oc; }
+            type *DtorValue => { return oc; }
+            type *CopyValue => { return oc; }
+            type *ReBorrowValue => { return oc; }
+            // `move x`: 源值已经被标成 Moved, 这个值本身就携带着那次 +1
+            type *MovedValue => {
+                oc.transferred = true;
+                return oc;
+            }
+            ctx_rv: *ContextValue => {
+                oc = self.insert_copy_if_needed_as(ctx_rv.inner, bb, move how, move receiver, move index);
+                return oc;
+            }
+            ty_asc_rv: *TypeAscriptionValue => {
+                oc = self.insert_copy_if_needed_as(ty_asc_rv.inner, bb, move how, move receiver, move index);
+                return oc;
+            }
 
             deref_rv: *DerefRValue => {
                 // deref 的结果需要 copy, raw pointer 除外
                 let op_sty = deref_rv.operand.get_stype();
                 if op_sty.type_symbol is type *RawPointerImmutSymbol ||
                     op_sty.type_symbol is type *RawPointerMutSymbol {
-                    return;
+                    return oc;
                 } else {
                     let copy = CopyValue::create(rval.expr_node(), rval);
                     bb.add_step(move copy as *XValue);
+                    oc.transferred = true;
+                    oc.copied = true;
                 }
             }
             _ => {
                 let copy = CopyValue::create(rval.expr_node(), rval);
                 bb.add_step(move copy as *XValue);
+                oc.transferred = true;
+                oc.copied = true;
             }
         }
+        return oc;
     }
 
-    // 语句翻译完了: 给 watermark 之后新增的临时变量在 bb 上插入析构标记。
-    // 如果之后发现它的借用活得比语句长, checker 里的 place_temp_drops 会把它标成 skipped。
-    //
-    // 注意这里插入的是一条 step (而不是只记下 bb): 记 bb 等于要求"语句结束时所在的块
-    // 以后一直是同一个块对象", 而语句的块之后还可能被拆分/合并; 插入 step 则跟着块一起走。
-    fn record_temps_drop_point(&mut self, watermark: UInt, bb: *BasicBlock) {
-        let mut i = watermark;
-        while i < self.temps.len() {
-            let t = *self.temps.index(i).deref();
-            let dtor = make_dtor_value(t.sym);
-            bb.add_step(dtor as *XValue);
-            t.drop_step = Some(dtor);
-            i += 1;
+    // 按值实参: 接手方是 callee 的形参。登记拥有型右值账目 (MovedToArg) 与外部接手账目。
+    fn consume_as_arg(&mut self, v: *RValue, bb: *BasicBlock, recv: Option<*VarSymbol>, index: UInt) {
+        let mut recv_key: UInt = 0_u;
+        let mut recv_dtor = false;
+        if recv is Some(p) {
+            recv_key = p as *raw VarSymbol as UInt;
+            recv_dtor = has_destructor(p.stype);
         }
-        while self.temps.len() > watermark {
-            self.temps.pop();
-        }
+        // 只有"值本身携带一次 +1"才要求接手方释放 (Option::None 这类没有 +1)
+        let value_dtor = self.value_carries_plus_one(v) && has_destructor(v.get_stype());
+        let oc = self.insert_copy_if_needed_as(
+            v, bb, RValueConsumption::MovedToArg, recv_key, index);
+        self.record_transfer(
+            v.expr_node().span(), TransferKind::ByValueArg, oc.rv_id, recv_key, index, bb,
+            value_dtor, recv_dtor, oc.transferred);
     }
 
-    // 把当前所有还没登记的临时变量都登记到 bb (函数/闭包体翻译完之后的兜底)
-    fn flush_all_temps(&mut self, bb: *BasicBlock) {
-        self.record_temps_drop_point(0_u, bb);
+    // 返回值: 接手方是调用点。登记拥有型右值账目 (MovedToReturn) 与外部接手账目。
+    fn consume_as_return(&mut self, v: *RValue, bb: *BasicBlock) {
+        let value_dtor = self.value_carries_plus_one(v) && has_destructor(v.get_stype());
+        let ret_dtor = self.return_sty_has_dtor();
+        let oc = self.insert_copy_if_needed_as(v, bb, RValueConsumption::MovedToReturn, 0_u, 0_u);
+        self.record_transfer(
+            v.expr_node().span(), TransferKind::ReturnValue, oc.rv_id, 0_u, 0_u, bb,
+            value_dtor, ret_dtor, oc.transferred);
+    }
+
+    // `return x;` (x 是具名局部量): 这是一次 move-out, 没有指令, 但 +1 确实交给了调用点。
+    fn record_return_move_out(&mut self, vs: *VarSymbol, bb: *BasicBlock) {
+        let value_dtor = has_destructor(vs.stype);
+        let ret_dtor = self.return_sty_has_dtor();
+        self.record_transfer(
+            vs.var_node.span(), TransferKind::ReturnValue, 0_u, 0_u, 0_u, bb,
+            value_dtor, ret_dtor, value_dtor);
+    }
+
+    fn return_sty_has_dtor(&self) -> Bool {
+        let mut ret: Option<*SType> = (type Option<*SType>)::None;
+        if self.sym is fsym: *FuncSymbol {
+            ret = fsym.return_sty;
+        } else if self.sym is lsym: *LambdaSymbol {
+            ret = lsym.return_sty;
+        }
+        if ret is Some(t) {
+            return has_destructor(t);
+        }
+        return false;
+    }
+
+    // 解析调用点的 callee 形参列表 (拿不到就返回空 —— 显式记为"外部信任")。
+    // 闭包/fn 指针/函数项这些 callee 在这里解析不到形参, 但它们自己的 CFG 仍然会
+    // 被 verifier 的 V12 (形参归宿) 检查。
+    fn fn_call_params(&self, callee: *RValue) -> Vec<*VarSymbol> {
+        let mut v = callee;
+        while true {
+            if v is c: *ContextValue {
+                v = c.inner;
+                continue;
+            }
+            if v is t: *TypeAscriptionValue {
+                v = t.inner;
+                continue;
+            }
+            if v is c2: *CastValue {
+                if c2.resolved_kind is ResolvedCastKind::SameType {
+                    v = c2.operand;
+                    continue;
+                }
+            }
+            break;
+        }
+        if v is qp: *QualifiedPathValue {
+            if qp.symbol is fsym: *FuncSymbol {
+                return fsym.params;
+            }
+        }
+        return (type Vec<*VarSymbol>)::new();
+    }
+
+    // 方法调用的形参列表: params[0] 是 receiver, 实参从 params[1] 开始对应 (与
+    // hir checker 的 desugar 一致, 见 check_method_call 里 "跳过 receiver")。
+    fn method_call_params(&self, mc: *MethodCallValue) -> Vec<*VarSymbol> {
+        if mc.resolved_method is Some(fsym) {
+            return fsym.params;
+        }
+        return (type Vec<*VarSymbol>)::new();
     }
 
 }
@@ -455,8 +926,7 @@ fn setup_incomings(bb: *BasicBlock, visited: &mut HashSet<UInt>) {
     }
 }
 
-fn extract_logical_and_chain(v: *RValue) -> Option<Vec<*RValue>> {
-    let mut res = (type Vec<*RValue>)::new();
+fn extract_logical_and_chain(v: *RValue) -> Option<Vec<*RValue>> {    let mut res = (type Vec<*RValue>)::new();
     if rec_extract_logical_and_chain(v, &mut res) {
         return Some(move res);
     } else {
@@ -479,4 +949,61 @@ fn rec_extract_logical_and_chain(v: *RValue, res: &mut Vec<*RValue>) -> Bool {
         res.push(v);
     }
     return true;
+}
+// 实参下标 i 对应的形参: 方法调用用 offset = 1 跳过 receiver。
+// 解析不到 callee 形参时返回 None (显式记为"外部信任", verifier 不检查接手方)。
+fn arg_param(params: &Vec<*VarSymbol>, offset: UInt, i: UInt) -> Option<*VarSymbol> {
+    let idx = i + offset;
+    if params.len() <= idx {
+        return (type Option<*VarSymbol>)::None;
+    }
+    return Some(*params.index(idx).deref());
+}
+
+// 这个右值是否"命名了一块存储"(一个 place): 具名量、字段/元组/索引/解引用访问。
+fn rvalue_names_storage(v: *RValue) -> Bool {    match v {
+        type *ReadValue => return true;
+        type *FieldRValue => return true;
+        type *TupleAccessRValue => return true;
+        type *IndexRValue => return true;
+        type *DerefRValue => return true;
+        ctx_rv: *ContextValue => return rvalue_names_storage(ctx_rv.inner);
+        ty_asc_rv: *TypeAscriptionValue => return rvalue_names_storage(ty_asc_rv.inner);
+        cast_rv: *CastValue => {
+            if cast_rv.resolved_kind is ResolvedCastKind::SameType {
+                return rvalue_names_storage(cast_rv.operand);
+            }
+            return false;
+        }
+        _ => return false;
+    }
+    return false;
+}
+
+// 块里是否有直接以 panic 结尾的语句 (这种块的正常出口不可达, 也不需要析构)
+fn block_contains_panic(blk: *BlockSentence) -> Bool {
+    for st in blk.sentences {
+        if st is type *BranchPanic {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 哪些右值结果"需要一个归宿": 它们产生一个拥有所有权的值, 但没有命名存储。
+// 这些正是 REPORT 里 R1 指出的、以前从不被物化的位置。
+fn rvalue_needs_home(v: *RValue) -> Bool {
+    match v {
+        type *FnCallValue => return true;
+        type *MethodCallValue => return true;
+        type *AggregateValue => return true;
+        type *TupleValue => return true;
+        type *ArrayLiteralValue => return true;
+        type *RepeatValue => return true;
+        type *InterpolationValue => return true;
+        type *SelectValue => return true;
+        type *PhiValue => return true;
+        _ => return false;
+    }
+    return false;
 }

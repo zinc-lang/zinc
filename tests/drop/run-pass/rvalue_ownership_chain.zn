@@ -1,0 +1,113 @@
+// R2 回归用例: 拥有型右值的接收者/借用临时量必须接手源值自带的那次强引用 (move),
+// 而不是复制一份再加一次 retain —— 复制会让源值那次 +1 无人释放 (ARC 句柄静默泄漏)。
+//
+// 触发路径: promote_local -> ensure_place。当被取地址/当作 &self 接收者的值是一个
+// "拥有型右值"(调用结果) 时, 物化出来的临时量拿走它自带的强引用。
+use std::{assert, assert_eq};
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn base() -> Vec<Vec<Int>> {
+    let mut v = (type Vec<Vec<Int>>)::new();
+    v.push(mk(1_i));
+    v.push(mk(2_i));
+    return v;
+}
+
+fn rc(v: &Vec<Vec<Int>>) -> UInt {
+    return v.ref_count() as UInt;
+}
+
+fn irc(v: &mut Vec<Vec<Int>>) -> UInt {
+    let g = v.get(0_u);
+    if g is Some(x) { return x.item.ref_count() as UInt; }
+    return 0_u;
+}
+
+fn hm() -> HashMap<UInt, Vec<Int>> {
+    let mut m = (type HashMap<UInt, Vec<Int>>)::new();
+    m.insert(1_u, mk(7_i));
+    m.insert(2_u, mk(8_i));
+    return m;
+}
+
+fn val_rc(m: &HashMap<UInt, Vec<Int>>) -> UInt {
+    let g = m.get(&1_u);
+    if g is Some(x) { return x.item.ref_count() as UInt; }
+    return 0_u;
+}
+
+fn main() {
+    // 1) 表达式语句里的调用链 (接收者临时量)
+    {
+        let mut v = base();
+        v.get(0_u).get_or_panic();
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 2) 具名量接收调用链的结果
+    {
+        let mut v = base();
+        {
+            let x = v.get(0_u).get_or_panic();
+            let _n = x.item.len();
+        }
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 3) 借用一个拥有型右值: &v.get(0_u) (ensure_place 的 move 路径)
+    {
+        let mut v = base();
+        {
+            let _p = &v.get(0_u);
+        }
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 4) 借用调用链的结果: &(v.get(0_u).get_or_panic())
+    {
+        let mut v = base();
+        {
+            let _p = &(v.get(0_u).get_or_panic());
+        }
+        assert_eq(rc(&v), 1_u);
+    }
+
+    // 5) Vec::at 的值拷贝链 (内层元素计数)
+    {
+        let mut v = (type Vec<Vec<Int>>)::new();
+        v.push(mk(1_i));
+        v.at(0_u).get_or_panic();
+        assert_eq(irc(&mut v), 1_u);
+        {
+            let x = v.at(0_u).get_or_panic();
+            let _n = x.len();
+        }
+        assert_eq(irc(&mut v), 1_u);
+    }
+
+    // 6) HashMap::at 链: 表缓冲区强引用计数不应变化
+    {
+        let m = hm();
+        let before = m.ref_count() as UInt;
+        {
+            let x = m.at(&1_u).get_or_panic();
+            let _n = x.len();
+        }
+        assert_eq((m.ref_count() as UInt) - before, 0_u);
+    }
+
+    // 7) HashMap::get 链: 值计数回到 1
+    {
+        let m = hm();
+        {
+            let x = m.get(&1_u).get_or_panic();
+            let _n = x.item.len();
+        }
+        assert_eq(val_rc(&m), 1_u);
+    }
+}

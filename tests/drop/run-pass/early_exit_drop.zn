@@ -1,0 +1,122 @@
+// return / break / continue 提前离开语句时, 也要沿路径析构已经登记的作用域。
+//
+// 历史 bug (R4): 绑定/scrutinee 的析构挂在 if/match 的 join 块上, arm 里 return 时
+// 控制流不经过 join 块, 于是永远不析构 (HashMap::at 的表引用计数 +2 就是这个来源)。
+use std::{assert, assert_eq};
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn base() -> Vec<Vec<Int>> {
+    let mut v = (type Vec<Vec<Int>>)::new();
+    v.push(mk(1_i));
+    v.push(mk(2_i));
+    return v;
+}
+
+fn rc(v: &mut Vec<Vec<Int>>) -> UInt {
+    return v.ref_count() as UInt;
+}
+
+// match 的两个 arm 都 return: join 块的析构不可达
+fn probe_match_return(v: &mut Vec<Vec<Int>>) -> UInt {
+    match v.get(0_u) {
+        Some(x) => {
+            let n = x.item.ref_count() as UInt;
+            return n + 100_u;
+        }
+        None => {
+            return 0_u;
+        }
+    }
+}
+
+// if 的 then 分支 return (无 else)
+fn probe_if_return(v: &mut Vec<Vec<Int>>, c: Bool) -> UInt {
+    if c {
+        if v.get(0_u) is Some(x) {
+            let n = x.item.ref_count() as UInt;
+            return n + 200_u;
+        }
+    }
+    return 0_u;
+}
+
+// while 条件 + continue / break
+fn probe_while_paths(v: &mut Vec<Vec<Int>>) -> UInt {
+    let mut i: UInt = 0_u;
+    while v.get(0_u) is Some(x) {
+        let _n = x.item.len();
+        i += 1_u;
+        if i < 3_u {
+            continue;
+        }
+        break;
+    }
+    return v.ref_count() as UInt;
+}
+
+// 循环体里提前 return, 具名局部量也要析构
+fn probe_body_return(v: &mut Vec<Vec<Int>>) -> UInt {
+    let mut i: UInt = 0_u;
+    while i < 3_u {
+        let g = v.get(0_u);
+        if g is Some(x) {
+            if x.item.len() > 0_u {
+                // 注意: 这里 g 和 x 都还活着, 所以不能量 rc; 提前 return,
+                // 返回之后它们必须已经沿 return 路径析构 (由调用方量 rc 验证)。
+                return 1_u;
+            }
+        }
+        i += 1_u;
+    }
+    return 0_u;
+}
+
+// 返回调用结果 (move-out), 不能多析构也不能漏
+fn probe_return_call() -> UInt {
+    let mut v = base();
+    let mut found: UInt = 0_u;
+    {
+        let r = v.get(0_u);
+        if r is Some(_) {
+            found = 1_u;
+        }
+    }
+    if found == 1_u {
+        return rc(&mut v);
+    }
+    return 0_u;
+}
+
+fn main() {
+    {
+        let mut v = base();
+        let n = probe_match_return(&mut v);
+        assert_eq(n, 101_u);
+        assert_eq(rc(&mut v), 1_u);
+    }
+    {
+        let mut v = base();
+        assert_eq(probe_if_return(&mut v, true), 201_u);
+        assert_eq(rc(&mut v), 1_u);
+        assert_eq(probe_if_return(&mut v, false), 0_u);
+        assert_eq(rc(&mut v), 1_u);
+    }
+    {
+        let mut v = base();
+        assert_eq(probe_while_paths(&mut v), 1_u);
+        assert_eq(rc(&mut v), 1_u);
+    }
+    {
+        let mut v = base();
+        assert_eq(probe_body_return(&mut v), 1_u);
+        assert_eq(rc(&mut v), 1_u);
+    }
+    {
+        assert_eq(probe_return_call(), 1_u);
+    }
+}

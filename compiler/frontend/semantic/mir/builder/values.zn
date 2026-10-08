@@ -41,6 +41,59 @@ impl CfgBuilder {
         return res;
     }
 
+    // 写目标位置的基址是一个 place 表达式 (例如 `Importer::get().field = x`)。
+    // 写入不搬走基址的所有权, 所有权仍然属于那个 place (常见的是全局单例/借用)。
+    // 所以这里**不物化、不析构**基址, 只显式记账"这次所有权归 place 的持有者",
+    // 让 V10 (拥有型右值必须有归宿) 不再把它当成漏归宿; 语义见 RValueConsumption。
+    //
+    // raw_v 是翻译前的原始右值: 它才是"被当作写目标基址"的那个表达式。如果它已经被
+    // 别的消费点接手 (典型是漏斗把它物化 -> MovedToTemp), 写目标基址就被过释放了,
+    // 登进外部接手账本交给 V14 报出来。
+    fn mark_place_base_consumed(&mut self, v: *XValue, raw_v: *XValue, bb: *BasicBlock) {
+        if v is rv: *RValue {
+            if self.rv_owns(rv) {
+                // 还没被消费: 显式记账为 place 语义, 不物化
+                let key = rv as *raw RValue as UInt;
+                let first = self.mark_rvalue_consumed_ex(rv, RValueConsumption::WrittenToPlace, 0_u, 0_u);
+                // first 为假 = 这个基址已经被别的消费点接手 (典型是漏斗物化): place 语义已破坏
+                self.record_transfer(
+                    v.expr_node().span(), TransferKind::PlaceBase, key, 0_u, 0_u, bb,
+                    has_destructor(rv.get_stype()), false, !first);
+                return;
+            }
+        }
+        // 翻译后的值不是拥有型右值: 要么本来就没有所有权 (读/借用), 要么在翻译过程中
+        // 已经被别的消费点接手 (漏斗物化 / as_place_base)。后者对写目标基址是错的,
+        // 记下来交给 verifier。
+        if raw_v is raw_rv: *RValue {
+            let key = raw_rv as *raw RValue as UInt;
+            if self.rvalue_account_map.at(&key) is Some(_) {
+                self.record_transfer(
+                    raw_rv.expr_node().span(), TransferKind::PlaceBase, key, 0_u, 0_u, bb,
+                    has_destructor(raw_rv.get_stype()), false, true);
+            }
+        }
+    }
+
+    // 翻译写目标的基址: place 语义。拥有型右值在这里**不**物化
+    // (见 mark_place_base_consumed); 用 suppress_depth 让漏斗只跳过这一层结果,
+    // 子表达式照常物化。
+    fn trans_place_base_rv(&mut self, v: *RValue, bb: *BasicBlock) -> (*RValue, *BasicBlock) {
+        let old = self.suppress_depth;
+        self.suppress_depth = self.rv_depth + 1_u;
+        let (r, r_bb) = self.trans_rvalue(v, bb);
+        self.suppress_depth = old;
+        return (r, r_bb);
+    }
+
+    fn trans_place_base_x(&mut self, base: *XValue, bb: *BasicBlock) -> (*XValue, *BasicBlock) {
+        if base is rv: *RValue {
+            let (r, r_bb) = self.trans_place_base_rv(rv, bb);
+            return (r as *XValue, r_bb);
+        }
+        return self.trans_xvalue(base, bb);
+    }
+
     fn do_trans_lvalue(&mut self, val: *LValue, bb: *BasicBlock) -> (*LValue, *BasicBlock) {
         match val {
             invalid: *InvalidValue => {
@@ -49,7 +102,9 @@ impl CfgBuilder {
 
             // LValue
             idx_lv: *IndexLValue => {
-                let (base, base_bb) = self.trans_xvalue(idx_lv.base, bb);
+                let raw_base = idx_lv.base;
+                let (base, base_bb) = self.trans_place_base_x(idx_lv.base, bb);
+                self.mark_place_base_consumed(base, raw_base, base_bb);
                 idx_lv.base = move base;
                 let (index, index_bb) = self.trans_rvalue(idx_lv.index, base_bb);
                 idx_lv.index = move index;
@@ -58,14 +113,18 @@ impl CfgBuilder {
                 return (move idx_lv as *LValue, index_bb);
             }
             field_lv: *FieldLValue => {
-                let (base, base_bb) = self.trans_xvalue(field_lv.base, bb);
+                let raw_base = field_lv.base;
+                let (base, base_bb) = self.trans_place_base_x(field_lv.base, bb);
+                self.mark_place_base_consumed(base, raw_base, base_bb);
                 field_lv.base = move base;
 
                 base_bb.add_step(field_lv as *XValue);
                 return (move field_lv as *LValue, base_bb);
             }
             tup_lv: *TupleAccessLValue => {
-                let (base, base_bb) = self.trans_xvalue(tup_lv.base, bb);
+                let raw_base = tup_lv.base;
+                let (base, base_bb) = self.trans_place_base_x(tup_lv.base, bb);
+                self.mark_place_base_consumed(base, raw_base, base_bb);
                 tup_lv.base = move base;
 
                 base_bb.add_step(tup_lv as *XValue);
@@ -74,13 +133,18 @@ impl CfgBuilder {
             deref_lv: *DerefLValue => {
                 // 需要判断是不是 auto deref
                 if deref_lv.desugared_method is Some(method) {
-                    let (m, m_bb) = self.trans_rvalue(method as *RValue, bb);
+                    // desugared_method 的结果也是 place 的一部分, 同样不物化
+                    let (m, m_bb) = self.trans_place_base_rv(method as *RValue, bb);
                     deref_lv.operand = m;
-                    let (op, op_bb) = self.trans_xvalue(deref_lv.operand, m_bb);
+                    let raw_op = deref_lv.operand;
+                    let (op, op_bb) = self.trans_place_base_x(deref_lv.operand, m_bb);
+                    self.mark_place_base_consumed(op, raw_op, op_bb);
                     op_bb.add_step(deref_lv as *XValue);
                     return (move deref_lv as *LValue, op_bb);
                 } else {
-                    let (op, op_bb) = self.trans_xvalue(deref_lv.operand, bb);
+                    let raw_op = deref_lv.operand;
+                    let (op, op_bb) = self.trans_place_base_x(deref_lv.operand, bb);
+                    self.mark_place_base_consumed(op, raw_op, op_bb);
                     deref_lv.operand = move op;
                     op_bb.add_step(deref_lv as *XValue);
                     return (move deref_lv as *LValue, op_bb);
@@ -103,13 +167,116 @@ impl CfgBuilder {
     }
 
     fn trans_rvalue(&mut self, val: *RValue, bb: *BasicBlock) -> (*RValue, *BasicBlock) {
+        // 维护递归深度: "处处物化" 的压制 (写目标基址) 只作用于本层结果,
+        // 不作用于它的子表达式。
+        self.rv_depth += 1_u;
+        let res = self.trans_rvalue_inner(val, bb);
+        self.rv_depth -= 1_u;
+        return res;
+    }
+
+    fn trans_rvalue_inner(&mut self, val: *RValue, bb: *BasicBlock) -> (*RValue, *BasicBlock) {
         let key = val as *raw RValue as UInt;
         if self.cached_rvalue.at(&key) is Some(v) {
             return (move v, move bb);
         }
         let res = self.do_trans_rvalue(val, bb);
+        
+        let rv_key = res.0 as *raw RValue as UInt;
+        if self.rvalue_state_map.at(&rv_key) is None {
+            self.set_rvalue_ownership(res.0, RValueOwnership::Unspecified);
+        }
+
+        if self.rv_depth != self.suppress_depth &&
+            self.rv_owns(res.0) && has_destructor(res.0.get_stype()) {
+            let (homed, homed_bb) = self.home_owned_rvalue(res.0, res.1);
+            self.cached_rvalue.insert(key, homed);
+            return (homed, homed_bb);
+        }
         self.cached_rvalue.insert(key, res.0);
         return res;
+    }
+
+    // 原则 1: 拥有型右值必须有归宿。绝大多数消费点本来就有归宿 —— 具名局部量
+    // (WriteValue/LetSentence)、实参、聚合体元素、box、返回值的 move-out —— 所有权在那里
+    // 直接移交。只有"没有归宿"的位置才需要物化成一个隐式局部量:
+    //   - 表达式语句丢弃的结果 (ExprSentence);
+    //   - if/match/while/&&/|| 的 scrutinee (PatternMatchValue 的操作数);
+    //   - match 的 scrutinee (BranchMultiple.value)。
+    // 在这些位置调用本函数, 值就不会停留在"没有归宿"的中间状态。
+    fn materialize_owned(&mut self, v: *RValue, bb: *BasicBlock) -> (*RValue, *BasicBlock) {
+        if !rvalue_needs_home(v) {
+            return (v, bb);
+        }
+        if !has_destructor(v.get_stype()) {
+            return (v, bb);
+        }
+        return self.home_owned_rvalue(v, bb);
+    }
+
+    // 把一个"拥有型右值"物化成一个隐式局部量: 临时量接手它自带的那次强引用 (move),
+    // 由临时量的析构 (作用域树) 释放。幂等: 同一个值只物化一次 (match 的 scrutinee
+    // 会被多个 arm 看到)。调用方负责确认"这个值确实需要/可以有一个归宿"。
+    fn home_owned_rvalue(&mut self, v: *RValue, bb: *BasicBlock) -> (*RValue, *BasicBlock) {
+        // 幂等: 同一个值只物化一次 (match 的 scrutinee 会被多个 arm 看到)
+        let key = v as *raw RValue as UInt;
+        if self.materialized.at(&key) is Some(rd) {
+            return (move rd, bb);
+        }
+        // 这个值没有别的归宿: 让它自带的那次强引用直接归临时量所有 (move),
+        // 由临时量的析构释放。复制的话源值的那次引用就永远没人释放 (R1/R2)。
+        // 已经被消费过的右值只能复制 (mark 返回 false)。
+        let mut took = true;
+        if self.rv_owns(v) {
+            took = self.mark_rvalue_consumed(v, RValueConsumption::MovedToTemp);
+        }
+        let temp = self.new_temp_impl(v, bb, !took);
+        if took {
+            self.set_rvalue_temp_home(v, temp.sym_var);
+        }
+        let rd = ReadValue::new(v.expr_node(), temp.sym_var) as *RValue;
+        // 临时量的读取是 place 读取: 所有权还在临时量上 (见 temp_map 的 move-out 处理)
+        self.set_rvalue_ownership(rd, RValueOwnership::BorrowsValue);
+        self.materialized.insert(key, rd);
+        return (rd, bb);
+    }
+
+    // 把一个右值当作"place 的基址"使用 (字段/元组/索引/解引用/载荷解包)。
+    // 如果基址是拥有型右值 (例如 `qty.canonical().type_symbol` 里 canonical() 的调用结果),
+    // 它必须有一个归宿: 物化成语句作用域的临时量, 由作用域树析构, 返回读它的 place。
+    // 这是原则 1 在"place 基址"这一类没有归宿的位置上的落地。
+    fn as_place_base(&mut self, v: *RValue, bb: *BasicBlock) -> (*RValue, *BasicBlock) {
+        if self.rv_owns(v) {
+            return self.home_owned_rvalue(v, bb);
+        }
+        return (v, bb);
+    }
+
+    // 需要一个 place: 已经是 place 就原样返回, 否则物化成一个临时量。
+    // 拥有型右值 (调用结果/聚合体/运算符结果) 没有别的归宿: 临时量接手它自带的那次
+    // 强引用 (move), 而不是复制 —— 复制会让源值那次 +1 无人释放, 这正是 R2 的泄漏。
+    // 已经消费过的右值只能复制。幂等: 同一个值只会有一个临时量。
+    fn ensure_place(&mut self, v: *RValue, bb: *BasicBlock) -> (*RValue, *BasicBlock) {
+        if rvalue_names_storage(v) {
+            return (v, bb);
+        }
+        let key = v as *raw RValue as UInt;
+        if self.materialized.at(&key) is Some(rd) {
+            return (move rd, bb);
+        }
+        let mut took = false;
+        if self.rv_owns(v) {
+            took = self.mark_rvalue_consumed(v, RValueConsumption::MovedToTemp);
+        }
+        let temp = self.new_temp_impl(v, bb, !took);
+        if took {
+            self.set_rvalue_temp_home(v, temp.sym_var);
+        }
+        let rd = ReadValue::new(v.expr_node(), temp.sym_var) as *RValue;
+        // 临时量的读取是 place 读取: 所有权还在临时量上 (见 temp_map 的 move-out 处理)
+        self.set_rvalue_ownership(rd, RValueOwnership::BorrowsValue);
+        self.materialized.insert(key, rd);
+        return (rd, bb);
     }
 
     fn do_trans_rvalue(&mut self, val: *RValue, bb: *BasicBlock) -> (*RValue, *BasicBlock) {
@@ -123,29 +290,37 @@ impl CfgBuilder {
 
             rv: *ReadValue => {
                 bb.add_step(rv as *XValue);
+                // 读一个已有存储: 只产生一次 load, 不带来新的强引用 (实测见 mod.zn 注释)
+                self.set_rvalue_ownership(rv as *RValue, RValueOwnership::BorrowsValue);
                 return (move rv as *RValue, bb);
             }
             idx_rv: *IndexRValue => {
-                let (base, base_bb) = self.trans_rvalue(idx_rv.base, bb);
+                let (base0, base_bb0) = self.trans_rvalue(idx_rv.base, bb);
+                let (base, base_bb) = self.as_place_base(base0, base_bb0);
                 idx_rv.base = move base;
                 let (index, index_bb) = self.trans_rvalue(idx_rv.index, base_bb);
                 idx_rv.index = move index;
 
                 index_bb.add_step(idx_rv as *XValue);
+                self.set_rvalue_ownership(idx_rv as *RValue, RValueOwnership::BorrowsValue);
                 return (move idx_rv as *RValue, index_bb);
             }
             field_rv: *FieldRValue => {
-                let (base, base_bb) = self.trans_rvalue(field_rv.base, bb);
+                let (base0, base_bb0) = self.trans_rvalue(field_rv.base, bb);
+                let (base, base_bb) = self.as_place_base(base0, base_bb0);
                 field_rv.base = move base;
 
                 base_bb.add_step(field_rv as *XValue);
+                self.set_rvalue_ownership(field_rv as *RValue, RValueOwnership::BorrowsValue);
                 return (move field_rv as *RValue, base_bb);
             }
             tup_rv: *TupleAccessRValue => {
-                let (base, base_bb) = self.trans_rvalue(tup_rv.base, bb);
+                let (base0, base_bb0) = self.trans_rvalue(tup_rv.base, bb);
+                let (base, base_bb) = self.as_place_base(base0, base_bb0);
                 tup_rv.base = move base;
 
                 base_bb.add_step(tup_rv as *XValue);
+                self.set_rvalue_ownership(tup_rv as *RValue, RValueOwnership::BorrowsValue);
                 return (move tup_rv as *RValue, base_bb);
             }
             deref_rv: *DerefRValue => {
@@ -153,13 +328,18 @@ impl CfgBuilder {
                 if deref_rv.desugared_method is Some(method) {
                     let (m, m_bb) = self.trans_rvalue(method as *RValue, bb);
                     deref_rv.operand = m;
-                    let (op, op_bb) = self.trans_rvalue(deref_rv.operand, m_bb);
-                    op_bb.add_step(deref_rv as *XValue);
-                    return (move deref_rv as *RValue, op_bb);
-                } else {
-                    let (op, op_bb) = self.trans_rvalue(deref_rv.operand, bb);
+                    let (op0, op_bb0) = self.trans_rvalue(deref_rv.operand, m_bb);
+                    let (op, op_bb) = self.as_place_base(op0, op_bb0);
                     deref_rv.operand = move op;
                     op_bb.add_step(deref_rv as *XValue);
+                    self.set_rvalue_ownership(deref_rv as *RValue, RValueOwnership::BorrowsValue);
+                    return (move deref_rv as *RValue, op_bb);
+                } else {
+                    let (op0, op_bb0) = self.trans_rvalue(deref_rv.operand, bb);
+                    let (op, op_bb) = self.as_place_base(op0, op_bb0);
+                    deref_rv.operand = move op;
+                    op_bb.add_step(deref_rv as *XValue);
+                    self.set_rvalue_ownership(deref_rv as *RValue, RValueOwnership::BorrowsValue);
                     return (move deref_rv as *RValue, op_bb);
                 }
 
@@ -171,10 +351,12 @@ impl CfgBuilder {
                 return (move deref_rv as *RValue, op_bb);
             }
             vp_rv: *VariantPayloadValue => {
-                let (ev, ev_bb) = self.trans_rvalue(vp_rv.enum_value, bb);
+                let (ev0, ev_bb0) = self.trans_rvalue(vp_rv.enum_value, bb);
+                let (ev, ev_bb) = self.as_place_base(ev0, ev_bb0);
                 vp_rv.enum_value = move ev;
 
                 ev_bb.add_step(vp_rv as *XValue);
+                self.set_rvalue_ownership(vp_rv as *RValue, RValueOwnership::BorrowsValue);
                 return (move vp_rv as *RValue, ev_bb);
             }
             wv: *WriteValue => {
@@ -183,6 +365,8 @@ impl CfgBuilder {
                 wv.src = move src;
                 let (dst, dst_bb) = self.trans_lvalue(wv.dst, src_bb);
                 wv.dst = dst;
+                // 所有权落进这个位置: record 给 verifier 做路径敏感的归宿检查 (V6)
+                self.set_rvalue_place_home(wv.src, dst);
 
                 // 析构原来的数据
                 self.drop_lvalue(move dst, dst_bb);
@@ -197,10 +381,12 @@ impl CfgBuilder {
                     SType::sty_unit(),
                     wv.src.expr_node().span(),
                 ) as *RValue;
+                self.set_rvalue_ownership(comptime_unit, RValueOwnership::BorrowsValue);
                 return (move comptime_unit as *RValue, dst_bb);
             }
             qp: *QualifiedPathValue => {
                 bb.add_step(qp as *XValue);
+                self.set_rvalue_ownership(qp as *RValue, RValueOwnership::BorrowsValue);
                 return (move qp as *RValue, bb);
             }
             lam: *LambdaValue => {
@@ -226,6 +412,8 @@ impl CfgBuilder {
             }
             lit_rv: *LiteralValue => {
                 bb.add_step(lit_rv as *XValue);
+                // 字面量/常量本身没有"接手所有权"这回事, 消费方需要时自己复制
+                self.set_rvalue_ownership(lit_rv as *RValue, RValueOwnership::BorrowsValue);
                 return (move lit_rv as *RValue, bb);
             }
             ty_asc_rv: *TypeAscriptionValue => {
@@ -254,6 +442,8 @@ impl CfgBuilder {
                 }
 
                 cur_bb.add_step(agg_rv as *XValue);
+                // 聚合体刚把内部元素搬进来: 本结果负责释放这些强引用
+                self.set_rvalue_ownership(agg_rv as *RValue, RValueOwnership::OwnsValue);
                 return (move agg_rv as *RValue, cur_bb);
             }
             tup_lit: *TupleValue => {
@@ -268,6 +458,7 @@ impl CfgBuilder {
                 tup_lit.elements = move transformed_elements;
 
                 cur_bb.add_step(tup_lit as *XValue);
+                self.set_rvalue_ownership(tup_lit as *RValue, RValueOwnership::OwnsValue);
                 return (move tup_lit as *RValue, cur_bb);
             }
             arr_lit: *ArrayLiteralValue => {
@@ -282,6 +473,7 @@ impl CfgBuilder {
                 arr_lit.elements = move transformed_elements;
 
                 cur_bb.add_step(arr_lit as *XValue);
+                self.set_rvalue_ownership(arr_lit as *RValue, RValueOwnership::OwnsValue);
                 return (move arr_lit as *RValue, cur_bb);
             }
             repeat_lit: *RepeatValue => {
@@ -296,6 +488,7 @@ impl CfgBuilder {
                 }
 
                 end_bb.add_step(repeat_lit as *XValue);
+                self.set_rvalue_ownership(repeat_lit as *RValue, RValueOwnership::OwnsValue);
                 return (move repeat_lit as *RValue, end_bb);
             }
             binary_rv: *BinaryExprValue => {
@@ -306,12 +499,25 @@ impl CfgBuilder {
                 let (op, op_bb) = self.trans_rvalue(unary_rv.operand, bb);
                 if unary_rv.kind is UnaryValueKind::Move {
                     ensure_expr_can_move(unary_rv.operand);
+                    self.move_out_if_temp(op, op_bb);
                     let mv = MovedValue::create(unary_rv.expr_node(), move op);
                     op_bb.add_step(mv as *XValue);
+                    // move 的结果不额外认领所有权: 源的 Moved 状态已经接管了那次 +1,
+                    // 消费方把它当作 place 拷贝 (与基准一致, 见 insert_copy_if_needed)
+                    self.set_rvalue_ownership(mv as *RValue, RValueOwnership::BorrowsValue);
                     return (move mv as *RValue, move op_bb);
                 } else {
+                    // box / to_weak 会把操作数的值(或所有权)搬走:
+                    // 拥有型临时量必须在这里 move-out, 否则语句末析构会把
+                    // 已经搬进 box 的对象释放掉 (File 的 fclose 就是这样踩到的)。
+                    if unary_rv.kind is UnaryValueKind::Box ||
+                        unary_rv.kind is UnaryValueKind::ToWeak {
+                        self.move_out_if_temp(op, op_bb);
+                        }
                     unary_rv.operand = move op;
                     op_bb.add_step(unary_rv as *XValue);
+                    // box 产出一个新的强引用; to_weak 产出弱引用 (按拥有处理, 消费方负责)
+                    self.set_rvalue_ownership(unary_rv as *RValue, RValueOwnership::OwnsValue);
                     return (move unary_rv as *RValue, move op_bb);
                 }
             }
@@ -321,15 +527,16 @@ impl CfgBuilder {
                     if d.operand.get_stype().type_symbol is type *ArcPointerSymbol {
                         // 需要新增临时变量
                         let (op, local_bb) = self.trans_rvalue(d.operand, bb);
-                        let temp = self.new_temp(op, bb);
-                        let rd = ReadValue::new(op.expr_node(), temp.sym_var);
-                        let r = ReBorrowValue::create(move rd as *RValue, addr_rv.get_stype());
-                        local_bb.add_step(r as *XValue);
-                        return (move r as *RValue, move local_bb);
+                        let (place, place_bb) = self.ensure_place(op, local_bb);
+                        let r = ReBorrowValue::create(place, addr_rv.get_stype());
+                        place_bb.add_step(r as *XValue);
+                        self.set_rvalue_ownership(r as *RValue, RValueOwnership::BorrowsValue);
+                        return (move r as *RValue, move place_bb);
                     } else {
                         let (op, op_bb) = self.trans_rvalue(d.operand, bb);
                         let r = ReBorrowValue::create(move op, addr_rv.get_stype());
                         op_bb.add_step(r as *XValue);
+                        self.set_rvalue_ownership(r as *RValue, RValueOwnership::BorrowsValue);
                         return (move r as *RValue, move op_bb);
                     }
                 } else {
@@ -337,6 +544,7 @@ impl CfgBuilder {
                     addr_rv.operand = move operand;
 
                     new_bb.add_step(addr_rv as *XValue);
+                    self.set_rvalue_ownership(addr_rv as *RValue, RValueOwnership::BorrowsValue);
                     return (move addr_rv as *RValue, move new_bb);
                 }
             }
@@ -348,56 +556,81 @@ impl CfgBuilder {
             }
             pmv: *PatternMatchValue => {
                 let (op, op_bb) = self.trans_rvalue(pmv.operand, bb);
-                pmv.operand = move op;
+                // scrutinee 没有归宿: 物化成隐式局部量, 让它在整条语句之后析构
+                let (homed, homed_bb) = self.materialize_owned(op, op_bb);
+                pmv.operand = homed;
 
-                op_bb.add_step(pmv as *XValue);
-                return (move pmv as *RValue, op_bb);
+                homed_bb.add_step(pmv as *XValue);
+                self.set_rvalue_ownership(pmv as *RValue, RValueOwnership::BorrowsValue);
+                return (move pmv as *RValue, homed_bb);
             }
             cast_rv: *CastValue => {
                 let (op, op_bb) = self.trans_rvalue(cast_rv.operand, bb);
                 cast_rv.operand = op;
                 if cast_rv.resolved_kind is ResolvedCastKind::SameType {
+                    // 同类型转换对所有权完全透明: 它就是操作数本身, 消费点也是同一个。
+                    // 不能在这里 move_out/记账 —— 否则消费点会变成"这个转换",
+                    // 实参接手方 (MovedToArg) / 返回值 (MovedToReturn) 就丢了。
                     return (move op as *RValue, move op_bb);
                 } else {
+                    // 真正的转换会消费操作数的所有权 (拥有型临时量在这里 move-out)
+                    self.move_out_if_temp(op, op_bb);
                     op_bb.add_step(cast_rv as *XValue);
+                    // `as` 对所有权透明: 结果不带来新的 +1 (例如 self.ptr as *())。
+                    // 消费方要保存它必须自己复制; 拥有型操作数由
+                    // insert_copy_if_needed 递归到 operand 处理 (老代码同样如此)。
+                    self.set_rvalue_ownership(cast_rv as *RValue, RValueOwnership::BorrowsValue);
                     return (move cast_rv as *RValue, move op_bb);
                 }
             }
             fn_call: *FnCallValue => {
                 let mut cur_bb = bb;
+                let params = self.fn_call_params(fn_call.callee);
                 let mut transformed_args: Vec<*RValue> = Vec::new();
+                let mut arg_i: UInt = 0_u;
                 for a in fn_call.desugared_args {
                     let (val, end_bb) = self.trans_rvalue(move a, cur_bb);
                     cur_bb = end_bb;
-                    self.insert_copy_if_needed(val, cur_bb);
+                    // 按值实参: 接手方是形参 (MovedToArg), 显式登进外部接手账本
+                    self.consume_as_arg(val, cur_bb, arg_param(&params, 0_u, arg_i), arg_i);
                     transformed_args.push(move val);
+                    arg_i += 1_u;
                 }
                 fn_call.desugared_args = move transformed_args;
 
                 // todo 根据生命周期传递规则设置 origin
 
                 cur_bb.add_step(fn_call as *XValue);
+                // 调用返回值自带一次强引用 (callee 已 retain / 产出新引用)
+                self.set_rvalue_ownership(fn_call as *RValue, RValueOwnership::OwnsValue);
                 return (move fn_call as *RValue, cur_bb);
             }
             method_call: *MethodCallValue => {
                 let mut cur_bb = bb;
+                // params[0] 是 receiver: 接收者也按"实参接手方"记账 (与 callee 形参一致)
+                let params = self.method_call_params(method_call);
                 let (receiver, receiver_bb) = self.trans_rvalue(method_call.desugared_receiver.get_or_panic(), cur_bb);
-                self.insert_copy_if_needed(receiver, receiver_bb);
+                self.consume_as_arg(receiver, receiver_bb, arg_param(&params, 0_u, 0_u), 0_u);
                 method_call.desugared_receiver = Some(move receiver);
                 cur_bb = move receiver_bb;
 
                 let mut transformed_args: Vec<*RValue> = Vec::new();
+                let mut arg_i: UInt = 0_u;
                 for a in method_call.desugared_args {
                     let (val, end_bb) = self.trans_rvalue(move a, cur_bb);
                     cur_bb = end_bb;
-                    self.insert_copy_if_needed(val, cur_bb);
+                    // 方法调用的 params[0] 是 receiver, 实参从 params[1] 开始
+                    self.consume_as_arg(val, cur_bb, arg_param(&params, 1_u, arg_i), arg_i + 1_u);
                     transformed_args.push(move val);
+                    arg_i += 1_u;
                 }
                 method_call.desugared_args = move transformed_args;
 
                 // todo 根据生命周期传递规则设置 origin
 
                 cur_bb.add_step(method_call as *XValue);
+                // 调用返回值自带一次强引用 (callee 已 retain / 产出新引用)
+                self.set_rvalue_ownership(method_call as *RValue, RValueOwnership::OwnsValue);
                 return (move method_call as *RValue, cur_bb);
             }
             select_rv: *SelectValue => {
@@ -430,12 +663,14 @@ impl CfgBuilder {
                 }
 
                 let (true_val, true_bb_end) = self.trans_rvalue(select_rv.br_true, move true_bb);
-                self.insert_copy_if_needed(true_val, true_bb_end);
+                let oc_true = self.insert_copy_if_needed_as(
+                    true_val, true_bb_end, RValueConsumption::MovedToPlace, 0_u, 0_u);
                 let alloca_true_val = AllocaValue::create(true_val);
                 true_bb_end.add_step(alloca_true_val);
 
                 let (false_val, false_bb_end) = self.trans_rvalue(select_rv.br_false, move false_bb);
-                self.insert_copy_if_needed(false_val, false_bb_end);
+                let oc_false = self.insert_copy_if_needed_as(
+                    false_val, false_bb_end, RValueConsumption::MovedToPlace, 0_u, 0_u);
                 let alloca_false_val = AllocaValue::create(false_val);
                 false_bb_end.add_step(alloca_false_val);
 
@@ -456,6 +691,14 @@ impl CfgBuilder {
                 phi.add_incoming(alloca_false_val, false_bb_end);
 
                 end_bb.add_step(phi as *XValue);
+                // phi 表示 alloca 的地址 (指针)。只有两个分支都把一次 +1 交进各自的
+                // alloca (transferred 都为真) 时, phi 才携带一次可释放的强引用, 登记
+                // OwnsValue 让它带析构时在产出点被物化; 否则保持 BorrowsValue (纯地址)。
+                if oc_true.transferred && oc_false.transferred {
+                    self.set_rvalue_ownership(phi as *RValue, RValueOwnership::OwnsValue);
+                } else {
+                    self.set_rvalue_ownership(phi as *RValue, RValueOwnership::BorrowsValue);
+                }
                 return (move phi as *RValue, move end_bb);
             }
             interpolation: *InterpolationValue => {
@@ -547,6 +790,8 @@ impl CfgBuilder {
                 let res = ReadValue::new(interpolation.expr, buf);
                 res.sty = interpolation.sty;
                 cur_bb.add_step(res as *XValue);
+                // 读出语句内建好的 String 缓冲: 缓冲是具名局部量, 自己拥有
+                self.set_rvalue_ownership(res as *RValue, RValueOwnership::BorrowsValue);
                 return (move res as *RValue, move cur_bb);
             }
             iter: *IteratorValue => {
@@ -559,12 +804,16 @@ impl CfgBuilder {
                 panic "BUG: IteratorItemValue has been handled when translate ForLoopSentence";
             }
             moved: *MovedValue => {
+                self.set_rvalue_ownership(val, RValueOwnership::BorrowsValue);
                 return (move val, move bb);
             }
             comptime: *CompileTimeValue => {
+                // 编译期常量不"接手"运行期强引用, 消费方需要时自己复制
+                self.set_rvalue_ownership(val, RValueOwnership::BorrowsValue);
                 return (move val, move bb);
             }
             rb: *ReBorrowValue => {
+                self.set_rvalue_ownership(val, RValueOwnership::BorrowsValue);
                 return (move val, move bb);
             }
             _ => {
@@ -639,6 +888,7 @@ impl CfgBuilder {
             phi.add_incoming(move load_rhs, move rhs2_bb);
 
             end_bb.add_step(phi as *XValue);
+            self.set_rvalue_ownership(phi as *RValue, RValueOwnership::BorrowsValue);
             return (move phi as *RValue, move end_bb);
         }
         else if binary_rv.op.token_kind is TokenKind::Punctuation(PunctuationKind::OrOr) {
@@ -669,15 +919,21 @@ impl CfgBuilder {
             phi.add_incoming(load_rhs, rhs_end);
 
             end_bb.add_step(phi as *XValue);
+            self.set_rvalue_ownership(phi as *RValue, RValueOwnership::BorrowsValue);
             return (move phi as *RValue, move end_bb);
         }
         else {
             let (lhs, lhs_end) = self.trans_rvalue(binary_rv.lhs, bb);
+            // 运算符消费两个操作数: 拥有型临时量/拥有型值都在这里交出所有权
+            self.move_out_if_temp(lhs, lhs_end);
             binary_rv.lhs = lhs;
             let (rhs, rhs_end) = self.trans_rvalue(binary_rv.rhs, lhs_end);
+            self.move_out_if_temp(rhs, rhs_end);
             binary_rv.rhs = rhs;
 
             rhs_end.add_step(binary_rv as *RValue);
+            // 二元运算产出一个新的强引用 (含 ==/!= 之类的重载运算符)
+            self.set_rvalue_ownership(binary_rv as *RValue, RValueOwnership::OwnsValue);
             return (move binary_rv as *RValue, move rhs_end);
         }
     }
@@ -697,9 +953,9 @@ impl CfgBuilder {
                 let base_sty = field_rv.base.get_stype();
                 if base_sty.type_symbol is type *ArcPointerSymbol {
                     let (base, new_bb) = self.trans_rvalue(field_rv.base, bb);
-                    let temp = self.new_temp(base, new_bb);
-                    field_rv.base = ReadValue::new(base.expr_node(), temp.sym_var) as *RValue;
-                    return (move field_rv as *RValue, move bb);
+                    let (place, place_bb) = self.ensure_place(base, new_bb);
+                    field_rv.base = place;
+                    return (move field_rv as *RValue, move place_bb);
                 } else {
                     let (base, new_bb) = self.promote_local(field_rv.base, bb);
                     field_rv.base = move base;
@@ -708,17 +964,16 @@ impl CfgBuilder {
             }
             tup_rv: *TupleAccessRValue => {
                 let (base, new_bb) = self.trans_rvalue(tup_rv.base, bb);
-                let temp = self.new_temp(base, new_bb);
-                tup_rv.base = ReadValue::new(base.expr_node(), temp.sym_var) as *RValue;
-                return (move tup_rv as *RValue, move new_bb);
+                let (place, place_bb) = self.ensure_place(base, new_bb);
+                tup_rv.base = place;
+                return (move tup_rv as *RValue, move place_bb);
             }
             deref_rv: *DerefRValue => {
                 let base_sty = deref_rv.operand.get_stype();
                 if base_sty.type_symbol is type *ArcPointerSymbol {
                     let (operand, new_bb) = self.trans_rvalue(deref_rv.operand, bb);
-                    let temp = self.new_temp(operand, new_bb);
                     deref_rv.operand = move operand;
-                    return (move deref_rv as *RValue, move bb);
+                    return (move deref_rv as *RValue, move new_bb);
                 } else {
                     let (op, new_bb) = self.promote_local(deref_rv.operand, bb);
                     deref_rv.operand = move op;
@@ -730,8 +985,8 @@ impl CfgBuilder {
                     return self.promote_local(cast_rv.operand, bb);
                 } else {
                     let (new_v, new_bb) = self.trans_rvalue(v, bb);
-                    let temp = self.new_temp(new_v, bb);
-                    return (ReadValue::new(v.expr_node(), temp.sym_var) as *RValue, move new_bb);
+                    let (place, place_bb) = self.ensure_place(new_v, new_bb);
+                    return (place, move place_bb);
                 }
             }
             ctx_rv: *ContextValue => {
@@ -749,8 +1004,8 @@ impl CfgBuilder {
 
             _ => {
                 let (new_v, new_bb) = self.trans_rvalue(v, bb);
-                let temp = self.new_temp(move new_v, new_bb);
-                return (ReadValue::new(v.expr_node(), temp.sym_var) as *RValue, move new_bb);
+                let (place, place_bb) = self.ensure_place(new_v, new_bb);
+                return (place, move place_bb);
             }
         }
         return (move v, move bb);
@@ -788,12 +1043,14 @@ impl CfgBuilder {
         }
 
         let (then_val, then_bb_end) = self.trans_rvalue(then_br, bb);
-        self.insert_copy_if_needed(then_val, then_bb_end);
+        let oc_true = self.insert_copy_if_needed_as(
+            then_val, then_bb_end, RValueConsumption::MovedToPlace, 0_u, 0_u);
         let alloca_true_val = AllocaValue::create(then_val);
         then_bb_end.add_step(alloca_true_val);
 
         let (else_val, else_bb_end) = self.trans_rvalue(else_br, bb_cond_false);
-        self.insert_copy_if_needed(else_val, else_bb_end);
+        let oc_false = self.insert_copy_if_needed_as(
+            else_val, else_bb_end, RValueConsumption::MovedToPlace, 0_u, 0_u);
         let alloca_false_val = AllocaValue::create(else_val);
         else_bb_end.add_step(alloca_false_val);
 
@@ -810,12 +1067,18 @@ impl CfgBuilder {
         phi.add_incoming(alloca_false_val, else_bb_end);
         bb_end.add_step(phi as *XValue);
 
-        // 条件析构所有的模式中的变量绑定
+        // 模式绑定归属当前语句作用域, 在 bb_end 条件析构 (claim 让所在块退出时跳过)
         for v in all_pmv_bindings {
             v.drop_flag = Some(VarSymbol::create(v.var_node.span(), SType::sty_bool()));
-            self.drop_var_sym(move v, bb_end);
+            self.register_owned_var(v);
+            self.claim_var(v);
         }
 
+        if oc_true.transferred && oc_false.transferred {
+            self.set_rvalue_ownership(phi as *RValue, RValueOwnership::OwnsValue);
+        } else {
+            self.set_rvalue_ownership(phi as *RValue, RValueOwnership::BorrowsValue);
+        }
         return (move phi as *RValue, move bb_end);
     }
 

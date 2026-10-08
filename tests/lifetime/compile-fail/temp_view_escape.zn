@@ -1,0 +1,19 @@
+// 视图逃出块: 返回指向本函数临时量堆缓冲的视图。宿主临时量在 return 之前析构,
+// 调用方拿到悬垂指针 (运行期 use-after-free)。这必须由 loan 检查报"生命周期错误",
+// 而不是被静默延长 (延长也救不了: 宿主存储本身随函数返回消失)。
+use std::primitives::string::String;
+use std::primitives::str::Str;
+
+fn mkstr() -> String {
+    return String::from_str("hello-world");
+}
+
+// 显式具名生命周期, 避免"返回类型省略的生命周期"那条诊断先命中,
+// 确保这里失败的原因是"视图活得比所有者长"。
+fn leak<'a>() -> Str<'a> {
+    return mkstr().as_str().deref();
+}
+
+fn main() {
+    println("ok");
+}

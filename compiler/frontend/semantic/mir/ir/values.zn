@@ -227,6 +227,7 @@ impl CopyValue {
         return box {
             .expr = move e,
             .src = move src,
+            .from_temp_init = false,
         }: CopyValue;
     }
 }

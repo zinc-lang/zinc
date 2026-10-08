@@ -40,7 +40,8 @@ impl ConstValue for IntegerCValue {
 
 impl IntegerCValue {
     fn new(t: Token) -> Self {
-        let mut tok_str = t.raw_str().as_str().deref();
+        let raw_tok_str = t.raw_str();
+        let mut tok_str = raw_tok_str.as_str().deref();
 
         // 防御性处理前导负号 (lexer 不再产出带 `-` 的字面量, 负号由语义阶段折进 sign)
         let mut sign = true;

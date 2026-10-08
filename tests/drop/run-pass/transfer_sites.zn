@@ -1,0 +1,173 @@
+// 三类"外部接手方"消费点 (按值实参 / 返回值 / 写目标基址) 的运行时行为。
+//
+// 这些消费点的右值账目 dst 以前是 None —— 接手方 (形参 / 调用点 / place) 只能靠
+// "外部信任"。本用例用析构次数把它们的释放责任钉住:
+//   - 按值实参: 形参接手, 在 callee 退出时恰好析构一次 (值类型有 copyfn 时调用点复制
+//     一份, 原局部量自己还要再析构一次);
+//   - 返回值: 调用点接手, callee 侧不得析构 (move-out);
+//   - 写目标基址: place 语义, 不接手所有权, 不得物化/析构 (对照: 读基址与表达式语句
+//     丢弃的拥有型右值都会被物化并恰好析构一次)。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+// 计数的析构类型: drop 时给计数指针 +1。
+// 带一个 String 成员, 因此是非平凡类型 (不会踩"成员全是位拷贝却实现 Drop"的警告)。
+struct D {
+    p: *raw mut Int,
+    s: String,
+}
+
+impl Drop for D {
+    fn drop(&mut self) {
+        unsafe { *self.p = *self.p + 1_i; }
+    }
+}
+
+fn make_d(q: *raw mut Int) -> D {
+    return { .p = q, .s = String::from_str("d") }: D;
+}
+
+// ---- 实参接手方 ----
+
+// 按值形参: 在函数退出时析构
+fn sink_owned(d: D) {
+    let _n = d.s.len();
+}
+
+// 借用形参: 不析构
+fn sink_ref(d: &D) {
+    let _n = d.s.len();
+}
+
+// 泛型按值形参
+fn sink_generic<T>(o: Option<T>) {
+    if o is Option::Some(_) {}
+}
+
+// ---- 返回值接手方 ----
+
+// 直接返回调用结果 (callee 侧不析构)
+fn ret_new(q: *raw mut Int) -> D {
+    return make_d(q);
+}
+
+// 具名局部量 move-out 返回 (callee 侧不析构)
+fn ret_local(q: *raw mut Int) -> D {
+    let d = make_d(q);
+    let _n = d.s.len();
+    return d;
+}
+
+fn ret_option(q: *raw mut Int) -> Option<D> {
+    return Option::Some(make_d(q));
+}
+
+// ---- 写目标基址 (place 语义) ----
+//
+// 这个对象只有"函数返回的那次 +1"一个所有者, 所以它被析构 = 句柄真的被释放了。
+// 用它区分: 写目标基址 (place 语义, 不释放) vs 读基址/丢弃 (物化, 释放一次)。
+struct Outer {
+    v: Vec<Int>,
+    n: Int,
+}
+
+unsafe static mut G_OUTER_DROPS: Int = 0_i;
+
+impl Drop for Outer {
+    fn drop(&mut self) {
+        unsafe { G_OUTER_DROPS = G_OUTER_DROPS + 1_i; }
+    }
+}
+
+fn make_outer() -> *Outer {
+    return box { .v = (type Vec<Int>)::new(), .n = 0_i }: Outer;
+}
+
+fn main() {
+    // 1) 拥有型右值作按值实参: 形参接手, callee 退出时析构一次
+    let mut a = 0_i;
+    {
+        sink_owned(make_d(&mut a as *raw mut Int));
+        assert_eq(a, 1_i);
+    }
+    assert_eq(a, 1_i);
+
+    // 2) 具名局部量作按值实参: 调用点复制一份交给形参, 各自析构一次
+    let mut b = 0_i;
+    {
+        let d = make_d(&mut b as *raw mut Int);
+        assert_eq(b, 0_i);
+        sink_owned(d);
+        assert_eq(b, 1_i);
+    }
+    assert_eq(b, 2_i);
+
+    // 3) move 实参: 只有一次析构 (不复制)
+    let mut c = 0_i;
+    {
+        let d = make_d(&mut c as *raw mut Int);
+        sink_owned(move d);
+        assert_eq(c, 1_i);
+    }
+    assert_eq(c, 1_i);
+
+    // 4) 借用实参: 形参不析构, 原值在块退出时析构
+    let mut e = 0_i;
+    {
+        let d = make_d(&mut e as *raw mut Int);
+        sink_ref(&d);
+        assert_eq(e, 0_i);
+    }
+    assert_eq(e, 1_i);
+
+    // 5) 泛型按值实参 (Option<T>): 形参接手
+    let mut f = 0_i;
+    {
+        sink_generic(Option::Some(make_d(&mut f as *raw mut Int)));
+        assert_eq(f, 1_i);
+    }
+    assert_eq(f, 1_i);
+
+    // 6) 返回值: 调用结果直接返回, callee 侧不析构, 调用点接手
+    let mut g = 0_i;
+    {
+        let d = ret_new(&mut g as *raw mut Int);
+        assert_eq(g, 0_i);
+        let _n = d.s.len();
+    }
+    assert_eq(g, 1_i);
+
+    // 7) 具名局部量 move-out 返回: callee 侧不析构
+    let mut h = 0_i;
+    {
+        let d = ret_local(&mut h as *raw mut Int);
+        assert_eq(h, 0_i);
+    }
+    assert_eq(h, 1_i);
+
+    // 8) 返回 Option<D> 里的新值
+    let mut i = 0_i;
+    {
+        let o = ret_option(&mut i as *raw mut Int);
+        assert_eq(i, 0_i);
+        if o is Option::Some(_) {}
+    }
+    assert_eq(i, 1_i);
+
+    // 9) 写目标基址: place 语义 -> 不物化、不析构返回的句柄
+    make_outer().n = 7_i;
+    assert_eq(unsafe(G_OUTER_DROPS), 0_i);
+    make_outer().n = 8_i;
+    assert_eq(unsafe(G_OUTER_DROPS), 0_i);
+
+    // 10) 对照: 同一个返回句柄当"读基址"用时会被物化并析构 (所有权交给读的结果)
+    {
+        let _o = make_outer().n;
+        assert_eq(_o, 0_i);
+    }
+    assert_eq(unsafe(G_OUTER_DROPS), 1_i);
+
+    // 11) 对照: 表达式语句丢弃的拥有型右值也会被物化并析构
+    make_outer();
+    assert_eq(unsafe(G_OUTER_DROPS), 2_i);
+}

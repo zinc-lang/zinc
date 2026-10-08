@@ -1,0 +1,49 @@
+// "拥有型临时量 -> Str 视图"直接绑定到局部量、后续语句再读它的形态, 也就是最初报的那个写法:
+//
+//     let mut tok_str = t.raw_str().as_str().deref();
+//     if tok_str.starts_with("-") { tok_str = tok_str.sub_str(1); }
+//     ... tok_str.len() / tok_str.starts_with(...) / tok_str.sub_str(...).to_string() ...
+//
+// raw_str() (这里用等价的 token_text()) 返回拥有型 String, 视图指向它的堆缓冲区;
+// 宿主的临时量必须活到"接收视图的局部量所在块"的末尾 (checker/drop_place.zn 的
+// dst_storage_scope + collect_projection_temps), 否则临时量在语句末析构, 后续语句
+// 读这个视图就是 use-after-free。
+//
+// 与 temp_view_raw_str_branch.zn 互补: 那个覆盖 if-else 表达式里的临时量, 本用例覆盖
+// "直接绑定、不带 if-else 表达式"的最简形态 (没有具名所有者)。
+use std::{assert, assert_eq};
+use std::primitives::string::String;
+use std::primitives::str::Str;
+
+fn token_text() -> String {
+    return String::from_str("-1234");
+}
+
+fn main() {
+    // 视图的宿主是 token_text() 返回的临时 String, 这里没有任何具名所有者。
+    let mut tok_str = token_text().as_str().deref();
+
+    // 后续语句里读它 —— 寿命分析不到位的话, 这里读到的就是已释放内存。
+    assert_eq(tok_str.len(), 5_u);
+    assert(tok_str.starts_with("-"));
+
+    // 条件分支里再取一次视图并重新绑定 (与 common.zn 原始写法的形态一致)。
+    if tok_str.starts_with("-") {
+        tok_str = tok_str.sub_str(1_u, 4_u);
+    }
+    assert_eq(tok_str.len(), 4_u);
+    assert(tok_str.starts_with("1"));
+
+    // 再派生一个视图并转成拥有型 String。
+    let suffix = tok_str.sub_str(2_u, 2_u).to_string();
+    assert_eq(suffix.len(), 2_u);
+    assert(suffix.starts_with("34"));
+
+    // 最后经由 String::push_str 的读写路径再用一次 (就是当初触发 mem_copy 读到已释放块的路径)。
+    let mut buf = String::new();
+    buf.push_str(tok_str);
+    assert_eq(buf.len(), 4_u);
+    assert(buf.starts_with("1234"));
+
+    println("ok");
+}

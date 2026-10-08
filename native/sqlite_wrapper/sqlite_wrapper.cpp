@@ -246,13 +246,13 @@ void * zno_create_db(const char * path, unsigned long len) {
 
     db->prepare_insert_stmts();
 
-    // 插入当前时间
-    const char * sql = "INSERT INTO Compilation VALUES('datetime', datetime('now'))";
-    char *err_msg = nullptr;
-    int rc1 = sqlite3_exec(db->db, sql, nullptr, nullptr, &err_msg);
-    if( rc1 != SQLITE_OK ){
-        std::cerr << "[Compiler Internal Error] 执行 SQL 语句失败：" << err_msg << std::endl;
-    }
+    // 插入当前时间 会影响不同时间编译的二进制一致性，暂时先不加这个
+    // const char * sql = "INSERT INTO Compilation VALUES('datetime', datetime('now'))";
+    // char *err_msg = nullptr;
+    // int rc1 = sqlite3_exec(db->db, sql, nullptr, nullptr, &err_msg);
+    // if( rc1 != SQLITE_OK ){
+    //     std::cerr << "[Compiler Internal Error] 执行 SQL 语句失败：" << err_msg << std::endl;
+    // }
 
     return db;
 }

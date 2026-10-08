@@ -1,0 +1,83 @@
+// 借用"拥有型右值"的临时量必须活到借用结束: `let p = &*mk();` 物化出来的临时量
+// 不能早于 p 的读取被析构, 借用作用域结束后必须恰好释放一次。
+//
+// 历史 bug（用户 3 行 BranchReturn 修复所针对的形态）: 返回表达式直接挂在 MIR 的
+// terminator 上, 代码生成先执行块内全部 step（含临时量的 DtorValue）再求值 terminator,
+// 于是 `let p = &*mk(); return p.n;` 会读到已经被释放的对象（valgrind: Invalid read）。
+// 修复: 返回值/尾表达式一律先提成一条 LoadValue step, 排在析构之前
+// （见 builder/sentences.zn 的 BranchReturn 与 builder/mod.zn 的表达式体闭包）。
+//
+// 本用例用析构计数 + 值断言把"读取先于析构 / 借用结束恰好释放一次"钉死:
+// 回归（读取被排到析构之后, 或临时量根本没被延长）时借用期间的计数先变成 1,
+// 断言立即失败; 同一构造在 valgrind 下同时报 Invalid read。
+use std::{assert, assert_eq};
+
+struct Obj {
+    n: Int,
+    tag: Int,
+}
+
+unsafe static mut G_OBJ_DROPS: Int = 0_i;
+
+impl Drop for Obj {
+    fn drop(&mut self) {
+        unsafe { G_OBJ_DROPS = G_OBJ_DROPS + 1_i; }
+    }
+}
+
+fn mk(x: Int) -> *Obj {
+    return box { .n = x, .tag = x * 10_i }: Obj;
+}
+
+fn drops_now() -> Int {
+    return unsafe(G_OBJ_DROPS);
+}
+
+// 借用临时量, 随后把借用的目标作为返回值读取（BranchReturn 形态）。
+fn borrow_then_return() -> Int {
+    let p = &*mk(4_i);
+    return p.n;
+}
+
+fn main() {
+    unsafe { G_OBJ_DROPS = 0_i; }
+
+    // 1) 块内借用 + 隔几条语句后读: 读之前析构次数必须为 0（临时量已延长到块）。
+    {
+        let p = &*mk(4_i);
+        let _pad1 = 1_i;
+        let _pad2 = 2_i;
+        assert_eq(drops_now(), 0_i);
+        assert_eq(p.n, 4_i);
+        assert_eq(p.tag, 40_i);
+        assert_eq(drops_now(), 0_i);
+    }
+    assert_eq(drops_now(), 1_i);
+
+    // 2) 显式 return 形态: 读取必须先于析构, 返回后恰好释放一次（不多不少）。
+    {
+        let v = borrow_then_return();
+        assert_eq(v, 4_i);
+        assert_eq(drops_now(), 2_i);
+    }
+
+    // 3) 表达式体闭包（builder/mod.zn 的尾表达式路径）: 借用临时量并返回它的字段。
+    {
+        let f = (x: Int) -> Int => (&*mk(x)).n;
+        assert_eq(f(6_i), 6_i);
+        assert_eq(drops_now(), 3_i);
+    }
+
+    // 4) 循环体里每轮借用 + 读: 作用域是"每轮迭代", 每轮恰好释放一次 (不泄漏也不多释放)。
+    {
+        let mut i: UInt = 0_u;
+        let mut s: Int = 0_i;
+        while i < 100_u {
+            let p = &*mk(4_i);
+            s += p.n;
+            i += 1_u;
+        }
+        assert_eq(s, 400_i);
+        assert_eq(drops_now(), 103_i);
+    }
+}

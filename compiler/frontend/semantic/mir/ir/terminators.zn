@@ -43,17 +43,56 @@ impl Terminator for BrBool {
     }
 }
 
+// BrInt::targets 是 HashMap<UInt, *BasicBlock>, 直接 `for kv in self.targets` 得到的是
+// "桶序" —— 取决于键的哈希值, 跨源码版本不稳定。整数 switch 目前还没实现
+// (backend/codegen/cg_cfg.zn 的 br_int 分支直接 panic "unimplemented"), 所以这条路径
+// **当前不可达**; 这里先把顺序确定化, 属于预防性修复, 免得将来实现 lowering 时把
+// 非确定性带进 CFG 遍历 (successors 被 MIR 检查/活跃性分析使用).
+//
+// 方案: 按 case 值升序。std 目前没有 sort, 而 targets 的规模很小, 用"每次取出比上一个
+// 更大的最小键"的选择法, 只读不写, 结果只依赖键的集合 (与桶序/插入序无关)。
+fn br_int_sorted_edges(targets: &HashMap<UInt, *BasicBlock>) -> Vec<(UInt, *BasicBlock)> {
+    let total = targets.len();
+    let mut res = (type Vec<(UInt, *BasicBlock)>)::with_capacity(total);
+    let mut picked: UInt = 0;
+    let mut has_prev = false;
+    let mut prev: UInt = 0;
+    while picked < total {
+        let mut found = false;
+        let mut best: UInt = 0;
+        for ref kv in targets {
+            let case_val: UInt = kv.0;
+            if !has_prev || case_val > prev {
+                if !found || case_val < best {
+                    best = case_val;
+                    found = true;
+                }
+            }
+        }
+        if !found {
+            break; // 键互不相等时不可达; 防御性退出, 避免死循环
+        }
+        res.push((best, targets.at(&best).get_or_panic()));
+        prev = best;
+        has_prev = true;
+        picked += 1;
+    }
+    return res;
+}
+
 impl Terminator for BrInt {
     fn successors(&self) -> Vec<*BasicBlock> {
         let mut succs = (type Vec<*BasicBlock>)::new();
-        for kv in self.targets {
+        let edges = br_int_sorted_edges(&self.targets);
+        for kv in edges {
             succs.push(kv.1);
         }
         return succs;
     }
 
     fn dump(&self) {
-        for kv in self.targets {
+        let edges = br_int_sorted_edges(&self.targets);
+        for kv in edges {
             print(kv.0);
             print(":bb");
             print(kv.1.index);

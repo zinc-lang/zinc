@@ -4,6 +4,7 @@ mod terminators;
 use ::self::frontend::semantic::hir::ir::*;
 use ::self::frontend::semantic::hir::constant::*;
 use ::self::frontend::syntax::ast::*;
+use ::self::frontend::semantic::hir::checker::type_cast::*;
 
 use ::self::frontend::source_code::*;
 
@@ -61,21 +62,190 @@ struct CFG {
     sym: *Symbol,
     basic_blocks: Vec<*BasicBlock>,
     // 语句里物化出来的临时变量 (见 TempVar)。它们同时注册在所在语句块的 local_vars 里
-    // (代码生成要按块分配栈槽), 但析构点由这里决定。
+    // (代码生成要按块分配栈槽), 但析构点由作用域树决定。
     temps: Vec<*TempVar>,
     temp_map: HashMap<UInt, *TempVar>,
+    // 析构作用域树: 所有 DtorValue 都由 checker 里的 insert_scope_drops 依它插入,
+    // lowering 只负责登记"值 + 作用域归属", 不自己决定析构点。
+    drop_scopes: Vec<*DropScope>,
+    drop_exits: Vec<*DropExit>,
+    // 已经被更内层作用域接管的具名局部量: 块退出时不再重复析构
+    claimed_vars: HashSet<UInt>,
+    // 右值产出时登记的显式所有权状态 (见 RValueState)。消费侧只查这张表,
+    // 不再按右值种类推断所有权; 漏登记的右值由 verifier 的 V8 报出来。
+    rvalue_states: Vec<*RValueState>,
+    rvalue_state_map: HashMap<UInt, *RValueState>,
+    // 右值消费账本 (见 RValueAccount): 消费点登记, checker 的 verifier (V6/V7) 核对
+    rvalue_accounts: Vec<*RValueAccount>,
+    rvalue_account_map: HashMap<UInt, *RValueAccount>,
+    // 外部接手账本 (见 RValueTransfer): 实参/返回值/写目标基址三类消费点登记,
+    // verifier 的 V11/V13/V14 用它把"接手方靠外部信任"变成可核对的判据。
+    rvalue_transfers: Vec<*RValueTransfer>,
+}
+
+// 一个局部量 (含临时量) 对它所保存的值的所有权状态。
+// 所有权是"存储位置"的属性, 不再从右值的种类去猜: 拥有型右值被写进某个位置时,
+// 所有权就转移到那个位置上; 之后是否析构只取决于这个状态。
+pub enum Ownership {
+    // 持有所有权: 离开所属作用域时 (若期间没有 move-out) 需要析构
+    Owned,
+    // 别名/借用: 该位置不拥有值, 不需要析构
+    Borrowed,
+    // 所有权已经移出 (move-out) 或已经析构: 不再析构
+    Moved,
+}
+
+// 右值 *结果* 的显式所有权状态: 由产出它的 lowering 处登记 (CfgBuilder::set_rvalue_ownership)。
+// 判定标准只有一个问题, 由产出方回答:
+//   "这个表达式是否刚刚让某个强引用由本结果负责释放?"
+// 消费侧 (insert_copy_if_needed / materialize_owned / ensure_place / move_out_if_temp)
+// 只读这个状态, 不再按右值种类 (FnCall/Aggregate/...) 推断所有权。
+pub enum RValueOwnership {
+    // 产出方没有登记 (漏设)。verifier 的 V8 见到带析构函数的结果是这个状态就报 ICE ——
+    // 漏设不会静默变成"不拥有"。
+    Unspecified,
+    // 是: 本结果自带一次需要有人释放的强引用 (+1), 必须有唯一归宿:
+    //   被一个临时量接手 (MovedToTemp) / 作为实参/元素/返回值/赋值源被目标位置接手
+    //   (MovedToPlace) / 没有归宿时被物化后由作用域树析构。
+    OwnsValue,
+    // 不是: 本结果只是从已有存储读出来的别名/借用 (读局部量/字段/索引/解引用),
+    // 或者是所有权透明的 `as` 转换 (例如 `self.ptr as *()`)。它不带来新的 +1,
+    // 消费方要保存它必须自己复制一份 (CopyValue); 拥有型操作数由消费方递归到它。
+    BorrowsValue,
+}
+
+// 一个右值结果在生产点登记的所有权状态。
+pub struct RValueState {
+    // 右值身份 (指针), 也用于诊断去重
+    rv_id: UInt,
+    span: SourceSpan,
+    ownership: RValueOwnership,
+    // 结果的类型是否有析构函数 (只有这种结果才谈得上所有权)。
+    // 在登记时算好, 这样 verifier 不需要把 rv_id 反解成指针。
+    has_dtor: Bool,
+}
+
+// 一次"拥有型右值被消费"的方式 —— 也就是"这次 +1 交给了谁"。
+// 这是显式的接手方描述: 以前 dst 为 None 的几类消费点 (实参/返回值/写目标基址)
+// 只能靠"外部信任", 现在每一类都有自己的名字和自己的 verifier 判据。
+pub enum RValueConsumption {
+    // 所有权移交给一个临时量: 由那个临时量的析构负责释放
+    MovedToTemp,
+    // 所有权直接移交给目标位置 (let/赋值源/聚合体元素/运算符操作数/接收者): 没有中间临时量
+    MovedToPlace,
+    // 按值实参: 接手方是 callee 的形参 —— 形参必须在每条退出路径上析构或 move-out (V12)
+    MovedToArg,
+    // 返回值: 接手方是调用点 —— 函数返回类型必须有析构 (否则 +1 无人释放, V13)
+    MovedToReturn,
+    // 写目标的基址 (place 语义): **不**接手所有权, 不该释放, 也不该被物化 (V14)
+    WrittenToPlace,
+}
+
+// 一条"拥有型右值被消费"的账目。右值层原来只有隐式约定 (谁该接手那次 +1 全靠调用点自觉),
+// 这个账本是显式化的所有权记录, verifier 用它拦下重复消费 / 漏消费 / 复制了却没有归宿。
+pub struct RValueAccount {
+    // 右值身份 (指针), 也用于诊断去重
+    rv_id: UInt,
+    span: SourceSpan,
+    // 消费方式; 被消费的右值在 rvalue_state_map 里必须是 OwnsValue (V9 核对)
+    consumption: RValueConsumption,
+    // MovedToTemp 时接手所有权的临时量 (*VarSymbol); 其它情况为 0
+    temp: UInt,
+    // MovedToPlace 时所有权落进的目标位置 (*LValue); 没有具体位置时为 None。
+    // V6 用它做路径敏感的归宿检查 (目标位置是否析构/移出)
+    dst: Option<*LValue>,
+    // MovedToArg 时接手形参 (*VarSymbol) 的 key; 无法解析 callee 时为 0 (显式记为外部信任)
+    receiver: UInt,
+    // MovedToArg 时实参下标 (诊断用), 其它情况为 0
+    index: UInt,
+}
+
+// 一次"外部接手"的显式记账 (verifier 的 V11/V13/V14)。
+// 右值层的账本 (RValueAccount) 只回答"这个 +1 有没有被消费"; 本账本回答
+// "接手方到底有没有/能不能释放它" —— 也就是原来靠外部信任的三类消费点。
+pub enum TransferKind {
+    // 按值实参: 接手方 = callee 的形参
+    ByValueArg,
+    // 返回值: 接手方 = 调用点
+    ReturnValue,
+    // 写目标的基址: place 语义, 不接手, 也不该释放
+    PlaceBase,
+}
+
+// 一条"外部接手"的记录。三个 Bool/UInt 字段是判据的全部输入:
+//   value_owns_dtor     这次转移的值本身是否携带一次 +1, 且它的类型有析构
+//                       (只有这种值才谈得上"接手方必须释放");
+//   receiver_has_dtor   接手方 (形参/返回类型) 是否有析构 (会释放才谈得上必须交出 +1);
+//   transfers_ownership 这次转移是否真的交出了一次 +1 (隐式 move / 物化临时量的 move-out / 复制)。
+// 判据: receiver_has_dtor && value_owns_dtor => transfers_ownership;
+//       PlaceBase => !transfers_ownership (写入不搬走所有权)。
+// 注意 value_owns_dtor 是"值携带 +1"而不是"类型有析构": `return None` 的类型是
+// Option<T> (有析构), 但 Option::None 不携带任何 +1, 不能要求它交出所有权。
+pub struct RValueTransfer {
+    span: SourceSpan,
+    kind: TransferKind,
+    // 被转移的右值身份 (指针); 没有具体右值 (例如借用) 时为 0
+    rv_id: UInt,
+    // 接手方符号 (*VarSymbol) 的 key: ByValueArg 时是形参, 其它为 0
+    receiver: UInt,
+    // 实参下标 (诊断用), 其它为 0
+    index: UInt,
+    // 这次接手发生的所在基本块 (*BasicBlock); V13 用它核对"每个 return 位置都登记了接手方"
+    bb: UInt,
+    value_owns_dtor: Bool,
+    receiver_has_dtor: Bool,
+    transfers_ownership: Bool,
 }
 
 // 一条语句翻译过程中产生的临时变量。
-// 默认在语句结束时析构; 如果它的借用被存进了生命周期更长的位置, extended 会被置位,
-// 就只在语句块退出时析构 (见 checker 里的 place_temp_drops)。
+// 它的析构点由 DropScope 树决定: 默认挂在"当前语句"作用域, 如果它的借用被存进了
+// 生命周期更长的位置 (extended), 归属会被提升到最近的 块/循环迭代 作用域 (见
+// checker/drop_place.zn 的 mark_extended_temps)。
 struct TempVar {
     sym: *VarSymbol,
-    // 语句结束时插入的析构标记 (DtorValue)。如果它的借用活得比语句长,
-    // 放置 pass 会把它标成 skipped, 只留语句块退出时的析构。
-    drop_step: Option<*DtorValue>,
-    // 借用活得比语句长, 不在语句末析构
-    extended: Bool,
+    // 这个临时量当前是否拥有它保存的值 (Owned / Borrowed / Moved)。
+    // 析构 pass 只对仍为 Owned 的临时量插入析构。
+    ownership: Ownership,
+    // 它归属的析构作用域 (drop_scopes 的下标)。
+    // 借用活得比语句长时, 归属会被提升到最近的 块/循环迭代/函数 作用域。
+    scope: UInt,
+    // 这个临时量是"物化某个拥有型右值"产生的 (home_owned_rvalue/ensure_place 的 move 路径):
+    // 记录被搬进来的那个右值的身份, 让消费点在 move-out 时能追溯到它的账目
+    // (实参/返回值三类外部接手的核对需要这条反向边)。
+    home_rv: UInt,
+}
+
+// 析构作用域的种类。析构点只由这棵树决定, 见 checker/drop_place.zn 的 insert_scope_drops。
+pub enum DropScopeKind {
+    // 函数体: 参数
+    Function,
+    // 块: 具名局部量 (析构顺序按块的 local_vars 逆序)
+    Block,
+    // 一条语句: 语句内产生、没有归宿的拥有型右值, 以及 if/match/&& 的模式绑定
+    Statement,
+    // 循环的一轮迭代: while 条件里物化出来的临时量
+    LoopIteration,
+}
+
+// 析构作用域树的一个节点。
+pub struct DropScope {
+    kind: DropScopeKind,
+    parent: Option<UInt>,
+    // Statement / LoopIteration 作用域显式登记的拥有型局部量 (按登记顺序, 析构时逆序)
+    vars: Vec<*VarSymbol>,
+    // Block 作用域: 析构顺序按这个块的 local_vars 逆序
+    blk: Option<*BlockSentence>,
+    // 这个作用域没有正常出口 (块以 panic 结尾, 出口不可达)。
+    // panic 会终止进程, 不需要析构; verifier 也会跳过这种作用域。
+    no_exit: Bool,
+}
+
+// "离开某个作用域"的一次记录: 在 bb 上析构 scope 里仍拥有所有权的局部量。
+// except 用于 return: 被返回的那个局部量是 move-out, 不析构 (0 表示没有例外)。
+pub struct DropExit {
+    scope: UInt,
+    bb: *BasicBlock,
+    except: UInt,
 }
 
 // 变量存储期结束 / 析构的标记指令。
@@ -208,6 +378,10 @@ struct DtorValue {
 struct CopyValue {
     expr: *ExpressionNode,
     src: *RValue,
+    // 这条复制来自 new_temp_impl 的复制路径 (给接收者/借用物化出一个临时量)。
+    // verifier 的 V7 用它检查: 被复制的拥有型右值必须已经有归宿, 否则源值那次强引用
+    // 就没有析构点 (这正是 R2 泄漏的形状)。
+    from_temp_init: Bool,
 }
 
 struct ReBorrowValue {
@@ -229,3 +403,10 @@ struct LoadValue {
 }
 
 // 类型是否有析构 (需要调用析构函数)。闭包/函数项都是零大小类型, 没有析构。
+
+// 注意: 这里原来有一个按右值种类判断"是不是拥有型"的白名单 rvalue_owns_value
+// (FnCall/MethodCall/Aggregate/Tuple/Array/Repeat/Binary/Unary)。它已经被删除:
+// 所有权现在是产出方在 lowering 时登记到 RValueState 里的显式状态, 消费侧只查状态
+// (CfgBuilder::rv_owns / CFG::rvalue_state_map)。判定标准与实测结论见
+// compiler/frontend/semantic/mir/builder/mod.zn 的 set_rvalue_ownership 注释。
+

@@ -30,7 +30,10 @@ impl CodeGenerator {
         let res = self.do_cg_typemeta(move sym);
         if res.has_initializer() {
             let tm_int = res.value as UInt;
-            self.all_typemeta.insert(tm_int);
+            // 只在真正新增时追加插入序 (HashSet::insert 返回是否新增)
+            if self.all_typemeta.insert(tm_int) {
+                self.all_typemeta_order.push(tm_int);
+            }
         }
         return res;
     }
@@ -115,7 +118,9 @@ impl CodeGenerator {
         let res = self.do_cg_generic_typemeta(move sym);
         if res.has_initializer() {
             let tm_int = res.value as UInt;
-            self.all_generic_typemeta.insert(tm_int);
+            if self.all_generic_typemeta.insert(tm_int) {
+                self.all_generic_typemeta_order.push(tm_int);
+            }
         }
         return res;
     }
@@ -715,7 +720,9 @@ impl CodeGenerator {
         let res = self.do_cg_impl_typemeta(move isym);
         if res.has_initializer() {
             let tm_int = res.value as UInt;
-            self.all_impl_typemeta.insert(tm_int);
+            if self.all_impl_typemeta.insert(tm_int) {
+                self.all_impl_typemeta_order.push(tm_int);
+            }
         }
         return res;
     }

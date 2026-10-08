@@ -1,0 +1,32 @@
+// 回归: "视图元素 + 标量元素" 的元组, 两个元素都要在正确偏移上读出来。
+//
+// 背景 (见 docs/ownership_materialization.md §5.2 / §5.4):
+//   旧 stage0 (发布版 v0.0.3) 的 codegen 对 `TupleSymbol::to_sty` 里
+//   `.args = args` 的隐式复制少 retain 一次 -> refcounted `*SType` 提前释放,
+//   地址被后续 SType 复用; 类型同一性/`GenericArgs` 的 key 是**指针比较**, 于是
+//   缓存命中到错误的**嵌套**元组类型, `p.1` 的 gep 偏移算成 24 而不是 16 -> 越界读。
+//   该缺口在 stage1 (由旧 stage0 编出) 上表现为 valgrind Invalid read / 串味,
+//   在 stage2/stage3 上不存在。
+//   确定性 stage0 (由当前字节级固定点编译器重建) 之后, 生成的 stage1 不再有该缺口。
+//
+// 这个用例在**旧 stage1** 上会失败 (p.1 读到垃圾值), 在新 stage1/2/3 上通过。
+use std::assert;
+use std::assert_eq;
+use std::primitives::string::String;
+use std::primitives::str::Str;
+
+fn mkstr() -> String {
+    return String::from_str("hello-world");
+}
+
+fn main() {
+    let p = (mkstr().as_str().deref(), 7_i);
+    // 视图元素: 必须仍然指向未析构的宿主缓冲区
+    assert_eq(p.0.len(), 11_u);
+    assert(p.0.starts_with("hello"));
+    // 先做一次会分配的输出: 旧 stage1 上正是这一步之后 SType 地址被复用, 缓存命中错类型
+    println(p.0.len());
+    // 标量元素: 必须落在偏移 16 (而不是旧 stage1 的 24)
+    assert_eq(p.1, 7_i);
+    println("ok");
+}

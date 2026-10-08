@@ -52,7 +52,18 @@ impl LivenessChecker {
                     // 只有返回类型里含借用时才需要检查来源; `return *r` 这种解引用结果是值拷贝
                     if type_contains_borrow(rv.get_stype()) {
                         let os = self.origin_of(rv as *XValue, &state);
-                        if os.locals.len() > 0 {
+                        let mut escapes = os.locals.len() > 0;
+                        // origin 数据流在"返回类型里的生命周期来自接收者类型自身 / 被省略"
+                        // 的视图链上给不出起点 (见 drop_place.zn 的说明)。这里按结构补一刀:
+                        // 视图链里若还有本函数拥有 (Owned) 的临时量, 它一定在 return 之前
+                        // 析构 -> 视图活得比所有者长。这是"逃出块"形态, 不能靠延长解决
+                        // (宿主存储本身随函数返回消失), 必须报诊断。
+                        if !escapes {
+                            if self.has_owned_temp_root(rv as *XValue) {
+                                escapes = true;
+                            }
+                        }
+                        if escapes {
                             DiagnosticEngine::get().emit_lives_not_longer_enough(rv.expr_node().span());
                         }
                     }

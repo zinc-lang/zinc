@@ -13,12 +13,13 @@ use super::{BasicBlockChunk, CfgBuilder, extract_logical_and_chain};
 
 impl CfgBuilder {
 
-    // 语句入口: 临时变量按"语句作用域"管理。
-    // 只处理本语句新增的临时变量 (水位线), 嵌套语句不会把外层语句的临时变量提前析构。
+    // 语句入口: 拥有型值按"语句作用域"登记。
+    // lowering 不插入任何析构指令 —— 归属关系记在作用域树上, 析构由
+    // checker 的 insert_scope_drops 统一插入 (决定析构的地方只有那一处)。
     fn trans_sentence(&mut self, s: *Sentence) -> BasicBlockChunk {
-        let watermark = self.temps.len();
+        let scope = self.push_drop_scope(DropScopeKind::Statement);
         let chunk = self.trans_sentence_inner(s);
-        self.record_temps_drop_point(watermark, chunk.end);
+        self.pop_drop_scope(scope, chunk.end);
         return chunk;
     }
 
@@ -28,8 +29,10 @@ impl CfgBuilder {
             es: *ExprSentence => {
                 let bb = self.new_bb();
                 let (val, end_bb) = self.trans_rvalue(es.expr, bb);
+                // 表达式结果没有归宿 (被丢弃): 物化成隐式局部量, 由作用域树析构
+                let (homed, homed_bb) = self.materialize_owned(val, end_bb);
 
-                return { .start = move bb, .end = move end_bb }: BasicBlockChunk;
+                return { .start = move bb, .end = move homed_bb }: BasicBlockChunk;
             }
             ls: *LetSentence => {
                 let bb = self.new_bb();
@@ -54,7 +57,15 @@ impl CfgBuilder {
 
                 // 后面的 next 应该调用这个转换后的 iterable
                 let span = fs.iterable.expr_node().span();
-                let (iterable, iterable_end) = self.trans_rvalue(fs.iterable, bb_start);
+                let (iterable, iterable_end0) = self.trans_rvalue(fs.iterable, bb_start);
+                // 拥有型右值 (Range 的运算符结果等) 必须有一个归宿: iter() 只借用它
+                // (receiver 是 &expr), 所以这里物化成语句作用域的临时量, 由作用域树在
+                // for 语句结束时析构。以前这一步缺失, 迭代对象的那次 +1 没有归宿 (R1 同类)。
+                let mut iterable_end = iterable_end0;
+                if self.rv_owns(iterable) {
+                    let (_homed, homed_end) = self.home_owned_rvalue(iterable, iterable_end);
+                    iterable_end = move homed_end;
+                }
                 // call iter() method
                 let iterator_sym = VarSymbol::create(span, fs.iterator.get_stype());
                 iterator_sym.is_mut_binding = true;
@@ -142,6 +153,10 @@ impl CfgBuilder {
                 self.loop_start.insert(ws as *raw WhileLoopSentence as UInt, bb_start);
                 self.loop_end.insert(ws as *raw WhileLoopSentence as UInt, bb_end);
 
+                // 条件与绑定属于"每轮迭代"作用域: 条件里物化出来的临时量必须每轮析构
+                let iter_scope = self.push_drop_scope(DropScopeKind::LoopIteration);
+                self.loop_iter_scope.insert(ws as *raw WhileLoopSentence as UInt, iter_scope);
+
                 let (cond, cond_end) = self.trans_rvalue(ws.cond, bb_start);
                 let true_bb = self.new_bb();
                 // 初始化变量绑定
@@ -177,12 +192,20 @@ impl CfgBuilder {
                         .target_false = bb_end,
                     }: BrBool as *Terminator
                 );
-                // 析构变量绑定
+
+                // 每轮迭代结束 (body 出口) 与循环出口都要析构条件临时量
+                self.add_scope_exit(iter_scope, body.end);
+                self.add_scope_exit(iter_scope, bb_end);
+                self.close_drop_scope(iter_scope);
+
+                // 条件里的模式绑定: 每轮都要写一次, 所以必须每轮析构。
+                // 和 for 循环变量一样挂到循环体块上 (代码生成仍按块分配栈槽)。
                 let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
                 collect_all_pmv_bindings(ws.cond, &mut all_pmv_bindings);
                 for var in all_pmv_bindings {
                     var.drop_flag = Some(VarSymbol::create(var.var_node.span(), SType::sty_bool()));
-                    self.drop_var_sym(move var, bb_end);
+                    ws.body.add_local_for_drop(var);
+                    self.nearest_block().remove_local(var);
                 }
                 return { .start = move bb_start, .end = move bb_end }: BasicBlockChunk;
             }
@@ -193,6 +216,10 @@ impl CfgBuilder {
                 self.loop_start.insert(dws as *raw DoWhileLoopSentence as UInt, bb_start);
                 self.loop_end.insert(dws as *raw DoWhileLoopSentence as UInt, bb_end);
 
+                // 条件临时量: 每轮析构 (cond_true 是回到 body 的那条边)
+                let iter_scope = self.push_drop_scope(DropScopeKind::LoopIteration);
+                self.loop_iter_scope.insert(dws as *raw DoWhileLoopSentence as UInt, iter_scope);
+
                 let body = self.trans_block(dws.body);
                 bb_start.terminator = Some(
                     box {
@@ -201,12 +228,27 @@ impl CfgBuilder {
                 );
 
                 if body.end.terminator is Some(_) {
+                    self.add_scope_exit(iter_scope, body.end);
+                    self.close_drop_scope(iter_scope);
                     return { .start = move bb_start, .end = body.end }: BasicBlockChunk;
                 }
 
                 let (cond, cond_end) = self.trans_rvalue(dws.cond, body.end);
-                
+
                 let cond_true = self.new_bb();
+                // 条件为真时绑定模式变量 (与 while 的 true_bb 同法)。绑定写在回到 body
+                // 的那条边上, 这样它能被下一轮循环体使用; 析构则挂到循环体块上 (见下),
+                // 每轮 body 出口 (含 break/continue) 析构一次, 而不是整条 do-while 之后一次。
+                if cond is pmv: *PatternMatchValue {
+                    for var in pmv.pattern.collect_all_bindings() {
+                        if var.init is Some(init) {
+                            self.insert_copy(init, cond_true);
+                            let local = LocalVar::new(cond.expr_node(), var);
+                            let w = WriteValue::create(move init, move local as *LValue);
+                            cond_true.add_step(move w);
+                        }
+                    }
+                }
                 cond_true.terminator = Some (
                     box {
                         .target = body.start
@@ -215,10 +257,32 @@ impl CfgBuilder {
                 cond_end.terminator = Some (
                     box {
                         .cond = move cond,
-                        .target_true = move cond_true,
+                        .target_true = cond_true,
                         .target_false = bb_end,
                     }: BrBool as *Terminator
                 );
+                self.add_scope_exit(iter_scope, cond_true);
+                self.add_scope_exit(iter_scope, bb_end);
+                self.close_drop_scope(iter_scope);
+
+                // 条件里的模式绑定: 每轮迭代都要写一次, 所以必须每轮析构。
+                // 和 while 一样把绑定挂到循环体块上 (代码生成仍按块分配栈槽),
+                // 从外层块移除, 避免整条语句结束时再析构一次。
+                let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
+                collect_all_pmv_bindings(dws.cond, &mut all_pmv_bindings);
+                for var in all_pmv_bindings {
+                    var.drop_flag = Some(VarSymbol::create(var.var_node.span(), SType::sty_bool()));
+                    dws.body.add_local_for_drop(var);
+                    self.nearest_block().remove_local(var);
+                }
+                // do-while 的绑定写在"条件为真"的那条边上 (cond_true / && 链内部), 而循环体
+                // 已经执行完。最后一轮条件为假时, 绑定等不到下一次 body 出口, 所以循环出口
+                // 也要登记一次循环体作用域的退出: 还活着的绑定在这里析构, 其余 (已经析构的)
+                // 由存活分析标成 no_need。
+                let body_blk_key = dws.body as *raw BlockSentence as UInt;
+                if self.block_scope.at(&body_blk_key) is Some(bs) {
+                    self.add_scope_exit(bs, bb_end);
+                }
                 return { .start = move bb_start, .end = move bb_end }: BasicBlockChunk;
             }
             br_break: *BranchBreak => {
@@ -230,11 +294,13 @@ impl CfgBuilder {
                             .target = move t
                         }: BrForward as *Terminator
                     );
-                    // 跳出 br_break.target 的 parent scope
-                    if br_break.target.parent_scope() is Some(scope) {
-                        let out_scope = scope as *raw ScopeSymbol as UInt;
-                        self.drop_locals_until_exit_block(out_scope, bb);
+                    // 跳出 br_break.target 的循环体块: 路径退出登记到 break 点
+                    let body_blk = br_break.target.loop_body() as *raw BlockSentence as UInt;
+                    let mut scope_target: Option<UInt> = None;
+                    if self.block_scope.at(&body_blk) is Some(s) {
+                        scope_target = Some(s);
                     }
+                    self.register_path_exit(scope_target, bb, (type Option<*VarSymbol>)::None);
                 } else {
                     panic "BUG: break statement is not inside a loop";
                 }
@@ -249,9 +315,18 @@ impl CfgBuilder {
                             .target = move t
                         }: BrBackward as *Terminator
                     );
-                    // 跳出 br_continue.target 的 loop_body
-                    let out_scope = br_continue.target.loop_body() as *raw BlockSentence as UInt;
-                    self.drop_locals_until_exit_block(out_scope, bb);
+                    // continue 跳出循环体块; 对 while 还要退出"每轮迭代"作用域
+                    // (条件里物化出来的临时量必须在跳回条件之前析构)
+                    let mut scope_target: Option<UInt> = None;
+                    if self.loop_iter_scope.at(&target) is Some(s) {
+                        scope_target = Some(s);
+                    } else {
+                        let body_blk = br_continue.target.loop_body() as *raw BlockSentence as UInt;
+                        if self.block_scope.at(&body_blk) is Some(s) {
+                            scope_target = Some(s);
+                        }
+                    }
+                    self.register_path_exit(scope_target, bb, (type Option<*VarSymbol>)::None);
                 } else {
                     panic "BUG: continue statement is not inside a loop";
                 }
@@ -261,19 +336,35 @@ impl CfgBuilder {
                 let bb = self.new_bb();
                 if br_ret.value is Some(v) {
                     let (rv, rv_end) = self.trans_rvalue(v, bb);
+
+                    // return 是 move-out: 被返回的那个局部量不析构
+                    let mut except_vs: Option<*VarSymbol> = self.returned_local(v);
+                    if except_vs is Some(vs) {
+                        // 具名局部量的 move-out: 没有指令, 但 +1 交给了调用点
+                        self.record_return_move_out(vs, rv_end);
+                    } else {
+                        // 返回值不是"某个局部量本身"(字段/解引用/调用结果...):
+                        // 需要一份自己的所有权。拥有型临时量会在这里被 move-out。
+                        self.consume_as_return(rv, rv_end);
+                    }
+
+                    // 返回值的**读取**必须是本块的一条 step, 排在 checker 追加的所有
+                    // DtorValue 之前。若把 rv 直接挂在 terminator 上, 代码生成会先执行
+                    // 全部 step (含临时量析构) 再求值 terminator —— `return p.n`
+                    // (p 借用了一个拥有型右值的临时量的存储) 就会读已释放内存。
+                    // 这就是 leak_probe5 的 use-after-free: &*mk() 的临时量在块末析构,
+                    // 返回值随后才读它。原先用户的修法就是把读取提成一条 LoadValue step;
+                    // 作用域树重写后这里等价重做 (读取提成 step, terminator 返回读取结果)。
+                    let direct_rv = LoadValue::create(rv);
+                    rv_end.add_step(direct_rv as *XValue);
                     rv_end.terminator = Some(
                         box {
-                            .ret_val = Some(rv)
+                            .ret_val = Some(direct_rv as *RValue)
                         }: BrRet as *Terminator
                     );
 
-                    // return 出去的变量不析构
-                    if self.returned_local(v) is Some(ex_var_sym) {
-                        self.drop_all_except(Some(move ex_var_sym), rv_end);
-                    } else {
-                        self.insert_copy_if_needed(rv, rv_end);
-                        self.drop_all_except((type Option<*VarSymbol>)::None, rv_end);
-                    }
+                    // 沿路径退出所有作用域 (函数作用域含参数)
+                    self.register_path_exit((type Option<UInt>)::None, rv_end, except_vs);
                     return { .start = move bb, .end = move rv_end}: BasicBlockChunk;
                 } else {
                     bb.terminator = Some(
@@ -281,8 +372,7 @@ impl CfgBuilder {
                             .ret_val = None
                         }: BrRet as *Terminator
                     );
-                    // 所有的变量都析构
-                    self.drop_all_except((type Option<*VarSymbol>)::None, bb);
+                    self.register_path_exit((type Option<UInt>)::None, bb, (type Option<*VarSymbol>)::None);
                     return { .start = bb, .end = bb }: BasicBlockChunk;
                 }
             }
@@ -353,13 +443,8 @@ impl CfgBuilder {
                             .target_false = else_sentence.start,
                         }: BrBool as *Terminator
                     );
-                    // 析构变量绑定
-                    let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
-                    collect_all_pmv_bindings(br_bool.cond, &mut all_pmv_bindings);
-                    for var in all_pmv_bindings {
-                        var.drop_flag = Some(VarSymbol::create(var.var_node.span(), SType::sty_bool()));
-                        self.drop_var_sym(move var, bb_end);
-                    }
+                    // 模式绑定由当前语句作用域拥有 (在 bb_end 条件析构)
+                    self.register_pmv_bindings(br_bool.cond);
                     return { .start = bb_start, .end = move bb_end }: BasicBlockChunk;
                 } else {
                     cond_end.terminator = Some(
@@ -369,13 +454,8 @@ impl CfgBuilder {
                             .target_false = bb_end,
                         }: BrBool as *Terminator
                     );
-                    // 析构变量绑定
-                    let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
-                    collect_all_pmv_bindings(br_bool.cond, &mut all_pmv_bindings);
-                    for var in all_pmv_bindings {
-                        var.drop_flag = Some(VarSymbol::create(var.var_node.span(), SType::sty_bool()));
-                        self.drop_var_sym(move var, bb_end);
-                    }
+                    // 模式绑定由当前语句作用域拥有 (在 bb_end 条件析构)
+                    self.register_pmv_bindings(br_bool.cond);
                     return { .start = bb_start, .end = move bb_end }: BasicBlockChunk;
                 }
             }
@@ -383,7 +463,9 @@ impl CfgBuilder {
                 let bb_start = self.new_bb(f"match_start");
                 let bb_end = self.new_bb(f"match_end");
 
-                let (val, val_end) = self.trans_rvalue(br_mult.value, bb_start);
+                let (raw_val, raw_val_end) = self.trans_rvalue(br_mult.value, bb_start);
+                // match 的 scrutinee 没有归宿: 物化, 让它活到整条 match 之后
+                let (val, val_end) = self.materialize_owned(raw_val, raw_val_end);
 
                 // 编译器在最后隐式插入一个分支, 如果 match 语句满足 exhaustive match, 这条分支是永远执行不到的死代码
                 let last_arm = self.new_bb();
@@ -438,13 +520,8 @@ impl CfgBuilder {
                             .target = arm_block.start
                         }: BrForward as *Terminator);
                     
-                    // 析构变量绑定
-                    let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
-                    collect_all_pmv_bindings(arm.pattern_match as *RValue, &mut all_pmv_bindings);
-                    for var in all_pmv_bindings {
-                        var.drop_flag = Some(VarSymbol::create(var.var_node.span(), SType::sty_bool()));
-                        self.drop_var_sym(move var, bb_end);
-                    }
+                    // 模式绑定由当前语句作用域拥有 (在 bb_end 条件析构)
+                    self.register_pmv_bindings(arm.pattern_match as *RValue);
                     if arm_block.end.terminator is None {
                         arm_block.end.terminator = Some(
                             box {
@@ -472,6 +549,7 @@ impl CfgBuilder {
 
     fn trans_block(&mut self, blk: *BlockSentence) -> BasicBlockChunk {
         self.block_stack.push(blk);
+        let blk_scope = self.push_block_scope(blk);
         let mut bb = self.new_bb();
         let mut end = bb;
 
@@ -491,7 +569,15 @@ impl CfgBuilder {
                 }
             }
         }
-        self.drop_locals_when_exit_block(move blk, end);
+        // 块以 panic 结尾时正常出口不可达 (panic 直接终止进程, 不需要析构);
+        // 含 return 的块仍然登记出口 —— 返回路径的出口与它同块时会被去重,
+        // 这样"借用活得比语句长而被提升到块作用域"的临时量一定有归宿。
+        if block_contains_panic(blk) {
+            self.mark_scope_no_exit(blk_scope);
+            self.close_drop_scope(blk_scope);
+        } else {
+            self.pop_drop_scope(blk_scope, end);
+        }
         self.block_stack.pop();
         return { .start = move bb, .end = move end }: BasicBlockChunk;
     }
@@ -557,12 +643,26 @@ impl CfgBuilder {
                 .target = bb_end
             }: BrForward as *Terminator);
         }
-        // 条件析构所有的模式中的变量绑定
+        // 模式绑定由当前语句作用域拥有 (在 bb_end 条件析构)
         for v in all_pmv_bindings {
             v.drop_flag = Some(VarSymbol::create(v.var_node.span(), SType::sty_bool()));
-            self.drop_var_sym(move v, bb_end);
+            self.register_owned_var(v);
+            self.claim_var(v);
         }
         return { .start = move bb_start, .end = move bb_end }: BasicBlockChunk;
+    }
+
+    // 把某个条件右值里的所有模式绑定登记为"当前作用域拥有、条件析构"。
+    // 它们同时也是所在块的 local_vars (代码生成要分配栈槽), 用 claim 让块退出时跳过,
+    // 避免同一份绑定被析构两次。
+    fn register_pmv_bindings(&mut self, cond: *RValue) {
+        let mut all_pmv_bindings = (type Vec<*VarSymbol>)::new();
+        collect_all_pmv_bindings(cond, &mut all_pmv_bindings);
+        for var in all_pmv_bindings {
+            var.drop_flag = Some(VarSymbol::create(var.var_node.span(), SType::sty_bool()));
+            self.register_owned_var(var);
+            self.claim_var(var);
+        }
     }
 
     fn returned_local(&self, rv: *RValue) -> Option<*VarSymbol> {

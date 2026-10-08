@@ -1,0 +1,42 @@
+// 分支/复合形态里的拥有型临时量 -> 派生视图 -> 绑到局部量 -> 之后使用。
+//
+// 视图在 MIR 里汇合成 Phi (每个 incoming 是包裹分支视图的 AllocaValue), 或者被包进
+// 元组字面量。宿主临时量必须沿所有分支/元素被收集并延长到"接收这个视图的变量"所在
+// 块的末尾 (checker/drop_place.zn 的 dst_storage_scope + collect_projection_temps);
+// 否则它在语句末就被析构, 视图悬垂 (valgrind: Invalid read; 断言失败)。
+use std::assert;
+use std::primitives::string::String;
+use std::primitives::str::Str;
+
+fn mkstr() -> String {
+    return String::from_str("hello-world");
+}
+
+fn cond() -> Bool {
+    return 1_i == 1_i;
+}
+
+fn main() {
+    // 1) 三元/if-else: 视图来自分支里的临时量
+    let t = if cond() then mkstr().as_str().deref() else "x";
+    assert(t.starts_with("hello"));
+    assert(t.len() == 11_u);
+
+    // 2) 元组字面量把视图包在元素里
+    let p = (mkstr().as_str().deref(), 7_i);
+    assert(p.0.starts_with("hello"));
+    assert(p.0.len() == 11_u);
+    // 标量元素也必须落在正确偏移: 旧 stage0 产的 stage1 会把元组类型串成嵌套元组,
+    // p.1 的 gep 偏移算成 24, 读到越界垃圾 (见 tuple_view_and_scalar.zn)。
+    assert(p.1 == 7_i);
+
+    // 3) 嵌套块里把视图写进外层局部量 (宿主必须延长到外层块的末尾)
+    let mut u = "fallback";
+    if cond() {
+        u = mkstr().as_str().deref();
+    }
+    assert(u.starts_with("hello"));
+    assert(u.len() == 11_u);
+
+    println("ok");
+}
