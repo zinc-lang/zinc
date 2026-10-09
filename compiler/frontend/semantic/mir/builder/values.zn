@@ -405,6 +405,13 @@ impl CfgBuilder {
                         bb.add_step(rd as *XValue);
                     }
                 }
+                // 闭包值 (环境结构体) 自身也是一个"带析构的产出结果": 按值/weak 捕获把
+                // 外层变量的那次 +1 搬进了环境字段 (见 cg_lambda_env_value), 所以产出方必须
+                // 显式登记 OwnsValue —— 否则 verifier 的 V8 会在捕获了 String/Vec/Arc 这类
+                // 有析构的类型的闭包上直接报
+                // "[V8] 右值结果没有显式所有权状态 (产出方漏设)" 的 ICE。
+                // 没有带析构的捕获时 has_destructor 为假, 这次登记不改变任何行为。
+                self.set_rvalue_ownership(lam as *RValue, RValueOwnership::OwnsValue);
                 return (move lam as *RValue, bb);
             }
             ctx_rv: *ContextValue => {

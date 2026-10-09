@@ -1,0 +1,11 @@
+// 第 3 项: 裸指针既非 Send 也非 Sync (与 Rust 一致, 也是"误放"必须变错误的那类)。
+//
+// 修改前: is_send_type 的 PointerLike 分支把 *raw T 一律映射成 is_sync_type(T),
+// 代入实参后 Vec<*raw Int> 会通过 `unsafe impl<T> Send for Vec<T> where T: Send`
+// 的检查 (误放)。现在 *raw/*raw mut 明确判 false。
+fn is_send<T>(x: T) where T: Send {}
+
+fn main() {
+    let v = (type Vec<*raw Int>)::new();
+    is_send(v);
+}

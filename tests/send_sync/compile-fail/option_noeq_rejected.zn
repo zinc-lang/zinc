@@ -1,0 +1,13 @@
+// 第 3 项: Option<NoEq> 同理 —— `impl<T> Eq for Option<T> where T: Eq` 要求 NoEq: Eq。
+use std::cmp::Eq;
+
+fn require_eq<T>(x: T) where T: Eq {}
+
+struct NoEq {
+    n: UInt,
+}
+
+fn main() {
+    let o: Option<NoEq> = Some({ .n = 1_u }: NoEq);
+    require_eq(o);
+}

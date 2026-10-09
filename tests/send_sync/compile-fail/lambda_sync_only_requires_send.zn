@@ -1,0 +1,19 @@
+// "Sync 但 !Send" 的捕获: 闭包满足 Sync, 但不满足 Send。
+// is_sync 一侧成立见 compile-pass/lambda_value_capture_sync_not_send.zn;
+// 这里断言 Send 一侧必须被拦下。
+//
+// 修改前: 闭包一律非 Send, 也会失败 (原因不同)。
+fn is_send<T>(x: T) where T: Send {}
+
+struct SyncNoSend {
+    n: UInt,
+}
+
+unsafe impl Sync for SyncNoSend {}
+impl !Send for SyncNoSend {}
+
+fn main() {
+    let s = { .n = 5_u }: SyncNoSend;
+    let f = .{ [move s] -> UInt => return s.n; };
+    is_send(f);
+}

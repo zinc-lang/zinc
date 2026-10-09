@@ -1,0 +1,13 @@
+// 第 2 项顺带确认 (负向): 按值捕获 Vec<UInt> 的闭包不是 Sync ——
+// std 里 Vec<T> 有显式 `impl<T> !Sync for Vec<T> {}`, 闭包按字段结构化继承这个否定。
+//
+// 修改前: 这个用例会因为按值捕获堆类型的 [V8] ICE 而失败 (原因不同);
+// 修完 [V8] 之后失败的才是真正的 Sync 约束。
+fn is_sync<T>(x: T) where T: Sync {}
+
+fn main() {
+    let mut v = (type Vec<UInt>)::new();
+    v.push(1_u);
+    let f = .{ [move v] -> UInt => return v.len(); };
+    is_sync(f);
+}

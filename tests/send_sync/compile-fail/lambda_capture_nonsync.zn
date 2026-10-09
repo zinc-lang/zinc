@@ -1,0 +1,17 @@
+// 按值捕获了非 Sync 类型 -> 闭包不满足 Sync, 必须报诊断 (不能 panic)。
+// NoSync 有显式 `impl !Sync` (它仍然是 Send)。
+//
+// 修改前: 闭包一律非 Sync, 也是编译失败 (原因不同: 旧版闭包没有 Sync 判断)。
+fn is_sync<T>(x: T) where T: Sync {}
+
+struct NoSync {
+    n: UInt,
+}
+
+impl !Sync for NoSync {}
+
+fn main() {
+    let s = { .n = 2_u }: NoSync;
+    let f = .{ [move s] -> UInt => return s.n; };
+    is_sync(f);
+}

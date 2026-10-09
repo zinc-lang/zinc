@@ -1,0 +1,30 @@
+// 按引用捕获的交叉规则 (和 Rust 一致, 也是本语言现有指针判据的约定):
+//   &T : Send  <=>  T : Sync        (见 is_send_type 的 PointerLike 分支)
+//   &mut T : Send <=> T : Sync
+// 闭包环境字段在按引用捕获时就是 &T / &mut T, 所以闭包是否 Send 由被借用类型的
+// Sync 决定, 而不是由它自己的 Send 决定。
+//
+// SyncOnly 显式 impl Sync -> &SyncOnly 是 Send -> 捕获 &SyncOnly 的闭包是 Send。
+// 反例 (被借用类型 Send 但 !Sync -> 闭包非 Send) 见 compile-fail 的
+// lambda_ref_capture_nonsync.zn。
+//
+// 修改前: 闭包一律非 Send, 两个调用都会报泛型约束错误。
+fn is_send<T>(x: T) where T: Send {}
+
+struct SyncOnly {
+    n: UInt,
+}
+
+unsafe impl Sync for SyncOnly {}
+
+fn main() {
+    let s = { .n = 4_u }: SyncOnly;
+
+    // 隐式按引用捕获 (闭包体只读, builder 默认 Ref)
+    let f1 = .{ -> UInt => return s.n; };
+    is_send(f1);
+
+    // 显式按引用捕获
+    let f2 = .{ [ref s] -> UInt => return s.n; };
+    is_send(f2);
+}

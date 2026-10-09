@@ -1,0 +1,19 @@
+// 第 2 项顺带确认: 按值 move 捕获堆类型的闭包, Send/Sync 判定仍然正确。
+//   - String: 显式 unsafe impl Send + 显式 !Sync  => 闭包 Send、!Sync
+//   - Vec<UInt>: 显式 impl<T> Send (T: Send) + 显式 !Sync => 闭包 Send、!Sync
+// 这里只验证 Send 一侧 (Sync 的反例在同目录 compile-fail/lambda_value_capture_vec_nonsync.zn)。
+//
+// 修改前: 这个用例会因为按值捕获堆类型的 [V8] ICE 而编译失败; 修完 [V8] 之后,
+// 走的才是本文件要验证的 Send 判据。
+fn is_send<T>(x: T) where T: Send {}
+
+fn main() {
+    let s = String::from_str("hello");
+    let f = .{ [move s] -> UInt => return s.len(); };
+    is_send(f);
+
+    let mut v = (type Vec<UInt>)::new();
+    v.push(1_u);
+    let g = .{ [move v] -> UInt => return v.len(); };
+    is_send(g);
+}

@@ -1,0 +1,20 @@
+// 按值捕获: 所有捕获都 Sync, 闭包才 Sync (嵌入 move, 环境字段就是捕获变量本身)。
+// SyncOnly 有显式 `unsafe impl Sync`, 所以它是 Sync 类型 (顺带也是 Send, 因为没有
+// 负向 !Send 且字段都 Send)。
+//
+// 修改前: 闭包一律非 Sync, is_sync 调用报泛型约束错误。
+fn is_send<T>(x: T) where T: Send {}
+fn is_sync<T>(x: T) where T: Sync {}
+
+struct SyncOnly {
+    n: UInt,
+}
+
+unsafe impl Sync for SyncOnly {}
+
+fn main() {
+    let s = { .n = 3_u }: SyncOnly;
+    let f = .{ [move s] -> UInt => return s.n; };
+    is_send(f);
+    is_sync(f);
+}

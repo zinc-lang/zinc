@@ -1,0 +1,44 @@
+// 第 1 项续: 聚合体 (元组 / 数组 / 结构体 / 枚举) 的 Sync 按字段结构递归。
+// 非泛型聚合体的字段类型都是具体的, 不需要代入泛型实参 (泛型实参代入见第 3 项用例)。
+//
+// 修改前: 这些类型只因为 "没有显式 impl Sync" 而被判非 Sync, is_sync 全部报错。
+fn is_sync<T>(x: T) where T: Sync {}
+
+struct Point {
+    x: UInt,
+    y: UInt,
+}
+
+struct Nested {
+    p: Point,
+    flag: Bool,
+}
+
+enum Shape {
+    Dot,
+    Circle(UInt),
+    Rect(UInt, UInt),
+}
+
+union Bits {
+    u: UInt,
+    i: Int,
+}
+
+fn main() {
+    // 元组 / 数组
+    is_sync((1_u, true));
+    is_sync([1_u, 2_u, 3_u]);
+
+    // 结构体 (含嵌套结构体)
+    is_sync({ .x = 1_u, .y = 2_u }: Point);
+    is_sync({ .p = { .x = 1_u, .y = 2_u }: Point, .flag = true }: Nested);
+
+    // 枚举 (带 / 不带 payload)
+    is_sync(Shape::Dot);
+    is_sync(Shape::Circle(3_u));
+    is_sync(Shape::Rect(1_u, 2_u));
+
+    // union
+    is_sync({ .u = 1_u }: Bits);
+}

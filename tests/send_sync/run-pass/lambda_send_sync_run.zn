@@ -1,0 +1,39 @@
+// run-pass: Send/Sync 只是类型层面的约束, 这里把它们和实际调用结合起来,
+// 确保闭包代码生成/调用不受影响, 程序能正常跑完。
+use std::{assert, assert_eq};
+
+fn is_send<T>(x: T) where T: Send {}
+fn is_sync<T>(x: T) where T: Sync {}
+fn require_both<T>(x: T) where T: Send, T: Sync {}
+
+struct SyncOnly {
+    n: UInt,
+}
+
+unsafe impl Sync for SyncOnly {}
+
+fn main() {
+    // 无捕获: Send + Sync, 且能正常调用
+    let add1 = (x: UInt) -> UInt => x + 1_u;
+    is_send(add1);
+    is_sync(add1);
+    assert_eq(add1(1_u), 2_u);
+
+    // 按值捕获 UInt: Send + Sync (第 1 项起 is_sync_type 也按结构递归, UInt 默认 Sync)
+    let n = 41_u;
+    let get = .{ [move n] -> UInt => return n; };
+    is_send(get);
+    is_sync(get);
+    assert_eq(get(), 41_u);
+
+    // 按值捕获显式 Sync 的用户类型: Send + Sync
+    let s = { .n = 9_u }: SyncOnly;
+    let get_s = .{ [move s] -> UInt => return s.n; };
+    is_send(get_s);
+    is_sync(get_s);
+    assert_eq(get_s(), 9_u);
+
+    // 闭包作为泛型实参直接调用
+    require_both((x: UInt) -> UInt => x);
+    assert(true);
+}

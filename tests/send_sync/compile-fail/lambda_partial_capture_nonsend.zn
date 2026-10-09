@@ -1,0 +1,18 @@
+// 多捕获项里只要有一个非 Send, 整个闭包就非 Send (与结构体逐字段判据一致)。
+// 这里同时捕获 UInt (Send) 和 NoSend (!Send) -> 必须报错。
+//
+// 修改前: 闭包一律非 Send, 也会失败 (原因不同)。
+fn is_send<T>(x: T) where T: Send {}
+
+struct NoSend {
+    n: UInt,
+}
+
+impl !Send for NoSend {}
+
+fn main() {
+    let n = 6_u;
+    let s = { .n = 7_u }: NoSend;
+    let f = .{ [move n, move s] -> UInt => return n + s.n; };
+    is_send(f);
+}

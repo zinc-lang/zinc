@@ -1,0 +1,28 @@
+// 闭包作为泛型实参 / 经过泛型返回值流动时, Send/Sync 判据跟着类型走:
+//   - 直接传给 where T: Send / T: Sync 的泛型函数 (泛型实参位置)
+//   - 经过泛型恒等函数返回后仍是同一个闭包类型, 约束照样满足
+//   - 闭包放进元组 (聚合体, 相当于结构体字段) 后, 元组按字段结构化判 Send
+//
+// 修改前: 闭包一律非 Send/非 Sync, 这些调用全部报错。
+fn is_send<T>(x: T) where T: Send {}
+fn is_sync<T>(x: T) where T: Sync {}
+
+fn require_both<T>(x: T) where T: Send, T: Sync {}
+
+fn identity<T>(x: T) -> T {
+    return x;
+}
+
+fn main() {
+    // 泛型实参位置
+    require_both((x: UInt) -> UInt => x);
+
+    // 泛型返回值: 闭包类型经过 identity 之后不丢约束
+    let f = identity((x: UInt) -> UInt => x);
+    is_send(f);
+    is_sync(f);
+
+    // 聚合体 (元组) 里的闭包: 元组所有元素 Send, 元组才 Send
+    let g = (x: UInt) -> UInt => x;
+    is_send((g, 1_u));
+}

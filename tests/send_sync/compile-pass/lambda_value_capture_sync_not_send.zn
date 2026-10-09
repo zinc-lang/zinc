@@ -1,0 +1,22 @@
+// 只要求 Sync 的闭包: 捕获一个 "Sync 但 !Send" 的类型时, 闭包满足 Sync 但不满足 Send。
+// 本文件只验证 Sync 这一侧成立 (Send 侧报错见 compile-fail/lambda_sync_only_requires_send.zn)。
+//
+// SyncNoSend 显式 impl Sync + 显式 impl !Send:
+//   - is_sync_type(SyncNoSend) = true  (显式 impl Sync)
+//   - is_send_type(SyncNoSend) = false (负向 impl !Send)
+//
+// 修改前: 闭包一律非 Sync, is_sync 调用报错。
+fn is_sync<T>(x: T) where T: Sync {}
+
+struct SyncNoSend {
+    n: UInt,
+}
+
+unsafe impl Sync for SyncNoSend {}
+impl !Send for SyncNoSend {}
+
+fn main() {
+    let s = { .n = 7_u }: SyncNoSend;
+    let f = .{ [move s] -> UInt => return s.n; };
+    is_sync(f);
+}

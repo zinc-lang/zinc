@@ -1,0 +1,20 @@
+// 第 3 项: 代入泛型实参的检查不能误杀正确的实例化。
+//   Vec<Int>: Eq        (impl<T> Eq for Vec<T> where T: Eq, T=Int: Eq)
+//   Option<Int>: Eq     (impl<T> Eq for Option<T> where T: Eq, T=Int: Eq)
+//   Result<Int, Int>: Eq
+// 这些是改动前就 PASS 的既有正向用例, 收紧后必须继续 PASS。
+use std::cmp::Eq;
+
+fn require_eq<T>(x: T) where T: Eq {}
+
+fn main() {
+    let mut v = (type Vec<Int>)::new();
+    v.push(1_i);
+    require_eq(v);
+
+    let o: Option<Int> = Some(1_i);
+    require_eq(o);
+
+    let r = (type Result<Int, Int>)::Ok(1_i);
+    require_eq(r);
+}

@@ -1,0 +1,25 @@
+// 按值捕获: 捕获类型本身 Send, 闭包才 Send。
+//   - 捕获 UInt (内建 base case: IntegerSymbol -> Send)
+//   - 捕获一个 "Send 但 !Sync" 的用户类型 (只要求 Send 时合法)
+//
+// 修改前: 闭包一律非 Send, 两个调用都会报泛型约束错误。
+fn is_send<T>(x: T) where T: Send {}
+
+struct SendNotSync {
+    n: UInt,
+}
+
+// 用户类型默认按字段结构化判 Send (字段 UInt 是 Send), 这里显式声明它不是 Sync。
+impl !Sync for SendNotSync {}
+
+fn main() {
+    // 按值捕获 UInt
+    let n = 1_u;
+    let f1 = .{ [move n] -> UInt => return n; };
+    is_send(f1);
+
+    // 按值捕获 "Send 但 !Sync" 的类型
+    let s = { .n = 2_u }: SendNotSync;
+    let f2 = .{ [move s] -> UInt => return s.n; };
+    is_send(f2);
+}

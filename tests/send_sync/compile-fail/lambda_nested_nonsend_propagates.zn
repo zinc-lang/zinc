@@ -1,0 +1,18 @@
+// 嵌套闭包的约束传递: 内层闭包按值捕获了非 Send 类型, 外层再 move 捕获这个内层闭包,
+// 于是外层闭包的环境字段类型 = 内层闭包类型, 而内层闭包非 Send -> 外层也非 Send。
+//
+// 修改前: 内层闭包一律非 Send, 外层失败 (原因不同: 旧版根本不给闭包判 Send)。
+fn is_send<T>(x: T) where T: Send {}
+
+struct NoSend {
+    n: UInt,
+}
+
+impl !Send for NoSend {}
+
+fn main() {
+    let s = { .n = 4_u }: NoSend;
+    let inner = .{ [move s] -> UInt => return s.n; };
+    let outer = .{ [move inner] -> UInt => return inner(); };
+    is_send(outer);
+}

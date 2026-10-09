@@ -911,6 +911,17 @@ impl CodeGenerator {
             !(field_sty.type_symbol is type *TupleSymbol) &&
             !(field_sty.type_symbol is type *ArraySymbol) {
 
+            // 可调用类型 (函数项 / 闭包) 的 TypeMeta 是"按需生成"的, 不像 struct/enum
+            // 那样在 codegen_items 里预先全部生成 (见 cg_type.zn 的 rt_typemeta_of)。
+            // 这里以前一律走 get_typemeta_global, 只会得到一个没有定义的 declare ——
+            // 闭包环境的 copyfn/dtorfn 里如果捕获字段本身也是闭包 (嵌套闭包), 链接期
+            // 就会报 `undefined reference to zn.meta.::<lambda>...`。
+            // 让可调用类型也走 cg_typemeta, 触发它真正的定义。
+            if field_sty.type_symbol is type *FuncSymbol ||
+                field_sty.type_symbol is type *LambdaSymbol {
+                return self.cg_typemeta(field_sty.type_symbol).as_value();
+            }
+
             return self.get_typemeta_global(field_sty.type_symbol).as_value();
         }
 

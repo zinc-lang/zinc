@@ -1,0 +1,19 @@
+// 按值捕获了非 Send 类型 -> 闭包不满足 Send, 必须报诊断 (不能 panic)。
+// NoSend 有显式 `impl !Send`。
+//
+// 修改前: 闭包在 is_send_type 里落到 default 分支, 同样报约束错误 —— 也就是说
+// 修改前这里"碰巧"也是编译失败, 但原因不同 (旧: 闭包根本没有 Send 判断;
+// 新: 闭包的捕获字段里有非 Send 类型)。
+fn is_send<T>(x: T) where T: Send {}
+
+struct NoSend {
+    n: UInt,
+}
+
+impl !Send for NoSend {}
+
+fn main() {
+    let s = { .n = 1_u }: NoSend;
+    let f = .{ [move s] -> UInt => return s.n; };
+    is_send(f);
+}

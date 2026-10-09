@@ -1948,10 +1948,22 @@ impl TypeCheckContext {
                     }
                     return;
                 }
-                for isym in ty.type_symbol.related_impls() {
-                    if isym.trait_sty is Some(trait_sty) {
-                        if trait_sty.type_symbol as *raw TypeSymbol as UInt == upper_sym_int {
-                            return;
+                // 完全具体的实参: 交给 is_subtype 做完整的"代入泛型实参 + 核对 impl
+                // 自己的 where 约束"的检查 (例如 Vec<NoEq> 不能因为存在
+                // `impl<T> Eq for Vec<T> where T: Eq` 就被当成 Eq)。
+                // 含自由类型参数 / 关联类型时, 没有当前上下文的约束信息就无法正确判定,
+                // 沿用旧行为 (只查 impl 符号), 与 type_cast.zn 里 ThinPtrUpToFatPtr 的
+                // 处理保持一致 —— 否则泛型代码会被误杀。
+                if !contains_type_param(ty) && !contains_associated_type(ty) {
+                    if is_subtype(ty, upper) {
+                        return;
+                    }
+                } else {
+                    for isym in ty.type_symbol.related_impls() {
+                        if isym.trait_sty is Some(trait_sty) {
+                            if trait_sty.type_symbol as *raw TypeSymbol as UInt == upper_sym_int {
+                                return;
+                            }
                         }
                     }
                 }

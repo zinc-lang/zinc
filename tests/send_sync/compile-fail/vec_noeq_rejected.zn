@@ -1,0 +1,19 @@
+// 第 3 项: "该拦没拦" 的核心用例。
+// std 里只有 `impl<T> Eq for Vec<T> where T: Eq`, NoEq 没有 Eq impl,
+// 所以 Vec<NoEq> 不满足 Eq, require_eq(v) 必须报编译错误。
+//
+// 修改前: 只比较 impl 的 trait 符号, 不代入实参/不核对 impl 的 where 约束,
+// 于是 Vec<NoEq> 被错误放行, 运行期用到 == / assert_eq 时会崩。
+use std::cmp::Eq;
+
+fn require_eq<T>(x: T) where T: Eq {}
+
+struct NoEq {
+    n: UInt,
+}
+
+fn main() {
+    let mut v = (type Vec<NoEq>)::new();
+    v.push({ .n = 1_u }: NoEq);
+    require_eq(v);
+}

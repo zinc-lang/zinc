@@ -1,0 +1,21 @@
+// run-pass: 嵌套闭包 (外层 move 捕获内层) 的 Send/Sync 判断 + 实际调用。
+use std::{assert, assert_eq};
+
+fn is_send<T>(x: T) where T: Send {}
+fn is_sync<T>(x: T) where T: Sync {}
+
+struct SyncOnly {
+    n: UInt,
+}
+
+unsafe impl Sync for SyncOnly {}
+
+fn main() {
+    let s = { .n = 5_u }: SyncOnly;
+    let inner = .{ [move s] -> UInt => return s.n; };
+    let outer = .{ [move inner] -> UInt => return inner() + 1_u; };
+    is_send(outer);
+    is_sync(outer);
+    assert_eq(outer(), 6_u);
+    assert(true);
+}

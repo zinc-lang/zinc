@@ -1,0 +1,11 @@
+// 第 1 项的硬性验收点: Vec<T> 的显式 `impl<T> !Sync for Vec<T> {}` 必须继续生效。
+// 即使元素 T = UInt 现在默认是 Sync (第 1 项起), 显式负 impl 也优先, Vec<UInt> 仍然 !Sync。
+//
+// 修改前: is_sync_type 只认显式 impl, 也返回 false; 本用例防回归。
+fn is_sync<T>(x: T) where T: Sync {}
+
+fn main() {
+    let mut v = (type Vec<UInt>)::new();
+    v.push(1_u);
+    is_sync(v);
+}

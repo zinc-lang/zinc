@@ -1,0 +1,38 @@
+// 第 2 项回归用例: 按值 move 捕获堆类型 (String / Vec) 的闭包必须能编译、能真正运行。
+//
+// 修改前: 这种闭包在 MIR 自检里报 `[V8] 右值结果没有显式所有权状态 (产出方漏设)`
+// 的 ICE (stage0 上同样复现)。根因是 lowering 闭包字面量时没有给"环境结构体"这个
+// 拥有型右值登记所有权, 见 compiler/frontend/semantic/mir/builder/values.zn 的
+// LambdaValue 分支。
+//
+// 第 3 段 (嵌套) 还暴露了第二个既有 codegen 缺陷: 闭包环境结构体的 copyfn/dtorfn 里,
+// 捕获字段若本身也是闭包, 以前只 declare 了它的 TypeMeta 全局而从不生成定义
+// (可调用类型的 TypeMeta 是按需生成的, 不在 codegen_items 里预生成), 于是链接期
+// `undefined reference to zn.meta.::<lambda>...`。修法见
+// compiler/backend/codegen/cg_meta.zn 的 get_typemeta_from_typearg。
+//
+// 这里不只断言"能编译": 每个闭包都真实调用并按内容断言 (String 的首字节 / Vec 的元素)。
+use std::{assert, assert_eq};
+
+fn main() {
+    // 1) 按值捕获 String: 真实调用, 断言内容 (首字节 'h' = 104)
+    let s = String::from_str("hello");
+    let first = .{ [move s] -> UInt8 => return s.index(0_u); };
+    assert_eq(first(), 104_u8);
+    // 环境里的 String 还在: 同一个闭包可以多次调用
+    assert_eq(first(), 104_u8);
+
+    // 2) 按值捕获 Vec<UInt>: 真实调用, 断言元素内容
+    let mut v = (type Vec<UInt>)::new();
+    v.push(10_u);
+    v.push(20_u);
+    v.push(30_u);
+    let head = .{ [move v] -> UInt => return v.at(0_u).get_or_panic(); };
+    assert_eq(head(), 10_u);
+
+    // 3) 嵌套: 外层闭包按值捕获"捕获了 String 的内层闭包", 两层环境里都有堆类型
+    let s2 = String::from_str("world");
+    let inner = .{ [move s2] -> UInt => return s2.len(); };
+    let outer = .{ [move inner] -> UInt => return inner(); };
+    assert_eq(outer(), 5_u);
+}

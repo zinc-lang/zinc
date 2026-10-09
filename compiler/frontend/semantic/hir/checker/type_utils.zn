@@ -1450,12 +1450,28 @@ fn is_subtype(sub: *SType, base: *SType) -> Bool {
             // FIXME: 显然这里要考虑 trait 的泛型参数, 需要用 TypeMapping 做类型替换
             return sub_trait.is_inherited_from(base_trait);
         } else {
-            // 检查 类型 impl 关系
-            // FIXME: 显然这里也要考虑 泛型参数的替换
-            for isym in sub.type_symbol.related_impls() {
+            // 检查 类型 impl 关系: 找到候选 impl 之后必须把它的类型参数代入
+            // (itrait_sty / target_sty -> 具体的 trait 实参 / 具体类型), 再核对
+            // impl 自己的 where 约束。否则 `impl<T> Eq for Vec<T> where T: Eq`
+            // 会让 Vec<NoEq> 也 "实现了" Eq (该拦没拦), 运行期才崩。
+            for isym in c_sub.type_symbol.related_impls() {
                 if isym.trait_sty is Some(itrait_sty) {
                     if itrait_sty.type_symbol as *raw TypeSymbol as UInt == base_trait as *raw TraitSymbol as UInt {
-                        return true;
+                        let mut mappings = TypeMapping::new();
+                        if !mappings.unify(itrait_sty, c_base) {
+                            continue;
+                        }
+                        if !mappings.unify(isym.target_sty, c_sub) {
+                            continue;
+                        }
+                        if isym.impl_node.bang.is_invalid() { // 正 impl
+                            return conform_upper_bounds(c_sub, &isym.generics.constraints, &mappings);
+                        } else {
+                            // 负 impl: 约束满足时明确判 "不满足"
+                            if conform_upper_bounds(c_sub, &isym.generics.constraints, &mappings) {
+                                return false;
+                            }
+                        }
                     }
                 }
             }
@@ -1702,6 +1718,19 @@ fn is_trivial_type(sty: *SType) -> Bool {
             }
             return true;
         }
+        lambda_sym: *LambdaSymbol => {
+            // 闭包的环境就是"捕获绑定组成的结构体" (见 cg_cfg.zn 的 lambda_env_cgtype),
+            // 和 struct 一样逐字段判断平凡性。缺这个分支时, 生成"捕获了另一个闭包"的
+            // 闭包的 copyfn/dtorfn 会在这里 panic (既有 bug, stage0 上也能用
+            // `fn touch<T>(x: T) {}` + 嵌套 move 捕获闭包复现);
+            // 本任务的 Send/Sync 判断放行了嵌套闭包作泛型实参, 所以顺手补上。
+            for c in lambda_sym.captures {
+                if !is_trivial_type(c.local_var.stype) {
+                    return false;
+                }
+            }
+            return true;
+        }
     }
     return false;
 }
@@ -1710,6 +1739,12 @@ fn conform_upper_bounds(sty: *SType, constraints: &GenericConstraints, mappings:
     let type_symbols = constraints.constraints.keys();
     for ts in type_symbols {
         let upper_bounds = constraints.constraints.at(&ts).get_or_panic();
+        // 约束里的类型参数在 mapping 里可能没有绑定 (例如 impl 的类型参数只出现在
+        // trait 的泛型实参里, 而这里只按 target_sty 做了 unify)。以前会 get_or_panic,
+        // 现在跳过它 —— 这类约束在旧实现里也从来没有被检查过, 跳过不会让行为变紧。
+        if mappings.ty_mapping.at(&ts) is None {
+            continue;
+        }
         let actual_sty = mappings.ty_mapping.at(&ts).get_or_panic();
 
         for ub in upper_bounds {
@@ -1722,7 +1757,25 @@ fn conform_upper_bounds(sty: *SType, constraints: &GenericConstraints, mappings:
     return true;
 }
 
+// Send/Sync 的结构递归可能遇到"经过指针 / Vec / Option 形成的递归类型":
+//   struct Node { next: Vec<Node> }
+//   Send(Node) <=> Send(Vec<Node>) <=> Send(Node) <=> ...
+// Rust 对 auto trait 采用协归纳 (最大不动点), 环上的类型先假定满足、再由环上的
+// 负向 impl / 基础类型决定。这里用一个递归深度上限实现同样的假设: 没有环时深度很小,
+// 判定与直接递归完全一致; 有环时环上的类型按"满足"处理 (与 Rust 一致)。
+static SEND_SYNC_MAX_DEPTH: UInt = 64;
+
 fn is_send_type(sty: *SType) -> Bool {
+    let res = is_send_type_inner(sty, 0_u);
+    return res;
+}
+
+fn is_sync_type(sty: *SType) -> Bool {
+    let res = is_sync_type_inner(sty, 0_u);
+    return res;
+}
+
+fn is_send_type_inner(sty: *SType, depth: UInt) -> Bool {
     if implemented_trait(sty.type_symbol, "::std::marker::Send") is Some(isym) {
 
         let mut mappings = TypeMapping::new();
@@ -1739,12 +1792,16 @@ fn is_send_type(sty: *SType) -> Bool {
         }
     }
 
+    if depth >= SEND_SYNC_MAX_DEPTH {
+        return true;
+    }
+
     match sty.type_symbol {
         type *BoolSymbol => return true;
         type *CharSymbol => return true;
         type *IntegerSymbol => return true;
         type *FloatSymbol => return true;
-        type *TypeAliasSymbol => return is_send_type(sty.canonical());
+        type *TypeAliasSymbol => return is_send_type_inner(sty.canonical(), depth + 1);
         type *TypeParamSymbol => { return false; } // todo 考虑泛型约束
         type *AssociatedTypeSymbol => { return false; } // todo 考虑泛型约束
         type *LifetimeSymbol => return false;
@@ -1752,13 +1809,18 @@ fn is_send_type(sty: *SType) -> Bool {
         type *FuncSymbol => return true;
         type *EnumVariantSymbol => return true;
 
+        // 裸指针既非 Send 也非 Sync (与 Rust 一致)。必须放在 PointerLikeSymbol
+        // 分支之前, 否则会被下面的通用指针规则当成 "&T" 处理而误放。
+        type *RawPointerImmutSymbol => return false;
+        type *RawPointerMutSymbol => return false;
+
         type *PointerLikeSymbol => {
             let pointee = sty.args.ty_arg(0);
             return is_sync_type(move pointee);
         }
         type *TupleSymbol => {
             for e in sty.args.ty_args {
-                if !is_send_type(move e) {
+                if !is_send_type_inner(move e, depth + 1) {
                     return false;
                 }
             }
@@ -1769,21 +1831,30 @@ fn is_send_type(sty: *SType) -> Bool {
                 return true;
             } else {
                 let elem = sty.args.ty_arg(0);
-                return is_send_type(move elem);
+                return is_send_type_inner(move elem, depth + 1);
             }
         }
         struct_sym: *StructSymbol => {
+            // 代入实际泛型实参再逐字段递归: 字段的声明类型里可能有该结构体自己的
+            // 类型参数 (例如 Holder<T> { v: T }), 不代入的话 Holder<某个 Send 类型>
+            // 会被保守地判成非 Send。
+            let mut mappings = TypeMapping::new();
+            mappings.unify(struct_sym.to_sty(), sty);
             for f in struct_sym.fields {
-                if !is_send_type(f.stype) {
+                let fty = mappings.subst(f.stype);
+                if !is_send_type_inner(move fty, depth + 1) {
                     return false;
                 }
             }
             return true;
         }
         enum_sym: *EnumSymbol => {
+            let mut mappings = TypeMapping::new();
+            mappings.unify(enum_sym.to_sty(), sty);
             for ev in enum_sym.variants {
                 for f in ev.fields {
-                    if !is_send_type(f) {
+                    let fty = mappings.subst(move f);
+                    if !is_send_type_inner(move fty, depth + 1) {
                         return false;
                     }
                 }
@@ -1791,8 +1862,24 @@ fn is_send_type(sty: *SType) -> Bool {
             return true;
         }
         union_sym: *UnionSymbol => {
+            let mut mappings = TypeMapping::new();
+            mappings.unify(union_sym.to_sty(), sty);
             for f in union_sym.fields {
-                if !is_send_type(f.stype) {
+                let fty = mappings.subst(f.stype);
+                if !is_send_type_inner(move fty, depth + 1) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        lambda_sym: *LambdaSymbol => {
+            // 闭包的环境结构体字段就是各个捕获绑定
+            // (见 backend/codegen/cg_cfg.zn 的 lambda_env_cgtype: 字段类型 = c.local_var.stype),
+            // 所以"闭包是否 Send"与结构体一致: 每个捕获都 Send, 闭包才 Send。
+            // 按引用捕获时环境字段类型是 &T / &mut T, 会走上面的 PointerLike 分支,
+            // 自动得到 "&T 只有 T: Sync 时才 Send" 的交叉规则。
+            for c in lambda_sym.captures {
+                if !is_send_type_inner(c.local_var.stype, depth + 1) {
                     return false;
                 }
             }
@@ -1803,16 +1890,123 @@ fn is_send_type(sty: *SType) -> Bool {
     return false;
 }
 
-fn is_sync_type(sty: *SType) -> Bool {
+fn is_sync_type_inner(sty: *SType, depth: UInt) -> Bool {
     if implemented_trait(sty.type_symbol, "::std::marker::Sync") is Some(isym) {
         let mut mappings = TypeMapping::new();
         mappings.unify(sty.type_symbol.to_sty(), isym.target_sty);
         mappings.unify(isym.target_sty, sty);
 
         // 检查 constraints 是否满足
-        if isym.impl_node.bang.is_invalid() { // 检查是不是 negative impl
+        if isym.impl_node.bang.is_invalid() { // 正 impl: 显式声明 Sync, 以 impl 自己的约束为准
             return conform_upper_bounds(sty, &isym.generics.constraints, &mappings);
+        } else {
+            // 负 impl (!Sync): 只要 impl 的约束成立, 就明确判定"非 Sync", 优先级高于
+            // 下面的结构化 fallback。std 的 String / Vec / File / Str / Mutable 就是靠
+            // 这条保持 !Sync 的 (显式声明必须压过"字段都 Sync 所以类型也 Sync"的推断)。
+            if conform_upper_bounds(sty, &isym.generics.constraints, &mappings) {
+                return false;
+            }
         }
+    }
+
+    if depth >= SEND_SYNC_MAX_DEPTH {
+        return true;
+    }
+
+    // 显式 impl 之后, 与 is_send_type 完全对称的结构化判据:
+    // 一个类型是 Sync, 当且仅当它的所有字段/元素/捕获都是 Sync
+    // (auto trait 的"结构递归"语义, 与 Rust 的 Sync 定义一致)。
+    match sty.type_symbol {
+        type *BoolSymbol => return true;
+        type *CharSymbol => return true;
+        type *IntegerSymbol => return true;
+        type *FloatSymbol => return true;
+        type *TypeAliasSymbol => return is_sync_type_inner(sty.canonical(), depth + 1);
+        type *TypeParamSymbol => return false; // todo 考虑泛型约束
+        type *AssociatedTypeSymbol => return false; // todo 考虑泛型约束
+        type *LifetimeSymbol => return false;
+        type *ExternTypeSymbol => return false;
+        type *FuncSymbol => return true;
+        type *EnumVariantSymbol => return true;
+
+        // 裸指针既非 Send 也非 Sync (与 Rust 一致)。必须放在 PointerLikeSymbol
+        // 分支之前, 否则会被下面的通用指针规则误放。
+        type *RawPointerImmutSymbol => return false;
+        type *RawPointerMutSymbol => return false;
+
+        // 指针类: 与 is_send_type 采用同一约定 —— 指针结果的 Sync 由被指向类型决定。
+        // 对本语言最常见的 &T / &mut T, 这条与 Rust 一致:
+        //   &T: Sync <=> T: Sync,  &mut T: Sync <=> T: Sync
+        // Arc<T>/Weak<T> 也统一走这条 (Rust 对 Arc<T> 要求 T: Send + Sync, 这里只要求
+        // T: Sync; 属于放宽, 记录在 docs/send_sync.md)。
+        type *PointerLikeSymbol => {
+            let pointee = sty.args.ty_arg(0);
+            return is_sync_type_inner(move pointee, depth + 1);
+        }
+        type *TupleSymbol => {
+            for e in sty.args.ty_args {
+                if !is_sync_type_inner(move e, depth + 1) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        type *ArraySymbol => {
+            if sty.args.ty_args.is_empty() {
+                return true;
+            } else {
+                let elem = sty.args.ty_arg(0);
+                return is_sync_type_inner(move elem, depth + 1);
+            }
+        }
+        struct_sym: *StructSymbol => {
+            // 与 is_send_type 对称: 先代入实际泛型实参, 再逐字段递归
+            let mut mappings = TypeMapping::new();
+            mappings.unify(struct_sym.to_sty(), sty);
+            for f in struct_sym.fields {
+                let fty = mappings.subst(f.stype);
+                if !is_sync_type_inner(move fty, depth + 1) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        enum_sym: *EnumSymbol => {
+            let mut mappings = TypeMapping::new();
+            mappings.unify(enum_sym.to_sty(), sty);
+            for ev in enum_sym.variants {
+                for f in ev.fields {
+                    let fty = mappings.subst(move f);
+                    if !is_sync_type_inner(move fty, depth + 1) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        union_sym: *UnionSymbol => {
+            let mut mappings = TypeMapping::new();
+            mappings.unify(union_sym.to_sty(), sty);
+            for f in union_sym.fields {
+                let fty = mappings.subst(f.stype);
+                if !is_sync_type_inner(move fty, depth + 1) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        lambda_sym: *LambdaSymbol => {
+            // 闭包的环境结构体字段就是各个捕获绑定
+            // (见 backend/codegen/cg_cfg.zn 的 lambda_env_cgtype: 字段类型 = c.local_var.stype),
+            // 所以"闭包是否 Sync"与结构体一致: 每个捕获都 Sync, 闭包才 Sync。
+            for c in lambda_sym.captures {
+                if !is_sync_type_inner(c.local_var.stype, depth + 1) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        _ => return false;
     }
     return false;
 }

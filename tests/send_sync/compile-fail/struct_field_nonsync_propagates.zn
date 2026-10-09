@@ -1,0 +1,15 @@
+// 结构化判据的负向传播: 结构体只要有一个字段不是 Sync, 整个结构体就不是 Sync。
+// Holder 的字段是 String, 而 String 有显式 `impl !Sync`。
+//
+// 修改前: 结构体一律非 Sync (只认显式 impl), 也是失败; 修改后靠逐字段递归得到
+// 同一个结论。本用例确认结构化分支不会因为"Holder 自己没有负 impl"而误放。
+fn is_sync<T>(x: T) where T: Sync {}
+
+struct Holder {
+    s: String,
+}
+
+fn main() {
+    let h = { .s = String::from_str("hello") }: Holder;
+    is_sync(h);
+}

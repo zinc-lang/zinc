@@ -1,0 +1,32 @@
+// 嵌套闭包: 内层闭包类型作为外层闭包的捕获字段类型, 判据递归传递。
+//   - 内层捕获 SyncOnly (Send + Sync) -> 内层 Send/Sync -> move 捕获它的外层也 Send/Sync
+//   - 内层捕获 UInt (第 1 项起默认 Send + Sync) -> 内层 Send/Sync -> 外层也 Send/Sync
+//
+// 注意内层必须用 `move` 按值捕获到外层环境里; 若只按引用捕获 (环境字段是 &内层闭包),
+// 那要判的是内层闭包的 Sync。
+//
+// 修改前: 闭包一律非 Send/非 Sync, is_send/is_sync 全部报错。
+fn is_send<T>(x: T) where T: Send {}
+fn is_sync<T>(x: T) where T: Sync {}
+
+struct SyncOnly {
+    n: UInt,
+}
+
+unsafe impl Sync for SyncOnly {}
+
+fn main() {
+    // 内层 Send + Sync
+    let s = { .n = 5_u }: SyncOnly;
+    let inner_sync = .{ [move s] -> UInt => return s.n; };
+    let outer_sync = .{ [move inner_sync] -> UInt => return inner_sync(); };
+    is_send(outer_sync);
+    is_sync(outer_sync);
+
+    // 内层 Send + Sync (UInt 现在也是 Sync)
+    let n = 6_u;
+    let inner_send = .{ [move n] -> UInt => return n; };
+    let outer_send = .{ [move inner_send] -> UInt => return inner_send(); };
+    is_send(outer_send);
+    is_sync(outer_send);
+}

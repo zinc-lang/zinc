@@ -1,0 +1,13 @@
+// 第 1 项的硬性验收点: 显式 `impl !Sync` 必须继续压过结构化的默认 Sync 推断。
+//
+// String 在 std 里写了 `impl !Sync for String {}` (尽管它的字段都是整数/裸指针,
+// 结构化推断本身可能得出 Sync), 所以 is_sync 必须报约束错误。
+//
+// 修改前: is_sync_type 只认显式 impl, 也会在这里返回 false —— 行为不变,
+// 本用例是防回归的硬性检查点 (改动后不得变成 PASS)。
+fn is_sync<T>(x: T) where T: Sync {}
+
+fn main() {
+    let s = String::from_str("hello");
+    is_sync(s);
+}

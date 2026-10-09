@@ -1,0 +1,18 @@
+// 闭包 Send/Sync 自动判断: 没有捕获的闭包相当于普通函数, 环境里没有字段,
+// 所以 "所有捕获都 Send/Sync" 空真 -> 闭包同时满足 Send 和 Sync。
+//
+// 修改前: 闭包类型在 is_send_type / is_sync_type 里落到 default 分支, 一律判为
+// 非 Send / 非 Sync, 本用例两个调用都会报 "泛型实参类型 <lambda> 不满足约束条件"。
+fn is_send<T>(x: T) where T: Send {}
+fn is_sync<T>(x: T) where T: Sync {}
+
+fn main() {
+    let f = (x: UInt) -> UInt => x;
+    is_send(f);
+    is_sync(f);
+
+    // 块体闭包同理
+    let g = .{ -> UInt => return 1_u; };
+    is_send(g);
+    is_sync(g);
+}

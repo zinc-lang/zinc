@@ -1,0 +1,28 @@
+// 第 1 项: is_sync_type 改成结构化判据之后的 "默认 Sync" 行为。
+//
+// 规则 (与 is_send_type 对称, 见 docs/send_sync.md):
+//   - base case: Bool / Char / 各种整数 / 各种浮点 都是 Sync; 函数项也是 Sync;
+//   - 聚合体: Tuple / Array / Struct / Enum / Union 逐字段递归, 全 Sync 才 Sync;
+//   - 显式 impl 优先: 有 `impl Sync` 就是 Sync, 有 `impl !Sync` 就明确不是 Sync。
+//
+// 修改前: is_sync_type 只认显式 impl, 上面这些内建/结构类型全部判为非 Sync,
+// 本文件所有调用都会报 "泛型实参类型 ... 不满足约束条件"。
+fn is_send<T>(x: T) where T: Send {}
+fn is_sync<T>(x: T) where T: Sync {}
+
+fn main() {
+    // base case: 内建标量默认 Sync
+    is_sync(1_u);
+    is_sync(-1_i);
+    is_sync(1_u8);
+    is_sync(1.5_f32);
+    is_sync(1.5_f64);
+    is_sync(true);
+    is_sync('z');
+
+    // 交叉规则: UInt 变 Sync 之后, &UInt 也是 Send (见 is_send_type 的 PointerLike 分支)
+    let n = 7_u;
+    let r = &n;
+    is_send(r);
+    is_sync(r);
+}

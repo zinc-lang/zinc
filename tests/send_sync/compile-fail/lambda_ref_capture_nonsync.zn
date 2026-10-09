@@ -1,0 +1,20 @@
+// 按引用捕获的交叉规则反例: &T: Send 要求 T: Sync。
+// SendNotSync 是 Send 类型但显式 !Sync, 所以:
+//   - 按值捕获它   -> 闭包 Send    (见 compile-pass/lambda_value_capture_send.zn)
+//   - 按引用捕获它 -> 闭包非 Send  (环境字段是 &SendNotSync, &T: Send 需要 T: Sync)
+//
+// 修改前: 闭包一律非 Send, 也会失败 (原因不同)。
+fn is_send<T>(x: T) where T: Send {}
+
+struct SendNotSync {
+    n: UInt,
+}
+
+impl !Sync for SendNotSync {}
+
+fn main() {
+    let s = { .n = 3_u }: SendNotSync;
+    // 闭包体只读, 隐式按引用捕获
+    let f = .{ -> UInt => return s.n; };
+    is_send(f);
+}

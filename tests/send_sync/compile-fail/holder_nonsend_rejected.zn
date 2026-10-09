@@ -1,0 +1,22 @@
+// 第 3 项: 结构性分支代入实参之后, 该 false 的仍然要 false。
+// Holder<NoSend> 的字段实参是显式 !Send 的类型, 所以 Holder<NoSend> 也非 Send。
+fn is_send<T>(x: T) where T: Send {}
+
+struct NoSend {
+    n: UInt,
+}
+
+impl !Send for NoSend {}
+
+struct Holder<T> {
+    v: T,
+}
+
+fn wrap<T>(v: T) -> Holder<T> {
+    return { .v = v }: Holder<T>;
+}
+
+fn main() {
+    let h = wrap({ .n = 1_u }: NoSend);
+    is_send(h);
+}

@@ -1,0 +1,30 @@
+// 第 3 项: 结构性 Send/Sync 分支代入泛型实参之后, "Holder<闭包>" 必须能正确判定。
+//
+// Holder<T> 没有显式 Send/Sync impl, 走结构化分支: 字段 v 的类型是 T, 代入实参之后
+// 才是闭包类型。修改前 is_send_type/is_sync_type 直接拿字段声明类型 T (TypeParamSymbol)
+// 去判, 一律得 false, 于是这里会被保守地误杀。
+fn is_send<T>(x: T) where T: Send {}
+fn is_sync<T>(x: T) where T: Sync {}
+
+struct Holder<T> {
+    v: T,
+}
+
+fn wrap<T>(v: T) -> Holder<T> {
+    return { .v = v }: Holder<T>;
+}
+
+fn main() {
+    // 无捕获闭包: Send + Sync
+    let f = (x: UInt) -> UInt => x;
+    let h = wrap(f);
+    is_send(h);
+    is_sync(h);
+
+    // 按值捕获 UInt 的闭包: Send + Sync (UInt 默认 Sync, 见第 1 项)
+    let n = 3_u;
+    let g = .{ [move n] -> UInt => return n; };
+    let h2 = wrap(g);
+    is_send(h2);
+    is_sync(h2);
+}
