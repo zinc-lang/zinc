@@ -1870,7 +1870,7 @@ fn is_send_type_inner(sty: *SType, depth: UInt, ctx: &GenericConstraints) -> Boo
 
         type *PointerLikeSymbol => {
             let pointee = sty.args.ty_arg(0);
-            return is_sync_type_ctx(move pointee, ctx);
+            return is_sync_type_inner(move pointee, depth + 1, ctx);
         }
         type *TupleSymbol => {
             for e in sty.args.ty_args {
