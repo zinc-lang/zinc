@@ -596,35 +596,46 @@ fn type_contains_borrow(sty: *SType) -> Bool {
     return false;
 }
 
+static TYPE_CONTAINS_POINTER_MAX_DEPTH: UInt = 64;
+
 fn type_contains_pointer(sty: *SType) -> Bool {
+    return type_contains_pointer_inner(move sty, 0_u);
+}
+
+fn type_contains_pointer_inner(sty: *SType, depth: UInt) -> Bool {
     let ts = sty.type_symbol;
     if ts is type *ArcPointerSymbol || ts is type *WeakPointerSymbol ||
         ts is type *BorrowImmutSymbol || ts is type *BorrowMutSymbol ||
         ts is type *RawPointerImmutSymbol || ts is type *RawPointerMutSymbol {
         return true;
     }
+
+    if depth >= TYPE_CONTAINS_POINTER_MAX_DEPTH {
+        return true;
+    }
+
     for a in sty.args.ty_args {
-        if type_contains_pointer(a) {
+        if type_contains_pointer_inner(a, depth + 1) {
             return true;
         }
     }
     // 结构体/联合体/枚举的字段里也可能含有指针/引用 (例如 StringSlice 的 start)
     if ts is s: *StructSymbol {
         for f in s.fields {
-            if type_contains_pointer(f.stype) {
+            if type_contains_pointer_inner(f.stype, depth + 1) {
                 return true;
             }
         }
     } else if ts is u: *UnionSymbol {
         for f in u.fields {
-            if type_contains_pointer(f.stype) {
+            if type_contains_pointer_inner(f.stype, depth + 1) {
                 return true;
             }
         }
     } else if ts is e: *EnumSymbol {
         for v in e.variants {
             for f in v.fields {
-                if type_contains_pointer(f) {
+                if type_contains_pointer_inner(f, depth + 1) {
                     return true;
                 }
             }
@@ -632,7 +643,7 @@ fn type_contains_pointer(sty: *SType) -> Bool {
     } else if ts is lam: *LambdaSymbol {
         // 闭包环境里的字段 (按值捕获的指针/借用捕获的引用) 也是指针来源
         for c in lam.captures {
-            if type_contains_pointer(c.local_var.stype) {
+            if type_contains_pointer_inner(c.local_var.stype, depth + 1) {
                 return true;
             }
         }

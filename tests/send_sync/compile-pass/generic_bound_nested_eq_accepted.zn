@@ -1,0 +1,10 @@
+// 第 2 项: 嵌套形态 Vec<Option<T>> 也要能沿 impl 的 where 约束递归推导到 T: Eq。
+use std::cmp::Eq;
+
+fn require_eq<T>(x: T) where T: Eq {}
+
+fn f<T: Eq>(v: Vec<Option<T>>) {
+    require_eq(v);
+}
+
+fn main() { }

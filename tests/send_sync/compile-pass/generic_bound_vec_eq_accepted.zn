@@ -1,0 +1,14 @@
+// 第 2 项: 带 `where T: Eq` 或内联 `<T: Eq>` 时, Vec<T>: Eq 必须通过。
+use std::cmp::Eq;
+
+fn require_eq<T>(x: T) where T: Eq {}
+
+fn with_where<T>(v: Vec<T>) where T: Eq {
+    require_eq(v);
+}
+
+fn with_inline<T: Eq>(v: Vec<T>) {
+    require_eq(v);
+}
+
+fn main() { }

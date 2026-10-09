@@ -1,0 +1,15 @@
+// 第 2 项: `T: Eq` 经泛型函数传递: outer<T: Eq> -> inner<U: Eq> -> require_eq,
+// 每一层都把约束代入后仍然成立。
+use std::cmp::Eq;
+
+fn require_eq<T>(x: T) where T: Eq {}
+
+fn inner<U: Eq>(v: Vec<U>) {
+    require_eq(v);
+}
+
+fn outer<T: Eq>(v: Vec<T>) {
+    inner(v);
+}
+
+fn main() { }

@@ -1398,7 +1398,50 @@ fn lambda_sig_matches(lsym: *LambdaSymbol, dst: *SType) -> Bool {
     return stype_eq_regardless_lifetime(ret_sty, dst.fn_return_sty());
 }
 
+// 类型参数 tp 在当前作用域约束 ctx 里能不能满足 upper_trait:
+// 直接写了该 trait, 或者写了继承自它的子 trait (和 check_requires_constraint
+// 原来对裸 `T` 的处理同一套判据)。
+fn type_param_conforms_ctx(tp: *TypeParamSymbol, upper_trait: *TraitSymbol, ctx: &GenericConstraints) -> Bool {
+    let tp_int = tp as *raw TypeParamSymbol as UInt;
+    for b in ctx.upper_bounds(&tp_int) {
+        if b.type_symbol is tr: *TraitSymbol {
+            if tr as *raw TraitSymbol as UInt == upper_trait as *raw TraitSymbol as UInt {
+                return true;
+            }
+            if tr.is_inherited_from(upper_trait) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Send/Sync 也需要按 trait 名字查 ctx (Send/Sync 是自动 trait, 拿不到 *TraitSymbol
+// 的地方用它; 只按名字与直接写出的 bound 比, 不处理"子 trait 继承 Send"的边角,
+// 那样只会更严格、不会漏判)。
+fn type_param_conforms_named(tp: *TypeParamSymbol, trait_name: Str, ctx: &GenericConstraints) -> Bool {
+    let tp_int = tp as *raw TypeParamSymbol as UInt;
+    for b in ctx.upper_bounds(&tp_int) {
+        if b.type_symbol is tr: *TraitSymbol {
+            if tr.mangle_name().as_str().deref().eq(&trait_name) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// 无上下文版本: 只用于调用点确定没有"自由类型参数要靠当前作用域约束判定"的情况
+// (例如 cast 检查)。有上下文时用 is_subtype_ctx。
 fn is_subtype(sub: *SType, base: *SType) -> Bool {
+    let empty = GenericConstraints::new();
+    return is_subtype_ctx(sub, base, &empty);
+}
+
+// ctx = 当前作用域 (函数 + 它所在的 impl + 闭包) 的类型参数约束。
+// 自由类型参数 (如 T) 的 trait 成员关系只从 ctx 推导:
+//   Vec<T>: Eq  <=  impl<U> Eq for Vec<U> where U: Eq  +  ctx 里有 T: Eq
+fn is_subtype_ctx(sub: *SType, base: *SType, ctx: &GenericConstraints) -> Bool {
     let c_sub = sub.canonical();
     let c_base = base.canonical();
 
@@ -1413,7 +1456,7 @@ fn is_subtype(sub: *SType, base: *SType) -> Bool {
 
         let sub_arg = c_sub.args.ty_arg(0);
         let base_arg = c_base.args.ty_arg(0);
-        return is_subtype(move sub_arg, move base_arg);
+        return is_subtype_ctx(move sub_arg, move base_arg, ctx);
     }
 
     // Fn / FnMut 也有 trait 语义: 闭包类型和 fn 指针都相当于给它们做 impl
@@ -1439,10 +1482,16 @@ fn is_subtype(sub: *SType, base: *SType) -> Bool {
             return true;
         }
         if base_trait_mangle_name.eq(&"::std::marker::Send") {
-            return is_send_type(move c_sub);
+            return is_send_type_ctx(move c_sub, ctx);
         }
         if base_trait_mangle_name.eq(&"::std::marker::Sync") {
-            return is_sync_type(move c_sub);
+            return is_sync_type_ctx(move c_sub, ctx);
+        }
+
+        // 自由类型参数: 从当前作用域的约束推导 (原来这里 related_impls 是空的,
+        // 现在 T: Eq 能靠 ctx 里的 `where T: Eq` / `<T: Eq>` 成立)。
+        if c_sub.type_symbol is tp: *TypeParamSymbol {
+            return type_param_conforms_ctx(tp, base_trait, ctx);
         }
 
         if c_sub.type_symbol is sub_trait: *TraitSymbol {
@@ -1465,10 +1514,10 @@ fn is_subtype(sub: *SType, base: *SType) -> Bool {
                             continue;
                         }
                         if isym.impl_node.bang.is_invalid() { // 正 impl
-                            return conform_upper_bounds(c_sub, &isym.generics.constraints, &mappings);
+                            return conform_upper_bounds(c_sub, &isym.generics.constraints, &mappings, ctx);
                         } else {
                             // 负 impl: 约束满足时明确判 "不满足"
-                            if conform_upper_bounds(c_sub, &isym.generics.constraints, &mappings) {
+                            if conform_upper_bounds(c_sub, &isym.generics.constraints, &mappings, ctx) {
                                 return false;
                             }
                         }
@@ -1735,7 +1784,7 @@ fn is_trivial_type(sty: *SType) -> Bool {
     return false;
 }
 
-fn conform_upper_bounds(sty: *SType, constraints: &GenericConstraints, mappings: &TypeMapping) -> Bool {
+fn conform_upper_bounds(sty: *SType, constraints: &GenericConstraints, mappings: &TypeMapping, ctx: &GenericConstraints) -> Bool {
     let type_symbols = constraints.constraints.keys();
     for ts in type_symbols {
         let upper_bounds = constraints.constraints.at(&ts).get_or_panic();
@@ -1749,7 +1798,7 @@ fn conform_upper_bounds(sty: *SType, constraints: &GenericConstraints, mappings:
 
         for ub in upper_bounds {
             let ub_sty = mappings.subst(ub);
-            if !is_subtype(actual_sty, ub_sty) {
+            if !is_subtype_ctx(actual_sty, ub_sty, ctx) {
                 return false;
             }
         }
@@ -1766,16 +1815,21 @@ fn conform_upper_bounds(sty: *SType, constraints: &GenericConstraints, mappings:
 static SEND_SYNC_MAX_DEPTH: UInt = 64;
 
 fn is_send_type(sty: *SType) -> Bool {
-    let res = is_send_type_inner(sty, 0_u);
+    let empty = GenericConstraints::new();
+    return is_send_type_ctx(sty, &empty);
+}
+
+fn is_send_type_ctx(sty: *SType, ctx: &GenericConstraints) -> Bool {
+    let res = is_send_type_inner(sty, 0_u, ctx);
     return res;
 }
 
-fn is_sync_type(sty: *SType) -> Bool {
-    let res = is_sync_type_inner(sty, 0_u);
+fn is_sync_type_ctx(sty: *SType, ctx: &GenericConstraints) -> Bool {
+    let res = is_sync_type_inner(sty, 0_u, ctx);
     return res;
 }
 
-fn is_send_type_inner(sty: *SType, depth: UInt) -> Bool {
+fn is_send_type_inner(sty: *SType, depth: UInt, ctx: &GenericConstraints) -> Bool {
     if implemented_trait(sty.type_symbol, "::std::marker::Send") is Some(isym) {
 
         let mut mappings = TypeMapping::new();
@@ -1784,9 +1838,9 @@ fn is_send_type_inner(sty: *SType, depth: UInt) -> Bool {
 
         // 检查 constraints 是否满足
         if isym.impl_node.bang.is_invalid() { // 检查是不是 negative impl
-            return conform_upper_bounds(sty, &isym.generics.constraints, &mappings);
+            return conform_upper_bounds(sty, &isym.generics.constraints, &mappings, ctx);
         } else {
-            if conform_upper_bounds(sty, &isym.generics.constraints, &mappings) {
+            if conform_upper_bounds(sty, &isym.generics.constraints, &mappings, ctx) {
                 return false;
             }
         }
@@ -1801,8 +1855,8 @@ fn is_send_type_inner(sty: *SType, depth: UInt) -> Bool {
         type *CharSymbol => return true;
         type *IntegerSymbol => return true;
         type *FloatSymbol => return true;
-        type *TypeAliasSymbol => return is_send_type_inner(sty.canonical(), depth + 1);
-        type *TypeParamSymbol => { return false; } // todo 考虑泛型约束
+        type *TypeAliasSymbol => return is_send_type_inner(sty.canonical(), depth + 1, ctx);
+        type *TypeParamSymbol => { return type_param_conforms_named(sty.type_symbol as *TypeParamSymbol, "::std::marker::Send", ctx); }
         type *AssociatedTypeSymbol => { return false; } // todo 考虑泛型约束
         type *LifetimeSymbol => return false;
         type *ExternTypeSymbol => return false;
@@ -1816,11 +1870,11 @@ fn is_send_type_inner(sty: *SType, depth: UInt) -> Bool {
 
         type *PointerLikeSymbol => {
             let pointee = sty.args.ty_arg(0);
-            return is_sync_type(move pointee);
+            return is_sync_type_ctx(move pointee, ctx);
         }
         type *TupleSymbol => {
             for e in sty.args.ty_args {
-                if !is_send_type_inner(move e, depth + 1) {
+                if !is_send_type_inner(move e, depth + 1, ctx) {
                     return false;
                 }
             }
@@ -1831,7 +1885,7 @@ fn is_send_type_inner(sty: *SType, depth: UInt) -> Bool {
                 return true;
             } else {
                 let elem = sty.args.ty_arg(0);
-                return is_send_type_inner(move elem, depth + 1);
+                return is_send_type_inner(move elem, depth + 1, ctx);
             }
         }
         struct_sym: *StructSymbol => {
@@ -1842,7 +1896,7 @@ fn is_send_type_inner(sty: *SType, depth: UInt) -> Bool {
             mappings.unify(struct_sym.to_sty(), sty);
             for f in struct_sym.fields {
                 let fty = mappings.subst(f.stype);
-                if !is_send_type_inner(move fty, depth + 1) {
+                if !is_send_type_inner(move fty, depth + 1, ctx) {
                     return false;
                 }
             }
@@ -1854,7 +1908,7 @@ fn is_send_type_inner(sty: *SType, depth: UInt) -> Bool {
             for ev in enum_sym.variants {
                 for f in ev.fields {
                     let fty = mappings.subst(move f);
-                    if !is_send_type_inner(move fty, depth + 1) {
+                    if !is_send_type_inner(move fty, depth + 1, ctx) {
                         return false;
                     }
                 }
@@ -1866,7 +1920,7 @@ fn is_send_type_inner(sty: *SType, depth: UInt) -> Bool {
             mappings.unify(union_sym.to_sty(), sty);
             for f in union_sym.fields {
                 let fty = mappings.subst(f.stype);
-                if !is_send_type_inner(move fty, depth + 1) {
+                if !is_send_type_inner(move fty, depth + 1, ctx) {
                     return false;
                 }
             }
@@ -1879,7 +1933,7 @@ fn is_send_type_inner(sty: *SType, depth: UInt) -> Bool {
             // 按引用捕获时环境字段类型是 &T / &mut T, 会走上面的 PointerLike 分支,
             // 自动得到 "&T 只有 T: Sync 时才 Send" 的交叉规则。
             for c in lambda_sym.captures {
-                if !is_send_type_inner(c.local_var.stype, depth + 1) {
+                if !is_send_type_inner(c.local_var.stype, depth + 1, ctx) {
                     return false;
                 }
             }
@@ -1890,7 +1944,7 @@ fn is_send_type_inner(sty: *SType, depth: UInt) -> Bool {
     return false;
 }
 
-fn is_sync_type_inner(sty: *SType, depth: UInt) -> Bool {
+fn is_sync_type_inner(sty: *SType, depth: UInt, ctx: &GenericConstraints) -> Bool {
     if implemented_trait(sty.type_symbol, "::std::marker::Sync") is Some(isym) {
         let mut mappings = TypeMapping::new();
         mappings.unify(sty.type_symbol.to_sty(), isym.target_sty);
@@ -1898,12 +1952,12 @@ fn is_sync_type_inner(sty: *SType, depth: UInt) -> Bool {
 
         // 检查 constraints 是否满足
         if isym.impl_node.bang.is_invalid() { // 正 impl: 显式声明 Sync, 以 impl 自己的约束为准
-            return conform_upper_bounds(sty, &isym.generics.constraints, &mappings);
+            return conform_upper_bounds(sty, &isym.generics.constraints, &mappings, ctx);
         } else {
             // 负 impl (!Sync): 只要 impl 的约束成立, 就明确判定"非 Sync", 优先级高于
             // 下面的结构化 fallback。std 的 String / Vec / File / Str / Mutable 就是靠
             // 这条保持 !Sync 的 (显式声明必须压过"字段都 Sync 所以类型也 Sync"的推断)。
-            if conform_upper_bounds(sty, &isym.generics.constraints, &mappings) {
+            if conform_upper_bounds(sty, &isym.generics.constraints, &mappings, ctx) {
                 return false;
             }
         }
@@ -1921,8 +1975,8 @@ fn is_sync_type_inner(sty: *SType, depth: UInt) -> Bool {
         type *CharSymbol => return true;
         type *IntegerSymbol => return true;
         type *FloatSymbol => return true;
-        type *TypeAliasSymbol => return is_sync_type_inner(sty.canonical(), depth + 1);
-        type *TypeParamSymbol => return false; // todo 考虑泛型约束
+        type *TypeAliasSymbol => return is_sync_type_inner(sty.canonical(), depth + 1, ctx);
+        type *TypeParamSymbol => { return type_param_conforms_named(sty.type_symbol as *TypeParamSymbol, "::std::marker::Sync", ctx); }
         type *AssociatedTypeSymbol => return false; // todo 考虑泛型约束
         type *LifetimeSymbol => return false;
         type *ExternTypeSymbol => return false;
@@ -1941,11 +1995,11 @@ fn is_sync_type_inner(sty: *SType, depth: UInt) -> Bool {
         // T: Sync; 属于放宽, 记录在 docs/send_sync.md)。
         type *PointerLikeSymbol => {
             let pointee = sty.args.ty_arg(0);
-            return is_sync_type_inner(move pointee, depth + 1);
+            return is_sync_type_inner(move pointee, depth + 1, ctx);
         }
         type *TupleSymbol => {
             for e in sty.args.ty_args {
-                if !is_sync_type_inner(move e, depth + 1) {
+                if !is_sync_type_inner(move e, depth + 1, ctx) {
                     return false;
                 }
             }
@@ -1956,7 +2010,7 @@ fn is_sync_type_inner(sty: *SType, depth: UInt) -> Bool {
                 return true;
             } else {
                 let elem = sty.args.ty_arg(0);
-                return is_sync_type_inner(move elem, depth + 1);
+                return is_sync_type_inner(move elem, depth + 1, ctx);
             }
         }
         struct_sym: *StructSymbol => {
@@ -1965,7 +2019,7 @@ fn is_sync_type_inner(sty: *SType, depth: UInt) -> Bool {
             mappings.unify(struct_sym.to_sty(), sty);
             for f in struct_sym.fields {
                 let fty = mappings.subst(f.stype);
-                if !is_sync_type_inner(move fty, depth + 1) {
+                if !is_sync_type_inner(move fty, depth + 1, ctx) {
                     return false;
                 }
             }
@@ -1977,7 +2031,7 @@ fn is_sync_type_inner(sty: *SType, depth: UInt) -> Bool {
             for ev in enum_sym.variants {
                 for f in ev.fields {
                     let fty = mappings.subst(move f);
-                    if !is_sync_type_inner(move fty, depth + 1) {
+                    if !is_sync_type_inner(move fty, depth + 1, ctx) {
                         return false;
                     }
                 }
@@ -1989,7 +2043,7 @@ fn is_sync_type_inner(sty: *SType, depth: UInt) -> Bool {
             mappings.unify(union_sym.to_sty(), sty);
             for f in union_sym.fields {
                 let fty = mappings.subst(f.stype);
-                if !is_sync_type_inner(move fty, depth + 1) {
+                if !is_sync_type_inner(move fty, depth + 1, ctx) {
                     return false;
                 }
             }
@@ -2000,7 +2054,7 @@ fn is_sync_type_inner(sty: *SType, depth: UInt) -> Bool {
             // (见 backend/codegen/cg_cfg.zn 的 lambda_env_cgtype: 字段类型 = c.local_var.stype),
             // 所以"闭包是否 Sync"与结构体一致: 每个捕获都 Sync, 闭包才 Sync。
             for c in lambda_sym.captures {
-                if !is_sync_type_inner(c.local_var.stype, depth + 1) {
+                if !is_sync_type_inner(c.local_var.stype, depth + 1, ctx) {
                     return false;
                 }
             }

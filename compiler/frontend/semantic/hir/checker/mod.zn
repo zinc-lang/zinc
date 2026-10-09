@@ -1903,6 +1903,21 @@ impl TypeCheckContext {
         if upper.type_symbol is upper_trait: *TraitSymbol {
             let upper_sym_int = upper_trait as *raw TraitSymbol as UInt;
 
+            // 当前作用域 (函数 + 它所在的 impl + 闭包) 的类型参数约束。
+            // 实参里出现自由类型参数 (如 T) 时, trait 成员关系只能靠它推导:
+            //   fn f<T>(v: Vec<T>)            要求 Vec<T>: Eq  => 需要 T: Eq, ctx 没有 => 报错
+            //   fn g<T: Eq>(v: Vec<T>)        要求 Vec<T>: Eq  => 需要 T: Eq, ctx 有   => 通过
+            let mut ctx = GenericConstraints::new();
+            if self.fsym is Some(cur_fsym) {
+                ctx.merge(&cur_fsym.generics.constraints);
+                if cur_fsym.parent_sym is Some(cur_isym: *ImplSymbol) {
+                    ctx.merge(&cur_isym.generics.constraints);
+                }
+            }
+            if self.lambda_sym is Some(cur_lsym) {
+                ctx.merge(&cur_lsym.generics.constraints);
+            }
+
             if ty.type_symbol is tp: *TypeParamSymbol {
                 let tp_int = tp as *raw TypeParamSymbol as UInt;
                 // 从当前 fsym 中找 tp 满足的约束
@@ -1937,35 +1952,23 @@ impl TypeCheckContext {
                     return;
                 }
                 if upper_trait.mangle_name().as_str().deref().eq(&"::std::marker::Send") {
-                    if !is_send_type(ty) {
+                    if !is_send_type_ctx(ty, &ctx) {
                         DiagnosticEngine::get().emit_typeparam_not_conform_constraint(ty.to_string(), upper.to_string(), span);
                     }
                     return;
                 }
                 if upper_trait.mangle_name().as_str().deref().eq(&"::std::marker::Sync") {
-                    if !is_sync_type(ty) {
+                    if !is_sync_type_ctx(ty, &ctx) {
                         DiagnosticEngine::get().emit_typeparam_not_conform_constraint(ty.to_string(), upper.to_string(), span);
                     }
                     return;
                 }
-                // 完全具体的实参: 交给 is_subtype 做完整的"代入泛型实参 + 核对 impl
-                // 自己的 where 约束"的检查 (例如 Vec<NoEq> 不能因为存在
-                // `impl<T> Eq for Vec<T> where T: Eq` 就被当成 Eq)。
-                // 含自由类型参数 / 关联类型时, 没有当前上下文的约束信息就无法正确判定,
-                // 沿用旧行为 (只查 impl 符号), 与 type_cast.zn 里 ThinPtrUpToFatPtr 的
-                // 处理保持一致 —— 否则泛型代码会被误杀。
-                if !contains_type_param(ty) && !contains_associated_type(ty) {
-                    if is_subtype(ty, upper) {
-                        return;
-                    }
-                } else {
-                    for isym in ty.type_symbol.related_impls() {
-                        if isym.trait_sty is Some(trait_sty) {
-                            if trait_sty.type_symbol as *raw TypeSymbol as UInt == upper_sym_int {
-                                return;
-                            }
-                        }
-                    }
+                // 统一的 trait 成员判定: 沿 impl 的 where 约束递归, 自由类型参数
+                // (含嵌套在 Vec/Option 里的) 在 ctx 里查。完全具体的实参等价于原来的
+                // is_subtype 路径; 含自由类型参数 / 关联类型的不再走"只看 impl 符号"
+                // 的宽松捷径 —— 那会漏掉 impl 自己的 where 约束 (该拦没拦)。
+                if is_subtype_ctx(ty, upper, &ctx) {
+                    return;
                 }
             }
             DiagnosticEngine::get().emit_typeparam_not_conform_constraint(ty.to_string(), upper.to_string(), span);

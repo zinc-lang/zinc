@@ -1,0 +1,15 @@
+// 第 2 项: T: Eq 经泛型函数传递也要能查出来。
+// inner<U: Eq> 要求 Vec<U>: Eq; outer<T> 把 U 推出 T 后, 缺 T: Eq => 报错。
+use std::cmp::Eq;
+
+fn require_eq<T>(x: T) where T: Eq {}
+
+fn inner<U: Eq>(v: Vec<U>) {
+    require_eq(v);
+}
+
+fn outer<T>(v: Vec<T>) {
+    inner(v);
+}
+
+fn main() { }

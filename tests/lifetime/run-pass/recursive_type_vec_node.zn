@@ -1,0 +1,24 @@
+// 经 Vec 的递归类型必须能通过 MIR 的 origin 分析 (loan.zn 的 type_contains_pointer),
+// 不能无限递归 / 栈溢出。
+//
+// 历史 bug: type_contains_pointer 对
+//     struct Node { next: Vec<Node> }
+// 走 Node -> Vec<Node>(实参) -> Node -> ... 无限递归, 在 stage0 上直接
+// "Error: stackoverflow detected"。
+// 修复用递归深度上限截断; 本轮核查把到上限的返回方向从 false 改成 true
+// (保守: 按"可能含指针"处理), 避免"指针只在 >64 层深处"时漏判 origin 来源 ——
+// 漏判会让 origin 分析丢掉参数/变量的来源, 是"该拦没拦"的不安全方向。
+use std::{assert, assert_eq};
+
+struct Node {
+    next: Vec<Node>,
+    value: Int,
+}
+
+fn main() {
+    let mut n = { .next = (type Vec<Node>)::new(), .value = 1_i }: Node;
+    n.next.push({ .next = (type Vec<Node>)::new(), .value = 2_i }: Node);
+    assert_eq(n.value, 1_i);
+    assert_eq(n.next.len(), 1_u);
+    assert(true);
+}

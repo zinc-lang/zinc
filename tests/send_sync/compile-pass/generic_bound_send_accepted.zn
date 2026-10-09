@@ -1,0 +1,17 @@
+// 第 2 项: `T: Send` 要能让 Vec<T>: Send (impl 自己的 where 约束) 和
+// 结构化 Holder<T>: Send 都通过。修改前自由类型参数一律判非 Send, 这两个会被误杀。
+fn is_send<T>(x: T) where T: Send {}
+
+struct Holder<T> {
+    v: T,
+}
+
+fn vec_side<T: Send>(v: Vec<T>) {
+    is_send(v);
+}
+
+fn holder_side<T: Send>(h: Holder<T>) {
+    is_send(h);
+}
+
+fn main() { }

@@ -1,0 +1,10 @@
+// 第 2 项: Send 一侧同样要按上下文约束推导。
+// std 里 `unsafe impl<T> Send for Vec<T> where T: Send`,
+// f<T> 没有 `T: Send` => Vec<T>: Send 不成立 => 报错。
+fn is_send<T>(x: T) where T: Send {}
+
+fn f<T>(v: Vec<T>) {
+    is_send(v);
+}
+
+fn main() { }

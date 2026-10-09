@@ -1,0 +1,13 @@
+// 第 2 项: 结构化类型 + Sync 一侧 (不是靠 Vec 的显式 !Sync, 而是走字段递归)。
+// Holder<T>: Sync <=> T: Sync; f<T> 没有 `T: Sync` => 报错。
+fn is_sync<T>(x: T) where T: Sync {}
+
+struct Holder<T> {
+    v: T,
+}
+
+fn f<T>(h: Holder<T>) {
+    is_sync(h);
+}
+
+fn main() { }

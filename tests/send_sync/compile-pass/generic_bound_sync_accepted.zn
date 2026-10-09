@@ -1,0 +1,12 @@
+// 第 2 项: `T: Sync` 让结构化 Holder<T>: Sync 通过 (修改前会被误杀)。
+fn is_sync<T>(x: T) where T: Sync {}
+
+struct Holder<T> {
+    v: T,
+}
+
+fn f<T: Sync>(h: Holder<T>) {
+    is_sync(h);
+}
+
+fn main() { }

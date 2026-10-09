@@ -1,0 +1,15 @@
+// 第 2 项核心: 实参里含自由类型参数 (T) 时, 必须按当前作用域的约束推导。
+// f<T> 没有 `T: Eq`, 所以 Vec<T>: Eq 不成立, require_eq(v) 必须报编译错误。
+//
+// 修改前: "含自由类型参数就只查 impl 符号" 的宽松捷径会放行 (只看到
+// `impl<T> Eq for Vec<T> where T: Eq` 的符号, 不核对它自己的 where 约束),
+// 运行期用到 == / assert_eq 时可能崩。
+use std::cmp::Eq;
+
+fn require_eq<T>(x: T) where T: Eq {}
+
+fn f<T>(v: Vec<T>) {
+    require_eq(v);
+}
+
+fn main() { }

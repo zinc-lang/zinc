@@ -1,0 +1,11 @@
+// 第 2 项: 缺约束出现在更深层也要能查出来。
+// Vec<Option<T>>: Eq  =>  Option<T>: Eq  =>  T: Eq, f<T> 没有该约束 => 报错。
+use std::cmp::Eq;
+
+fn require_eq<T>(x: T) where T: Eq {}
+
+fn f<T>(v: Vec<Option<T>>) {
+    require_eq(v);
+}
+
+fn main() { }
