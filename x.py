@@ -94,6 +94,32 @@ def require_llvm_tools():
             "(delete out/llvm first if an old install is incomplete)."
         )
 
+def require_llvm_libs():
+    missing = [p for p in LLVM_LIBS if not os.path.isfile(p)]
+    if missing:
+        raise SystemExit(
+            "LLVM install is missing libraries needed to link Zinc:\n  "
+            + "\n  ".join(missing)
+            + "\nRun `python x.py build-llvm` (delete out/llvm first if an old install is incomplete)."
+        )
+
+def require_stage0():
+    stage0 = os.path.join(CMAKE_OUTPUT_DIR, "stage0")
+    zinc_bin = os.path.join(stage0, "bin", "zinc")
+    if not os.path.isfile(zinc_bin):
+        raise SystemExit(
+            f"stage0 compiler not found at {zinc_bin}.\n"
+            "Run `python x.py setup-stage0` (or unpack stage0.zip so that path exists).\n"
+            "Accepted zip layouts: stage0/bin/zinc, stage1/bin/zinc, or bin/zinc at the zip root."
+        )
+    link = os.path.join(stage0, "llvm")
+    if not (os.path.islink(link) or os.path.isdir(link)):
+        raise SystemExit(
+            f"stage0 is missing the llvm symlink at {link} -> ../llvm.\n"
+            "Run `python x.py setup-stage0` after `python x.py build-llvm`, "
+            "or: ln -sfn ../llvm out/stage0/llvm"
+        )
+
 def link_stage_llvm(stage_dir):
     if not os.path.isdir(stage_dir):
         return
@@ -141,11 +167,21 @@ def setup_stage0():
         shutil.move(tmp, stage0)
         tmp = None
     else:
-        raise SystemExit(f"unrecognized stage0 zip layout in {tmp}")
+        found = sorted(os.listdir(tmp)) if os.path.isdir(tmp) else []
+        raise SystemExit(
+            f"unrecognized stage0 zip layout in {tmp}\n"
+            f"top-level entries: {found or '(empty)'}\n"
+            "expected one of: stage0/bin/zinc, stage1/bin/zinc, or bin/zinc"
+        )
 
     if tmp is not None:
         shutil.rmtree(tmp, ignore_errors=True)
-    os.chmod(os.path.join(stage0, "bin", "zinc"), 0o755)
+    zinc_bin = os.path.join(stage0, "bin", "zinc")
+    if not os.path.isfile(zinc_bin):
+        raise SystemExit(
+            f"stage0 zip unpacked to {stage0} but {zinc_bin} is missing"
+        )
+    os.chmod(zinc_bin, 0o755)
     link_stage_llvm(stage0)
     print(f"stage0 ready at {stage0}")
 
@@ -247,6 +283,7 @@ def build(stage, check_only):
     if stage == 1:
         out_dir = './out/stage1'
         compiler = './out/stage0/bin/zinc'
+        require_stage0()
     if stage == 2:
         out_dir = './out/stage2'
         compiler = './out/stage1/bin/zinc'
@@ -258,6 +295,11 @@ def build(stage, check_only):
         cmd = f'{compiler} -O0 ./compiler/zinc.zn --out-dir=./out/bin --check-only '
         run_checked(cmd, shell=True)
     else:
+        require_llvm_tools()
+        require_llvm_libs()
+        if not shutil.which("clang++"):
+            raise SystemExit("clang++ is required to link Zinc (install the clang package)")
+
         subprocess.run('cmake -S ./native/sqlite_wrapper -B ./build_sqlite_wrapper -DCMAKE_BUILD_TYPE=Debug -G Ninja', shell=True,check=True,text=True)
         subprocess.run('cmake --build ./build_sqlite_wrapper --config Debug', shell=True,check=True,text=True)
 
@@ -277,9 +319,6 @@ def build(stage, check_only):
 
         cmd += " --extra-link='-lzstd -lz -lpthread -lm -ldl' "
 
-        require_llvm_tools()
-        if not shutil.which("clang++"):
-            raise SystemExit("clang++ is required to link Zinc (install the clang package)")
         run_checked(cmd, shell=True)
 
         zinc_out = os.path.join(out_dir, "bin", "zinc")

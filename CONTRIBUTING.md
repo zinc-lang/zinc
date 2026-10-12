@@ -6,12 +6,25 @@ Language-design changes belong in [zinc-lang/zinc-design](https://github.com/zin
 
 ## Setup
 
-1. Download `stage0.zip` from [Releases](https://github.com/zinc-lang/zinc/releases) and unpack it as `./out/stage0`.
-2. `python x.py build-llvm`
-3. Symlink `./out/stage0/llvm` -> `../llvm`
-4. `python x.py build`
+Prefer the scripts (they also create the `out/stage0/llvm` symlink):
 
-See the root README for the expected `./out` layout.
+```
+python x.py setup-stage0
+python x.py build-llvm
+python x.py build
+```
+
+`setup-stage0` downloads `stage0.zip` from [Releases](https://github.com/zinc-lang/zinc/releases) into `./out/stage0.zip` and unpacks it. Accepted zip layouts:
+
+- `stage0/bin/zinc` (current)
+- `stage1/bin/zinc` (older releases; renamed to `out/stage0`)
+- `bin/zinc` at the zip root
+
+If something is wrong with the tree, `x.py build` / `setup-stage0` should now say what is missing instead of failing later in cmake/link.
+
+Expected `./out` layout after a successful bootstrap is documented in the root README.
+
+WSL note: if submodule/network fetch of LLVM is painful under WSL, clone on Windows then fix `third_party/llvm-project/llvm/cmake/config.guess` CRLF → LF before `build-llvm`.
 
 ## Tests
 
