@@ -196,7 +196,7 @@ Note: Only Linux/x64 platform is supported.
     ```
 4. run `python x.py build`
 
-GitHub Actions on `ubuntu-latest` caches LLVM and runs this sequence automatically (see `.github/workflows/ci.yml`).
+GitHub Actions on `ubuntu-latest` caches LLVM and runs this sequence automatically (see `.github/workflows/compiler-zinc.yml`).
 
 ## tests
 
