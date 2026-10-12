@@ -1852,6 +1852,10 @@ impl CodeGenerator {
                 self.llds.create_br(merge_bb);
 
                 self.llds.set_insert_point(merge_bb);
+                // 本 MIR 块的出口变成了 merge_bb, 后继 phi 要按这个前驱记
+                if ctx.current_mir_bb != 0_u {
+                    ctx.bb_map.insert(ctx.current_mir_bb, merge_bb);
+                }
                 return self.llds.create_load(self.llds.type_int1(), result_slot);
             }
             _ => panic;

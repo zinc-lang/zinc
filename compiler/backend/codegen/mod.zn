@@ -55,6 +55,9 @@ pub struct CgContext {
     signature: *CgSignature,
 
     bb_map: HashMap<UInt, CgBasicBlock>,
+    // 正在生成的 MIR 基本块 (bb_map 的 key)。中途若拆出新的 LLVM 块,
+    // 要用最终出口块覆盖 bb_map, 否则后继 phi 仍记着入口块当前驱。
+    current_mir_bb: UInt,
 
     value_map: HashMap<UInt, CgValue>, // *XValue 到 CgValue 的映射
     arg_map: HashMap<UInt, CgValue>, // *VarSymbol 到 CgValue 的映射
@@ -171,6 +174,7 @@ impl CgContext {
             .ll_func = f,
             .signature = move sig,
             .bb_map = (type HashMap<UInt, CgBasicBlock>)::new(),
+            .current_mir_bb = 0_u,
             .value_map = (type HashMap<UInt, CgValue>)::new(),
             .arg_map = (type HashMap<UInt, CgValue>)::new(),
             .local_map = (type HashMap<UInt, CgValue>)::new(),
@@ -185,6 +189,7 @@ impl CgContext {
             .ll_func = f,
             .signature = move sig,
             .bb_map = (type HashMap<UInt, CgBasicBlock>)::new(),
+            .current_mir_bb = 0_u,
             .value_map = (type HashMap<UInt, CgValue>)::new(),
             .arg_map = (type HashMap<UInt, CgValue>)::new(),
             .local_map = (type HashMap<UInt, CgValue>)::new(),
@@ -199,6 +204,7 @@ impl CgContext {
             .ll_func = f,
             .signature = move sig,
             .bb_map = (type HashMap<UInt, CgBasicBlock>)::new(),
+            .current_mir_bb = 0_u,
             .value_map = (type HashMap<UInt, CgValue>)::new(),
             .arg_map = (type HashMap<UInt, CgValue>)::new(),
             .local_map = (type HashMap<UInt, CgValue>)::new(),

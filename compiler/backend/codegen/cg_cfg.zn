@@ -512,6 +512,7 @@ impl CodeGenerator {
                     self.llds.create_br(llbb);
                     is_first = false;
                 }
+                ctx.current_mir_bb = bb_int;
                 self.llds.set_insert_point(llbb);
                 for step in bb.steps {
                     self.cg_xvalue(step.value, ctx);
@@ -668,6 +669,7 @@ impl CodeGenerator {
                 self.llds.create_br(llbb);
                 is_first = false;
             }
+            ctx.current_mir_bb = bb_int;
             self.llds.set_insert_point(llbb);
             for step in bb.steps {
                 self.cg_xvalue(step.value, ctx);
