@@ -1794,8 +1794,19 @@ impl CodeGenerator {
                 if ev_pat.elements.is_empty() {
                     return tag_check;
                 }
-                // 如果有字段，继续匹配字段
-                // todo: 如果 tag_check 失败，应该跳过字段匹配，避免读取到未定义数据
+
+                // tag 不匹配时不要读 payload 字段 (布局未定义)
+                let result_slot = self.llds.create_alloca_sized(self.llds.type_int1());
+                let fields_bb = self.llds.create_bb("enum_pat_fields", ctx.ll_func);
+                let fail_bb = self.llds.create_bb("enum_pat_tag_fail", ctx.ll_func);
+                let merge_bb = self.llds.create_bb("enum_pat_merge", ctx.ll_func);
+                self.llds.create_cond_br(tag_check, fields_bb, fail_bb);
+
+                self.llds.set_insert_point(fail_bb);
+                self.llds.create_store(self.llds.get_const_int1(false).as_value(), result_slot);
+                self.llds.create_br(merge_bb);
+
+                self.llds.set_insert_point(fields_bb);
                 let mut base = self.llds.create_gep(self.llds.type_int64(), enum_op, self.llds.get_const_int32(1_u32).as_value());
                 let mut mappings = TypeMapping::new();
                 mappings.unify(enum_sty.type_symbol.to_sty(), enum_sty);
@@ -1820,7 +1831,6 @@ impl CodeGenerator {
                         field_checks = self.llds.create_logic_and(field_checks, field_match);
                         idx += 1;
                     }
-                    return self.llds.create_logic_and(tag_check, field_checks);
                 } else {
                     // todo 这部分代码有 bug
                     let mut idx: UInt = 0;
@@ -1837,8 +1847,12 @@ impl CodeGenerator {
                         base = self.llds.create_gep(self.llds.type_int8(), base, size);
                         idx += 1;
                     }
-                    return self.llds.create_logic_and(tag_check, field_checks);
                 }
+                self.llds.create_store(field_checks, result_slot);
+                self.llds.create_br(merge_bb);
+
+                self.llds.set_insert_point(merge_bb);
+                return self.llds.create_load(self.llds.type_int1(), result_slot);
             }
             _ => panic;
         }

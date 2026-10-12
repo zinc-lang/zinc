@@ -1,0 +1,26 @@
+// match 先试带字段的错误变体时, tag 对不上就不能读 payload
+// (见 #3: enum tag-check failure can still read undefined field data)
+use std::{assert, assert_eq};
+
+enum E {
+    A(Int),
+    B(Int, Int),
+}
+
+fn main() {
+    let e = E::A(42_i);
+    let mut got = 0_i;
+    match e {
+        E::B(x, y) => { got = x + y; }
+        E::A(n) => { got = n; }
+    }
+    assert_eq(got, 42_i);
+
+    let e2 = E::B(1_i, 2_i);
+    let mut got2 = 0_i;
+    match e2 {
+        E::A(n) => { got2 = n; }
+        E::B(x, y) => { got2 = x + y; }
+    }
+    assert_eq(got2, 3_i);
+}
