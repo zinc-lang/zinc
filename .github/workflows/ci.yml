@@ -88,9 +88,8 @@ jobs:
       - name: Fetch stage0
         run: python3 x.py setup-stage0
 
-      - name: Check compiler
-        run: python3 x.py check
-
+      # `x.py build` already typechecks the compiler while producing stage1.
+      # A separate `x.py check` was re-doing ~8 minutes of HIR+MIR work for free.
       - name: Build Zinc
         run: python3 x.py build
 
