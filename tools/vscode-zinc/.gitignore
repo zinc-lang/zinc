@@ -1,0 +1,6 @@
+node_modules/
+out/
+.vscode-test/
+*.vsix
+*.tsbuildinfo
+examples/_ui_*.zn

@@ -40,7 +40,7 @@ Add a short comment at the top of each test describing what it covers.
 - More `compile-pass` / `compile-fail` / `run-pass` cases (add them under the matching feature folder)
 - Standard-library methods with tests (collections, strings, integers)
 - Diagnostics and error-message wording
-- VS Code grammar, snippets, and README (`tools/vscode-zinc`)
+- VS Code grammar, snippets, LSP, and README (`tools/vscode-zinc`; run `npm test` there)
 - Build-script cleanup in `x.py` (LLVM library list, docs)
 
 ## Larger work

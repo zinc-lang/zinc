@@ -1,0 +1,60 @@
+name: vscode-zinc
+
+on:
+  push:
+    paths:
+      - "tools/vscode-zinc/**"
+      - ".github/workflows/vscode-zinc.yml"
+  pull_request:
+    paths:
+      - "tools/vscode-zinc/**"
+      - ".github/workflows/vscode-zinc.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: vscode-zinc-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: tools/vscode-zinc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: tools/vscode-zinc/package-lock.json
+
+      - name: Install OS deps for UI tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Unit + integration tests
+        # Compiler binary is not built here; zinc-backed cases skip when missing.
+        run: npm test
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Extension Host UI tests
+        run: npm run test:ui
+
+      - name: Package VSIX
+        run: npx --yes @vscode/vsce@3.2.1 package --no-update-package-json
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zinc-vscode-vsix
+          path: tools/vscode-zinc/*.vsix
+          if-no-files-found: error
