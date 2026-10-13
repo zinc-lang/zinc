@@ -47,6 +47,9 @@ pub struct CodeGenerator {
     all_typemeta_order: Vec<UInt>,
     all_generic_typemeta_order: Vec<UInt>,
     all_impl_typemeta_order: Vec<UInt>,
+
+    // enum 带 payload 的模式匹配会生成 alwaysinline helper, 用序号保证名字唯一
+    enum_pat_helper_seq: UInt,
 }
 
 pub struct CgContext {
@@ -55,15 +58,17 @@ pub struct CgContext {
     signature: *CgSignature,
 
     bb_map: HashMap<UInt, CgBasicBlock>,
-    // 正在生成的 MIR 基本块 (bb_map 的 key)。中途若拆出新的 LLVM 块,
-    // 要用最终出口块覆盖 bb_map, 否则后继 phi 仍记着入口块当前驱。
-    current_mir_bb: UInt,
 
     value_map: HashMap<UInt, CgValue>, // *XValue 到 CgValue 的映射
     arg_map: HashMap<UInt, CgValue>, // *VarSymbol 到 CgValue 的映射
     local_map: HashMap<UInt, CgValue>, // *VarSymbol 到 CgValue 的映射
 
     cached_instantiated: HashMap<UInt, CgValue>, // *SType 到 *type_meta 的映射
+
+    // 在 enum-pat alwaysinline helper 内时: 外层函数的 TypeMeta/GenericArg
+    // 已作为 helper 参数传入, 按「外层 LLVM 参数下标 -> helper 内的 CgValue」查询。
+    // 空表示不在 helper 内。
+    pat_helper_arg_remap: HashMap<UInt, CgValue>,
 
     // 闭包函数的第一个参数是环境指针时, 真实 LLVM 参数下标 = 签名里的下标 + 1。
     // (BrRet 通过 sret 返回时要按这个偏移取隐藏的返回槽位)
@@ -94,6 +99,7 @@ impl CodeGenerator {
             .all_typemeta_order = (type Vec<UInt>)::new(),
             .all_generic_typemeta_order = (type Vec<UInt>)::new(),
             .all_impl_typemeta_order = (type Vec<UInt>)::new(),
+            .enum_pat_helper_seq = 0_u,
         }: CodeGenerator;
     }
 
@@ -174,11 +180,11 @@ impl CgContext {
             .ll_func = f,
             .signature = move sig,
             .bb_map = (type HashMap<UInt, CgBasicBlock>)::new(),
-            .current_mir_bb = 0_u,
             .value_map = (type HashMap<UInt, CgValue>)::new(),
             .arg_map = (type HashMap<UInt, CgValue>)::new(),
             .local_map = (type HashMap<UInt, CgValue>)::new(),
             .cached_instantiated = (type HashMap<UInt, CgValue>)::new(),
+            .pat_helper_arg_remap = (type HashMap<UInt, CgValue>)::new(),
             .env_shift = 0_u,
         }: CgContext;
     }
@@ -189,11 +195,11 @@ impl CgContext {
             .ll_func = f,
             .signature = move sig,
             .bb_map = (type HashMap<UInt, CgBasicBlock>)::new(),
-            .current_mir_bb = 0_u,
             .value_map = (type HashMap<UInt, CgValue>)::new(),
             .arg_map = (type HashMap<UInt, CgValue>)::new(),
             .local_map = (type HashMap<UInt, CgValue>)::new(),
             .cached_instantiated = (type HashMap<UInt, CgValue>)::new(),
+            .pat_helper_arg_remap = (type HashMap<UInt, CgValue>)::new(),
             .env_shift = 0_u,
         }: CgContext;
     }
@@ -204,11 +210,11 @@ impl CgContext {
             .ll_func = f,
             .signature = move sig,
             .bb_map = (type HashMap<UInt, CgBasicBlock>)::new(),
-            .current_mir_bb = 0_u,
             .value_map = (type HashMap<UInt, CgValue>)::new(),
             .arg_map = (type HashMap<UInt, CgValue>)::new(),
             .local_map = (type HashMap<UInt, CgValue>)::new(),
             .cached_instantiated = (type HashMap<UInt, CgValue>)::new(),
+            .pat_helper_arg_remap = (type HashMap<UInt, CgValue>)::new(),
             .env_shift = 0_u,
         }: CgContext;
     }

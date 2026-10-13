@@ -99,6 +99,8 @@ void * llds_save_ip(LLVMDataStructures *ds);
 void llds_restore_ip(LLVMDataStructures *ds, void* ip);
 void llds_set_ip_for_instantiate(LLVMDataStructures* ds, llvm::Function* f);
 llvm::Function * llds_create_function(LLVMDataStructures *ds, const char * name, size_t len, llvm::FunctionType * ty);
+// 模块内 helper: InternalLinkage + alwaysinline (enum 模式匹配等需要拆 BB 时用)
+llvm::Function * llds_create_internal_alwaysinline_function(LLVMDataStructures *ds, const char * name, size_t len, llvm::FunctionType * ty);
 void llds_create_do_nothing(LLVMDataStructures *ds);
 bool llds_function_is_empty(llvm::Function* f);
 llvm::BasicBlock * llds_function_entry_basicblock(llvm::Function* f);

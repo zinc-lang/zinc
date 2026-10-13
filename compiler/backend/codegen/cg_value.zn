@@ -1795,72 +1795,159 @@ impl CodeGenerator {
                     return tag_check;
                 }
 
-                // tag 不匹配时不要读 payload 字段 (布局未定义)
-                let result_slot = self.llds.create_alloca_sized(self.llds.type_int1());
-                let fields_bb = self.llds.create_bb("enum_pat_fields", ctx.ll_func);
-                let fail_bb = self.llds.create_bb("enum_pat_tag_fail", ctx.ll_func);
-                let merge_bb = self.llds.create_bb("enum_pat_merge", ctx.ll_func);
-                self.llds.create_cond_br(tag_check, fields_bb, fail_bb);
-
-                self.llds.set_insert_point(fail_bb);
-                self.llds.create_store(self.llds.get_const_int1(false).as_value(), result_slot);
-                self.llds.create_br(merge_bb);
-
-                self.llds.set_insert_point(fields_bb);
-                let mut base = self.llds.create_gep(self.llds.type_int64(), enum_op, self.llds.get_const_int32(1_u32).as_value());
-                let mut mappings = TypeMapping::new();
-                mappings.unify(enum_sty.type_symbol.to_sty(), enum_sty);
-
-                let mut args = GenericArgs::new();
-                let mut idx: UInt = 0;
-                for elem_pat in ev_pat.elements {
-                    let field_sty = mappings.subst(*ev_pat.enum_ctor_sym.fields.index(idx).deref());
-                    args.ty_args.push(move field_sty);
-                    idx += 1;
-                }
-                let payload_tup_sty = TupleSymbol::new().to_sty(move args);
-
-                let mut field_checks = self.llds.get_const_int1(true).as_value();
-
-                if self.cgtype_of(payload_tup_sty) is Some(tup_cgty) {
-                    let mut idx: UInt = 0;
-                    for elem_pat in ev_pat.elements {
-                        let field_sty = payload_tup_sty.args.ty_arg(idx);
-                        let field_addr = self.llds.create_struct_gep(tup_cgty, base, idx);
-                        let field_match = self.cg_pattern_match(field_addr, field_sty, elem_pat, ctx);
-                        field_checks = self.llds.create_logic_and(field_checks, field_match);
-                        idx += 1;
-                    }
-                } else {
-                    // todo 这部分代码有 bug
-                    let mut idx: UInt = 0;
-                    for elem_pat in ev_pat.elements {
-                        let field_sty = payload_tup_sty.args.ty_arg(idx);
-                        let field_tm = self.rt_typemeta_of(field_sty, ctx);
-                        if idx > 0 {
-                            base = self.llds.align_pointer_to_typemeta(base, field_tm);
-                        }
-                        let field_match = self.cg_pattern_match(base, field_sty, elem_pat, ctx);
-                        field_checks = self.llds.create_logic_and(field_checks, field_match);
-
-                        let size = self.access_typemeta_size(field_tm);
-                        base = self.llds.create_gep(self.llds.type_int8(), base, size);
-                        idx += 1;
-                    }
-                }
-                self.llds.create_store(field_checks, result_slot);
-                self.llds.create_br(merge_bb);
-
-                self.llds.set_insert_point(merge_bb);
-                // 本 MIR 块的出口变成了 merge_bb, 后继 phi 要按这个前驱记
-                if ctx.current_mir_bb != 0_u {
-                    ctx.bb_map.insert(ctx.current_mir_bb, merge_bb);
-                }
-                return self.llds.create_load(self.llds.type_int1(), result_slot);
+                // tag 不匹配时不要读 payload (布局未定义)。拆 BB 放进
+                // internal+alwaysinline helper, 调用方只剩一条 call, MIR↔LLVM BB 仍对应。
+                return self.cg_enum_payload_pat_match(enum_op, enum_sty, ev_pat, ctx);
             }
             _ => panic;
         }
         panic;
+    }
+
+    // 带 payload 的 enum 变体匹配: 生成 internal+alwaysinline helper,
+    // 在 helper 内做 tag 判断 + 字段匹配 (需要拆 BB), 调用方只发一条 call。
+    // 外层 TypeMeta/GenericArg 作为额外参数传入, 避免跨函数引用 Argument。
+    fn cg_enum_payload_pat_match(
+        &mut self,
+        enum_op: CgValue,
+        enum_sty: *SType,
+        ev_pat: *EnumVariantPattern,
+        ctx: *CgContext,
+    ) -> CgValue {
+        let seq = self.enum_pat_helper_seq;
+        self.enum_pat_helper_seq = seq + 1;
+        let helper_name = f"zinc_enum_pat_match.$(seq)";
+
+        // 收集外层需要传入 helper 的 typemeta 实参
+        let mut param_tys = (type Vec<CgType>)::new();
+        param_tys.push(self.llds.type_thin_ptr()); // enum ptr
+        let mut call_args = (type Vec<CgValue>)::new();
+        let mut enum_arg_val = enum_op;
+        enum_arg_val.indirect = false;
+        call_args.push(enum_arg_val);
+
+        let mut outer_arg_indices = (type Vec<UInt>)::new();
+        let mut llvm_idx: UInt = 0;
+        for p in ctx.signature.params {
+            match p {
+                CgParam::TypeMeta => {
+                    param_tys.push(self.llds.type_thin_ptr());
+                    // 可能已在外层 helper 内, 走 remap 取「当前函数」里的 typemeta 实参
+                    call_args.push(self.cg_typemeta_arg(ctx, llvm_idx));
+                    outer_arg_indices.push(llvm_idx);
+                }
+                CgParam::GenericArg(_, ga_idx) => {
+                    param_tys.push(self.llds.type_thin_ptr());
+                    call_args.push(self.cg_typemeta_arg(ctx, ga_idx));
+                    outer_arg_indices.push(ga_idx);
+                }
+                _ => {}
+            }
+            llvm_idx += 1;
+        }
+
+        let helper_ty = self.llds.type_function(self.llds.type_int1(), param_tys.as_slice().deref());
+        let helper = self.llds.create_internal_alwaysinline_fn(helper_ty, helper_name.as_str().deref());
+
+        let entry_bb = self.llds.create_bb("entry", helper);
+        let fields_bb = self.llds.create_bb("enum_pat_fields", helper);
+        let fail_bb = self.llds.create_bb("enum_pat_tag_fail", helper);
+
+        let saved_ip = self.llds.save_ip();
+        let saved_ll_func = ctx.ll_func;
+        // 嵌套 helper 时保存/恢复外层 remap
+        let saved_remap_keys = ctx.pat_helper_arg_remap.keys();
+        let mut saved_remap_vals = (type Vec<CgValue>)::new();
+        let mut si: UInt = 0;
+        while si < saved_remap_keys.len() {
+            let k = *saved_remap_keys.index(si).deref();
+            saved_remap_vals.push(ctx.pat_helper_arg_remap.at(&k).get_or_panic());
+            si += 1;
+        }
+        // helper 体内新建的 typemeta 指令必须属于 helper; 清掉缓存避免跨函数串用 Value
+        ctx.ll_func = helper;
+        ctx.cached_instantiated.clear();
+        ctx.pat_helper_arg_remap.clear();
+        let mut helper_arg_i: UInt = 1;
+        for outer_idx in outer_arg_indices {
+            ctx.pat_helper_arg_remap.insert(outer_idx, self.llds.get_arg(helper, helper_arg_i));
+            helper_arg_i += 1;
+        }
+
+        self.llds.set_insert_point(entry_bb);
+
+        let enum_arg = self.llds.get_arg(helper, 0_u);
+        let mut enum_ptr = enum_arg;
+        enum_ptr.indirect = true;
+
+        let tag_expected = self.llds.get_const_int64(ev_pat.enum_ctor_sym.tag_num() as UInt64).as_value();
+        let tag_actual = self.llds.create_load(self.llds.type_int64(), enum_ptr);
+        let tag_check = self.llds.create_icmp_eq(tag_expected, tag_actual);
+        self.llds.create_cond_br(tag_check, fields_bb, fail_bb);
+
+        self.llds.set_insert_point(fail_bb);
+        self.llds.create_ret(self.llds.get_const_int1(false).as_value());
+
+        self.llds.set_insert_point(fields_bb);
+        let mut base = self.llds.create_gep(
+            self.llds.type_int64(),
+            enum_ptr,
+            self.llds.get_const_int32(1_u32).as_value(),
+        );
+        let mut mappings = TypeMapping::new();
+        mappings.unify(enum_sty.type_symbol.to_sty(), enum_sty);
+
+        let mut args = GenericArgs::new();
+        let mut idx: UInt = 0;
+        for elem_pat in ev_pat.elements {
+            let field_sty = mappings.subst(*ev_pat.enum_ctor_sym.fields.index(idx).deref());
+            args.ty_args.push(move field_sty);
+            idx += 1;
+        }
+        let payload_tup_sty = TupleSymbol::new().to_sty(move args);
+
+        let mut field_checks = self.llds.get_const_int1(true).as_value();
+
+        if self.cgtype_of(payload_tup_sty) is Some(tup_cgty) {
+            let mut idx: UInt = 0;
+            for elem_pat in ev_pat.elements {
+                let field_sty = payload_tup_sty.args.ty_arg(idx);
+                let field_addr = self.llds.create_struct_gep(tup_cgty, base, idx);
+                let field_match = self.cg_pattern_match(field_addr, field_sty, elem_pat, ctx);
+                field_checks = self.llds.create_logic_and(field_checks, field_match);
+                idx += 1;
+            }
+        } else {
+            // todo 这部分代码有 bug
+            let mut idx: UInt = 0;
+            for elem_pat in ev_pat.elements {
+                let field_sty = payload_tup_sty.args.ty_arg(idx);
+                let field_tm = self.rt_typemeta_of(field_sty, ctx);
+                if idx > 0 {
+                    base = self.llds.align_pointer_to_typemeta(base, field_tm);
+                }
+                let field_match = self.cg_pattern_match(base, field_sty, elem_pat, ctx);
+                field_checks = self.llds.create_logic_and(field_checks, field_match);
+
+                let size = self.access_typemeta_size(field_tm);
+                base = self.llds.create_gep(self.llds.type_int8(), base, size);
+                idx += 1;
+            }
+        }
+        self.llds.create_ret(field_checks);
+
+        ctx.pat_helper_arg_remap.clear();
+        let mut ri: UInt = 0;
+        while ri < saved_remap_keys.len() {
+            let k = *saved_remap_keys.index(ri).deref();
+            ctx.pat_helper_arg_remap.insert(k, *saved_remap_vals.index(ri).deref());
+            ri += 1;
+        }
+        ctx.cached_instantiated.clear(); // helper 里生成的 Value 不能留给外层用
+        ctx.ll_func = saved_ll_func;
+        self.llds.restore_ip(saved_ip);
+
+        return self.llds.create_call(helper, call_args.as_slice().deref());
     }
 
     fn access_fatptr_field(&mut self, fatptr: CgValue, idx: UInt) -> CgValue {
