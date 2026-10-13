@@ -229,6 +229,15 @@ impl CodeGenerator {
         }
     }
 
+    // 取 TypeMeta / GenericArg 对应的 LLVM 实参。在 enum-pat helper 内时走 remap
+    // (helper 自己的参数), 否则取当前函数参数 —— 跨函数直接引用 Argument 会校验失败。
+    fn cg_typemeta_arg(&mut self, ctx: *CgContext, llvm_idx: UInt) -> CgValue {
+        if ctx.pat_helper_arg_remap.at(&llvm_idx) is Some(v) {
+            return v;
+        }
+        return self.llds.get_arg(ctx.ll_func, llvm_idx);
+    }
+
     fn rt_typemeta_of(&mut self, sty: *SType, ctx: *CgContext) -> CgValue {
         // 编译侧的"全局 typemeta 缓存" (见本文件末尾 tmcache_* 的注释):
         // 上下文无关的实例化类型 (Option<Int> / Vec<String> / [Int; 4] ...) 的 TypeMeta
@@ -254,7 +263,7 @@ impl CodeGenerator {
                 if assoc.is_self_ty() {
                     // 特殊处理 Self 类型, 从函数参数中获得
                     let idx = ctx.signature.index_of_typemeta();
-                    return self.llds.get_arg(ctx.ll_func, idx);
+                    return self.cg_typemeta_arg(ctx, idx);
                 } else {
                     return self.rt_typemeta_of(sty.canonical(), ctx);
                 }
@@ -266,7 +275,7 @@ impl CodeGenerator {
                 // 泛型参数有两种来源:
                 // 一种是直接携带的, fn f<T>() 这种; 第二种是包含在 Self 类型中的, impl<T> S<T> { fn f(&self) {} }
                 if ctx.signature.index_of_type_param(tp) is Some(i) {
-                    return self.llds.get_arg(ctx.ll_func, i);
+                    return self.cg_typemeta_arg(ctx, i);
                 } else {
                     // todo 这里假设了泛型参数就是 Self 类型的直接参数而不是 S<Option<T>> 这种, 后续继续改进支持更多情况
                     let mut self_sty = ctx.self_sty().get_or_panic();
@@ -277,7 +286,7 @@ impl CodeGenerator {
                     for a in self_sty.args.ty_args {
                         if a.type_symbol as *raw TypeSymbol as UInt == tp as *raw TypeParamSymbol as UInt {
                             let self_ty_idx = ctx.signature.index_of_typemeta();
-                            let self_tymeta = self.llds.get_arg(ctx.ll_func, self_ty_idx);
+                            let self_tymeta = self.cg_typemeta_arg(ctx, self_ty_idx);
                             return self.access_typemeta_argv_of(self_tymeta, idx);
                         }
                         idx += 1;

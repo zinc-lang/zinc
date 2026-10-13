@@ -55,6 +55,9 @@ pub struct CodeGenerator {
     all_typemeta_order: Vec<UInt>,
     all_generic_typemeta_order: Vec<UInt>,
     all_impl_typemeta_order: Vec<UInt>,
+
+    // enum 带 payload 的模式匹配会生成 alwaysinline helper, 用序号保证名字唯一
+    enum_pat_helper_seq: UInt,
 }
 
 pub struct CgContext {
@@ -69,6 +72,11 @@ pub struct CgContext {
     local_map: HashMap<UInt, CgValue>, // *VarSymbol 到 CgValue 的映射
 
     cached_instantiated: HashMap<UInt, CgValue>, // *SType 到 *type_meta 的映射
+
+    // 在 enum-pat alwaysinline helper 内时: 外层函数的 TypeMeta/GenericArg
+    // 已作为 helper 参数传入, 按「外层 LLVM 参数下标 -> helper 内的 CgValue」查询。
+    // 空表示不在 helper 内。
+    pat_helper_arg_remap: HashMap<UInt, CgValue>,
 
     // 闭包函数的第一个参数是环境指针时, 真实 LLVM 参数下标 = 签名里的下标 + 1。
     // (BrRet 通过 sret 返回时要按这个偏移取隐藏的返回槽位)
@@ -102,6 +110,7 @@ impl CodeGenerator {
             .all_typemeta_order = (type Vec<UInt>)::new(),
             .all_generic_typemeta_order = (type Vec<UInt>)::new(),
             .all_impl_typemeta_order = (type Vec<UInt>)::new(),
+            .enum_pat_helper_seq = 0_u,
         }: CodeGenerator;
     }
 
@@ -186,6 +195,7 @@ impl CgContext {
             .arg_map = (type HashMap<UInt, CgValue>)::new(),
             .local_map = (type HashMap<UInt, CgValue>)::new(),
             .cached_instantiated = (type HashMap<UInt, CgValue>)::new(),
+            .pat_helper_arg_remap = (type HashMap<UInt, CgValue>)::new(),
             .env_shift = 0_u,
         }: CgContext;
     }
@@ -200,6 +210,7 @@ impl CgContext {
             .arg_map = (type HashMap<UInt, CgValue>)::new(),
             .local_map = (type HashMap<UInt, CgValue>)::new(),
             .cached_instantiated = (type HashMap<UInt, CgValue>)::new(),
+            .pat_helper_arg_remap = (type HashMap<UInt, CgValue>)::new(),
             .env_shift = 0_u,
         }: CgContext;
     }
@@ -214,6 +225,7 @@ impl CgContext {
             .arg_map = (type HashMap<UInt, CgValue>)::new(),
             .local_map = (type HashMap<UInt, CgValue>)::new(),
             .cached_instantiated = (type HashMap<UInt, CgValue>)::new(),
+            .pat_helper_arg_remap = (type HashMap<UInt, CgValue>)::new(),
             .env_shift = 0_u,
         }: CgContext;
     }

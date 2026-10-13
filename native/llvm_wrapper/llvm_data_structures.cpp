@@ -884,12 +884,23 @@ llvm::Function * llds_create_function(LLVMDataStructures *ds, const char * name,
     }
     return llvm::Function::Create(ty, llvm::Function::ExternalLinkage, fname, ds->module);
 }
+
 llvm::Function * llds_create_internal_function(LLVMDataStructures *ds, const char * name, size_t len, llvm::FunctionType * ty) {
     std::string fname{name, len};
     if (auto * f = ds->module->getFunction(fname)) {
         return f;
     }
     return llvm::Function::Create(ty, llvm::Function::InternalLinkage, fname, ds->module);
+}
+llvm::Function * llds_create_internal_alwaysinline_function(LLVMDataStructures *ds, const char * name, size_t len, llvm::FunctionType * ty) {
+    std::string fname{name, len};
+    if (auto * f = ds->module->getFunction(fname)) {
+        return f;
+    }
+    auto * fn = llvm::Function::Create(ty, llvm::Function::InternalLinkage, fname, ds->module);
+    fn->addFnAttr(llvm::Attribute::AlwaysInline);
+    fn->addFnAttr(llvm::Attribute::NoUnwind);
+    return fn;
 }
 void llds_create_do_nothing(LLVMDataStructures *ds) {
     llvm::Function *do_nothing = llvm::Intrinsic::getOrInsertDeclaration(
