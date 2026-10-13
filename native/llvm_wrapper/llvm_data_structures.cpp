@@ -15,6 +15,7 @@
 
 #include <string>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <filesystem>
@@ -115,11 +116,39 @@ void LLVMDataStructures::init_typemeta_structs() {
         void_ptr,// ZnGenericTypeMeta **  generic_type_meta;
         void_ptr,// ZnTraitImpl **        trait_impls;
         void_ptr,// struct ZnComponent ** imported_components;
-        int8,// int8_t has_init;
         void_ptr,// void (*cache_init_fn)(void);
+        int8,// uint8_t has_init;  (必须保持为最后一个字段)
     };
     zn_component->setBody(elems4);
     assert(this->module->getDataLayout().getTypeAllocSize(zn_component) == sizeof(ZnComponent));
+
+    static_assert(offsetof(ZnComponent, imported_components) < offsetof(ZnComponent, cache_init_fn),
+                  "ZnComponent: cache_init_fn must follow imported_components (see zinc_core_typemeta.h)");
+    static_assert(offsetof(ZnComponent, cache_init_fn) < offsetof(ZnComponent, has_init),
+                  "ZnComponent: has_init must be the last field (see zinc_core_typemeta.h)");
+    static_assert(sizeof(ZnComponent) == 56, "ZnComponent size changed; update elems4 if intended");
+
+    // 上面的 static_assert 只检查 C 头文件自身的顺序; elems4 的**每个 ElementType / 偏移**
+    // 也必须与 C 侧逐个一致。注意: 只比偏移是不够的 —— has_init(i8) 与 cache_init_fn(ptr)
+    // 互换后两者占的偏移仍是 40 / 48, sizeof 也仍是 56, 所以**必须同时比类型**。
+    {
+        struct { size_t off; llvm::Type * ty; const char * what; } c_fields[7] = {
+            { offsetof(ZnComponent, name),                  void_ptr, "name" },
+            { offsetof(ZnComponent, non_generic_type_meta), void_ptr, "non_generic_type_meta" },
+            { offsetof(ZnComponent, generic_type_meta),     void_ptr, "generic_type_meta" },
+            { offsetof(ZnComponent, trait_impls),           void_ptr, "trait_impls" },
+            { offsetof(ZnComponent, imported_components),   void_ptr, "imported_components" },
+            { offsetof(ZnComponent, cache_init_fn),         void_ptr, "cache_init_fn" },
+            { offsetof(ZnComponent, has_init),              int8,     "has_init" },
+        };
+        const llvm::StructLayout * comp_layout = this->module->getDataLayout().getStructLayout(zn_component);
+        for (unsigned i = 0; i < 7; i++) {
+            assert(comp_layout->getElementOffset(i) == c_fields[i].off
+                   && "elems4 offset diverged from zinc_core_typemeta.h");
+            assert(zn_component->getElementType(i) == c_fields[i].ty
+                   && "elems4 field type diverged from zinc_core_typemeta.h (field order/kind mismatch)");
+        }
+    }
 
     //====================
     // 构造 fat pointer type

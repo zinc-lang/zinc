@@ -166,11 +166,10 @@ impl CodeGenerator {
         let imports = self.llds.cg_const_array_gv(self.llds.type_thin_ptr(), all_imports.as_slice().deref());
         ll_fields.push(imports);
 
+        ll_fields.push(cache_init_fn.as_const());
+
         let has_init = self.llds.get_const_int8(0_u8);
         ll_fields.push(has_init);
-
-        // 编译侧 typemeta 缓存的初始化函数 (internal, 通过 ZnComponent 的函数指针被运行时调用)
-        ll_fields.push(cache_init_fn.as_const());
 
         let comp_struct = self.llds.get_const_struct(self.llds.type_ZnComponent(), ll_fields.as_slice().deref());
         comp_meta.set_initializer(comp_struct);
