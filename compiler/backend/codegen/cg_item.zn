@@ -123,6 +123,11 @@ impl CodeGenerator {
             return comp_meta; // 已经生成了
         }
 
+        // 先把本单元的 typemeta 缓存初始化函数生成出来 (它可能按需生成一些 typemeta 全局量),
+        // 这样下面搜集 all_typemeta / all_generic_typemeta 时不会漏掉它们。
+        // 运行时 zinc_core_component_init 会在注册完 trait impls 之后调用这个函数。
+        let cache_init_fn = self.cg_tmcache_init_fn();
+
         let mut ll_fields: Vec<CgConst> = (type Vec<CgConst>)::new();
         let gv_name = self.llds.get_const_string(self.comp_name.as_str().deref());
         ll_fields.push(gv_name);
@@ -160,6 +165,8 @@ impl CodeGenerator {
         }
         let imports = self.llds.cg_const_array_gv(self.llds.type_thin_ptr(), all_imports.as_slice().deref());
         ll_fields.push(imports);
+
+        ll_fields.push(cache_init_fn.as_const());
 
         let has_init = self.llds.get_const_int8(0_u8);
         ll_fields.push(has_init);

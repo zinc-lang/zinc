@@ -346,6 +346,13 @@ void zinc_core_component_init(ZnComponent * comp) {
         }
     }
 
+    // 编译侧 typemeta 缓存的初始化 (编译器生成的函数, 没有就跳过)。
+    // 必须在上面 impls 注册之后: do_instantiate 会把 generic_def->related_impls
+    // 复制进新实例化出来的 ZnTypeMeta。
+    if (comp->cache_init_fn != NULL) {
+        comp->cache_init_fn();
+    }
+
     comp->has_init = 1;
 }
 

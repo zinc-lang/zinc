@@ -220,10 +220,7 @@ impl TypeSymbol for IntegerSymbol {
             if G_INT_STYPE[idx] is Some(t) {
                 return t;
             } else {
-                let sty = box {
-                    .type_symbol = self as *IntegerSymbol as *TypeSymbol,
-                    .args = GenericArgs::new(),
-                }: SType;
+                let sty = SType::new_sty(self as *IntegerSymbol as *TypeSymbol, GenericArgs::new());
                 G_INT_STYPE[idx] = Some(sty);
                 return sty;
             }

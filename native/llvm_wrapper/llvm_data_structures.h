@@ -89,9 +89,14 @@ size_t llds_storage_size_of(LLVMDataStructures *ds, llvm::Type * ty);
 size_t llds_alignment_of(LLVMDataStructures *ds, llvm::Type * ty);
 
 llvm::GlobalVariable * llds_get_or_insert_global(LLVMDataStructures *ds, char * name, size_t len, llvm::Type * ty);
+// 模块内 internal linkage 全局量 (初值 = null): 给编译侧的 typemeta 缓存槽用。
+// 每个编译单元是一个 module, internal 保证跨 module 不会重名冲突 (缓存本来就只在本单元内用)。
+llvm::GlobalVariable * llds_get_or_insert_internal_global(LLVMDataStructures *ds, char * name, size_t len, llvm::Type * ty);
 bool llds_global_has_initializer(llvm::GlobalVariable * g);
 void llds_global_set_initializer(llvm::GlobalVariable * g, llvm::Constant * c);
 llvm::Function* llds_get_function(LLVMDataStructures *ds, char * name, size_t len);
+// 模块内 internal linkage 函数 (和 llds_create_function 一样, 已存在就复用)
+llvm::Function * llds_create_internal_function(LLVMDataStructures *ds, const char * name, size_t len, llvm::FunctionType * ty);
 
 bool llds_verify_function(llvm::Function* f);
 void llds_dump_function(llvm::Function* f);

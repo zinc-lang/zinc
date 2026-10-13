@@ -2,7 +2,15 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include "zinc_core_map.h"
+
+// 编译期断言: C 与 C++ 都能用
+#ifdef __cplusplus
+#define ZN_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#else
+#define ZN_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+#endif
 
 #ifdef __cplusplus // 如果正在被C++编译器编译
 extern "C" {       // 告诉C++编译器，括号内的函数按C语言的规则编译和链接
@@ -114,8 +122,14 @@ typedef struct ZnComponent {
   ZnGenericTypeMeta **  generic_type_meta; // NULL 结尾的指针数组
   ZnTraitImpl **        trait_impls; // NULL 结尾的指针数组
   struct ZnComponent ** imported_components; // NULL 结尾的指针数组
-  uint8_t               has_init; // 确保不会重复初始化
+  void (*cache_init_fn)(void); // 编译侧 typemeta 缓存的初始化函数
+  uint8_t               has_init; // 确保不会重复初始化 (必须保持为最后一个字段)
 } ZnComponent;
+
+ZN_STATIC_ASSERT(offsetof(ZnComponent, imported_components) < offsetof(ZnComponent, cache_init_fn),
+                 "ZnComponent: cache_init_fn must follow imported_components");
+ZN_STATIC_ASSERT(offsetof(ZnComponent, cache_init_fn) < offsetof(ZnComponent, has_init),
+                 "ZnComponent: has_init must be the last field");
 
 // 每个 component 都会生成一个 ZnComponent 类型的全局变量
 // 它的mangle名就是 zn.component.<name>

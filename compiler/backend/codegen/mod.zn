@@ -36,6 +36,14 @@ pub struct CodeGenerator {
 
     cached_signatures: HashMap<UInt, *CgSignature>, // *FuncSymbol 到 CgSignature 的映射
 
+    // 编译侧全局 typemeta 缓存 (见 cg_type.zn 的 tmcache_*):
+    // "上下文无关"的实例化类型 (实参全是具体类型, 如 Option<Int>) 在模块内发射一个
+    // internal 全局槽; 赋值语句集中在本单元的缓存初始化函数里 (由 zinc_core_component_init
+    // 在注册完 trait impls 之后调用), 使用点只 load 这个槽。
+    tmcache_slots: HashMap<String, CgGlobal>,
+    tmcache_entries: Vec<*SType>, // 后序: 实参的槽一定在依赖它的人之前
+    tmcache_init_fn: Option<CgFunc>,
+
     all_typemeta: HashSet<UInt>,
     all_generic_typemeta: HashSet<UInt>,
     all_impl_typemeta: HashSet<UInt>,
@@ -91,6 +99,9 @@ impl CodeGenerator {
             .cached_sizefn = (type HashMap<UInt, CgFunc>)::new(),
             .cached_alignfn = (type HashMap<UInt, CgFunc>)::new(),
             .cached_signatures = (type HashMap<UInt, *CgSignature>)::new(),
+            .tmcache_slots = (type HashMap<String, CgGlobal>)::new(),
+            .tmcache_entries = (type Vec<*SType>)::new(),
+            .tmcache_init_fn = (type Option<CgFunc>)::None,
 
             .all_typemeta = (type HashSet<UInt>)::new(),
             .all_generic_typemeta = (type HashSet<UInt>)::new(),

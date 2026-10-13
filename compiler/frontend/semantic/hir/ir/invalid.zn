@@ -70,10 +70,7 @@ impl TypeSymbol for InvalidSymbol {
         if self.cache is Some(cached) {
             return cached;
         } else {
-            let sty = box {
-                .type_symbol = self as *InvalidSymbol as *TypeSymbol,
-                .args = GenericArgs::new(),
-            }: SType;
+            let sty = SType::new_sty(self as *InvalidSymbol as *TypeSymbol, GenericArgs::new());
             self.cache = Some(sty);
             return sty;
         }

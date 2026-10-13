@@ -1,8 +1,8 @@
 {
   "name": "zinc",
   "displayName": "Zinc",
-  "description": "Zinc language: syntax highlighting, brackets, comments, and snippets for .zn files",
-  "version": "0.0.2",
+  "description": "Zinc language: syntax highlighting, LSP (diagnostics, completion, go-to-definition), formatter, and debug adapter for .zn files",
+  "version": "0.1.2",
   "publisher": "F001",
   "icon": "./zinc-logo.png",
   "license": "MIT",
@@ -11,27 +11,180 @@
     "url": "https://github.com/zinc-lang/zinc"
   },
   "engines": {
-    "vscode": "^1.8.0"
+    "vscode": "^1.75.0"
   },
   "categories": [
     "Programming Languages",
-    "Snippets"
+    "Snippets",
+    "Formatters",
+    "Debuggers",
+    "Linters"
   ],
+  "activationEvents": [
+    "onLanguage:zinc",
+    "onDebugResolve:zinc"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test $(find out/test -name '*.test.js' | sort)",
+    "test:ui": "npm run compile && xvfb-run -a node ./out/ui-test/runTest.js",
+    "test:thorough": "./scripts/run-thorough-tests.sh",
+    "lint": "tsc -p ./ --noEmit",
+    "install-dev": "./scripts/install-dev.sh",
+    "package": "./scripts/publish.sh package",
+    "publish:marketplace": "./scripts/publish.sh marketplace",
+    "publish:openvsx": "./scripts/publish.sh openvsx"
+  },
   "contributes": {
-    "languages": [{
-      "id": "zinc",
-      "aliases": ["Zinc", "zinc"],
-      "extensions": [".zn"],
-      "configuration": "./language-configuration.json"
-    }],
-    "grammars": [{
-      "language": "zinc",
-      "scopeName": "source.zinc",
-      "path": "./syntaxes/zinc.tmLanguage.json"
-    }],
-    "snippets": [{
-      "language": "zinc",
-      "path": "./snippets/zinc.json"
-    }]
+    "configurationDefaults": {
+      "[zinc]": {
+        "editor.semanticHighlighting.enabled": false,
+        "editor.defaultFormatter": "F001.zinc",
+        "editor.formatOnSave": false
+      }
+    },
+    "languages": [
+      {
+        "id": "zinc",
+        "aliases": [
+          "Zinc",
+          "zinc"
+        ],
+        "extensions": [
+          ".zn"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "zinc",
+        "scopeName": "source.zinc",
+        "path": "./syntaxes/zinc.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "zinc",
+        "path": "./snippets/zinc.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "zinc.restartServer",
+        "title": "Zinc: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Zinc",
+      "properties": {
+        "zinc.compilerPath": {
+          "type": "string",
+          "default": "zinc",
+          "description": "Path to the zinc compiler executable used by the language server and debugger."
+        },
+        "zinc.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces communication between VS Code and the Zinc language server."
+        }
+      }
+    },
+    "debuggers": [
+      {
+        "type": "zinc",
+        "label": "Zinc",
+        "languages": [
+          "zinc"
+        ],
+        "program": "./out/debugAdapter.js",
+        "runtime": "node",
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the .zn source file to compile and run.",
+                "default": "${file}"
+              },
+              "args": {
+                "type": "array",
+                "description": "Arguments passed to the compiled program.",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory for the debug session.",
+                "default": "${workspaceFolder}"
+              },
+              "compilerPath": {
+                "type": "string",
+                "description": "Override zinc compiler path for this launch.",
+                "default": ""
+              },
+              "outDir": {
+                "type": "string",
+                "description": "Directory for the compiled binary.",
+                "default": "${workspaceFolder}/out"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "zinc",
+            "request": "launch",
+            "name": "Zinc: Launch current file",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}",
+            "outDir": "${workspaceFolder}/out"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Zinc: Launch",
+            "description": "Compile and run a Zinc source file",
+            "body": {
+              "type": "zinc",
+              "request": "launch",
+              "name": "Zinc: Launch",
+              "program": "^\"\\${file}\"",
+              "cwd": "^\"\\${workspaceFolder}\"",
+              "outDir": "^\"\\${workspaceFolder}/out\""
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "dependencies": {
+    "@vscode/debugadapter": "^1.68.0",
+    "@vscode/debugprotocol": "^1.68.0",
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.12"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.75.0",
+    "@vscode/test-electron": "^2.4.1",
+    "glob": "^10.4.5",
+    "mocha": "^10.7.3",
+    "typescript": "^5.3.3"
   }
 }

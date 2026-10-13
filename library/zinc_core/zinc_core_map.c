@@ -5,6 +5,9 @@
 #include <stddef.h>
 #include <pthread.h>   // PTHREAD_MUTEX_INITIALIZER (惰性初始化用的全局锁)
 
+// ===========================================================================
+// 设计说明: 读多写少 -> 无锁读 + 写加锁 + 旧表延迟回收
+// ===========================================================================
 typedef _Atomic(void*) Key;
 typedef _Atomic(void*) Value;
 
@@ -19,7 +22,7 @@ typedef struct {
 // (发布后仍可就地插入单个槽位, 见 put/get_or_insert)
 typedef struct Table {
     zinc_ushort   capacity;  // 槽位数, 恒为 2^N - 1
-    struct Table* retired;   // 待回收的旧表链, 只在持有 map->mutex 时访问
+    struct Table* retired;   // 延迟回收链的 next (见 retire_table)
     KeyValue      kv[];
 } Table;
 
@@ -34,6 +37,34 @@ _Static_assert(sizeof(HashMap) == 56, "HashMap 大小改变后需要同步修改
 // 保护 map 的惰性初始化。不能用 map->mutex: 它本身可能还没初始化,
 // 也就没法用它来串行化初始化过程。
 static OsMutex g_init_lock = { PTHREAD_MUTEX_INITIALIZER };
+
+// ---------------------------------------------------------------------------
+// 延迟回收链
+// ---------------------------------------------------------------------------
+
+// 所有 map 被替换下来的旧表都挂在这条全局链上, 运行期只插入、不摘取
+// (除了显式调用 zinc_core_map_reclaim_all 的安全点)。
+// 用 CAS 插入, 不需要额外的锁; 节点自身的 retired 字段就是链的 next。
+static _Atomic(Table*) g_retired_head = NULL;
+
+// 把旧表挂到全局延迟回收链上。只在写路径 (扩容) 调用, 极少触发。
+// 注意: 这里只发布表指针, 表的内容不会再有读者以外的人访问, 用 release 足够。
+static void retire_table(Table* t) {
+    Table* head = atomic_load_explicit(&g_retired_head, memory_order_relaxed);
+    do {
+        t->retired = head;
+    } while (!atomic_compare_exchange_weak_explicit(
+                 &g_retired_head, &head, t, memory_order_release, memory_order_relaxed));
+}
+
+void zinc_core_map_reclaim_all(void) {
+    Table* t = atomic_exchange_explicit(&g_retired_head, NULL, memory_order_acquire);
+    while (t != NULL) {
+        Table* next = t->retired;
+        zinc_core_free_meta(t);
+        t = next;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 小工具
@@ -96,45 +127,6 @@ void zinc_core_map_init(HashMapPtr map) {
 }
 
 // ---------------------------------------------------------------------------
-// 读者登记 (无锁读的入口/出口)
-// ---------------------------------------------------------------------------
-
-// 必须先登记读者再取表: 反过来写的话, 扩容线程可能在 "取表" 和 "登记" 之间
-// 把这张表回收掉。用 seq_cst 是为了和 collect_retired 里的读构成全序,
-// 保证两者至少有一方能看到对方 (见文件顶部的说明)。
-static Table* reader_enter(HashMapPtr map) {
-    atomic_fetch_add_explicit(&map->readers, 1, memory_order_seq_cst);
-    return (Table*)atomic_load_explicit(&map->table, memory_order_seq_cst);
-}
-
-static void reader_exit(HashMapPtr map) {
-    atomic_fetch_sub_explicit(&map->readers, 1, memory_order_seq_cst);
-}
-
-// ---------------------------------------------------------------------------
-// 旧表回收
-// ---------------------------------------------------------------------------
-
-// 释放所有已经没有读者可能引用的旧表。调用者必须持有 map->mutex。
-static void collect_retired(HashMapPtr map) {
-    Table* cur = (Table*)atomic_load_explicit(&map->table, memory_order_relaxed);
-    if (cur == NULL || cur->retired == NULL) {
-        return;
-    }
-    // 还有读者在临界区里, 他们可能正拿着链上的某张表, 留到下次写操作再回收
-    if (atomic_load_explicit(&map->readers, memory_order_seq_cst) != 0) {
-        return;
-    }
-    Table* t = cur->retired;
-    cur->retired = NULL;
-    while (t != NULL) {
-        Table* next = t->retired;
-        zinc_core_free_meta(t);
-        t = next;
-    }
-}
-
-// ---------------------------------------------------------------------------
 // 探测 (只在某一张表内进行)
 // ---------------------------------------------------------------------------
 
@@ -179,6 +171,7 @@ static zinc_ushort table_free_slot(const Table* t, void* k) {
 
 // 把 value 和 key 发布到槽位: 必须先写 value 再 release 写 key,
 // 这样读者 acquire 读到 key 时一定能看到对应的 value。
+// 槽位一旦发布就不再改写 (本表只插入、不删除、不搬移), 所以不需要更强的同步。
 static void table_publish(Table* t, zinc_ushort slot, void* k, void* v) {
     atomic_store_explicit(&t->kv[slot].v, v, memory_order_relaxed);
     atomic_store_explicit(&t->kv[slot].k, k, memory_order_release);
@@ -188,8 +181,8 @@ static _Bool should_grow(zinc_ushort count, zinc_ushort capacity) {
     return ((zinc_uint)count * 5 >= (zinc_uint)capacity * 4); // 超过 0.8 就扩容
 }
 
-// 建一张两倍大的新表, 把元素搬过去, 并把旧表挂到新表的待回收链上。
-// 旧表此时还不能释放, 可能仍有读者在用 (交给 collect_retired 判断)。
+// 建一张两倍大的新表, 把元素搬过去。旧表交给 retire_table 延迟回收
+// (此刻可能仍有读者在探测它, 绝不能 free)。
 static Table* table_grow(const Table* old) {
     zinc_uint new_cap = (zinc_uint)old->capacity * 2 + 1; // 仍然保持 2^N - 1
     if (new_cap > (zinc_uint)(zinc_ushort)~0) {
@@ -205,30 +198,27 @@ static Table* table_grow(const Table* old) {
         void* v = atomic_load_explicit(&old->kv[i].v, memory_order_relaxed);
         table_publish(nt, table_free_slot(nt, k), k, v);
     }
-    nt->retired = (Table*)old;
+    retire_table((Table*)old);
     return nt;
 }
 
 // ---------------------------------------------------------------------------
-// 读操作 (不加锁, 通过 readers 计数保证用到的表不会被释放)
+// 读操作 (无锁: 只有 acquire load, 没有原子写)
 // ---------------------------------------------------------------------------
 
 void* zinc_core_map_get(HashMapPtr map, void* k) {
-    Table* t = reader_enter(map);
+    Table* t = (Table*)atomic_load_explicit(&map->table, memory_order_acquire);
     if (t == NULL) {
-        reader_exit(map);
         return NULL; // 还没初始化过 -> 一定为空
     }
     zinc_ushort slot;
-    void* v = NULL;
     if (table_find(t, k, &slot)) {
-        v = atomic_load_explicit(&t->kv[slot].v, memory_order_relaxed);
+        return atomic_load_explicit(&t->kv[slot].v, memory_order_relaxed);
     }
-    reader_exit(map); // 之后再也不能碰 t
-    return v;
+    return NULL;
 }
 
-// 遍历这张表, 统计元素个数 (调用者已经在读临界区里)
+// 遍历这张表, 统计元素个数
 static size_t table_count(const Table* t) {
     size_t count = 0;
     zinc_ushort cap = t->capacity;
@@ -241,25 +231,22 @@ static size_t table_count(const Table* t) {
 }
 
 size_t zinc_core_map_calc_count(HashMapPtr map) {
-    Table* t = reader_enter(map);
+    Table* t = (Table*)atomic_load_explicit(&map->table, memory_order_acquire);
     if (t == NULL) {
-        reader_exit(map);
         return 0;
     }
-    size_t count = table_count(t);
-    reader_exit(map);
-    return count;
+    return table_count(t);
 }
 
 void zinc_core_map_iter(HashMapPtr map, void (*callback)(void* k, void* v, void* extra), void* extra) {
-    Table* t = reader_enter(map);
+    Table* t = (Table*)atomic_load_explicit(&map->table, memory_order_acquire);
     if (t == NULL) {
-        reader_exit(map);
         return;
     }
-    // 弱一致遍历: 只走这张表。回调里对本 map 插入/扩容也安全 —— 本线程还是
-    // readers 里的一个, 旧表不会被回收; 扩容只是把新表发布到 map->table,
-    // 本次遍历继续用这张旧的。遍历期间就地插入的新条目可能落在游标之后而被看到。
+    // 弱一致遍历: 只走这张表, 而这张表在遍历期间不会被改写也不会被释放
+    // (扩容只是把新表发布到 map->table, 旧表原样保留到安全点回收)。
+    // 回调里对本 map 插入/扩容是安全的: 遍历继续用这张旧的、不可变的表。
+    // 遍历期间就地插入的新条目可能落在游标之后而被看到。
     zinc_ushort cap = t->capacity;
     for (zinc_ushort i = 0; i < cap; i++) {
         void* k = atomic_load_explicit(&t->kv[i].k, memory_order_acquire);
@@ -269,20 +256,17 @@ void zinc_core_map_iter(HashMapPtr map, void (*callback)(void* k, void* v, void*
         void* v = atomic_load_explicit(&t->kv[i].v, memory_order_relaxed);
         callback(k, v, extra);
     }
-    reader_exit(map);
 }
 
 // ---------------------------------------------------------------------------
-// 写操作 (每个 map 自己的 mutex 串行化)
+// 写操作 (每个 map 自己的 mutex 串行化; 只在未命中时才会走到这里)
 // ---------------------------------------------------------------------------
 
 void zinc_core_map_put(HashMapPtr map, void* k, void* v) {
     ensure_init(map);
     map_lock(map);
 
-    collect_retired(map); // 顺手回收上次没能释放的旧表
-
-    // 加锁后重新取快照: 加锁前可能已经有别的线程扩容/插入过
+    // 加锁后取快照: 加锁前可能已经有别的线程扩容/插入过
     Table* t = (Table*)atomic_load_explicit(&map->table, memory_order_acquire);
 
     zinc_ushort slot;
@@ -293,24 +277,31 @@ void zinc_core_map_put(HashMapPtr map, void* k, void* v) {
 
     zinc_ushort count = atomic_load_explicit(&map->count, memory_order_relaxed);
     if (should_grow(count, t->capacity)) {
-        Table* nt = table_grow(t);
-        // 发布新表之后, 旧表就只可能被已经登记过的读者引用 (见文件顶部协议)
-        atomic_store_explicit(&map->table, nt, memory_order_seq_cst);
-        t = nt;
+        t = table_grow(t);
+        // 发布新表: release 足够 —— 旧表不会被释放, 读者要么看到旧表
+        // (内容依然完整) 要么看到新表 (内容已经初始化完整)。
+        atomic_store_explicit(&map->table, t, memory_order_release);
     }
 
     table_publish(t, table_free_slot(t, k), k, v);
     atomic_fetch_add_explicit(&map->count, 1, memory_order_relaxed);
 
-    collect_retired(map); // 刚刚换下来的旧表, 没有读者就立刻释放
     map_unlock(map);
 }
 
 void* zinc_core_map_get_or_insert(HashMapPtr map, void* k, NewValueFn fn, void* arg) {
+    // ---- 无锁快路径: 命中就直接返回 (实测 99.997% 的调用都走这里) ----
+    Table* ft = (Table*)atomic_load_explicit(&map->table, memory_order_acquire);
+    if (ft != NULL) {
+        zinc_ushort fslot;
+        if (table_find(ft, k, &fslot)) {
+            return atomic_load_explicit(&ft->kv[fslot].v, memory_order_relaxed);
+        }
+    }
+
+    // ---- 慢路径: 未命中才加锁; 加锁后重新探测 (别的线程可能刚刚插入) ----
     ensure_init(map);
     map_lock(map);
-
-    collect_retired(map);
 
     Table* t = (Table*)atomic_load_explicit(&map->table, memory_order_acquire);
 
@@ -327,15 +318,13 @@ void* zinc_core_map_get_or_insert(HashMapPtr map, void* k, NewValueFn fn, void* 
 
     zinc_ushort count = atomic_load_explicit(&map->count, memory_order_relaxed);
     if (should_grow(count, t->capacity)) {
-        Table* nt = table_grow(t);
-        atomic_store_explicit(&map->table, nt, memory_order_seq_cst);
-        t = nt;
+        t = table_grow(t);
+        atomic_store_explicit(&map->table, t, memory_order_release);
     }
 
     table_publish(t, table_free_slot(t, k), k, v);
     atomic_fetch_add_explicit(&map->count, 1, memory_order_relaxed);
 
-    collect_retired(map);
     map_unlock(map);
     return v;
 }

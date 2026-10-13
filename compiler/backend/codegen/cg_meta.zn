@@ -926,6 +926,12 @@ impl CodeGenerator {
         }
 
         // 带泛型参数, 调用 runtime 函数生成
+        // 上下文无关的形态 (实参全是具体类型) 走模块内缓存 (见 cg_type.zn 的 tmcache_*):
+        // 这种形态不读 struct_typemeta 里的运行时实参, 所以可以按类型结构静态缓存。
+        if self.sty_is_tmcacheable(field_sty) {
+            return self.tmcache_load(field_sty);
+        }
+
         let generic_typemeta = self.cg_generic_typemeta(field_sty.type_symbol).as_value();
         let len = field_sty.args.ty_args.len();
         let argc = self.llds.get_const_int8(len as UInt8).as_value();

@@ -10,6 +10,7 @@ extern fn llds_restore_ip(ds: Ptr, ip: Ptr);
 extern fn llds_set_ip_for_instantiate(ds: Ptr, f: Ptr);
 extern fn llds_create_function(ds: Ptr, name: Ptr, len: UInt, ty: Ptr) -> Ptr;
 extern fn llds_create_internal_alwaysinline_function(ds: Ptr, name: Ptr, len: UInt, ty: Ptr) -> Ptr;
+extern fn llds_create_internal_function(ds: Ptr, name: Ptr, len: UInt, ty: Ptr) -> Ptr;
 extern fn llds_create_do_nothing(ds: Ptr);
 extern fn llds_get_arg(f: Ptr, i: UInt) -> Ptr;
 extern fn llds_set_arg_name(f: Ptr, i: UInt, name: Ptr, len: UInt);
@@ -112,6 +113,14 @@ impl LLDataStructures {
     // 模块内 alwaysinline helper (拆 BB 关在独立函数里, 不搅乱调用方 MIR↔LLVM BB 对应)
     fn create_internal_alwaysinline_fn(&self, ty: CgFuncType, name: Str) -> CgFunc {
         let ll_fn = unsafe(llds_create_internal_alwaysinline_function(self.ds, name.raw_ptr(), name.len(), ty.llfnty));
+        return {
+            .llfn = ll_fn
+        }: CgFunc;
+    }
+    
+    // 模块内 internal 函数 (typemeta 缓存 helper 用)
+    fn create_internal_fn(&self, ty: CgFuncType, name: Str) -> CgFunc {
+        let ll_fn = unsafe(llds_create_internal_function(self.ds, name.raw_ptr(), name.len(), ty.llfnty));
         return {
             .llfn = ll_fn
         }: CgFunc;
