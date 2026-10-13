@@ -1,0 +1,19 @@
+// Open this file to try Zinc LSP: diagnostics, completion, go-to-def, format.
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn distance(a: Point, b: Point) -> Int {
+    let dx: Int = a.x;
+    return dx;
+}
+
+fn main() {
+let p: Point = { .x = 1, .y = 2 }: Point;
+    // Ctrl+click (or F12) on Point / distance to go to definition.
+    // Format Document should indent the line above.
+    // let bad: Int = "oops";
+    let d: Int = distance(p, p);
+    println(f"d=$(d)");
+}

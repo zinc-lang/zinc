@@ -40,8 +40,12 @@ build-std/
 build_llvm_wrapper/
 build_sqlite_wrapper/
 .vscode/
+# Keep Extension Development Host launch configs for vscode-zinc
+!tools/vscode-zinc/.vscode/
+!tools/vscode-zinc/.vscode/**
 .vs/
 .idea/
+.cursor/
 .clangd/
 .clang-tidy/
 .cache/
