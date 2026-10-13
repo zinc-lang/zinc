@@ -76,10 +76,7 @@ impl TypeSymbol for BoolSymbol {
             if G_BOOL_STYPE is Some(t) {
                 return t;
             } else {
-                let sty = box {
-                    .type_symbol = self as *BoolSymbol as *TypeSymbol,
-                    .args = GenericArgs::new(),
-                }: SType;
+                let sty = SType::new_sty(self as *BoolSymbol as *TypeSymbol, GenericArgs::new());
                 G_BOOL_STYPE = Some(sty);
                 return sty;
             }

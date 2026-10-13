@@ -111,10 +111,7 @@ impl TypeSymbol for EnumSymbol {
         if self.cache.at(&args) is Some(cached) {
             return cached;
         } else {
-            let sty = box {
-                .type_symbol = self as *EnumSymbol as *TypeSymbol,
-                .args = args,
-            }: SType;
+            let sty = SType::new_sty(self as *EnumSymbol as *TypeSymbol, args);
             self.cache.insert(move args, sty);
             return sty;
         }

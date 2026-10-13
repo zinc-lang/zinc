@@ -96,10 +96,7 @@ impl TypeSymbol for FloatSymbol {
                 if G_F32_STYPE is Some(t) {
                     return t;
                 } else {
-                    let sty = box {
-                        .type_symbol = self as *FloatSymbol as *TypeSymbol,
-                        .args = GenericArgs::new(),
-                    }: SType;
+                    let sty = SType::new_sty(self as *FloatSymbol as *TypeSymbol, GenericArgs::new());
                     G_F32_STYPE = Some(sty);
                     return sty;
                 }
@@ -108,10 +105,7 @@ impl TypeSymbol for FloatSymbol {
                 if G_F64_STYPE is Some(t) {
                     return t;
                 } else {
-                    let sty = box {
-                        .type_symbol = self as *FloatSymbol as *TypeSymbol,
-                        .args = GenericArgs::new(),
-                    }: SType;
+                    let sty = SType::new_sty(self as *FloatSymbol as *TypeSymbol, GenericArgs::new());
                     G_F64_STYPE = Some(sty);
                     return sty;
                 }

@@ -126,10 +126,7 @@ impl TypeSymbol for LifetimeSymbol {
             if self.cache is Some(t) {
                 return t;
             } else {
-                let sty = box {
-                    .type_symbol = self as *LifetimeSymbol as *TypeSymbol,
-                    .args = GenericArgs::new(),
-                }: SType;
+                let sty = SType::new_sty(self as *LifetimeSymbol as *TypeSymbol, GenericArgs::new());
                 self.cache = Some(sty);
                 return sty;
             }

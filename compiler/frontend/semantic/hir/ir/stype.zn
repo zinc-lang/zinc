@@ -7,7 +7,62 @@ use std::primitives::string::ToString;
 use std::cmp::{Eq, PartialEq};
 use std::hash::{Hash, Hasher};
 
+impl STypeFlags {
+    // 全部 "未知 / 未计算"。只有 SType::new_sty 应当在构造时改写 is_canonical。
+    pub fn unknown() -> Self {
+        return {
+            .is_send = false,
+            .is_sync = false,
+            .is_canonical = false,
+            .is_send_known = false,
+            .is_sync_known = false,
+        }: STypeFlags;
+    }
+}
+
+// is_canonical 的递归深度上限。因为 SType 是自底向上构造的 (ty_args 一定是先于本类型
+// 建好的), 实参图不可能有环, 深度就是类型的嵌套深度。超限时返回 false —— 这是保守方向:
+// canonical() 会走完整的 canonical_impl + CanonicalCache, 结果不变, 只是不进快路径。
+static STYPE_CANONICAL_MAX_DEPTH: UInt = 256;
+
+// 纯结构判定: type_symbol + 整棵 ty_args 树里有没有 typealias / associatedtype。
+// 只读 type_symbol 与 args.ty_args, 不读 target_sty / GenericConstraints / TypeMapping /
+// TypeCheckContext, 也不调用任何 checker 侧函数, 因此:
+//   * 放在 ir 侧不构成分层倒置;
+//   * 构造期求值安全 (canonical 的可变输入只有 target_sty, 而这里根本不看它);
+//   * 结果一旦算出就不会过期 (SType 的 type_symbol / args 建好后只读)。
+fn sty_is_canonical(type_symbol: *TypeSymbol, args: &GenericArgs, depth: UInt) -> Bool {
+    if type_symbol is type *TypeAliasSymbol || type_symbol is type *AssociatedTypeSymbol {
+        return false;
+    }
+    if depth >= STYPE_CANONICAL_MAX_DEPTH {
+        return false;
+    }
+    for a in args.ty_args {
+        if !sty_is_canonical(a.type_symbol, &a.args, depth + 1_u) {
+            return false;
+        }
+    }
+    return true;
+}
+
 impl SType {
+    // **唯一的 SType 分配入口**: 所有 TypeSymbol::to_sty (以及 SType::from) 都必须走这里。
+    // 构造期只填 is_canonical —— 纯结构、便宜、无陈旧值; is_send / is_sync 留到第一次
+    // 需要时再由 checker 惰性填 (见 type_utils.zn): 它们依赖 GenericConstraints /
+    // TypeMapping / target_sty, 在 ir 侧构造期既算不动 (分层) 也不安全 (alias 的
+    // target_sty 要到 round2 才回填)。
+    // 任何新增的构造点若绕过本函数 (自己写 struct 字面量), 漏掉 flags 字段会直接编译失败。
+    pub fn new_sty(type_symbol: *TypeSymbol, args: GenericArgs) -> *Self {
+        let mut flags = STypeFlags::unknown();
+        flags.is_canonical = sty_is_canonical(type_symbol, &args, 0_u);
+        return box {
+            .type_symbol = move type_symbol,
+            .args = move args,
+            .flags = move flags,
+        }: SType;
+    }
+
     pub fn export_value(&self) -> String {
         return self.type_symbol.to_string_with_args(&self.args);
     }
@@ -135,6 +190,8 @@ impl Eq for SType { }
 
 impl Hash for SType {
     fn hash(&self, state: &mut Hasher) {
+        let ts_hash_key: UInt = self.type_symbol as *raw TypeSymbol as UInt;
+        state.combine(ts_hash_key as UInt64);
         for lt in self.args.lt_args {
             lt.hash(state);
         }

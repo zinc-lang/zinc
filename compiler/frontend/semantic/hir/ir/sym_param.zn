@@ -77,10 +77,7 @@ impl TypeSymbol for TypeParamSymbol {
         if self.cache is Some(cached) {
             return cached;
         } else {
-            let sty = box {
-                .type_symbol = self as *TypeParamSymbol as *TypeSymbol,
-                .args = GenericArgs::new(),
-            }: SType;
+            let sty = SType::new_sty(self as *TypeParamSymbol as *TypeSymbol, GenericArgs::new());
             self.cache = Some(sty);
             return sty;
         }

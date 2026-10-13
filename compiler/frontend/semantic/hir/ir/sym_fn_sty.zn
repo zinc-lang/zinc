@@ -176,10 +176,7 @@ impl TypeSymbol for FnLowerTypeSymbol {
         if self.cache.at(&args) is Some(t) {
             return t;
         } else {
-            let sty = box {
-                .type_symbol = self as *TypeSymbol,
-                .args = args,
-            }: SType;
+            let sty = SType::new_sty(self as *TypeSymbol, args);
             self.cache.insert(move args, sty);
             return sty;
         }
@@ -265,10 +262,7 @@ impl TypeSymbol for FnUpperMutTypeSymbol {
         if self.cache.at(&args) is Some(t) {
             return t;
         } else {
-            let sty = box {
-                .type_symbol = self as *TypeSymbol,
-                .args = args,
-            }: SType;
+            let sty = SType::new_sty(self as *TypeSymbol, args);
             self.cache.insert(move args, sty);
             return sty;
         }
@@ -354,10 +348,7 @@ impl TypeSymbol for FnUpperTypeSymbol {
         if self.cache.at(&args) is Some(t) {
             return t;
         } else {
-            let sty = box {
-                .type_symbol = self as *TypeSymbol,
-                .args = args,
-            }: SType;
+            let sty = SType::new_sty(self as *TypeSymbol, args);
             self.cache.insert(move args, sty);
             return sty;
         }
