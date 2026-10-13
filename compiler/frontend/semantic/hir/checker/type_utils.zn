@@ -1812,7 +1812,16 @@ fn conform_upper_bounds(sty: *SType, constraints: &GenericConstraints, mappings:
 // Rust 对 auto trait 采用协归纳 (最大不动点), 环上的类型先假定满足、再由环上的
 // 负向 impl / 基础类型决定。这里用一个递归深度上限实现同样的假设: 没有环时深度很小,
 // 判定与直接递归完全一致; 有环时环上的类型按"满足"处理 (与 Rust 一致)。
+//
+// 顶层查询结果按 SType 指针缓存 (与 MentionsLifetimeCache 同一套路)。编译器源码里
+// 同一类型会被 Send/Sync 判定成千上万次; 不缓存的话 HIR 检查会多花数分钟。
+// 只缓存空 ctx 的结果: 非空 ctx 时 TypeParam 答案依赖当前约束, 不能跨查询复用。
+// 注意: 只在顶层 is_*_type_ctx 写入缓存, 不在递归过程中缓存中间结果 —— 协归纳
+// 路径上的临时 true 若被缓存, 会把"环上后来证明不成立"的类型误判成成立。
 static SEND_SYNC_MAX_DEPTH: UInt = 64;
+
+unsafe static mut SendTypeCache: Option<HashMap<UInt, Bool>> = None;
+unsafe static mut SyncTypeCache: Option<HashMap<UInt, Bool>> = None;
 
 fn is_send_type(sty: *SType) -> Bool {
     let empty = GenericConstraints::new();
@@ -1820,12 +1829,62 @@ fn is_send_type(sty: *SType) -> Bool {
 }
 
 fn is_send_type_ctx(sty: *SType, ctx: &GenericConstraints) -> Bool {
+    let key = sty as *raw SType as UInt;
+    let cacheable = ctx.len() == 0_u;
+    if cacheable {
+        unsafe {
+            match SendTypeCache {
+                Some(ref mut m) => {
+                    if m.at(&key) is Some(cached) {
+                        return cached;
+                    }
+                }
+                None => {
+                    SendTypeCache = Some((type HashMap<UInt, Bool>)::new());
+                }
+            }
+        }
+    }
+
     let res = is_send_type_inner(sty, 0_u, ctx);
+
+    if cacheable {
+        unsafe {
+            if SendTypeCache is Some(ref mut m) {
+                m.insert(key, res);
+            }
+        }
+    }
     return res;
 }
 
 fn is_sync_type_ctx(sty: *SType, ctx: &GenericConstraints) -> Bool {
+    let key = sty as *raw SType as UInt;
+    let cacheable = ctx.len() == 0_u;
+    if cacheable {
+        unsafe {
+            match SyncTypeCache {
+                Some(ref mut m) => {
+                    if m.at(&key) is Some(cached) {
+                        return cached;
+                    }
+                }
+                None => {
+                    SyncTypeCache = Some((type HashMap<UInt, Bool>)::new());
+                }
+            }
+        }
+    }
+
     let res = is_sync_type_inner(sty, 0_u, ctx);
+
+    if cacheable {
+        unsafe {
+            if SyncTypeCache is Some(ref mut m) {
+                m.insert(key, res);
+            }
+        }
+    }
     return res;
 }
 
