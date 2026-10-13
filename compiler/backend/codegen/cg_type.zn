@@ -230,6 +230,25 @@ impl CodeGenerator {
     }
 
     fn rt_typemeta_of(&mut self, sty: *SType, ctx: *CgContext) -> CgValue {
+        // 编译侧的"全局 typemeta 缓存" (见本文件末尾 tmcache_* 的注释):
+        // 上下文无关的实例化类型 (Option<Int> / Vec<String> / [Int; 4] ...) 的 TypeMeta
+        // 只依赖编译期常量, 所以在模块内发射一个 internal 全局量, 在 component_init 里赋值,
+        // 使用点直接 load 这个全局量 (没有分支、没有调用、没有运行时查表)。
+        if self.sty_is_tmcacheable(sty) {
+            let sty_int = sty as *raw SType as UInt;
+            if ctx.cached_instantiated.at(&sty_int) is Some(v) {
+                return v;
+            }
+            // 和原来的 instantiated_typemeta 一样, 把 load 提到函数入口基本块,
+            // 保证它支配本函数里所有复用点
+            let saved_insert_point = self.llds.save_ip();
+            self.llds.set_ip_for_instantiate(ctx.ll_func);
+            let result = self.tmcache_load(sty);
+            ctx.cached_instantiated.insert(sty_int, result);
+            self.llds.restore_ip(saved_insert_point);
+            return result;
+        }
+
         match sty.type_symbol {
             assoc: *AssociatedTypeSymbol => {
                 if assoc.is_self_ty() {
@@ -333,8 +352,9 @@ impl CodeGenerator {
     }
 
     // 假设 sty 是包含泛型参数的
-    // todo: 这里是对每个函数做一个缓存, 其实可以做一个全局缓存。
-    // 对于编译时所有泛型参数都是已知具体类型的情况下, 可以把这个类型的 TypeMeta 保存成一个internal linkage全局变量
+    // 上下文无关的形态 (实参全是具体类型) 会在 rt_typemeta_of 的开头走 tmcache 缓存;
+    // 这里是"依赖运行时上下文"的老路径 (泛型函数/泛型 impl 里的 T、Self 关联类型等)。
+    // (原来这里的 todo "对每个函数做一个缓存, 其实可以做一个全局缓存" 已经由 tmcache_* 实现)
     fn instantiated_typemeta(&mut self, sty: *SType, ctx: *CgContext) -> CgValue {
         // 查缓存
         let sty_int = sty as *raw SType as UInt;
@@ -369,5 +389,203 @@ impl CodeGenerator {
 
         self.llds.restore_ip(saved_insert_point);
         return result;
+    }
+
+    // 使用点: load 缓存槽
+    fn tmcache_load(&mut self, sty: *SType) -> CgValue {
+        let gv = self.get_or_insert_tmcache_slot(sty);
+        return self.llds.create_load(self.llds.type_thin_ptr(), gv.as_value());
+    }
+
+    // 拿到 (必要时创建) 某个上下文无关实例化的模块内缓存槽
+    fn get_or_insert_tmcache_slot(&mut self, sty: *SType) -> CgGlobal {
+        let c = sty.canonical();
+        let name = self.tmcache_slot_name_of(c);
+        if self.tmcache_slots.at(&name) is Some(g) {
+            return g;
+        }
+
+        // 先把"实参里也需要缓存的槽"建好 (后序), 这样 tmcache_entries 里的顺序保证
+        // 依赖 (实参) 在依赖者之前 —— 初始化函数里可以按顺序直接赋值。
+        if c.type_symbol is type *ArraySymbol {
+            // [T; N] 的 ty_args 是 N 个重复的 T, 只递归一次
+            if c.args.ty_args.len() > 0_u {
+                let ec = c.args.ty_arg(0).canonical();
+                if self.sty_needs_runtime_instantiate(ec) && self.is_context_independent_sty(ec, 0_u) {
+                    self.get_or_insert_tmcache_slot(ec);
+                }
+            }
+        } else {
+            for a in c.args.ty_args {
+                let ac = a.canonical();
+                if self.sty_needs_runtime_instantiate(ac) && self.is_context_independent_sty(ac, 0_u) {
+                    self.get_or_insert_tmcache_slot(ac);
+                }
+            }
+        }
+
+        let g = self.llds.get_or_insert_internal_global(name.as_str().deref(), self.llds.type_thin_ptr());
+        self.tmcache_slots.insert(name, g);
+        self.tmcache_entries.push(c);
+        return g;
+    }
+
+    // 该类型是否需要经过运行时 instantiate (和 rt_typemeta_of 的分派保持一致)
+    fn sty_needs_runtime_instantiate(&self, sty: *SType) -> Bool {
+        let ts = sty.type_symbol;
+        if ts is type *TupleSymbol || ts is type *ArraySymbol {
+            return true;
+        }
+        if ts is type *PointerLikeSymbol ||
+            ts is type *StructSymbol ||
+            ts is type *EnumSymbol {
+            return !sty.args.ty_args.is_empty();
+        }
+        // fn 指针 / Fn / FnMut: args 里存的是签名而不是泛型实参, 走 cg_typemeta
+        // 其它 (trait / union / FuncSymbol / LambdaSymbol ...) 都不在这里缓存
+        return false;
+    }
+
+    // 归一化之后, 类型实参树里没有自由类型参数 / 关联类型 / 生命周期 / Invalid
+    fn is_context_independent_sty(&self, sty: *SType, depth: UInt) -> Bool {
+        if depth > 32_u {
+            return false; // 保守: 太深就不缓存
+        }
+        let c = sty.canonical();
+        if c.type_symbol is type *TypeParamSymbol ||
+            c.type_symbol is type *AssociatedTypeSymbol ||
+            c.type_symbol is type *LifetimeSymbol ||
+            c.type_symbol is type *InvalidSymbol {
+            return false;
+        }
+        for a in c.args.ty_args {
+            if !self.is_context_independent_sty(a, depth + 1_u) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    fn sty_is_tmcacheable(&self, sty: *SType) -> Bool {
+        let c = sty.canonical();
+        if !self.sty_needs_runtime_instantiate(c) {
+            return false;
+        }
+        return self.is_context_independent_sty(c, 0_u);
+    }
+
+    // 缓存槽名: zn.tmvar.<类型结构 mangle>
+    fn tmcache_slot_name_of(&mut self, sty: *SType) -> String {
+        let mut name = f"zn.tmvar.";
+        self.tmcache_mangle_into(&mut name, sty);
+        return name;
+    }
+
+    // 用"类型符号的 export_key + 递归实参"做确定性 mangle。
+    // 不看生命周期实参 (typemeta 里本来就没有它们), 所以 Foo<'a, Int> 与 Foo<'b, Int> 共用一槽。
+    fn tmcache_mangle_into(&mut self, buf: &mut String, sty: *SType) {
+        let c = sty.canonical();
+        buf.push_str(c.type_symbol.export_key().as_str().deref());
+        buf.push_str("(");
+        let mut i: UInt = 0;
+        for a in c.args.ty_args {
+            if i > 0_u {
+                buf.push_str(",");
+            }
+            self.tmcache_mangle_into(buf, a);
+            i += 1;
+        }
+        buf.push_str(")");
+    }
+
+    // 本 component 的 typemeta 缓存初始化函数 (每个编译单元一个, internal linkage)。
+    // 没有可缓存实例化时就是一个空函数 (照样生成, 让 ZnComponent.cache_init_fn 永远有效)。
+    fn cg_tmcache_init_fn(&mut self) -> CgFunc {
+        if self.tmcache_init_fn is Some(f) {
+            return f;
+        }
+
+        let mut name = f"zn.component.";
+        name.push_str(self.comp_name.as_str().deref());
+        name.push_str(".tmcache_init");
+        let fnty = self.llds.type_function(self.llds.type_void(), &[] as Slice<CgType>);
+        let f = self.llds.create_internal_fn(fnty, name.as_str().deref());
+        self.tmcache_init_fn = Some(f);
+
+        let saved_insert_point = self.llds.save_ip();
+        let entry_bb = self.llds.create_bb("entry", f);
+        self.llds.set_insert_point(entry_bb);
+
+        // 按 tmcache_entries 的顺序赋值 (实参的槽一定在前面, 见 get_or_insert_tmcache_slot)
+        let len = self.tmcache_entries.len();
+        let mut i: UInt = 0;
+        while i < len {
+            let sty: *SType = *self.tmcache_entries.index(i).deref();
+            let v = self.concrete_instantiated_typemeta(sty);
+            let gv = self.get_or_insert_tmcache_slot(sty);
+            self.llds.create_store(v, gv.as_value());
+            i += 1;
+        }
+        // get_or_insert_tmcache_slot 的后序保证: 走到这里不应该再新增槽
+        if self.tmcache_entries.len() != len {
+            panic "BUG: tmcache entries grew while emitting the init function";
+        }
+        self.llds.create_retvoid();
+
+        self.llds.verify_function(f);
+        self.llds.restore_ip(saved_insert_point);
+        return f;
+    }
+
+    // 发射 zinc_core_instantiated(...) 调用 (实参都是编译期常量)
+    fn concrete_instantiated_typemeta(&mut self, sty: *SType) -> CgValue {
+        let c = sty.canonical();
+        let generic_typemeta = self.cg_generic_typemeta(c.type_symbol).as_value();
+        let len = c.args.ty_args.len();
+        let argc = self.llds.get_const_int8(len as UInt8).as_value();
+
+        // Array 特殊处理: [T; N] 的 ty_args 是 N 个重复的 T, 逐个存指针会生成 O(N) 条指令
+        // (和 rt_typemeta_of 里 Array 分支的优化一致)
+        if c.type_symbol is type *ArraySymbol {
+            let elem_tm = if len == 0_u
+                then self.llds.get_const_null().as_value()
+                else self.concrete_typemeta_of(c.args.ty_arg(0));
+            let callee = self.llds.get_ext_fn_in_core("zinc_core_instantiate_array");
+            return self.llds.create_call(callee, &[generic_typemeta, argc, elem_tm] as Slice<CgValue>);
+        }
+
+        let argv = self.llds.create_alloca_sized(self.llds.type_ptr_array(len));
+        let mut i: UInt32 = 0;
+        for arg in c.args.ty_args {
+            let a = self.concrete_typemeta_of(arg);
+            let elem_ptr = self.llds.create_gep(
+                self.llds.type_thin_ptr(),
+                argv,
+                self.llds.get_const_int32(i).as_value()
+            );
+            self.llds.create_store(a, elem_ptr);
+            i += 1;
+        }
+
+        let callee = self.llds.get_ext_fn_in_core("zinc_core_instantiated");
+        return self.llds.create_call(callee, &[generic_typemeta, argc, argv] as Slice<CgValue>);
+    }
+
+    // 具体类型实参的 typemeta: 全局量, 或者另一个缓存槽的 load
+    // (调用者保证 sty 是上下文无关的, 且它的缓存槽已经建好)
+    fn concrete_typemeta_of(&mut self, sty: *SType) -> CgValue {
+        let c = sty.canonical();
+        if self.sty_needs_runtime_instantiate(c) && self.is_context_independent_sty(c, 0_u) {
+            return self.tmcache_load(c);
+        }
+        // 可调用类型 / fn 指针 / Fn / FnMut 的 TypeMeta 是按需生成的
+        if c.type_symbol is type *FnLowerTypeSymbol ||
+            c.type_symbol is type *FnUpperTypeSymbol ||
+            c.type_symbol is type *FnUpperMutTypeSymbol ||
+            c.type_symbol is type *FuncSymbol ||
+            c.type_symbol is type *LambdaSymbol {
+            return self.cg_typemeta(c.type_symbol).as_value();
+        }
+        return self.get_typemeta_global(c.type_symbol).as_value();
     }
 }

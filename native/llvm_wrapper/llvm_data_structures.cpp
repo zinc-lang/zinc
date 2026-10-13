@@ -116,6 +116,7 @@ void LLVMDataStructures::init_typemeta_structs() {
         void_ptr,// ZnTraitImpl **        trait_impls;
         void_ptr,// struct ZnComponent ** imported_components;
         int8,// int8_t has_init;
+        void_ptr,// void (*cache_init_fn)(void);
     };
     zn_component->setBody(elems4);
     assert(this->module->getDataLayout().getTypeAllocSize(zn_component) == sizeof(ZnComponent));
@@ -203,6 +204,16 @@ llvm::Type * llds_get_fat_ptr_type(LLVMDataStructures *ds) {
 llvm::GlobalVariable * llds_get_or_insert_global(LLVMDataStructures *llds, char * n, size_t len, llvm::Type * ty) {
     std::string name{n, len};
     return llds->module->getOrInsertGlobal(name, ty);
+}
+llvm::GlobalVariable * llds_get_or_insert_internal_global(LLVMDataStructures *llds, char * n, size_t len, llvm::Type * ty) {
+    std::string name{n, len};
+    if (auto * g = llds->module->getNamedGlobal(name)) {
+        return g;
+    }
+    // isConstant=false: 这个槽位运行期要写; 初值 null = "还没初始化" 哨兵
+    return new llvm::GlobalVariable(
+        *llds->module, ty, /*isConstant=*/false, llvm::GlobalValue::InternalLinkage,
+        llvm::Constant::getNullValue(ty), name);
 }
 bool llds_global_has_initializer(llvm::GlobalVariable * g) {
     return g && g->hasInitializer();
@@ -843,6 +854,13 @@ llvm::Function * llds_create_function(LLVMDataStructures *ds, const char * name,
         return f;
     }
     return llvm::Function::Create(ty, llvm::Function::ExternalLinkage, fname, ds->module);
+}
+llvm::Function * llds_create_internal_function(LLVMDataStructures *ds, const char * name, size_t len, llvm::FunctionType * ty) {
+    std::string fname{name, len};
+    if (auto * f = ds->module->getFunction(fname)) {
+        return f;
+    }
+    return llvm::Function::Create(ty, llvm::Function::InternalLinkage, fname, ds->module);
 }
 void llds_create_do_nothing(LLVMDataStructures *ds) {
     llvm::Function *do_nothing = llvm::Intrinsic::getOrInsertDeclaration(

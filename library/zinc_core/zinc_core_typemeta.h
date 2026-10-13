@@ -114,6 +114,7 @@ typedef struct ZnComponent {
   ZnGenericTypeMeta **  generic_type_meta; // NULL 结尾的指针数组
   ZnTraitImpl **        trait_impls; // NULL 结尾的指针数组
   struct ZnComponent ** imported_components; // NULL 结尾的指针数组
+  void (*cache_init_fn)(void);
   uint8_t               has_init; // 确保不会重复初始化
 } ZnComponent;
 

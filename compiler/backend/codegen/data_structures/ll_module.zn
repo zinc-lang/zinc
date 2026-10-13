@@ -5,6 +5,7 @@ extern fn llds_create(p: Ptr, len: UInt) -> Ptr;
 extern fn llds_setup_compile_unit(ds: Ptr, entry: Ptr, len: UInt);
 extern fn llds_destroy(ds: Ptr);
 extern fn llds_get_or_insert_global(ds: Ptr, name: Ptr, len: UInt, ty: Ptr) -> Ptr;
+extern fn llds_get_or_insert_internal_global(ds: Ptr, name: Ptr, len: UInt, ty: Ptr) -> Ptr;
 extern fn llds_get_function(ds: Ptr, name: Ptr, len: UInt) -> Ptr;
 extern fn llds_get_const_null(ds: Ptr) -> Ptr;
 extern fn llds_get_null_value_of(ds: Ptr, ty: Ptr) -> Ptr;
@@ -36,6 +37,15 @@ impl LLDataStructures {
 
     fn get_or_insert_global(&self, name: Str, ty: CgType) -> CgGlobal {
         let ll_value = unsafe(llds_get_or_insert_global(self.ds, name.raw_ptr(), name.len(), ty.llty));
+        return {
+            .value = ll_value,
+        }: CgGlobal;
+    }
+
+    // 模块内 internal 全局量 (初值 null)。每个编译单元是一个 LLVM module,
+    // internal linkage 保证不同 module 里的同名缓存槽互不冲突。
+    fn get_or_insert_internal_global(&self, name: Str, ty: CgType) -> CgGlobal {
+        let ll_value = unsafe(llds_get_or_insert_internal_global(self.ds, name.raw_ptr(), name.len(), ty.llty));
         return {
             .value = ll_value,
         }: CgGlobal;
