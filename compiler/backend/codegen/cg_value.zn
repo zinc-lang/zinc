@@ -1711,7 +1711,27 @@ impl CodeGenerator {
                     }
                     return matched;
                 } else {
-                    panic; // todo 暂未实现, 应该仿照 TupleAccessRValue 做运行时的 field offset 计算, 然后再去访问 field
+                    // 泛型元组 (元素类型含类型参数, 编译期尺寸/布局未知): 运行期按
+                    // typemeta 逐字段求偏移, 与 TupleAccessRValue 的运行时分支同一套
+                    // 算法 (align_pointer_to_typemeta + 按 size 前进)。
+                    // 触发场景: `E::V((ref a, ref b), _)` 且 V 的载荷是泛型元组 (K, V)。
+                    let mut matched = self.llds.get_const_int1(true).as_value();
+                    let mut field_head = tup_op;
+                    field_head.indirect = false; // field_head 是"指向元组的指针"值
+                    let mut field_idx: UInt = 0;
+                    for field_sty in tup_sty.args.ty_args {
+                        let field_tm = self.rt_typemeta_of(field_sty, ctx);
+                        field_head = self.llds.align_pointer_to_typemeta(field_head, field_tm);
+                        let mut field_op = field_head;
+                        field_op.indirect = true;
+                        let field_pat = *tup_pat.elements.index(field_idx).deref();
+                        let inner_matched = self.cg_pattern_match(field_op, field_sty, field_pat, ctx);
+                        matched = self.llds.create_logic_and(matched, inner_matched);
+                        let s = self.size_of_stype(field_sty, ctx);
+                        field_head = self.llds.create_gep(self.llds.type_int8(), field_head, s);
+                        field_idx += 1;
+                    }
+                    return matched;
                 }
             }
             ev_pat: *EnumVariantPattern => {

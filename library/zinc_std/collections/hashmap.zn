@@ -318,11 +318,12 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
                     Entry::Occupied(ref existing_key, ref mut value, _) => {
                         if (existing_key.eq(&key)) {
                             // key 已存在: 本次传入的 key 与 default 都不会被使用。
-                            // 这两个形参在下面的插入分支里被 move 过, 编译器因此不会给它们
-                            // 插入 drop, 所以这里必须显式析构, 否则它们的间接内存泄漏
-                            // (HashMap<String, String> 场景 valgrind: 15 / 9 bytes definitely lost)。
-                            ::self::intrinsic::destruct_in_place(&key as *raw K as *raw mut K);
-                            ::self::intrinsic::destruct_in_place(&default as *raw V as *raw mut V);
+                            // 它们只在下面的插入分支里被 move; 这条提前返回的路径上没有被
+                            // move, 由编译器按 drop flag 在函数返回前自动析构 (形参的 drop
+                            // flag 在入口处初始化为 true)。这里**不要**再显式析构, 否则会
+                            // 和编译器插入的析构重复, 造成 double free。
+                            // (历史: 编译器曾经不给"条件 move 的形参"插入析构, 这里用
+                            //  destruct_in_place 绕过; 编译器修好后已移除。)
                             return {
                                 .ptr = self.table.ptr as *(),
                                 .size = self.table.len(),

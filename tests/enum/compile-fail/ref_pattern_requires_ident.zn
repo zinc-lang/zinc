@@ -1,0 +1,17 @@
+// `ref` 后面必须是一个标识符绑定。放宽 enum variant 载荷的 ref 绑定之后
+// (见 tests/enum/run-pass/enum_variant_payload_ref_binding.zn), 这仍然是非法形态:
+// 不能对"模式"取地址, 只能给一个名字绑定取地址。
+//
+// 诊断: [错误]: 此处只能是标识符模式
+enum E {
+    Occ((Int, Int), UInt),
+    Nil,
+}
+
+fn main() {
+    let e = E::Occ((1_i, 2_i), 3_u);
+    match e {
+        E::Occ(ref (a, b), _) => { let _ = a; let _ = b; }
+        E::Nil => {}
+    }
+}

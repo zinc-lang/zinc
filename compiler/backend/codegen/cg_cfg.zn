@@ -429,7 +429,7 @@ impl CodeGenerator {
                         let arg = self.llds.get_arg(func, 0_u); // 肯定是第一个
                         self.llds.set_arg_name(func, 0_u, "self");
                         ctx.arg_map.insert(r as *raw VarSymbol as UInt, arg);
-                        self.alloc_drop_flag(r, ctx);
+                        self.alloc_drop_flag(r, ctx, true);
                     }
                     CgParam::SRet => {
                         self.llds.set_arg_name(func, param_idx, "$ret");
@@ -456,7 +456,7 @@ impl CodeGenerator {
                             // 直接传递的参数不大可能是 编译时不知道大小的类型
                             panic "BUG: byval argument should have corresponding CgType";
                         }
-                        self.alloc_drop_flag(param_sym, ctx);
+                        self.alloc_drop_flag(param_sym, ctx, true);
                     }
                     CgParam::FnArgRef(i2, j2, ty2) => {
                         let param_sym = *fsym.params.index(i2).deref();
@@ -476,7 +476,7 @@ impl CodeGenerator {
                             self.llds.create_memcpy(alloca, arg, size);
                             ctx.arg_map.insert(param_sym as *raw VarSymbol as UInt, alloca);
                         }
-                        self.alloc_drop_flag(move param_sym, ctx);
+                        self.alloc_drop_flag(move param_sym, ctx, true);
                     }
                 }
                 param_idx += 1;
@@ -495,7 +495,7 @@ impl CodeGenerator {
                     let alloca = self.llds.create_alloca_unsized(size);
                     ctx.local_map.insert(v as *raw VarSymbol as UInt, alloca);
                 }
-                self.alloc_drop_flag(move v, ctx);
+                self.alloc_drop_flag(move v, ctx, false);
             }
             // 遍历 cfg, 先创建所有 BasicBlock
             for bb in cfg.basic_blocks {
@@ -589,7 +589,7 @@ impl CodeGenerator {
                     let alloca = self.llds.create_alloca_sized(cgtype);
                     self.llds.create_store(arg, alloca);
                     ctx.arg_map.insert(param_sym as *raw VarSymbol as UInt, alloca);
-                    self.alloc_drop_flag(param_sym, ctx);
+                    self.alloc_drop_flag(param_sym, ctx, true);
                 }
                 CgParam::FnArgRef(i2, j2, _) => {
                     let param_sym = *lsym.params.index(i2).deref();
@@ -607,7 +607,7 @@ impl CodeGenerator {
                         self.llds.create_memcpy(alloca, arg, size);
                         ctx.arg_map.insert(param_sym as *raw VarSymbol as UInt, alloca);
                     }
-                    self.alloc_drop_flag(param_sym, ctx);
+                    self.alloc_drop_flag(param_sym, ctx, true);
                 }
                 _ => {
                     panic "BUG: unexpected param kind in lambda signature";
@@ -629,7 +629,7 @@ impl CodeGenerator {
                 let alloca = self.llds.create_alloca_unsized(size);
                 ctx.local_map.insert(v as *raw VarSymbol as UInt, alloca);
             }
-            self.alloc_drop_flag(move v, ctx);
+            self.alloc_drop_flag(move v, ctx, false);
         }
 
         // 有捕获的闭包: 把每个捕获绑定到环境里的字段 (相当于 self.x)。
@@ -761,10 +761,23 @@ impl CodeGenerator {
         // todo
     }
 
-    fn alloc_drop_flag(&mut self, v: *VarSymbol, ctx: *CgContext) {
+    // 分配一个变量的 drop flag。
+    //
+    // drop flag 的语义: "这个存储当前是否持有一个需要析构的值"。
+    //   - 局部量: 入口处置 false (未初始化); 之后每次 WriteValue 置 true,
+    //     每次 move-out 置 false (见 cg_value 里的 WriteValue / MovedValue 处理)。
+    //   - 形参: 函数一进来就**已经**持有一个值 (调用方按值交过来的所有权),
+    //     所以 drop flag 必须初始化为 true。以前这里无条件置 false, 于是"只在
+    //     某条路径上被 move 的形参"在另一条路径上析构时看到 flag=false, 直接跳过
+    //     析构 -> 堆内存泄漏 (HashMap::or_insert 的 key/default 就是这样漏的)。
+    //     owned_at_entry 就是用来区分这两种情况的。
+    fn alloc_drop_flag(&mut self, v: *VarSymbol, ctx: *CgContext, owned_at_entry: Bool) {
         if v.drop_flag is Some(f) {
             let flag = self.llds.create_alloca_sized(self.llds.type_int1());
-            self.llds.create_store(self.llds.get_const_int1(false).as_value(), flag);
+            let init = if owned_at_entry
+                then self.llds.get_const_int1(true)
+                else self.llds.get_const_int1(false);
+            self.llds.create_store(init.as_value(), flag);
             ctx.local_map.insert(f as *raw VarSymbol as UInt, flag);
         }
     }

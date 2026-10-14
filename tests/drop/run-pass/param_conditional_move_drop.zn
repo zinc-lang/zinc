@@ -1,0 +1,69 @@
+// 条件 move 的形参: 形参只在一条路径上被 move/消费时, **另一条路径**上它仍必须
+// 在函数返回前被析构 (第 4 项修复的回归用例)。
+//
+// drop flag 的语义是"这个存储当前是否持有一个需要析构的值":
+//   - 局部量入口处置 false, 每次写置 true, move-out 置 false;
+//   - 形参入口处**已经**持有调用方交过来的值, 必须初始化为 true。
+// 历史 bug: 形参的 drop flag 被无条件初始化为 false, 于是"只在 if 分支里被 move 的
+// 形参"在另一条路径上析构时看到 flag=false 直接跳过 -> 堆内存泄漏
+// (HashMap::or_insert 的 key/default 就是这样漏的; 探针 valgrind 19 bytes definitely lost)。
+//
+// 本用例用引用计数把"形参到底有没有被析构"变成可断言的输出, 不只依赖 valgrind:
+//   arg 是 owner 的一份复制 (rc=2); 按值传参时形参又持有一份 (rc=3);
+//   函数返回后形参必须已被析构, rc 回到 2。泄漏则停在 3。
+use std::{assert, assert_eq};
+
+fn consume(v: Vec<Int>) -> UInt { return v.len(); }
+
+// 两条路径: true 分支把 v move 进 consume; false 分支什么都不做,
+// 因此 v 必须在函数返回时被析构。
+fn cond_move(v: Vec<Int>, c: Bool) -> UInt {
+    if c {
+        return consume(move v);
+    }
+    return 0_u;
+}
+
+// 形参在循环体/嵌套块里被条件 move, 未被 move 的路径同样要析构。
+fn cond_move_nested(v: Vec<Int>, c: Bool) -> UInt {
+    if c {
+        {
+            if v.len() > 0_u {
+                return consume(move v) + 100_u;
+            }
+        }
+        return 7_u;
+    }
+    return 0_u;
+}
+
+fn mk(x: Int) -> Vec<Int> {
+    let mut v = (type Vec<Int>)::new();
+    v.push(x);
+    return v;
+}
+
+fn main() {
+    let owner = mk(7_i);
+    assert_eq(owner.ref_count() as UInt, 1_u);
+
+    // 读具名局部量 -> 复制一份 (rc = 2)
+    let arg = owner;
+    assert_eq(arg.ref_count() as UInt, 2_u);
+
+    // false 路径: 形参未被 move, 函数返回时必须析构 (rc 回到 2; 泄漏则停在 3)
+    assert_eq(cond_move(arg, false), 0_u);
+    assert_eq(arg.ref_count() as UInt, 2_u);
+
+    // true 路径: 形参被 move 进 consume, consume 返回时析构 (正好一次, 不多不少)
+    assert_eq(cond_move(arg, true), 1_u);
+    assert_eq(arg.ref_count() as UInt, 2_u);
+
+    // 嵌套条件 move 的两条路径
+    assert_eq(cond_move_nested(arg, false), 0_u);
+    assert_eq(arg.ref_count() as UInt, 2_u);
+    assert_eq(cond_move_nested(arg, true), 101_u);
+    assert_eq(arg.ref_count() as UInt, 2_u);
+
+    println("param conditional move drop ok");
+}
