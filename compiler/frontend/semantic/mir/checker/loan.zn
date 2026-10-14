@@ -211,9 +211,8 @@ impl LivenessChecker {
     fn transfer_origins(&self, bb: *BasicBlock, in_state: &HashMap<UInt, OriginSet>) -> HashMap<UInt, OriginSet> {
         let mut state = (type HashMap<UInt, OriginSet>)::new();
         for ref kv in in_state {
-            // H14: kv.0/kv.1 是 &K/&V
-            let key = *kv.0;
-            let val = *kv.1;
+            let key = kv.0;
+            let val = kv.1;
             state.insert(key, move val);
         }
         for step in bb.steps {
@@ -237,9 +236,8 @@ impl LivenessChecker {
             println(" origin-in:");
             if self.origin_in_states.at(&bb_key) is Some(st) {
                 for ref kv in st {
-                    // H14: kv.0/kv.1 是 &K/&V
-                    let key = *kv.0;
-                    let orig = *kv.1;
+                    let key = kv.0;
+                    let orig = kv.1;
                     if orig.is_empty() {
                         continue;
                     }
@@ -536,9 +534,8 @@ fn lookup_origin(state: &HashMap<UInt, OriginSet>, vs: *VarSymbol) -> OriginSet 
 fn merge_origin_state(dst: &mut HashMap<UInt, OriginSet>, src: &HashMap<UInt, OriginSet>) -> Bool {
     let mut changed = false;
     for ref kv in src {
-        // H14: kv.0/kv.1 是 &K/&V
-        let key = *kv.0;
-        let val = *kv.1;
+        let key = kv.0;
+        let val = kv.1;
         if dst.get_mut(&key) is Some(mut existing) {
             if existing.deref_mut().union_with(&val) {
                 changed = true;

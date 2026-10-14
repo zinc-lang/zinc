@@ -16,7 +16,7 @@ fn main() {
 
     let mut sum = 0_i;
     for (k, v) in m {
-        sum += *k as Int + *v;
+        sum += k as Int + v;
     }
     assert_eq(sum, 33_i);
     assert_eq(m.ref_count() as UInt, 1_u);

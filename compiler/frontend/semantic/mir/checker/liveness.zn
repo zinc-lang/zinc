@@ -46,9 +46,8 @@ impl LivenessChecker {
 
         // 遍历完毕, 已知每个点上活着哪些变量, 就可以得出每个变量在哪些点上活着
         for ref kv in self.alive_locals_at_point {
-            // H14: kv.0/kv.1 是 &K/&V; kv.1 本身就是要迭代的 &UIntSet
-            let lp = *kv.0;
-            let vars = kv.1;
+            let lp = kv.0;
+            let vars = &kv.1;
 
             for var in vars {
                 if self.local_liveness.get_mut(&var) is Some(mut points) {

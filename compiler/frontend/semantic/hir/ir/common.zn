@@ -440,9 +440,8 @@ impl GenericConstraints {
 
     pub fn merge(&mut self, another: &GenericConstraints) {
         for ref kv in another.constraints {
-            // H14: kv.0/kv.1 是 &K/&V
-            let key: UInt = *kv.0;
-            let value: Vec<*SType> = *kv.1;
+            let key: UInt = kv.0;
+            let value: Vec<*SType> = kv.1;
 
             if !self.constraints.contains(&key) {
                 self.constraints.insert(key, move value);

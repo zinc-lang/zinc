@@ -38,7 +38,7 @@ fn main() {
     let mut isum: UInt = 0_u;
     for (k, v) in m {
         count += 1_u;
-        isum += *k;
+        isum += k;
     }
     assert_eq(count, 100_u);
     assert_eq(isum, 4950_u);

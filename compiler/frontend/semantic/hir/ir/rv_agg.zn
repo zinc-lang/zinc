@@ -70,8 +70,7 @@ impl AggregateValue {
         }
         else if self.sty.type_symbol is union_sym: *UnionSymbol {
             for kv in self.named_init { // 只有一个元素
-                // H14: kv.1 是 &*RValue
-                ordered.push(*kv.1);
+                ordered.push(kv.1);
             }
         }
         else {

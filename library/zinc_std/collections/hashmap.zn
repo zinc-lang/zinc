@@ -473,34 +473,23 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
 // todo 实现 traits
 pub struct HashMapIter<'a, K, V> {
     vec_iter: VecIter<'a, Entry<K, V> >,
-    // 迭代器自己持有一个真实的 (&K, &V) 视图; next 返回的引用指向这个对象,
-    // 类型与对象完全一致, 不再把 &K 强转成 &(K, V) 依赖 Entry 的字段布局。
-    cur: Option<(&'a K, &'a V)>,
 }
 
 impl<'a, K, V> Iterator for HashMapIter<'a, K, V> {
-    // 注意: Item 由 `(K, V)` 改为 `(&'a K, &'a V)` (H14)。
-    // 旧的 `(K, V)` 版本只能靠 `&K as *raw (K, V)` 强转得到引用, 隐含依赖
-    // `Entry::Occupied(K, V, UInt)` 里 V 紧跟在 K 后面这一布局假设;
-    // 现在返回的引用指向迭代器状态里的真元组。对 `for (k, v) in map`
-    // 的绑定类型没有影响: k 仍是 &K, v 仍是 &V (与 Vec::iter 的形态一致)。
-    type Item = (&'a K, &'a V);
+    // 注意: 这里的 `Item = (K, V)` 是**旧 seed (stage0) 认得**的公开 API。
+    // H14 曾把它改成 `(&'a K, &'a V)` (并给迭代器加一个 `cur` 真元组字段),
+    // 那需要 stage0 同步刷新, 否则编译器自身源码无法被旧 seed 编译。
+    // 当前用户手上的 `out/stage0` (md5 `cc08258f…`) 是老一代, 故此处按老 API 写。
+    type Item = (K, V);
 
-    fn next<'n>(&'n mut self) -> Option<&'n (&'a K, &'a V)> {
+    fn next<'n>(&'n mut self) -> Option<&'n (K, V)> {
         while true {
             let r = self.vec_iter.next();
             if r is Some(entry) {
                 unsafe {
-                    if entry is Entry::Occupied(ref k, ref v, _) {
-                        self.cur = Some((k, v));
-                        match self.cur {
-                            Some(ref pair) => {
-                                return Some(pair);
-                            }
-                            None => {
-                                panic "BUG: HashMapIter::next cur is None";
-                            }
-                        }
+                    if entry is Entry::Occupied(ref k, _, _) {
+                        let ptr = k as &K as *raw K as *raw (K, V) as &(K, V);
+                        return Some(ptr);
                     } else {
                         continue;
                     }
@@ -519,7 +508,6 @@ impl<K, V> Iterable for HashMap<K, V> {
     fn iter<'a>(&'a self) -> HashMapIter<'a, K, V> {
         return {
             .vec_iter = self.table.iter(),
-            .cur = None,
         }: HashMapIter<K, V>;
     }
 }
