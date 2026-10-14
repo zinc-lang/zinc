@@ -1,0 +1,54 @@
+// std::env 的 API 覆盖: args / current_exe / set_current_dir。
+//
+// 这三个函数都跨过 C 边界 (zinc_core_get_main_args / zinc_core_current_exe /
+// zinc_core_set_current_dir), 是 H16 (current_exe 越界写 1 字节, 见
+// tests/std/env/run-pass/current_exe_len.zn 与 docs/std_review.md) 的邻近路径,
+// 之前没有用例。
+//
+// 注意: current_exe 读 /proc/self/exe, 会解析符号链接; argv[0] 是调用者给的路径。
+// 仓库里 out/test-run 是指向 /tmp/perf2/test-run 的软链, 所以两者不必逐字节相同,
+// 但必须是同一个文件 (文件名一致, current_exe 指向的文件存在)。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    // args(): Slice<Str>, argv[0] 是真实程序路径
+    let a = std::env::args();
+    assert(a.length >= 1_u);
+    assert_eq(a.length, 1_u); // 测试运行器不带额外参数
+
+    let exe = std::env::current_exe();
+    assert(exe is Some(_));
+
+    let first = a.get(0_u);
+    assert(first is Some(_));
+    if first is Some(sref) {
+        // sref 是 &Str: 取 pointer/length 重新拼一个 Str
+        let s: Str = {
+            .pointer = sref.pointer,
+            .length = sref.length,
+        }: Str;
+        assert(s.len() > 0_u);
+        assert_eq(s.index(0_u), 47_u8); // argv[0] 是绝对路径 '/'
+        // argv[0] 指向的文件存在
+        assert(std::fs::Path::new(s).exists());
+
+        if exe is Some(p) {
+            assert(p.exists());
+            let ps = p.to_string();
+            assert(ps.len() > 0_u);
+            // 同一个文件: 取末尾的文件名比较
+            let pn = p.file_name();
+            let sp = std::fs::Path::new(s);
+            let sn = sp.file_name();
+            assert(pn.deref().eq(&sn.deref()));
+        }
+    }
+
+    // set_current_dir: 成功返回 true, 不存在返回 false
+    assert(std::env::set_current_dir(&std::fs::Path::new("/tmp")));
+    assert(std::env::set_current_dir(&std::fs::Path::new("/")));
+    assert(!std::env::set_current_dir(&std::fs::Path::new("/no/such/dir/zinc")));
+
+    println("env_args_cwd ok");
+}

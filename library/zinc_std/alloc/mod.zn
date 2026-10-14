@@ -10,7 +10,12 @@ extern fn zinc_core_alloc_boxed(size: UInt) -> *raw mut ();
 extern fn zinc_core_free(ptr: *raw mut ());
 
 // 主要是给标准库里面的数据结构使用
+// size * count 必须做溢出检查: 回绕会算出一个小得多的字节数, 分配出远小于调用方
+// 预期的缓冲区, 后续越界写 (Rust 的 RawVec 在容量溢出时也是 panic)。
 unsafe pub fn raw_alloc_n(size: UInt, count: UInt) -> *raw mut () {
+    if count != 0_u && size > UInt::max_value() / count {
+        panic "capacity overflow: size * count overflows UInt in raw_alloc_n";
+    }
     return zinc_core_alloc_boxed(size * count);
 }
 

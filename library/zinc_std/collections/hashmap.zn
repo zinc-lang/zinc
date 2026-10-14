@@ -4,8 +4,6 @@
 use ::self::cmp::Eq;
 use ::self::hash::Hash;
 use ::self::hash::default_hasher;
-use ::self::primitives::slice::ItemRef;
-use ::self::primitives::slice::ItemRefMut;
 use ::self::collections::vec::VecIter;
 
 pub struct HashMap<K, V> {
@@ -17,6 +15,87 @@ pub enum Entry<K, V> {
     Occupied(K, V, UInt),
     Vacant,
     Tombstone,
+}
+
+// HashMap 的表缓冲区元素类型是 Entry<K, V>, 而 slice.zn 里的 ItemRef/ItemRefMut 是
+// 按 T 的尺寸和析构函数遍历缓冲区的 (它们服务的是 Vec<T>)。HashMap::get/get_mut/or_insert
+// 直接复用它们时, 句柄的 T 只是 V, 与缓冲区实际的元素布局不一致: 一旦句柄成为旧表的
+// 最后一个强引用 (借出句柄后 map 触发 COW 换表), 归还句柄就会按 V 的布局逐个
+// destruct_in_place 一整片 Entry<K, V>, 对 Entry 内存做非法析构 (SIGSEGV / UAF)。
+//
+// 所以这里为 HashMap 单独提供一对句柄: 类型参数带上 K, Drop 里显式按
+// Entry<K, V> 析构 (类型参数已知, 尺寸与析构函数都正确), 语义与原句柄一致。
+pub struct HashMapItemRef<'a, K, V> {
+    ptr: *(),
+    size: UInt, // 归还句柄时需要析构的元素个数 = table.len(); 0 表示不负责元素析构
+    item: &'a V, // 这里也可以用裸指针，但是从使用的角度来看，借用更合理
+}
+
+impl<'a, K, V> Deref for HashMapItemRef<'a, K, V> {
+    type Target<'t> = &'t V;
+
+    fn deref(&self) -> &V {
+        return unsafe(self.item as &V);
+    }
+}
+
+impl<'a, K, V> Drop for HashMapItemRef<'a, K, V> {
+    fn drop(&mut self) {
+        // 只有自己是最后一个强引用时才遍历元素; 否则 (count != 1) 容器/其它句柄还在用
+        // 这份缓冲区, 元素归它们负责。
+        if (::self::ptr::is_unique(&self.ptr)) {
+            unsafe {
+                // 缓冲区首地址就是元素基址 (Vec::ptr 指向元素区起点, 分配头在它之前),
+                // 元素个数用构造句柄时快照下来的 size (缓冲区冻结, 该值不变)。
+                let mut i: UInt = 0;
+                while (i < self.size) {
+                    let item: *raw mut Entry<K, V> = (self.ptr as *raw () as *raw mut Entry<K, V>) + i;
+                    ::self::intrinsic::destruct_in_place(item); // 析构, 包括间接内存释放
+                    i += 1;
+                }
+                self.size = 0;
+            }
+        }
+    }
+}
+
+// HashMapItemRef 的可变版本, 规则与 HashMapItemRef 完全对称; 通过 DerefMut<V> 直接修改值。
+pub struct HashMapItemRefMut<'a, K, V> {
+    ptr: *(),
+    size: UInt, // 归还句柄时需要析构的元素个数 = table.len(); 0 表示不负责元素析构
+    item: &'a mut V,
+}
+
+impl<'a, K, V> Deref for HashMapItemRefMut<'a, K, V> {
+    type Target<'t> = &'t V;
+
+    fn deref(&self) -> &V {
+        return unsafe(self.item as &V);
+    }
+}
+
+impl<'a, K, V> DerefMut for HashMapItemRefMut<'a, K, V> {
+    type TargetMut<'t> = &'t mut V;
+
+    fn deref_mut(&mut self) -> &mut V {
+        return unsafe(self.item as &mut V);
+    }
+}
+
+impl<'a, K, V> Drop for HashMapItemRefMut<'a, K, V> {
+    fn drop(&mut self) {
+        if (::self::ptr::is_unique(&self.ptr)) {
+            unsafe {
+                let mut i: UInt = 0;
+                while (i < self.size) {
+                    let item: *raw mut Entry<K, V> = (self.ptr as *raw () as *raw mut Entry<K, V>) + i;
+                    ::self::intrinsic::destruct_in_place(item);
+                    i += 1;
+                }
+                self.size = 0;
+            }
+        }
+    }
 }
 
 // todo: K 的约束条件不应该写到类型定义这里, 应该写到构造函数那里
@@ -146,7 +225,7 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
     }
 
     // todo 参数类型应该更灵活一些, 比如 String 作为 Key 的时候应该允许用 Str 做查询
-    pub fn get<'a>(&'a self, key: &K) -> Option<ItemRef<'a, V>> {
+    pub fn get<'a>(&'a self, key: &K) -> Option<HashMapItemRef<'a, K, V>> {
         if self.size == 0 {
             return None;
         }
@@ -162,9 +241,9 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
                         if (existing_key.eq(key)) {
                             return Some({
                                 .ptr = self.table.ptr as *(),
-                                .size = self.size,
+                                .size = self.table.len(),
                                 .item = value,
-                            } : ItemRef<'a, V>);
+                            } : HashMapItemRef<'a, K, V>);
                         }
                     }
                     Entry::Vacant => return None;
@@ -178,7 +257,7 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         return None;
     }
 
-    pub fn get_mut<'a>(&'a mut self, key: &K) -> Option<ItemRefMut<'a, V>> {
+    pub fn get_mut<'a>(&'a mut self, key: &K) -> Option<HashMapItemRefMut<'a, K, V>> {
         if self.size == 0 {
             return None;
         }
@@ -194,9 +273,9 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
                         if (existing_key.eq(key)) {
                             return Some({
                                 .ptr = self.table.ptr as *(),
-                                .size = self.size,
+                                .size = self.table.len(),
                                 .item = value,
-                            } : ItemRefMut<'a, V>);
+                            } : HashMapItemRefMut<'a, K, V>);
                         }
                     }
                     Entry::Vacant => return None;
@@ -220,7 +299,7 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         }
     }
 
-    pub fn or_insert<'a>(&'a mut self, key: K, default: V) -> ItemRefMut<'a, V> {
+    pub fn or_insert<'a>(&'a mut self, key: K, default: V) -> HashMapItemRefMut<'a, K, V> {
         if self.table.len() == 0 {
             self.resize();
         } else if ((self.size as F64 / self.table.len() as F64) > 0.75) {
@@ -238,11 +317,17 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
                 match self.table.get_unchecked_mut(index) {
                     Entry::Occupied(ref existing_key, ref mut value, _) => {
                         if (existing_key.eq(&key)) {
+                            // key 已存在: 本次传入的 key 与 default 都不会被使用。
+                            // 这两个形参在下面的插入分支里被 move 过, 编译器因此不会给它们
+                            // 插入 drop, 所以这里必须显式析构, 否则它们的间接内存泄漏
+                            // (HashMap<String, String> 场景 valgrind: 15 / 9 bytes definitely lost)。
+                            ::self::intrinsic::destruct_in_place(&key as *raw K as *raw mut K);
+                            ::self::intrinsic::destruct_in_place(&default as *raw V as *raw mut V);
                             return {
                                 .ptr = self.table.ptr as *(),
-                                .size = self.size,
+                                .size = self.table.len(),
                                 .item = value,
-                            }: ItemRefMut<'a, V>;
+                            }: HashMapItemRefMut<'a, K, V>;
                         }
                     }
                     Entry::Vacant => {
@@ -275,9 +360,9 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
                 Entry::Occupied(_, ref mut value, _) => {
                     return {
                         .ptr = self.table.ptr as *(),
-                        .size = self.size,
+                        .size = self.table.len(),
                         .item = value,
-                    }: ItemRefMut<'a, V>;
+                    }: HashMapItemRefMut<'a, K, V>;
                 }
                 _ => {
                     panic "BUG: HashMap::or_insert failed to insert";
@@ -387,19 +472,34 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
 // todo 实现 traits
 pub struct HashMapIter<'a, K, V> {
     vec_iter: VecIter<'a, Entry<K, V> >,
+    // 迭代器自己持有一个真实的 (&K, &V) 视图; next 返回的引用指向这个对象,
+    // 类型与对象完全一致, 不再把 &K 强转成 &(K, V) 依赖 Entry 的字段布局。
+    cur: Option<(&'a K, &'a V)>,
 }
 
 impl<'a, K, V> Iterator for HashMapIter<'a, K, V> {
-    type Item = (K, V);
+    // 注意: Item 由 `(K, V)` 改为 `(&'a K, &'a V)` (H14)。
+    // 旧的 `(K, V)` 版本只能靠 `&K as *raw (K, V)` 强转得到引用, 隐含依赖
+    // `Entry::Occupied(K, V, UInt)` 里 V 紧跟在 K 后面这一布局假设;
+    // 现在返回的引用指向迭代器状态里的真元组。对 `for (k, v) in map`
+    // 的绑定类型没有影响: k 仍是 &K, v 仍是 &V (与 Vec::iter 的形态一致)。
+    type Item = (&'a K, &'a V);
 
-    fn next<'n>(&'n mut self) -> Option<&'n (K, V)> {
+    fn next<'n>(&'n mut self) -> Option<&'n (&'a K, &'a V)> {
         while true {
             let r = self.vec_iter.next();
             if r is Some(entry) {
                 unsafe {
-                    if entry is Entry::Occupied(ref k, _, _) {
-                        let ptr = k as &K as *raw K as *raw (K, V) as &(K, V);
-                        return Some(ptr);
+                    if entry is Entry::Occupied(ref k, ref v, _) {
+                        self.cur = Some((k, v));
+                        match self.cur {
+                            Some(ref pair) => {
+                                return Some(pair);
+                            }
+                            None => {
+                                panic "BUG: HashMapIter::next cur is None";
+                            }
+                        }
                     } else {
                         continue;
                     }
@@ -418,6 +518,7 @@ impl<K, V> Iterable for HashMap<K, V> {
     fn iter<'a>(&'a self) -> HashMapIter<'a, K, V> {
         return {
             .vec_iter = self.table.iter(),
+            .cur = None,
         }: HashMapIter<K, V>;
     }
 }

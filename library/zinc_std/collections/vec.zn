@@ -30,7 +30,10 @@ pub struct Vec<T> {
 // 不论 T 实例化成什么类型，指针 ptr 在操作引用计数的时候都应该是原子指令
 struct Shared<T> {}
 unsafe impl<T> Send for Shared<T> where T: Send {}
-unsafe impl<T> Sync for Shared<T> {}
+// 引用计数的增减本身是原子的, 但"共享同一块缓冲区"是否线程安全还取决于负载 T:
+// Shared<T> 只有在 T: Sync 时才能跨线程共享。以前这里没有约束, 于是
+// VecIter<String> 这种帧里的 *Shared<String> 会被误判为 Sync, 绕过 String: !Sync。
+unsafe impl<T> Sync for Shared<T> where T: Sync {}
 
 unsafe impl<T> Send for Vec<T> where T: Send {}
 impl<T> !Sync for Vec<T> {}
@@ -87,6 +90,11 @@ impl<T> Vec<T> {
     }
 
     pub fn reserve(&mut self, additional: UInt) {
+        // size + additional 回绕会算出很小的 min_cap, 之后 cap >= min_cap 直接返回,
+        // 调用方以为预留成功, 继续 push 就越界写。容量加法溢出按 Rust 语义 panic。
+        if additional > UInt::max_value() - self.size {
+            panic "capacity overflow: Vec::reserve size + additional overflows UInt";
+        }
         let min_cap = self.size + additional;
         if (self.cap >= min_cap) {
             return;
@@ -217,7 +225,16 @@ impl<T> Vec<T> {
             return 4;
         }
         if self.size >= self.cap {
-            return self.cap * 2;
+            // cap * 2 回绕会得到 0 (或很小的值), 分配出比 self.cap 还小的缓冲区,
+            // 紧接着的 mem_move / 写入就越界。翻倍溢出按 Rust 语义 panic。
+            match self.cap.checked_mul(2_u) {
+                Some(v) => {
+                    return v;
+                }
+                None => {
+                    panic "capacity overflow: Vec capacity doubling overflows UInt";
+                }
+            }
         }
         return self.cap;
     }
@@ -245,6 +262,10 @@ impl<T> Vec<T> {
     }
 
     pub fn extend_from_slice(&mut self, other: Slice<T>) {
+        // size + other.length 回绕会得到很小的 new_cap, 之后按 other.length 复制就越界写。
+        if other.length > UInt::max_value() - self.size {
+            panic "capacity overflow: Vec::extend_from_slice size + length overflows UInt";
+        }
         let new_size: UInt = self.size + other.length;
         let new_cap: UInt = if (new_size > self.cap) then (new_size) else (self.cap);
         if (!::self::ptr::is_unique(&self.ptr)) {

@@ -101,11 +101,17 @@ zinc_ushort zinc_core_dec_strong_atomic(void *p, void* type_meta) {
         return old;
     }
     ZnTypeMeta * ty_meta = (ZnTypeMeta*)type_meta;
+    // 在析构期间用一次临时 weak 引用把本块钉住。AST 节点持有指向 parent 的 *weak
+    // 反向引用, 而 parent 反过来强引用子节点; 析构 parent 时子节点析构会
+    // dec_weak(parent)。若不钉住, weak 会在 parent 的 dtor 中途归零并 free(parent),
+    // 之后的 dtor 代码读到已释放内存 (valgrind: Invalid read; glibc 有时报
+    // "double free or corruption" 并 abort, 即 H17 的浮点字面量报错崩溃)。
+    atomic_fetch_add(&c->weak, 1);
     if (ty_meta->dtor_fn) {
         dtor_fn_ty dtor = (dtor_fn_ty)ty_meta->dtor_fn;
         dtor(p, type_meta);
     }
-    if (c->weak == 0) {
+    if (atomic_fetch_sub(&c->weak, 1) == 1) {
         zinc_core_free(head);
     }
     return old;
@@ -179,10 +185,14 @@ zinc_ushort zinc_core_dec_strong(void *p, void* type_meta) {
         return old;
     }
     ZnTypeMeta * ty_meta = (ZnTypeMeta*)type_meta;
+    // 同 zinc_core_dec_strong_atomic: dtor 期间用临时 weak 引用钉住本块, 避免
+    // 子节点析构时 dec_weak 在 dtor 中途把本块 free 掉 (H17 的 use-after-free)。
+    c->weak += 1;
     if (ty_meta->dtor_fn) {
         dtor_fn_ty dtor = (dtor_fn_ty)ty_meta->dtor_fn;
         dtor(p, type_meta);
     }
+    c->weak -= 1;
     if (c->weak == 0) {
         zinc_core_free(head);
     }

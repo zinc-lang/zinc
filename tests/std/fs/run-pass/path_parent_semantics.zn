@@ -1,0 +1,54 @@
+// Path::parent() 的语义 (对齐 Rust 的 Path::parent, 但签名仍返回 Path 而不是 Option):
+//   "/a/b" -> "/a",  "/a/b/" -> "/a",  "a/b" -> "a",  "a//b" -> "a",
+//   "/foo" -> "/",   "/"    -> "/",   "foo" -> "" (空 Path),  "" -> "".
+//
+// 修复前: "/foo" 返回 inner 为空的 Path, "foo" 返回自身 (把文件名当目录);
+// 空 Path 上再调用 parent() 会 panic。
+use std::{assert, assert_eq};
+use std::fs::Path;
+use std::primitives::string::ToString;
+
+fn main() {
+    // 绝对路径的根: 父目录是 "/"
+    assert(Path::new("/foo").parent().as_str().deref().eq(&"/"));
+    assert(Path::new("/a/b/c.txt").parent().as_str().deref().eq(&"/a/b"));
+    assert(Path::new("/a/b/").parent().as_str().deref().eq(&"/a"));
+    // "/" 是自己的父目录 (dirname 语义)
+    assert(Path::new("/").parent().as_str().deref().eq(&"/"));
+
+    // 相对路径
+    assert(Path::new("a/b").parent().as_str().deref().eq(&"a"));
+    assert(Path::new("a/b/c").parent().as_str().deref().eq(&"a/b"));
+    // 连续分隔符不会留下尾随 '/'
+    assert(Path::new("a//b").parent().as_str().deref().eq(&"a"));
+
+    // 单段相对路径: 父目录是空 Path (等价当前目录), 不是自身
+    let single = Path::new("foo");
+    let up = single.parent();
+    assert(up.as_str().is_empty());
+    // 空 Path 的所有后续操作都安全
+    assert(up.file_name().deref().is_empty());
+    assert(up.file_stem().deref().is_empty());
+    assert(up.file_prefix().deref().is_empty());
+    assert(up.parent().as_str().is_empty());
+    assert_eq(up.to_string().len(), 0_u);
+    assert(!up.exists());
+
+    // join 在空 Path 上不引入前导 '/'
+    let mut j = up;
+    j.join("x");
+    assert(j.as_str().deref().eq(&"x"));
+
+    // 多级向上: 逐层剥掉目录
+    let mut p = Path::new("/a/b/c");
+    p = p.parent();
+    assert(p.as_str().deref().eq(&"/a/b"));
+    p = p.parent();
+    assert(p.as_str().deref().eq(&"/a"));
+    p = p.parent();
+    assert(p.as_str().deref().eq(&"/"));
+    p = p.parent();
+    assert(p.as_str().deref().eq(&"/"));
+
+    println("path_parent_semantics ok");
+}

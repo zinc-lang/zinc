@@ -1,0 +1,28 @@
+// std::io 的 print/println 返回写入字节数; std::time::Instant 可测量非负耗时。
+// 两个模块之前都没有用例 (io 的 fwrite/fflush 声明, time 的 Instant::elapsed_ms)。
+use std::{assert, assert_eq};
+
+fn main() {
+    // print_str 返回写入的字节数
+    let n = std::io::print_str("");
+    assert_eq(n, 0_u);
+
+    // println(msg): 这里只验证不 panic 与基本可调用性 (返回值包含 1 个换行)
+    let m = std::io::println("time_io ok");
+    assert(m >= 1_u);
+
+    // Instant: 忙等之后 elapsed_ms 必须是非负且单调不减
+    let t = std::time::Instant::now();
+    let a = t.elapsed_ms();
+    let mut i: UInt = 0_u;
+    while i < 200000_u {
+        i += 1_u;
+    }
+    let b = t.elapsed_ms();
+    assert(b >= a);
+    assert(b >= 0_u64);
+
+    // 再取一个 Instant: 也是合法值
+    let t2 = std::time::Instant::now();
+    assert(t2.elapsed_ms() >= 0_u64);
+}

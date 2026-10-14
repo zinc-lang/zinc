@@ -1,0 +1,46 @@
+// 带生命周期实参的泛型聚合体: 字段初始化必须接手 (move) 拥有型临时量, 而不是复制。
+//
+// 修复前: 字段初始化的隐式 LifetimeCast 先把这个临时量 move-out, 消费点又按
+// "临时量已被 move" 再插一条 copyfn retain, 而临时量已不再析构 —— 那次 retain
+// 对应的 +1 永远泄漏。这里用 VecIter (内部持有 Vec 缓冲区的强引用) 做探针:
+// Wrap<'a, T> 归还之后, v 的缓冲区引用计数必须回到独占 (1)。
+//
+// 用 -O0 编译后 valgrind 复验: 修复前 40 字节 definitely lost (Vec::new 的缓冲区),
+// 修复后 0。
+use std::{assert, assert_eq};
+use std::collections::vec::VecIter;
+
+struct Wrap<'a, T> {
+    inner: VecIter<'a, T>,
+}
+
+fn mk<'a>(it: VecIter<'a, Int>) -> Wrap<'a, Int> {
+    return { .inner = it }: Wrap<'a, Int>;
+}
+
+fn main() {
+    let mut v = (type Vec<Int>)::new();
+    v.push(1_i);
+    v.push(2_i);
+    assert_eq(v.ref_count() as UInt, 1_u);
+
+    {
+        let w = { .inner = v.iter() }: Wrap<Int>;
+        // 迭代器本身持有一次强引用; 字段初始化接手的就是那一次, 不能额外 retain
+        assert_eq(v.ref_count() as UInt, 2_u);
+    }
+
+    // 聚合体析构: 迭代器那次 +1 被归还, 缓冲区回到 v 独占
+    assert_eq(v.ref_count() as UInt, 1_u);
+    assert_eq(v.len(), 2_u);
+    assert_eq(v.at(0_u).get_or_panic(), 1_i);
+
+    // 同样的形状, 但通过函数返回值构造 (返回路径上的 LifetimeCast)
+    {
+        let w2 = mk(v.iter());
+        assert_eq(v.ref_count() as UInt, 2_u);
+    }
+    assert_eq(v.ref_count() as UInt, 1_u);
+
+    println("ok");
+}

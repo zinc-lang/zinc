@@ -1,0 +1,29 @@
+// HashMapIter::next 返回 (&K, &V) 的真实视图 (H14), 不再把 Entry 里的 &K 强转成
+// &(K, V) 而依赖字段布局。for (k, v) in map 里 k: &K, v: &V。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut m = (type HashMap<String, String>)::new();
+    m.insert(String::from_str("a"), String::from_str("A"));
+    m.insert(String::from_str("b"), String::from_str("B"));
+    let before = m.ref_count() as UInt;
+
+    let mut n: UInt = 0_u;
+    let mut sum: UInt = 0_u;
+    for (k, v) in m {
+        // k / v 都是引用: 直接借用成员, 长度必须一致
+        assert_eq(k.len(), v.len());
+        n += 1_u;
+        sum += k.len();
+    }
+    assert_eq(n, 2_u);
+    assert_eq(sum, 2_u);
+    assert_eq(m.len(), 2_u);
+    // 迭代器归还后表仍独占 (迭代不额外 retain 表缓冲区)
+    assert_eq(m.ref_count() as UInt, before);
+
+    // 迭代后仍可原地改表
+    m.insert(String::from_str("c"), String::from_str("C"));
+    assert_eq(m.len(), 3_u);
+    println("hashmap_iter_ref_binding ok");
+}

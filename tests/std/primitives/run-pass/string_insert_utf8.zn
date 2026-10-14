@@ -1,6 +1,6 @@
 // String 的插入/编码路径: insert / insert_str / push_char / index。
 // 覆盖首/中/尾插入、多字节 UTF-8 字符、1~4 字节编码, 以及 ASCII 的 reverse。
-// (注意: 源码 string.zn 明确注释 reverse 目前不按 UTF-8 实现, 因此这里只测 ASCII。)
+// (多字节 reverse 见 string_reverse_utf8.zn。)
 use std::{assert, assert_eq};
 use std::primitives::string::ToString;
 
@@ -66,6 +66,37 @@ fn main() {
     let mut ib = String::from_str("ac");
     ib.insert_byte(1_u, 98_u8); // 'b'
     assert(ib.eq(&String::from_str("abc")));
+
+    // push_char 的合法边界: 代理区之外的最大/最小多字节码点都必须是合法 UTF-8。
+    // (非法码点 U+D800..U+DFFF / >U+10FFFF 现在会被 push_char / insert 直接 panic,
+    //  run-pass 表达不了, 见报告 H9 的手工探针。)
+    let mut b = String::new();
+    b.push_char(0x7FF_u32 as Char);    // 2 字节上界
+    b.push_char(0x800_u32 as Char);    // 3 字节下界
+    b.push_char(0xFFFF_u32 as Char);   // 3 字节上界
+    b.push_char(0x10000_u32 as Char);  // 4 字节下界
+    b.push_char(0x10FFFF_u32 as Char); // Unicode 最大码点
+    assert_eq(b.len(), 2_u + 3_u + 3_u + 4_u + 4_u);
+    assert_eq(b.index(0_u), 0xDF_u8);
+    assert_eq(b.index(2_u), 0xE0_u8);
+    assert_eq(b.index(5_u), 0xEF_u8);
+    assert_eq(b.index(8_u), 0xF0_u8);
+    assert_eq(b.index(12_u), 0xF4_u8);
+    assert_eq(b.index(15_u), 0xBF_u8);
+    // 代理区两侧的合法码点
+    let mut c = String::new();
+    c.push_char(0xD7FF_u32 as Char); // 代理区前一个
+    c.push_char(0xE000_u32 as Char); // 代理区后一个
+    assert_eq(c.len(), 6_u);
+    assert_eq(c.index(0_u), 0xED_u8);
+    assert_eq(c.index(1_u), 0x9F_u8);
+    assert_eq(c.index(3_u), 0xEE_u8);
+    // insert 走同一条编码路径
+    let mut d = String::from_str("ab");
+    d.insert(1_u, 0x10FFFF_u32 as Char);
+    assert_eq(d.len(), 6_u);
+    assert_eq(d.index(1_u), 0xF4_u8);
+    assert_eq(d.index(5_u), 0x62_u8);
 
     // ASCII reverse (空串 / 单字符 / 奇数 / 偶数)
     let mut r = String::from_str("abcde");

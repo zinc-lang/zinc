@@ -1,0 +1,65 @@
+// 容量乘法/加法溢出检查 (H3) 不能误伤正常路径。
+//
+// raw_alloc_n / expanded_cap / reserve / extend_from_slice 现在在溢出时 panic
+// (Rust 语义: 回绕成小值再越界写是内存安全 bug)。溢出本身只能 panic, run-pass
+// 用例表达不了, 所以这里覆盖"不溢出"的边界: reserve(0)、cap*2 翻倍、按需扩容、
+// extend_from_slice 的多次调用都照常工作。
+use std::{assert, assert_eq};
+
+fn main() {
+    // reserve(0) 是 no-op, 不改变容量
+    let mut a = (type Vec<Int>)::new();
+    a.reserve(0_u);
+    assert_eq(a.capacity(), 4_u);
+    assert_eq(a.len(), 0_u);
+
+    // size == cap 时 push 按 cap*2 扩容
+    let mut b = (type Vec<UInt8>)::new();
+    assert_eq(b.capacity(), 4_u);
+    b.push(1_u8);
+    b.push(2_u8);
+    b.push(3_u8);
+    b.push(4_u8);
+    assert_eq(b.capacity(), 4_u);
+    b.push(5_u8);
+    assert_eq(b.capacity(), 8_u);
+    assert_eq(b.len(), 5_u);
+    assert_eq(b.at(4_u).get_or_panic(), 5_u8);
+
+    // reserve 一个确实需要扩容的量
+    let mut c = (type Vec<UInt8>)::new();
+    c.reserve(1000_u);
+    assert(c.capacity() >= 1000_u);
+    assert_eq(c.len(), 0_u);
+    c.push(7_u8);
+    assert_eq(c.len(), 1_u);
+
+    // reserve 之后 push 不越界
+    let mut i: UInt = 0_u;
+    while i < 1000_u {
+        c.push(i as UInt8);
+        i += 1_u;
+    }
+    assert_eq(c.len(), 1001_u);
+
+    // extend_from_slice (经 String::push_str) 多次追加, 覆盖 size+length 加法
+    let mut s = String::new();
+    s.push_str("hello");
+    s.push_str(" world");
+    assert_eq(s.len(), 11_u);
+    assert(s.eq(&String::from_str("hello world")));
+
+    // Vec::from(slice) 走 with_capacity + extend_from_slice
+    let mut v = (type Vec<UInt8>)::from("hello".as_bytes());
+    assert_eq(v.len(), 5_u);
+    assert_eq(v.at(0_u).get_or_panic(), 104_u8);
+    assert_eq(v.at(4_u).get_or_panic(), 111_u8);
+
+    // 空 Vec 边界
+    let mut e = (type Vec<UInt8>)::new();
+    assert_eq(e.len(), 0_u);
+    e.reserve(0_u);
+    assert_eq(e.len(), 0_u);
+
+    println("ok");
+}

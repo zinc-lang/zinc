@@ -33,6 +33,8 @@ extern fn fopen(filename: *raw UInt8, mode: *raw UInt8) -> *raw mut UInt8;
 extern fn fclose(stream: *raw mut UInt8) -> Int32;
 extern fn fread(buffer: *raw mut UInt8, size: UInt, count: UInt, stream: *raw mut UInt8) -> UInt;
 extern fn fwrite(buffer: *raw UInt8, size: UInt, count: UInt, stream: *raw mut UInt8) -> UInt;
+// C 的 ferror 返回 int: 用来区分 fread 短读是 EOF 还是读取错误
+extern fn ferror(stream: *raw mut UInt8) -> Int32;
 // C 的 fflush 返回 int; io 里同名声明必须和这里完全一致
 extern fn fflush(stream: *raw mut UInt8) -> Int32;
 extern fn zinc_core_errno() -> Int32;
@@ -67,7 +69,9 @@ impl File {
     pub fn open(p: Str) -> Result<*File, IOError> { 
         let cs = CString::from_str(p);
         unsafe {
-            let mode = "r+"; // 这里应该用 cstring literal, 但目前所有的 string literal 都是 0 结尾所以无所谓
+            // open 的语义是只读打开 (调用方只用 read_*)。用 "r+" 会要求文件可写,
+            // 于是只读文件 (例: /proc/version, 0444 的源码) 一律打不开。
+            let mode = "r"; // 这里应该用 cstring literal, 但目前所有的 string literal 都是 0 结尾所以无所谓
             let f = fopen(cs.as_ptr(), mode.pointer as *raw UInt8);
             
             if (f as UInt == 0) {
@@ -88,6 +92,12 @@ impl File {
     pub fn read(&mut self, buf: SliceMut<UInt8>) -> Result<UInt, IOError> {
         unsafe {
             let r = fread(buf.pointer as *raw mut UInt8, 1, buf.length, self.f);
+            // 短读既可能是 EOF 也可能是读错误; 原来一律当 Ok 返回。
+            // ferror 区分错误, 出错时带上 errno (EOF 仍然是 Ok, 长度小于请求值)。
+            if ferror(self.f) != 0 {
+                let err = { .errno = zinc_core_errno() }: IOError;
+                return (type Result<UInt, IOError>)::Err(err);
+            }
             return (type Result<UInt, IOError>)::Ok(r);
         }
     }
@@ -137,6 +147,13 @@ impl File {
         while remain > 0 {
             unsafe {
                 let r: UInt = fwrite(data, 1, remain, self.f);
+                if r == 0 {
+                    // fwrite 返回 0 (磁盘满 / EBADF / 管道另一端关闭) 时,
+                    // 原来的 remain -= 0 会让循环永远不退出 (死循环)。
+                    // 立刻把 errno 记下来返回错误 (errno 可能被后续调用覆盖)。
+                    let err = { .errno = zinc_core_errno() }: IOError;
+                    return (type Result<UInt, IOError>)::Err(err);
+                }
                 remain -= r;
                 data = data + r;
             }
@@ -146,7 +163,11 @@ impl File {
 
     pub fn flush(&mut self) -> Result<(), IOError> {
         unsafe {
-            let r = fflush(self.f); // todo 处理错误
+            let r = fflush(self.f);
+            if r != 0 {
+                let err = { .errno = zinc_core_errno() }: IOError;
+                return (type Result<(), IOError>)::Err(err);
+            }
             return (type Result<(), IOError>)::Ok(());
         }
     }
@@ -177,6 +198,11 @@ impl Path {
     }
 
     pub fn file_name(&self) -> StringSlice {
+        // 空 Path (例: Path::new("/foo").parent() 的返回值) 上 len-1 会回绕成
+        // UInt::MAX, 随后 index() 越界 panic。空路径没有文件名, 返回空视图。
+        if self.inner.is_empty() {
+            return self.inner.as_str();
+        }
         let mut i: UInt = self.inner.len();
         while true {
             i -= 1;
@@ -219,26 +245,59 @@ impl Path {
     }
 
     pub fn parent(&self) -> Path {
-        let mut i: UInt = self.inner.len();
-        if i == 0 {
-            panic "empty Path calls parent() method";
+        // 语义对齐 Rust 的 Path::parent (签名仍然是 Path 而不是 Option):
+        //   "/a/b" -> "/a",  "/a/b/" -> "/a",  "/foo" -> "/",  "foo" -> "" (空 Path),
+        //   "" -> "",  "/" -> "/" (根目录是自己的父目录, 与 dirname 一致)。
+        // 修复前: "/foo" 会返回 inner 为空的 Path; "foo" 返回自身 (把文件当成了目录)。
+        // 空 Path 是 parent 可以产出的合法表示 (Path::new 仍然拒绝空串), all
+        // file_name/file_stem/file_prefix/join/exists/to_string 在它上面都是安全的。
+        let n = self.inner.len();
+        if n == 0 {
+            return { .inner = String::new() }: Path;
         }
-        while true {
+        // 1. 跳过结尾的分隔符 (但根 "/" 本身要保留)
+        let mut i: UInt = n;
+        while i > 1 {
+            let c = self.inner.index(i - 1);
+            if c != b'/' && c != b'\\' {
+                break;
+            }
+            i -= 1;
+        }
+        // 2. 从后往前找最后一个分隔符
+        while i > 0 {
             i -= 1;
             let c = self.inner.index(i);
             if c == b'/' || c == b'\\' {
-                let sub: Str = self.inner.slice(0, i).deref();
-                return { .inner = sub.to_string() } : Path;
-            }
-            if i == 0 {
-                break;
+                if i == 0 {
+                    // 以分隔符开头: 父目录是根目录
+                    return { .inner = String::from_str("/") }: Path;
+                }
+                // 3. 前缀里也要跳过连续的分隔符 ("a//b" 的父目录是 "a")
+                let mut j: UInt = i;
+                while j > 1 {
+                    let c2 = self.inner.index(j - 1);
+                    if c2 != b'/' && c2 != b'\\' {
+                        break;
+                    }
+                    j -= 1;
+                }
+                let sub: Str = self.inner.slice(0, j).deref();
+                return { .inner = sub.to_string() }: Path;
             }
         }
-        return { .inner = self.inner } : Path;
+        // 没有分隔符 (单段相对路径): 父目录是空 Path (等价于当前目录)
+        return { .inner = String::new() }: Path;
     }
 
     pub fn join(&mut self, other: Str) {
         if other.is_empty() {
+            return;
+        }
+        if self.inner.is_empty() {
+            // 空 Path (parent() 可以产出) 等价当前目录: join 就是 other 本身。
+            // 修复前会先 push('/') 变成 "/x", 把相对路径变成绝对路径。
+            self.inner = other.to_string();
             return;
         }
         let mut s = self.inner;

@@ -1,0 +1,50 @@
+// for-in 迭代 HashMap / HashSet 之后, 迭代器句柄必须被析构, 表的强引用计数回到独占。
+//
+// 修复前: HashMapIter<'a, K, V> 的字段 VecIter<'a, Entry<K,V>> 在字段初始化时走了
+// LifetimeCast 的 "先 move-out 再复制" 路径, 复制出来的那次 retain 永远泄漏 ——
+// 迭代一次之后表引用计数从 1 变 2, 表缓冲区 (整张表) 在本体析构后泄漏。
+// (valgrind: 修复前 20 个条目的表泄漏 1000 字节; 修复后 0。)
+use std::{assert, assert_eq};
+use std::collections::hashset::HashSet;
+
+fn main() {
+    // HashMap: for (k, v) in m
+    let mut m = (type HashMap<UInt, Int>)::new();
+    m.insert(1_u, 10_i);
+    m.insert(2_u, 20_i);
+    assert_eq(m.ref_count() as UInt, 1_u);
+
+    let mut sum = 0_i;
+    for (k, v) in m {
+        sum += *k as Int + *v;
+    }
+    assert_eq(sum, 33_i);
+    assert_eq(m.ref_count() as UInt, 1_u);
+    assert_eq(m.len(), 2_u);
+
+    // 迭代器归还之后还能正常改表 (独占 -> 原地写)
+    m.insert(3_u, 30_i);
+    assert_eq(m.len(), 3_u);
+    assert_eq(m.ref_count() as UInt, 1_u);
+
+    // HashSet: for x in s
+    let mut s = (type HashSet<UInt>)::new();
+    s.insert(1_u);
+    s.insert(2_u);
+    assert_eq(s.ref_count() as UInt, 1_u);
+
+    let mut count = 0_u;
+    for x in s {
+        count += 1_u;
+    }
+    assert_eq(count, 2_u);
+    assert_eq(s.ref_count() as UInt, 1_u);
+    assert_eq(s.len(), 2_u);
+
+    // keys()/values() 返回的 Vec 也走同一条泛型聚合体字段路径
+    let ks = m.keys();
+    assert_eq(ks.len(), 3_u);
+    assert_eq(m.ref_count() as UInt, 1_u);
+
+    println("ok");
+}

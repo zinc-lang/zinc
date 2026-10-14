@@ -1,0 +1,28 @@
+// 回归: File::open 的语义是只读打开。
+// 之前用 "r+" 打开 (要求可写), 导致只读文件一律打不开 —— 编译器读源码就踩这个坑。
+// /proc/version 在 Linux 上存在且只读 (存在性用 stat 判断, 与打开模式无关),
+// 所以它能在 "r+" 下失败、在 "r" 下成功。非 Linux / 无 /proc 时跳过。
+use std::{assert, assert_eq};
+use std::fs::File;
+use std::fs::Path;
+use std::primitives::string::ToString;
+
+fn main() {
+    let probe = Path::new("/proc/version");
+    if probe.exists() {
+        let r = File::open("/proc/version");
+        assert(r is Ok(_));
+        if r is Ok(f) {
+            let c = f.read_to_string();
+            assert(c is Ok(_));
+            if c is Ok(content) {
+                assert(content.len() > 0_u);
+                // 内容确实是 version 文本
+                assert(content.starts_with("Linux version"));
+            }
+        }
+    } else {
+        println("skip: /proc/version not present");
+    }
+    println("file_open_readonly ok");
+}

@@ -703,6 +703,31 @@ impl CfgBuilder {
                     ResolvedCastKind::UIntToUnsafePointer => { return oc; }
                     ResolvedCastKind::DerefCast(_) => { return oc; }
                     ResolvedCastKind::DerefMutCast(_) => { return oc; }
+                    ResolvedCastKind::LifetimeCast => {
+                        // LifetimeCast 只差生命周期实参, 运行时/布局完全不变
+                        // (codegen: cg_cast_value 直接返回操作数)。do_trans_rvalue 里
+                        // 它已经把自己的拥有型临时量 move-out —— 那次 move-out 的接手方
+                        // 就是本消费点, 所以这里不能再递归到 operand 复制一份: 复制会多
+                        // retain 一次, 而临时量已被标记 Moved 不再析构, 那次 +1 就永远
+                        // 泄漏。带生命周期实参的泛型聚合体 (HashMapIter<'a,K,V> 的字段
+                        // VecIter<'a,T>、ItemRef 之类的句柄) 在初始化字段/传参时必然产生
+                        // 这种 LifetimeCast, 于是整张表/整块缓冲区泄漏一份引用。
+                        // 操作数不是"被本转换接手的临时量"(place 读取 / 具名局部量 /
+                        // 借用) 时, 仍走下面的正常复制路径。
+                        if cast_rv.operand is rd: *ReadValue {
+                            let key = rd.sym_var as *raw VarSymbol as UInt;
+                            if self.temp_map.at(&key) is Some(t) {
+                                if t.ownership is Ownership::Moved {
+                                    oc.transferred = true;
+                                    oc.rv_id = t.home_rv;
+                                    return oc;
+                                }
+                            }
+                        }
+                        oc = self.insert_copy_if_needed_as(
+                            cast_rv.operand, bb, move how, move receiver, move index);
+                        return oc;
+                    }
                     _ => {
                         oc = self.insert_copy_if_needed_as(
                             cast_rv.operand, bb, move how, move receiver, move index);

@@ -1,0 +1,54 @@
+// Path::join 的语义 + File::read (定长短读) 覆盖。
+//
+// join: 普通追加 / 已有尾部分隔符不重复 / 空 other 是 no-op / 空 Path (parent()
+// 的产物) 上等价于当前目录 (不引入前导 '/'), 修复前空 Path 会变成 "/x"。
+// File::read: 短读 (EOF) 返回实际字节数, ferror == 0 时必须是 Ok 而不是 Err (H13)。
+use std::{assert, assert_eq};
+use std::fs::File;
+use std::fs::Path;
+use std::primitives::string::ToString;
+
+fn main() {
+    // join: 常规
+    let mut p = Path::new("/a");
+    p.join("b");
+    assert(p.as_str().deref().eq(&"/a/b"));
+    let mut q = Path::new("/a/");
+    q.join("b");
+    assert(q.as_str().deref().eq(&"/a/b"));
+    // 空 other 不改动
+    let mut r = Path::new("/a");
+    r.join("");
+    assert(r.as_str().deref().eq(&"/a"));
+    // 空 Path (等价当前目录) 上 join 不加前导 '/'
+    let mut empty = Path::new("foo").parent();
+    assert(empty.as_str().deref().is_empty());
+    empty.join("x");
+    assert(empty.as_str().deref().eq(&"x"));
+
+    // File::read: 先写入, 再按固定长度读
+    let path = "/tmp/zinc_path_join_io_read.txt";
+    if File::create(path) is Ok(f) {
+        let w = f.write_all("hello world".as_bytes());
+        assert(w is Ok(_));
+    } else {
+        panic "create failed";
+    }
+    if File::open(path) is Ok(f) {
+        // 读 5 字节 (定长短读)
+        let mut buf = (type Vec<UInt8>)::with_capacity(8_u);
+        let dst: SliceMut<UInt8> = {
+            .pointer = unsafe(buf.raw_ptr() as *raw mut UInt8 as &mut UInt8),
+            .length = 5_u,
+        }: SliceMut<UInt8>;
+        let r = f.read(dst);
+        assert(r is Ok(_));
+        if r is Ok(n) {
+            assert_eq(n, 5_u);
+        }
+    } else {
+        panic "open failed";
+    }
+
+    println("path_join_io_read ok");
+}

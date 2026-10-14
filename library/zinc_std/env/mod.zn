@@ -21,9 +21,11 @@ pub fn current_exe() -> Option<Path> {
         if len == 0 {
             return None;
         } else {
+            // 必须用 C 侧返回的真实长度: 用整块缓冲区长度 (255) 会把末尾大量 '\0'
+            // 一起当成路径内容, 使 len / 比较 / file_name 等全部失真。
             let str: Str = {
                 .pointer = s.pointer as &UInt8,
-                .length = s.length,
+                .length = len,
             }: Str;
             return Some(Path::new(str));
         }

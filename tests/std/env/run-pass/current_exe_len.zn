@@ -1,0 +1,38 @@
+// 回归: env::current_exe 必须用 C 侧返回的真实长度构造 Path。
+// 之前的写法把 255 字节栈缓冲区整块当成路径, 返回的 String 长度恒为 255,
+// 后面跟着大量 '\0', 长度/比较/file_name 全部失真。
+// 覆盖: 长度 < 255、无内嵌 '\0'、路径存在、file_name 非空。
+use std::{assert, assert_eq};
+use std::primitives::string::ToString;
+
+fn main() {
+    let exe = std::env::current_exe();
+    assert(exe is Some(_));
+    if exe is Some(p) {
+        let s = p.to_string();
+        assert(s.len() > 0_u);
+        // 真实可执行文件路径一定远短于 255 (原来恒等于 255)
+        assert(s.len() < 255_u);
+
+        let mut i: UInt = 0_u;
+        let mut has_nul: Bool = false;
+        while i < s.len() {
+            if s.index(i) == 0_u8 {
+                has_nul = true;
+            }
+            i += 1_u;
+        }
+        assert(!has_nul);
+
+        assert(p.exists());
+        let name = p.file_name();
+        assert(!name.deref().is_empty());
+        // file_name 是路径后缀, 必须比整条路径短 (空/污染时不会)
+        assert(name.len() < s.len());
+
+        // to_string 与 as_str 视图长度一致
+        assert_eq(s.len(), p.as_str().len());
+    }
+
+    println("current_exe ok");
+}

@@ -1,0 +1,69 @@
+// String::reverse 必须按"码点"反转, 结果仍然是合法 UTF-8。
+//
+// 修复前实现是 self.data.reverse(), 即按字节首尾交换: "aé" (61 C3 A9) 会变成
+// A9 C3 61, 多字节序列被拆散, 不再是合法 UTF-8 (源码注释里原本就写着 todo)。
+// 现在逐码点 (起始字节 + 续字节 0b10xxxxxx) 从尾部往前搬运。
+use std::{assert, assert_eq};
+
+fn main() {
+    // 混合 1..4 字节字符 (code point 数 4, 字节数 10)
+    let mut s = String::from_str("aé中😀");
+    assert_eq(s.len(), 1_u + 2_u + 3_u + 4_u);
+    s.reverse();
+    assert(s.eq(&String::from_str("😀中éa")));
+    assert_eq(s.len(), 1_u + 2_u + 3_u + 4_u);
+    // 反转两次回到原串
+    s.reverse();
+    assert(s.eq(&String::from_str("aé中😀")));
+
+    // 全多字节 (2 个 3 字节码点)
+    let mut t = String::from_str("中文");
+    assert_eq(t.len(), 6_u);
+    t.reverse();
+    assert(t.eq(&String::from_str("文中")));
+    assert_eq(t.len(), 6_u);
+    // 反转后每个字节仍是原来那个码点的字节 (顺序不变)
+    assert_eq(t.index(0_u), 0xE6_u8);
+    assert_eq(t.index(1_u), 0x96_u8);
+    assert_eq(t.index(2_u), 0x87_u8);
+    assert_eq(t.index(3_u), 0xE4_u8);
+    assert_eq(t.index(4_u), 0xB8_u8);
+    assert_eq(t.index(5_u), 0xAD_u8);
+
+    // 边界码点 U+10FFFF (4 字节) 与 ASCII 混合
+    let mut u = String::new();
+    u.push_char('A');
+    u.push_char(0x10FFFF_u32 as Char);
+    assert_eq(u.len(), 5_u);
+    u.reverse();
+    assert_eq(u.len(), 5_u);
+    assert_eq(u.index(0_u), 0xF4_u8);
+    assert_eq(u.index(1_u), 0x8F_u8);
+    assert_eq(u.index(2_u), 0xBF_u8);
+    assert_eq(u.index(3_u), 0xBF_u8);
+    assert_eq(u.index(4_u), 0x41_u8);
+
+    // 空串 / 单码点 / 纯 ASCII 奇偶长度
+    let mut e = String::from_str("");
+    e.reverse();
+    assert(e.is_empty());
+    let mut one = String::from_str("中");
+    one.reverse();
+    assert(one.eq(&String::from_str("中")));
+    let mut r5 = String::from_str("abcde");
+    r5.reverse();
+    assert(r5.eq(&String::from_str("edcba")));
+    let mut r4 = String::from_str("abcd");
+    r4.reverse();
+    assert(r4.eq(&String::from_str("dcba")));
+
+    // reverse 之后 String 仍然可用: push_char / slice / 再次 reverse
+    let mut w = String::from_str("a中");
+    w.reverse();
+    assert(w.eq(&String::from_str("中a")));
+    w.push_char('!');
+    assert(w.eq(&String::from_str("中a!")));
+    assert(w.slice(0_u, 3_u).deref().eq(&"中"));
+
+    println("ok");
+}

@@ -209,7 +209,8 @@ impl Symbol for ImplSymbol {
 
         res.push_str(" {\n");
         for kv in self.associated_types {
-            let s = kv.1.export_value();
+            // H14: kv.1 是 &V, V = *TypeAliasSymbol
+            let s = (*kv.1).export_value();
             res.push_str(s.as_str().deref());
             res.push_str("\n");
         }

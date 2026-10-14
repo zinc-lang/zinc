@@ -1,0 +1,43 @@
+// 回归: 空 Path 上调用 file_name/stem/prefix 不能 panic。
+// parent() 的语义见 path_parent_semantics.zn: "/foo" 的父目录现在是 "/";
+// 空 Path 由单段相对路径 "foo" 的 parent() 产出 (Path::new 自己仍然禁止空串)。
+// 旧实现 (parent("/foo") 返回空 Path, 且 file_name 在空串上做 len-1 回绕) 会 panic。
+use std::{assert, assert_eq};
+use std::fs::Path;
+use std::primitives::string::ToString;
+
+fn main() {
+    let p = Path::new("foo");
+    let parent = p.parent();
+    assert(parent.as_str().deref().is_empty());
+
+    // 旧实现在这里 panic (index 越界)
+    let name = parent.file_name();
+    assert(name.deref().is_empty());
+    let stem = parent.file_stem();
+    assert(stem.deref().is_empty());
+    let prefix = parent.file_prefix();
+    assert(prefix.deref().is_empty());
+    // 空 Path 的 parent 仍然是空 Path, 不再 panic
+    assert(parent.parent().as_str().deref().is_empty());
+    assert_eq(parent.to_string().len(), 0_u);
+
+    // 绝对路径 "/foo" 的父目录是根目录, 不再是空 Path
+    assert(Path::new("/foo").parent().as_str().deref().eq(&"/"));
+
+    // 常规路径行为不变
+    let q = Path::new("/a/b/c.txt");
+    assert(q.file_name().deref().eq(&"c.txt"));
+    assert(q.file_stem().deref().eq(&"c"));
+    assert(q.file_prefix().deref().eq(&"c"));
+    assert(q.parent().as_str().deref().eq(&"/a/b"));
+
+    let rel = Path::new("plain.txt");
+    assert(rel.file_name().deref().eq(&"plain.txt"));
+
+    // 以分隔符结尾: 末段是空
+    let dir = Path::new("dir/");
+    assert(dir.file_name().deref().is_empty());
+
+    println("path_empty_file_name ok");
+}

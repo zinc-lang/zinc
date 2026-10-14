@@ -1363,7 +1363,8 @@ impl TypeCheckContext {
         // impl 里写的关联类型 (type A = ...;) 和普通类型别名一样不允许递归
         // (它们也是 TypeAliasDecl, 只是挂在 impl 上, check_typealias 遍历不到)
         for kv in i.associated_types {
-            let alias = kv.1;
+            // H14: HashMap 迭代元素是 (&K, &V), 这里要的是 map 里存的值 (*TypeAliasSymbol)
+            let alias = *kv.1;
             let mut visited = (type HashSet<UInt>)::new();
             if type_alias_contains(alias.target_sty, alias, &mut visited) {
                 DiagnosticEngine::get().emit_recursive_type_alias(alias.short_name(), alias.syntax_node().span());
@@ -3024,8 +3025,9 @@ impl TypeCheckContext {
 
             let named_init = agg_rv.named_init;
             for ref kv in named_init {
-                let name: String = kv.0;
-                let init: *RValue = kv.1;
+                // H14: kv.0/kv.1 是 &K/&V
+                let name: String = *kv.0;
+                let init: *RValue = *kv.1;
 
                 if struct_sym.find_field(&name) is Some(field) {
                     let field_sty = mappings.subst(field.stype);
@@ -3065,8 +3067,9 @@ impl TypeCheckContext {
         else if stripped_agg_sty.type_symbol is union_sym: *UnionSymbol {
             let named_init = agg_rv.named_init;
             for ref kv in named_init {
-                let name: String = kv.0;
-                let init: *RValue = kv.1;
+                // H14: kv.0/kv.1 是 &K/&V
+                let name: String = *kv.0;
+                let init: *RValue = *kv.1;
 
                 if union_sym.find_field(&name) is Some(field) {
                     let field_sty = field.stype;

@@ -1,0 +1,89 @@
+// fs::File 的基本读写往返 (此前 fs::File 的所有 API 都没有用例):
+// create / write_all / flush / open / read_to_string / read_lines, 覆盖空文件、
+// 1 字节、恰好 1024 字节 (read_to_string 内部每次读 1024)、5000 字节 (多次扩容),
+// 以及 open 失败的错误路径。
+use std::{assert, assert_eq};
+use std::fs::File;
+use std::fs::Path;
+use std::primitives::string::ToString;
+
+fn write_file(path: Str, content: &String) {
+    // create 的结果是临时量: if 块结束时 *File 析构 -> fclose 会 flush
+    if File::create(path) is Ok(f) {
+        let w = f.write_all(content.as_str().deref().as_bytes());
+        assert(w is Ok(_));
+        if w is Ok(n) {
+            assert_eq(n, content.len());
+        }
+        let fl = f.flush();
+        assert(fl is Ok(_));
+    } else {
+        panic "File::create failed";
+    }
+}
+
+fn read_file(path: Str) -> String {
+    if File::open(path) is Ok(f) {
+        let r = f.read_to_string();
+        assert(r is Ok(_));
+        if r is Ok(content) {
+            return content;
+        }
+        return String::new();
+    } else {
+        panic "File::open failed";
+    }
+}
+
+fn make_content(n: UInt) -> String {
+    let mut s = String::new();
+    let mut i: UInt = 0_u;
+    while i < n {
+        s.push((65_u8 + (i % 26_u) as UInt8));
+        i += 1_u;
+    }
+    return s;
+}
+
+fn main() {
+    let path = "/tmp/zinc_std_file_roundtrip.txt";
+
+    // 0 / 1 / 1024 / 1025 / 5000 字节往返
+    let mut sizes = (type Vec<UInt>)::new();
+    sizes.push(0_u); sizes.push(1_u); sizes.push(1024_u); sizes.push(1025_u); sizes.push(5000_u);
+    let mut idx: UInt = 0_u;
+    while idx < sizes.len() {
+        let n = sizes.at(idx).get_or_panic();
+        let content = make_content(n);
+        write_file(path, &content);
+        let back = read_file(path);
+        assert_eq(back.len(), n);
+        assert(back.eq(&content));
+        idx += 1_u;
+    }
+
+    // read_lines: "l1\nl2\nl3" -> 3 段
+    let multi = String::from_str("l1\nl2\nl3");
+    write_file(path, &multi);
+    if File::open(path) is Ok(f) {
+        let rl = f.read_lines();
+        assert(rl is Ok(_));
+        if rl is Ok(lines) {
+            assert_eq(lines.len(), 3_u);
+            assert(lines.at(0_u).get_or_panic().eq(&String::from_str("l1")));
+            assert(lines.at(2_u).get_or_panic().eq(&String::from_str("l3")));
+        }
+    } else {
+        panic "open for read_lines failed";
+    }
+
+    // 不存在的文件 -> Err
+    let bad = File::open("/tmp/zinc_std_definitely_missing_file.txt");
+    assert(bad is Err(_));
+
+    // Path::exists / 缺失
+    assert(Path::new(path).exists());
+    assert(!Path::new("/tmp/zinc_std_definitely_missing_file.txt").exists());
+
+    println("file_roundtrip ok");
+}

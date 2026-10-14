@@ -1,0 +1,128 @@
+// HashMap 句柄 (get/get_mut/or_insert) 的缓冲区元素类型必须与析构布局一致。
+//
+// 表缓冲区是 Entry<K, V>[], 而 Vec 的 ItemRef/ItemRefMut 句柄析构时按 V 的尺寸和
+// 析构函数遍历缓冲区。HashMap 直接复用它们时, 一旦句柄成为旧表的最后一个强引用
+// (借出句柄之后 map 触发 copy-on-write 换到新表), 归还句柄就按 V 的布局非法析构
+// 一整片 Entry<K, V> —— 元素类型带间接内存 (这里用 Vec<Int>) 时立刻 SIGSEGV。
+//
+// 修复: HashMap 使用自己的 HashMapItemRef/HashMapItemRefMut, Drop 显式按
+// Entry<K, V> 析构。本用例在修复前段错误 (退出码 139), 修复后正常退出。
+use std::{assert, assert_eq};
+
+// 只持有计数器指针的析构类型: 自身不拥有堆内存, 但缓冲区布局不匹配时仍然会被
+// 按错误布局调用 drop (对垃圾指针写计数器) —— 用于 or_insert 路径而不引入
+// "临时 default 漏析构" 带来的堆泄漏噪音。
+struct Ctr {
+    p: *raw mut Int,
+}
+
+impl Drop for Ctr {
+    fn drop(&mut self) {
+        unsafe { *self.p = *self.p + 1_i; }
+    }
+}
+
+fn ctr(p: *raw mut Int) -> Ctr {
+    return { .p = p }: Ctr;
+}
+
+fn main() {
+    // A. get: 不可变句柄成为旧表的最后持有者
+    {
+        let mut m = (type HashMap<UInt, Vec<Int>>)::new();
+        m.insert(1_u, (type Vec<Int>)::new());
+        {
+            let g = m.get(&1_u);
+            assert(g is Some(_));
+            if g is Some(x) {
+                assert_eq(x.item.len(), 0_u);
+            }
+            // COW: m 换到新表, 旧表只被句柄持有
+            m.insert(2_u, (type Vec<Int>)::new());
+        }
+        // 句柄归还, 按 Entry<K, V> 析构旧表 —— 不得崩溃
+        assert_eq(m.len(), 2_u);
+        assert_eq(m.ref_count() as UInt, 1_u);
+        assert(m.contains(&1_u));
+        assert(m.contains(&2_u));
+    }
+
+    // B. get_mut: 可变句柄成为旧表的最后持有者
+    {
+        let mut m = (type HashMap<UInt, Vec<Int>>)::new();
+        m.insert(1_u, (type Vec<Int>)::new());
+        {
+            let g = m.get_mut(&1_u);
+            assert(g is Some(_));
+            if g is Some(x) {
+                x.item.push(7_i);
+                assert_eq(x.item.len(), 1_u);
+            }
+            m.insert(2_u, (type Vec<Int>)::new());
+        }
+        assert_eq(m.len(), 2_u);
+        assert_eq(m.ref_count() as UInt, 1_u);
+        let v1 = m.get(&1_u);
+        assert(v1 is Some(_));
+        if v1 is Some(x) {
+            // get_mut 的修改发生在 COW 之前, 换表时被 retain-copy 带进新表
+            assert_eq(x.item.len(), 1_u);
+        }
+    }
+
+    // C. or_insert: 命中已有 key 与新增 key 两条路径 (V 用 Ctr, 见文件头注释)
+    {
+        let mut n = 0_i;
+        let mut m = (type HashMap<UInt, Ctr>)::new();
+        m.insert(1_u, ctr(&mut n as *raw mut Int));
+        {
+            let g = m.or_insert(1_u, ctr(&mut n as *raw mut Int));
+            unsafe { *g.item.p = *g.item.p + 0_i; }
+            m.insert(2_u, ctr(&mut n as *raw mut Int));
+        }
+        assert_eq(m.len(), 2_u);
+        assert_eq(m.ref_count() as UInt, 1_u);
+
+        {
+            let g = m.or_insert(3_u, ctr(&mut n as *raw mut Int));
+            unsafe { *g.item.p = *g.item.p + 0_i; }
+            m.insert(4_u, ctr(&mut n as *raw mut Int));
+        }
+        assert_eq(m.len(), 4_u);
+        assert_eq(m.ref_count() as UInt, 1_u);
+        assert(m.contains(&3_u));
+    }
+
+    // D. 共享表 + 句柄 + 两条 COW 路径走完, 引用计数回到独占
+    {
+        let mut m = (type HashMap<UInt, Vec<Int>>)::with_capacity(7);
+        let mut i: UInt = 0_u;
+        while i < 6_u {
+            let mut v = (type Vec<Int>)::new();
+            v.push(i as Int);
+            m.insert(i, move v);
+            i += 1_u;
+        }
+        let mut m2 = m;
+        assert(m.ref_count() as UInt >= 2_u);
+        {
+            let g = m.get_mut(&0_u);
+            assert(g is Some(_));
+            m.insert(100_u, (type Vec<Int>)::new());
+        }
+        assert(m2.contains(&0_u));
+        assert(!m2.contains(&100_u));
+        assert_eq(m2.ref_count() as UInt, 1_u);
+        m.clear();
+        assert_eq(m.len(), 0_u);
+        assert_eq(m2.len(), 6_u);
+        let last = m2.get(&5_u);
+        assert(last is Some(_));
+        if last is Some(x) {
+            assert_eq(x.item.len(), 1_u);
+            assert_eq(*x.item.index(0_u).item, 5_i);
+        }
+    }
+
+    println("ok");
+}

@@ -47,18 +47,28 @@ impl Type {
         return unsafe(Str::from_cstr(self.rt_typemeta.name));
     }
 
-    // 忽略最后一个 :: 之前的所有内容; 不含 :: 时返回完整名字
+    // 忽略最后一个 (不在泛型实参里面的) "::" 之前的所有内容; 不含 "::" 时返回完整名字。
+    // 必须跟踪 <> 深度: 像 `Option<::a::b::String>` 的最后一个 ':' 在泛型实参内部,
+    // 直接取最后一个 ':' 会返回 "String>" 这种被截断的错误短名。
     pub fn short_name(&self) -> Str<'static> {
         let name = self.name();
         let len = name.len();
+        let mut depth: UInt = 0;
         let mut i = len;
         while i > 0 {
             i -= 1;
-            if name.index(i) == b':' {
+            let c = name.index(i);
+            if c == b'>' {
+                depth += 1;
+            } else if c == b'<' {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            } else if c == b':' && depth == 0 {
                 return name.sub_str(i+1);
             }
         }
-        // 没有找到 ::, 整个 name 就是短名 (原来的写法会从 i+1 开始, 丢掉首字符)
+        // 没有找到 "::", 整个 name 就是短名 (原来的写法会从 i+1 开始, 丢掉首字符)
         return name;
     }
 }

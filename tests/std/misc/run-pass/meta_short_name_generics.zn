@@ -1,0 +1,32 @@
+// 回归: meta::Type::short_name 必须把泛型实参整体保留。
+// 旧实现无条件取名字里最后一个 ':', 而泛型实参内部 (例如
+// Option<::std::...::String>) 的 ':' 会让短名从中间被截断成 "String>"。
+use std::{assert, assert_eq};
+use std::meta::Type;
+use std::primitives::string::ToString;
+
+fn main() {
+    // 内建类型 / 限定名: 行为不变
+    assert_eq(Type::of(<Int>).short_name(), "Int");
+    assert_eq(Type::of(<Bool>).short_name(), "Bool");
+    assert_eq(Type::of(<Vec<Int>>).short_name(), "Vec<Int>");
+
+    // 泛型实参内部的 "::" 不能被当成顶级分隔符
+    let o = Type::of(<Option<String>>);
+    assert(o.short_name().starts_with("Option<"));
+    assert(o.short_name().ends_with("String>"));
+    assert(!o.short_name().eq(&"String>"));
+
+    let r = Type::of(<Result<Int, String>>);
+    assert(r.short_name().starts_with("Result<"));
+    assert(!r.short_name().eq(&"String>"));
+
+    let h = Type::of(<HashMap<String, Int>>);
+    assert(h.short_name().starts_with("HashMap<"));
+
+    let vv = Type::of(<Vec<Vec<Int>>>);
+    assert(vv.short_name().starts_with("Vec<"));
+    assert(vv.short_name().ends_with(">>"));
+
+    println("meta_short_name_generics ok");
+}

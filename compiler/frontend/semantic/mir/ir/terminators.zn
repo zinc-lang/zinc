@@ -61,7 +61,8 @@ fn br_int_sorted_edges(targets: &HashMap<UInt, *BasicBlock>) -> Vec<(UInt, *Basi
         let mut found = false;
         let mut best: UInt = 0;
         for ref kv in targets {
-            let case_val: UInt = kv.0;
+            // H14: kv.0 是 &UInt
+            let case_val: UInt = *kv.0;
             if !has_prev || case_val > prev {
                 if !found || case_val < best {
                     best = case_val;

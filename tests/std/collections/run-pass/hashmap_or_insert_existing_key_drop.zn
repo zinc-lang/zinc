@@ -1,0 +1,44 @@
+// or_insert 命中已有 key 时, 传入的 key/default 不会被使用, 必须被析构 (否则间接内存泄漏);
+// 同时语义不变: 保留旧值、不覆盖、len 不变、句柄归还后表强引用计数回到 1。
+//
+// 泄漏本身用 valgrind 钉住 (见 docs/std_review.md 的 or_insert 一节):
+//   修复前 HashMap<UInt, String> / HashMap<String, UInt> 各 1 个 definitely lost 块,
+//   修复后 0 errors / 0 leaks。
+// 本用例钉住语义与引用计数, 防止修析构时改坏行为。
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut m = (type HashMap<String, String>)::new();
+    m.insert(String::from_str("k"), String::from_str("v"));
+    assert_eq(m.ref_count() as UInt, 1_u);
+
+    // key 已存在: default 与传入的 key 都作废; 返回旧 value 的可变句柄
+    {
+        let r = m.or_insert(String::from_str("k"), String::from_str("default"));
+        assert_eq(*r.item, String::from_str("v"));
+        assert_eq(m.ref_count() as UInt, 2_u);
+    }
+    assert_eq(m.ref_count() as UInt, 1_u);
+    assert_eq(m.len(), 1_u);
+    assert_eq(m.at(&String::from_str("k")).get_or_panic(), String::from_str("v"));
+
+    // key 不存在: 正常插入 key/default
+    {
+        let r = m.or_insert(String::from_str("k2"), String::from_str("v2"));
+        assert_eq(*r.item, String::from_str("v2"));
+    }
+    assert_eq(m.len(), 2_u);
+    assert_eq(m.ref_count() as UInt, 1_u);
+
+    // 无析构的 K/V (UInt) 也照常, 命中已有 key 不覆盖
+    let mut n = (type HashMap<UInt, UInt>)::new();
+    n.insert(1_u, 10_u);
+    {
+        let r = n.or_insert(1_u, 99_u);
+        assert_eq(*r.item, 10_u);
+    }
+    assert_eq(n.len(), 1_u);
+    assert_eq(n.at(&1_u).get_or_panic(), 10_u);
+
+    println("or_insert_existing_key_ok");
+}

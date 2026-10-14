@@ -586,6 +586,8 @@ impl CfgBuilder {
                     // `as` 对所有权透明: 结果不带来新的 +1 (例如 self.ptr as *())。
                     // 消费方要保存它必须自己复制; 拥有型操作数由
                     // insert_copy_if_needed 递归到 operand 处理 (老代码同样如此)。
+                    // LifetimeCast 的例外见 insert_copy_if_needed_as: 它的 move-out
+                    // 已经由本转换完成, 消费点不得再复制一份。
                     self.set_rvalue_ownership(cast_rv as *RValue, RValueOwnership::BorrowsValue);
                     return (move cast_rv as *RValue, move op_bb);
                 }
