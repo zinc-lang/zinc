@@ -45,6 +45,13 @@ impl FileParser {
             let ty = self.parse_borrow_type();
             return ty;
         }
+        else if t.token_kind is TokenKind::Punctuation(PunctuationKind::AndAnd) {
+            // `&&T` / `&&mut T` / `&&&T`: 词法把连续 `&` 收成 AndAnd (给表达式 `&&`
+            // 用), 类型位置应拆成嵌套借用。外层永远是不可变借用; 内层按第二个 `&`
+            // 的 lifetime/mut 解析, 其余交给 parse_type (可再遇 Borrow/AndAnd)。
+            let ty = self.parse_and_and_borrow_type();
+            return ty;
+        }
         else if t.token_kind is TokenKind::Punctuation(PunctuationKind::LBracket) {
             let ty = self.parse_array_type();
             return ty;
@@ -121,6 +128,11 @@ impl FileParser {
 
     fn parse_borrow_type(&mut self) -> *TypeNode {
         let amp = self.lexer.next();
+        return self.parse_borrow_type_after_amp(amp);
+    }
+
+    // 已消费一个 `&` (或其在 AndAnd 里对应的那一档) 之后: 可选 lifetime / mut, 再解析被指类型。
+    fn parse_borrow_type_after_amp(&mut self, amp: Token) -> *TypeNode {
         let mut lifetime = Token::invalid(amp.source_span);
         if self.lexer.peek(0).token_kind is TokenKind::Lifetime {
             lifetime = self.lexer.next();
@@ -138,6 +150,23 @@ impl FileParser {
             .ty_arg = ty_arg,
         }: BorrowType;
         return ty;
+    }
+
+    // `&&...`: 外层 `&` + 内层从第二个 `&` 起的 borrow 类型。
+    //   &&T      => &(&T)
+    //   &&mut T  => &(&mut T)
+    //   &&&T     => &(&(&T))   (AndAnd 后再遇 Borrow / AndAnd)
+    fn parse_and_and_borrow_type(&mut self) -> *TypeNode {
+        let and_and = self.lexer.next();
+        let inner = self.parse_borrow_type_after_amp(and_and);
+        let outer = box {
+            .parent_node = self.dummy() as *SyntaxNode as *weak SyntaxNode,
+            .amp = and_and,
+            .lifetime = Token::invalid(and_and.source_span),
+            .kw_mut = Token::invalid(and_and.source_span),
+            .ty_arg = inner,
+        }: BorrowType;
+        return outer;
     }
 
     fn parse_array_type(&mut self) -> *TypeNode {

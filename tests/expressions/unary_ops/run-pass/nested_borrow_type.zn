@@ -1,0 +1,36 @@
+// 嵌套借用类型 `&&T` / `&&&T` / `&&mut T`: 词法 AndAnd 在类型位置拆成多层 &
+use std::{assert, assert_eq};
+
+fn takes_pp(pp: &&Int) -> Int {
+    return **pp;
+}
+
+fn takes_ppp(ppp: &&&Int) -> Int {
+    return ***ppp;
+}
+
+fn takes_p_mut(p: &&mut Int) -> Int {
+    return **p;
+}
+
+fn main() {
+    let x = 42_i;
+    let p: &Int = &x;
+    let pp: &&Int = &p;
+    assert_eq(**pp, 42_i);
+    assert_eq(takes_pp(pp), 42_i);
+
+    let ppp: &&&Int = &pp;
+    assert_eq(***ppp, 42_i);
+    assert_eq(takes_ppp(ppp), 42_i);
+
+    // 与显式空格形式等价
+    let pp2: & &Int = &p;
+    assert_eq(**pp2, 42_i);
+
+    let mut y = 7_i;
+    let m: &mut Int = &mut y;
+    let pm: &&mut Int = &m;
+    assert_eq(**pm, 7_i);
+    assert_eq(takes_p_mut(pm), 7_i);
+}
