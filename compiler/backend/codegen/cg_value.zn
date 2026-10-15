@@ -1713,8 +1713,45 @@ impl CodeGenerator {
                         matched = self.llds.create_logic_and(matched, inner_matched);
                     }
                     return matched;
+                } else if struct_sty.type_symbol is struct_sym: *StructSymbol {
+                    // 泛型结构体 (字段含类型参数): 运行期按 typemeta 对齐/前进求字段地址,
+                    // 与 FieldRValue / 泛型 TuplePattern 同一套算法。
+                    let mut mappings = TypeMapping::new();
+                    mappings.unify(struct_sym.to_sty(), struct_sty);
+
+                    let mut base_ptr = struct_op;
+                    base_ptr.indirect = false; // 指向结构体的指针值
+
+                    let mut matched = self.llds.get_const_int1(true).as_value();
+                    for field_pat in struct_pat.fields {
+                        let target_idx = field_pat.index_of_field().get_or_panic();
+                        let field_sty = field_pat.matches_with.get_or_panic().get_stype();
+
+                        let mut field_head = base_ptr;
+                        let mut idx: UInt = 0;
+                        for f in struct_sym.fields {
+                            let actual_field_sty = mappings.subst(f.stype);
+                            let field_tm = self.rt_typemeta_of(actual_field_sty, ctx);
+                            field_head = self.llds.align_pointer_to_typemeta(field_head, field_tm);
+                            if idx == target_idx {
+                                let mut field_op = field_head;
+                                field_op.indirect = true;
+                                let inner_matched = self.cg_pattern_match(
+                                    field_op, field_sty, field_pat.inner, ctx
+                                );
+                                matched = self.llds.create_logic_and(matched, inner_matched);
+                                break;
+                            }
+                            let s = self.size_of_stype(actual_field_sty, ctx);
+                            field_head = self.llds.create_gep(self.llds.type_int8(), field_head, s);
+                            idx += 1;
+                        }
+                    }
+                    return matched;
                 } else {
-                    panic; // todo 暂未实现, 应该仿照 FieldRValue 做运行时的 field offset 计算, 然后再去访问 field
+                    let sty_name = struct_sty.to_string();
+                    let msg = f"BUG: struct pattern on non-struct type $(sty_name)";
+                    panic msg.as_str().deref();
                 }
             }
             tup_pat: *TuplePattern => {

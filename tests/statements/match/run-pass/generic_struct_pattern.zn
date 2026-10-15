@@ -1,0 +1,38 @@
+// 泛型结构体模式: 字段布局编译期未知时, codegen 按 typemeta 运行时求偏移
+// (以前 StructPattern 无 cgtype 分支直接 panic)。
+use std::{assert, assert_eq};
+use std::cmp::PartialEq;
+
+struct GenPair<T, U> {
+    a: T,
+    b: U,
+}
+
+fn check_gen<T, U>(p: GenPair<T, U>, ea: T, eb: U) -> Bool
+    where T: PartialEq, U: PartialEq
+{
+    match p {
+        { .a = x, .b = y }: GenPair<T, U> => {
+            return x.eq(&ea) && y.eq(&eb);
+        }
+    }
+    return false;
+}
+
+fn main() {
+    // 具体类型走编译期布局路径
+    let p = { .a = 1_i, .b = 2_i }: GenPair<Int, Int>;
+    match p {
+        { .a = x, .b = y }: GenPair<Int, Int> => {
+            assert_eq(x, 1_i);
+            assert_eq(y, 2_i);
+        }
+    }
+
+    // 泛型函数内: 走运行时 field offset
+    let g = { .a = 3_i, .b = 4_i }: GenPair<Int, Int>;
+    assert(check_gen(g, 3_i, 4_i));
+
+    let s = { .a = String::from_str("a"), .b = String::from_str("bb") }: GenPair<String, String>;
+    assert(check_gen(s, String::from_str("a"), String::from_str("bb")));
+}
