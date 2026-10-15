@@ -77,6 +77,20 @@ impl Pattern for LiteralPattern {
                         );
                     }
                 }
+                const_str: *StringCValue => {
+                    // 字符串字面量模式只能匹配按字节内容比较的类型。
+                    // 不能对整个结构体做 mem_compare: Str/StringSlice 含指针字段,
+                    // String 的 LLVM 布局也不是 {ptr,len}。
+                    let key = sty.type_symbol.export_key();
+                    let ks = key.as_str().deref();
+                    if !(ks.eq(&"::std::primitives::str::Str") ||
+                         ks.eq(&"::std::primitives::string::String") ||
+                         ks.eq(&"::std::primitives::string::StringSlice")) {
+                        DiagnosticEngine::get().emit_type_mismatch(
+                            f"Str / String / StringSlice", sty.to_string(), self.node.span()
+                        );
+                    }
+                }
                 _ => {}
             }
         } else {

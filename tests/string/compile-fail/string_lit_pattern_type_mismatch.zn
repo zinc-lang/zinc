@@ -1,0 +1,6 @@
+// 字符串字面量模式只能匹配 Str / String / StringSlice
+fn main() {
+    let x = 1_i;
+    if x is "hello" {
+    }
+}

@@ -1,0 +1,12 @@
+// is 表达式对 Str / String 的字符串字面量模式 (内容比较, 非结构体按位比较)
+use std::{assert, assert_eq};
+
+fn main() {
+    let a: Str = "hi";
+    assert(a is "hi");
+    assert(!(a is "ho"));
+
+    let b = String::from_str("hi");
+    assert(b is "hi");
+    assert(!(b is "h"));
+}

@@ -1549,13 +1549,19 @@ impl CodeGenerator {
                         }
                     }
                     let lit_sty = op_sty.strip_pointer().canonical();
+
+                    // 字符串字面量: 按字节内容比较, 不能 mem_compare 整个结构体
+                    // (Str/StringSlice 含指针; String 布局也不是 {ptr,len}, 硬塞会生成非法 IR)。
+                    if cv is str_cv: *StringCValue {
+                        return self.cg_string_lit_pattern_match(c_op, lit_sty, str_cv);
+                    }
+
                     let src = self.load_to_single_ptr_level(lit_sty, c_op);
                     let const_val = self.cg_const_value(move cv, lit_pat.stype).as_value();
                     let cgty = self.cgtype_of(lit_pat.stype).get_or_panic();
                     let const_val_ptr = self.llds.create_alloca_sized(cgty);
                     self.llds.create_store(const_val, const_val_ptr);
                     let size = self.size_of_stype(lit_pat.stype, ctx);
-                    // todo 字符串模式匹配不能这么简单粗暴
                     let cmp_fn = self.llds.get_ext_fn_in_core("zinc_core_mem_compare");
                     let cmp_res = self.llds.create_call(cmp_fn, &[src, const_val_ptr, size] as Slice<CgValue>);
                     return self.llds.create_icmp_eq(cmp_res, self.llds.get_const_int32(0_u32).as_value());
@@ -1976,6 +1982,96 @@ impl CodeGenerator {
         } else {
             let addr = self.llds.create_gep(self.llds.type_thin_ptr(), fatptr, self.llds.get_const_int64(idx as UInt64).as_value());
             return self.llds.create_load(self.llds.type_thin_ptr(), addr);
+        }
+    }
+
+    // 字符串字面量模式: 比较字节内容 (长度 + mem_compare), 而不是整结构体按位相等。
+    // 见 issue #3 "String pattern matching is too naive"。
+    fn cg_string_lit_pattern_match(&mut self, op: CgValue, sty: *SType, lit: *StringCValue) -> CgValue {
+        let lit_ptr = self.llds.get_const_string(lit.value.as_str().deref()).as_value();
+        let lit_len = self.llds.get_const_int64(lit.value.len() as UInt64).as_value();
+
+        let key = sty.type_symbol.export_key();
+        let ks = key.as_str().deref();
+        if ks.eq(&"::std::primitives::str::Str") {
+            let (data_ptr, data_len) = self.cg_extract_str_bytes(op, sty);
+            return self.cg_bytes_eq(data_ptr, data_len, lit_ptr, lit_len);
+        }
+        if ks.eq(&"::std::primitives::string::String") {
+            let (data_ptr, data_len) = self.cg_extract_string_bytes(op, sty);
+            return self.cg_bytes_eq(data_ptr, data_len, lit_ptr, lit_len);
+        }
+        if ks.eq(&"::std::primitives::string::StringSlice") {
+            let (data_ptr, data_len) = self.cg_extract_stringslice_bytes(op, sty);
+            return self.cg_bytes_eq(data_ptr, data_len, lit_ptr, lit_len);
+        }
+        let msg = f"BUG: string literal pattern against unsupported type $(key)";
+        panic msg.as_str().deref();
+    }
+
+    // 长度不等时不能对内容做 mem_compare (长度取错会越界); 用 select 把比较长度收成 0。
+    fn cg_bytes_eq(&mut self, lhs_ptr: CgValue, lhs_len: CgValue, rhs_ptr: CgValue, rhs_len: CgValue) -> CgValue {
+        let len_eq = self.llds.create_icmp_eq(lhs_len, rhs_len);
+        let zero = self.llds.get_const_int64(0_u64).as_value();
+        let cmp_size = self.llds.create_select(len_eq, lhs_len, zero);
+        let cmp_fn = self.llds.get_ext_fn_in_core("zinc_core_mem_compare");
+        let cmp_res = self.llds.create_call(cmp_fn, &[lhs_ptr, rhs_ptr, cmp_size] as Slice<CgValue>);
+        let content_eq = self.llds.create_icmp_eq(cmp_res, self.llds.get_const_int32(0_u32).as_value());
+        return self.llds.create_logic_and(len_eq, content_eq);
+    }
+
+    // Str { pointer, length }
+    fn cg_extract_str_bytes(&mut self, op: CgValue, sty: *SType) -> (CgValue, CgValue) {
+        let cgty = self.cgtype_of(sty).get_or_panic();
+        if op.indirect {
+            let ptr_addr = self.llds.create_struct_gep(cgty, op, 0_u);
+            let len_addr = self.llds.create_struct_gep(cgty, op, 1_u);
+            let ptr = self.llds.create_load(self.llds.type_thin_ptr(), ptr_addr);
+            let len = self.llds.create_load(self.llds.type_int64(), len_addr);
+            return (ptr, len);
+        } else {
+            let ptr = self.llds.extract_value(op, 0_u);
+            let len = self.llds.extract_value(op, 1_u);
+            return (ptr, len);
+        }
+    }
+
+    // String { data: Vec<UInt8> }, Vec { ptr, cap, size } —— 字节在 ptr, 长度在 size。
+    fn cg_extract_string_bytes(&mut self, op: CgValue, sty: *SType) -> (CgValue, CgValue) {
+        let string_ty = self.cgtype_of(sty).get_or_panic();
+        if sty.type_symbol is struct_sym: *StructSymbol {
+            let data_field = *struct_sym.fields.index(0_u).deref();
+            let vec_ty = self.cgtype_of(data_field.stype).get_or_panic();
+            if op.indirect {
+                let data_addr = self.llds.create_struct_gep(string_ty, op, 0_u);
+                let ptr_addr = self.llds.create_struct_gep(vec_ty, data_addr, 0_u);
+                let size_addr = self.llds.create_struct_gep(vec_ty, data_addr, 2_u);
+                let ptr = self.llds.create_load(self.llds.type_thin_ptr(), ptr_addr);
+                let len = self.llds.create_load(self.llds.type_int64(), size_addr);
+                return (ptr, len);
+            } else {
+                let data = self.llds.extract_value(op, 0_u);
+                let ptr = self.llds.extract_value(data, 0_u);
+                let len = self.llds.extract_value(data, 2_u);
+                return (ptr, len);
+            }
+        }
+        panic "BUG: String type_symbol is not StructSymbol";
+    }
+
+    // StringSlice { origin, start, length } —— 字节在 start, 长度在 length。
+    fn cg_extract_stringslice_bytes(&mut self, op: CgValue, sty: *SType) -> (CgValue, CgValue) {
+        let cgty = self.cgtype_of(sty).get_or_panic();
+        if op.indirect {
+            let start_addr = self.llds.create_struct_gep(cgty, op, 1_u);
+            let len_addr = self.llds.create_struct_gep(cgty, op, 2_u);
+            let ptr = self.llds.create_load(self.llds.type_thin_ptr(), start_addr);
+            let len = self.llds.create_load(self.llds.type_int64(), len_addr);
+            return (ptr, len);
+        } else {
+            let ptr = self.llds.extract_value(op, 1_u);
+            let len = self.llds.extract_value(op, 2_u);
+            return (ptr, len);
         }
     }
 

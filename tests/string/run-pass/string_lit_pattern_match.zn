@@ -1,0 +1,66 @@
+// 字符串字面量模式按字节内容匹配 (issue #3: String pattern matching is too naive)。
+//
+// 历史 bug:
+//   1) match/is 对 String 时, codegen 把 {ptr,len} 常量硬存进 String 布局 -> Invalid store / 非法 bitcode;
+//   2) 对 Str 时对整个结构体 mem_compare, 指针不同即使内容相同也匹配失败。
+use std::{assert, assert_eq};
+
+fn main() {
+    // --- Str: is / match ---
+    let s: Str = "hello";
+    assert(s is "hello");
+    assert(!(s is "world"));
+    assert(!(s is "hell"));
+    assert(!(s is "hello!"));
+
+    let mut hit = 0_i;
+    match s {
+        "world" => { hit = 1_i; }
+        "hello" => { hit = 2_i; }
+        _ => { hit = 3_i; }
+    }
+    assert_eq(hit, 2_i);
+
+    // 空串
+    let empty: Str = "";
+    assert(empty is "");
+    assert(!(empty is "a"));
+
+    // --- String: is / match (曾生成非法 LLVM IR) ---
+    let t = String::from_str("hello");
+    assert(t is "hello");
+    assert(!(t is "world"));
+
+    let mut hit2 = 0_i;
+    match t {
+        "hell" => { hit2 = 1_i; }
+        "hello" => { hit2 = 2_i; }
+        _ => { hit2 = 3_i; }
+    }
+    assert_eq(hit2, 2_i);
+
+    // 不同分配、相同内容
+    let t2 = String::from_str("hello");
+    assert(t2 is "hello");
+
+    // 前缀 / 更长串不能误匹配
+    let short = String::from_str("ab");
+    assert(short is "ab");
+    assert(!(short is "abc"));
+    let longer = String::from_str("abc");
+    assert(longer is "abc");
+    assert(!(longer is "ab"));
+
+    // --- StringSlice (as_str) ---
+    let owned = String::from_str("zinc");
+    let slice = owned.as_str();
+    assert(slice is "zinc");
+    assert(!(slice is "zin"));
+
+    let mut hit3 = 0_i;
+    match slice {
+        "zinc" => { hit3 = 1_i; }
+        _ => { hit3 = 0_i; }
+    }
+    assert_eq(hit3, 1_i);
+}
