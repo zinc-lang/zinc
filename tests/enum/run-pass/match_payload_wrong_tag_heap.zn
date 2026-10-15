@@ -1,0 +1,28 @@
+// 错 tag 时跳过堆载荷字段读取 (相对 match_payload_wrong_tag_first 的 Int 版, 用 String 抓 UAF/泄漏)
+use std::{assert, assert_eq};
+
+enum E {
+    A(String),
+    B(String, String),
+}
+
+fn main() {
+    let e = E::A(String::from_str("ok"));
+    let mut got = String::new();
+    match e {
+        E::B(x, y) => { got = x; let _ = y; }
+        E::A(s) => { got = s; }
+    }
+    assert_eq(got, String::from_str("ok"));
+
+    let e2 = E::B(String::from_str("x"), String::from_str("y"));
+    let mut got2 = String::new();
+    match e2 {
+        E::A(s) => { got2 = s; }
+        E::B(x, y) => {
+            got2 = x;
+            assert_eq(y, String::from_str("y"));
+        }
+    }
+    assert_eq(got2, String::from_str("x"));
+}

@@ -1,0 +1,9 @@
+// 全局 static 要求 Send (README §6; Zinc 与 Rust 的 Sync 要求不同)
+struct NoSend {
+    x: Int,
+}
+impl !Send for NoSend {}
+
+static G: NoSend = { .x = 0_i }: NoSend;
+
+fn main() {}

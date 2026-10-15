@@ -1,0 +1,17 @@
+// 闭包形参与 fn 形参一样: owned_at_entry=true, 条件 move 的未走路径仍须析构
+// (647c7fb 给 lambda 也接了 alloc_drop_flag(..., true); 对照 param_conditional_move_drop.zn)
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut owner = (type Vec<Int>)::new();
+    owner.push(1_i);
+    let arg = owner;
+    // owner+arg => rc=2; 按值传入闭包形参 => 瞬时 rc=3; 返回后形参必须析构回 2
+    let f = (v: Vec<Int>, c: Bool) -> UInt => if c then v.len() else 0_u;
+    let zero = false;
+    assert_eq(f(arg, zero), 0_u);
+    assert_eq(arg.ref_count() as UInt, 2_u);
+    let one = true;
+    assert_eq(f(arg, one), 1_u);
+    assert_eq(arg.ref_count() as UInt, 2_u);
+}

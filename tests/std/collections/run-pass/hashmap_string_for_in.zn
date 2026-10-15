@@ -1,0 +1,17 @@
+// HashMap<String, String> 的 for-in: Occupied 布局与 (K,V) 解包要对齐
+// (ee1ed03 曾删掉同类用例; 非 UInt key 的迭代仍需要覆盖)
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut m = (type HashMap<String, String>)::new();
+    m.insert(String::from_str("a"), String::from_str("A"));
+    m.insert(String::from_str("bb"), String::from_str("BB"));
+
+    let mut n = 0_u;
+    for (k, v) in m {
+        assert_eq(k.len(), v.len());
+        n += 1;
+    }
+    assert_eq(n, 2_u);
+    assert_eq(m.len(), 2_u);
+}

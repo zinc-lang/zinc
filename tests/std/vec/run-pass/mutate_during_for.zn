@@ -1,0 +1,18 @@
+// 迭代期间 mutate 触发 COW, 迭代器仍指向旧缓冲 (README §5)
+use std::{assert, assert_eq};
+
+fn main() {
+    let mut vec = (type Vec<Int>)::from(&[1_i, 2_i, 3_i] as Slice<Int>);
+    for i in vec {
+        vec.push(4_i);
+        let _ = i;
+    }
+    // 三轮迭代各 push 一次 -> [1,2,3,4,4,4]
+    assert_eq(vec.len(), 6_u);
+    assert_eq(*vec.get(0_u).get_or_panic().item, 1_i);
+    assert_eq(*vec.get(1_u).get_or_panic().item, 2_i);
+    assert_eq(*vec.get(2_u).get_or_panic().item, 3_i);
+    assert_eq(*vec.get(3_u).get_or_panic().item, 4_i);
+    assert_eq(*vec.get(4_u).get_or_panic().item, 4_i);
+    assert_eq(*vec.get(5_u).get_or_panic().item, 4_i);
+}

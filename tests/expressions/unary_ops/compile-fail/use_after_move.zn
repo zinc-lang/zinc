@@ -1,0 +1,7 @@
+// move 之后原变量已死, 再使用必须报错 (README §2)
+fn main() {
+    let p: *Int = box 1_i;
+    let q = move p;
+    let _ = *p;
+    let _ = *q;
+}

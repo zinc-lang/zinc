@@ -1,0 +1,35 @@
+// enum variant 载荷上的 `ref` / `ref mut` 绑定 (须在 unsafe 中; 见 validator)。
+// 对应 compile-fail/ref_pattern_requires_ident.zn 的合法对照, 以及 HashMap Entry::Occupied(ref k, ref v, ...) 路径。
+use std::{assert, assert_eq};
+
+enum E {
+    Occ((Int, Int), UInt),
+    Pair(Int, Int),
+    Nil,
+}
+
+fn main() {
+    let e = E::Occ((10_i, 20_i), 3_u);
+    unsafe {
+        match e {
+            E::Occ((ref a, ref b), n) => {
+                assert_eq(*a, 10_i);
+                assert_eq(*b, 20_i);
+                assert_eq(n, 3_u);
+            }
+            E::Nil => { assert(false); }
+            _ => { assert(false); }
+        }
+    }
+
+    let e2 = E::Pair(1_i, 2_i);
+    unsafe {
+        match e2 {
+            E::Pair(ref x, ref y) => {
+                assert_eq(*x, 1_i);
+                assert_eq(*y, 2_i);
+            }
+            _ => { assert(false); }
+        }
+    }
+}
