@@ -87,5 +87,14 @@ impl Pattern for VarBindingPattern {
                 self.var_sym.init = Some(move mw as *RValue);
             }
         }
+
+        // 模式绑定同样不能持有 unsized 值 (裸 trait / Fn / extern type)。
+        // 否则 `x is &u` 在 `&Trait` 上会把 u 绑成裸 trait, codegen 对 fat pointer
+        // 误做 memcpy 触发 LLVM 模块验证失败 (issue #3 fat-pointer 相关)。
+        if is_unsized_type(self.var_sym.stype) {
+            DiagnosticEngine::get().emit_unsized_type_not_allowed(
+                self.var_sym.stype.to_string(), self.node.span()
+            );
+        }
     }
 }

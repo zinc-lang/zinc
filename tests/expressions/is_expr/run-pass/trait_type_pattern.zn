@@ -1,0 +1,38 @@
+// 对 trait 对象做类型测试要用 `type` 模式, 不要写成 `is &Name` (那是解引用绑定)
+use std::{assert, assert_eq};
+
+trait T {
+    virtual fn f(&self) -> Int;
+}
+struct S {
+    x: Int,
+}
+struct Other {
+    y: Int,
+}
+impl T for S {
+    fn f(&self) -> Int {
+        return self.x;
+    }
+}
+impl T for Other {
+    fn f(&self) -> Int {
+        return self.y;
+    }
+}
+
+fn main() {
+    let s = { .x = 7_i }: S;
+    let o = { .y = 3_i }: Other;
+    let t1: &T = &s;
+    let t2: &T = &o;
+
+    assert(t1 is type &S);
+    assert(!(t1 is type &Other));
+    assert(t2 is type &Other);
+    assert(!(t2 is type &S));
+
+    // 临时 cast 作为 scrutinee 也应能类型测试 (曾对错误的 `is &S` 绑定路径 ICE)
+    assert((&s as &T) is type &S);
+    assert(!((&s as &T) is type &Other));
+}

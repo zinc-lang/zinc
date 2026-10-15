@@ -186,7 +186,15 @@ impl CodeGenerator {
                 return self.cg_cast_value(move cast_rv, move ctx);
             }
             deref_rv: *DerefRValue => {
+                let op_sty = deref_rv.operand.get_stype().canonical();
                 let mut v = self.cg_xvalue(deref_rv.operand, ctx);
+                // fat pointer (&Trait / *Trait / Fn): 解引用得到的 place 是 data 字段指向的对象
+                if op_sty.is_fat_pointer() {
+                    let data = self.access_fatptr_field(v, 0);
+                    let mut place = data;
+                    place.indirect = true;
+                    return place;
+                }
                 if v.indirect {
                     let mut r = self.llds.create_load(self.llds.type_thin_ptr(), v);
                     r.indirect = true;
@@ -567,8 +575,16 @@ impl CodeGenerator {
                         self.llds.create_store(src, dst);
                     }
                 } else {
-                    let src = self.cg_xvalue(write_rv.src, ctx);
+                    // 运行期才知大小的类型: memcpy 的 src 必须是指针。
+                    // 直接值 (例如误把 fat pointer 结构体当 src) 会生成非法 LLVM IR。
+                    let mut src = self.cg_xvalue(write_rv.src, ctx);
                     let size_val = self.size_of_stype(src_sty, ctx);
+                    if !src.indirect {
+                        let src_llty = src.get_type();
+                        let tmp = self.llds.create_alloca_sized(src_llty);
+                        self.llds.create_store(src, tmp);
+                        src = tmp;
+                    }
                     self.llds.create_memcpy(dst, src, size_val);
                 }
                 return empty_struct;
@@ -908,9 +924,11 @@ impl CodeGenerator {
                 return self.llds.create_zext(bool, self.cgtype_of(dst_sty).get_or_panic());
             }
             ResolvedCastKind::IntToInt => {
-                if dst_sty.type_symbol is int_sym: *IntegerSymbol {
+                // 加宽时扩展符号必须看**源**类型 (与 IntToFloat 一致)。
+                // 以前按目标类型选 sext/zext: `255_u8 as Int16` 会变成 -1, `(-1_i8) as UInt16` 变成 255。
+                if src_sty.type_symbol is src_int: *IntegerSymbol {
                     let int = self.adjust_to_direct(src_sty, op);
-                    if int_sym.is_signed() {
+                    if src_int.is_signed() {
                         return self.llds.create_sext_or_trunc(int, self.cgtype_of(dst_sty).get_or_panic());
                     } else {
                         return self.llds.create_zext_or_trunc(int, self.cgtype_of(dst_sty).get_or_panic());
@@ -1497,8 +1515,20 @@ impl CodeGenerator {
                 }
             }
             deref_pat: *DerefPattern => {
-                let mut direct_op = self.adjust_to_direct(op_sty, op);
-                return self.cg_pattern_match(op, op_sty, deref_pat.inner, ctx);
+                // 与 DerefRValue 一致: thin 直接解引用; fat 取 data 字段作为 place
+                let mut place = op;
+                let pointee = op_sty.strip_pointer();
+                if op_sty.is_fat_pointer() {
+                    let data = self.access_fatptr_field(op, 0);
+                    place = data;
+                    place.indirect = true;
+                } else if op.indirect {
+                    place = self.llds.create_load(self.llds.type_thin_ptr(), op);
+                    place.indirect = true;
+                } else {
+                    place.indirect = true;
+                }
+                return self.cg_pattern_match(place, pointee, deref_pat.inner, ctx);
             }
             weak_pat: *WeakPattern => {
                 return self.cg_pattern_match(op, op_sty, weak_pat.inner, ctx);

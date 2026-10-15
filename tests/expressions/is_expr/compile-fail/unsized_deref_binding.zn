@@ -1,0 +1,22 @@
+// `is &name` 是 DerefPattern + 绑定: 绑定的是**被指对象**类型。
+// 对 &Trait 会把 name 绑成裸 trait (unsized), 必须在类型检查拒绝
+// (否则 codegen 对 fat pointer 误 memcpy 会 ICE, 见 issue #3)。
+trait T {
+    virtual fn f(&self) -> Int;
+}
+struct S {
+    x: Int,
+}
+impl T for S {
+    fn f(&self) -> Int {
+        return self.x;
+    }
+}
+
+fn main() {
+    let s = { .x = 1_i }: S;
+    let t: &T = &s;
+    if t is &u {
+        let _ = u;
+    }
+}
