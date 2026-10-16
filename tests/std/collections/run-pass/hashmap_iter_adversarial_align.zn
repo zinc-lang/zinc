@@ -1,0 +1,99 @@
+// HashMap 迭代 (HashMapIter::next) 在**对抗性对齐**的载荷下的取值正确性。
+//
+// 历史实现: next 里把 Entry::Occupied 的第 0 个字段地址强转成 &(K, V)
+// (依赖 docs/memory_layout.md 的前缀偏移保证, 并把重解释出来的引用当整对象返回)。
+// 本用例选 K/V 尺寸组合让 sizeof((K,V)) 与载荷里的第三个字段 (DIB UInt) 重叠:
+//   K=UInt64,V=UInt32 ⇒ sizeof((UInt64,UInt32)) = 16, 而 UInt 就在第 12 字节;
+//   K=UInt8, V=UInt32 ⇒ 前缀 size 8 / 载荷 12 字节。
+// 迭代出来的每个 (k,v) 必须与插入时一一对应, 迭代之后表必须完好。
+use std::{assert, assert_eq};
+
+fn check64x32() {
+    let mut m = (type HashMap<UInt64, UInt32>)::new();
+    let mut i: UInt = 0_u;
+    while i < 200_u {
+        m.insert(i as UInt64, (i * 3_u) as UInt32);
+        i += 1_u;
+    }
+    assert_eq(m.len(), 200_u);
+    assert_eq(m.ref_count() as UInt, 1_u);
+
+    let mut n: UInt = 0_u;
+    let mut ksum: UInt = 0_u;
+    let mut vsum: UInt = 0_u;
+    for (k, v) in m {
+        // 强转出来的假对象会读到相邻字段; 这里断言读出来的每个值都与 key 对应
+        assert_eq(v, ((k as UInt) * 3_u) as UInt32);
+        n += 1_u;
+        ksum += k as UInt;
+        vsum += v as UInt;
+    }
+    assert_eq(n, 200_u);
+    assert_eq(ksum, 19900_u);
+    assert_eq(vsum, 59700_u);
+
+    // 迭代后表完好: 长度 / 查询 / 引用计数 / 还能原地改
+    assert_eq(m.len(), 200_u);
+    assert_eq(m.at(&7_u64).get_or_panic(), 21_u32);
+    assert_eq(m.ref_count() as UInt, 1_u);
+    m.or_insert(1000_u64, 3000_u32);
+    assert_eq(m.len(), 201_u);
+    assert_eq(m.at(&1000_u64).get_or_panic(), 3000_u32);
+    // 删除一半后再迭代一次
+    let mut j: UInt = 0_u;
+    while j < 200_u {
+        if j % 2_u == 0_u {
+            m.remove(&(j as UInt64));
+        }
+        j += 1_u;
+    }
+    let mut n2: UInt = 0_u;
+    for (k, v) in m {
+        assert_eq(v, ((k as UInt) * 3_u) as UInt32);
+        n2 += 1_u;
+    }
+    assert_eq(n2, 101_u);
+}
+
+fn check8x32() {
+    let mut m = (type HashMap<UInt8, UInt32>)::new();
+    let mut i: UInt = 0_u;
+    while i < 120_u {
+        m.insert(i as UInt8, (i * 5_u) as UInt32);
+        i += 1_u;
+    }
+    assert_eq(m.len(), 120_u);
+    let mut n: UInt = 0_u;
+    for (k, v) in m {
+        assert_eq(v, ((k as UInt) * 5_u) as UInt32);
+        n += 1_u;
+    }
+    assert_eq(n, 120_u);
+    assert_eq(m.at(&3_u8).get_or_panic(), 15_u32);
+    assert_eq(m.ref_count() as UInt, 1_u);
+}
+
+// 键/值都是"大对象"(带间接内存) 时, 迭代出来的引用也不能破坏 ARC 计数
+fn check_string_keys() {
+    let mut m = (type HashMap<String, String>)::new();
+    m.insert(String::from_str("a"), String::from_str("A"));
+    m.insert(String::from_str("bb"), String::from_str("BB"));
+    let before = m.ref_count() as UInt;
+    let mut n: UInt = 0_u;
+    for (k, v) in m {
+        assert_eq(k.len() + 1_u, v.len() + 1_u);
+        n += 1_u;
+    }
+    assert_eq(n, 2_u);
+    assert_eq(m.len(), 2_u);
+    assert_eq(m.ref_count() as UInt, before);
+    m.insert(String::from_str("ccc"), String::from_str("CCC"));
+    assert_eq(m.len(), 3_u);
+}
+
+fn main() {
+    check64x32();
+    check8x32();
+    check_string_keys();
+    println("hashmap iter adversarial alignment ok");
+}

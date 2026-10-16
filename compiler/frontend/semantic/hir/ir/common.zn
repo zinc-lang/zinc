@@ -107,8 +107,8 @@ impl<'a> Iterator for SymTableIter<'a> {
                 let entry: Option<&Entry<String, *Symbol>> = self.iter.next();
                 if entry is Some(e) {
                     match e {
-                        Entry::Occupied(_, ref v, _) => {
-                            return Some(v);
+                        Entry::Occupied(ref kv, _) => {
+                            return Some(&kv.1);
                         }
                         Entry::Vacant => {
                             continue;

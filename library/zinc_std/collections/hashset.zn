@@ -63,8 +63,9 @@ impl<T> HashSet<T> where T: Eq + Hash {
     pub fn keys(&self) -> Vec<T> {
         let mut res = (type Vec<T>)::with_capacity(self.len());
         for entry in self.map.table {
-            if entry is Entry::Occupied(k, _, _) {
-                res.push(move k);
+            // 只做字段读取 (不 move): 旧 seed 不允许对绑定变量做部分 move。
+            if entry is Entry::Occupied(kv, _) {
+                res.push(kv.0);
             }
         }
         return res;
@@ -83,11 +84,15 @@ impl<'a, T> Iterator for HashSetIter<'a, T> {
             let r = self.vec_iter.next();
             if r is Some(entry) {
                 unsafe {
-                    if entry is Entry::Occupied(ref k, _, _) {
-                        let ptr = unsafe(k as &T);
-                        return Some(ptr);
-                    } else {
-                        continue;
+                    // 载荷是真元组 (T, ()): 借出真实对象的第 0 个字段, 不再做强转。
+                    match entry {
+                        Entry::Occupied(ref kv, _) => {
+                            let ptr = unsafe(&kv.0 as &T);
+                            return Some(ptr);
+                        }
+                        _ => {
+                            continue;
+                        }
                     }
                 }
             } else {
@@ -102,8 +107,9 @@ impl<T> Iterable for HashSet<T> {
     type Iter<'i> = HashSetIter<'i, T>;
 
     fn iter<'a>(&'a self) -> HashSetIter<'a, T> {
-        return {
-            .vec_iter = self.map.table.iter(),
-        }: HashSetIter<T>;
+        // 与 HashMap::iter 同样的原因: 先落局部变量再 move, 否则走
+        // "临时量 + VecIter.copyfn" 路径, retain 泄漏 (见 hashmap.zn 的注释)。
+        let mut it = self.map.table.iter();
+        return { .vec_iter = move it }: HashSetIter<T>;
     }
 }

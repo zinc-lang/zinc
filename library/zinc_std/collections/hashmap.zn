@@ -11,8 +11,13 @@ pub struct HashMap<K, V> {
     size: UInt,
 }
 
+// 载荷形状: Occupied((K, V), UInt)。把 key/value 包成**真元组**紧挨着放, 后面才是
+// 探测距离 (DIB)。这样迭代器拿到的 `&(K, V)` 是指向真实对象的引用, 不再需要
+// `k as &K as *raw (K, V)` 那种"按前缀偏移重解释"的布局强转 —— 那种强转在对抗性
+// 对齐的 (K,V) 尺寸组合下会把相邻字段读进来 (见 tests/std/collections/run-pass/
+// hashmap_iter_adversarial_align.zn)。
 pub enum Entry<K, V> {
-    Occupied(K, V, UInt),
+    Occupied((K, V), UInt),
     Vacant,
     Tombstone,
 }
@@ -162,7 +167,8 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         let mut new_table = Self::with_capacity(new_capacity);
 
         for entry in self.table {
-            if entry is Entry::Occupied(key, value, _) {
+            if entry is Entry::Occupied(kv, _) {
+                let (key, value) = kv;
                 new_table.insert(move key, move value);
             }
         }
@@ -187,31 +193,44 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
 
         // 第一趟: 找已有 key; 同时记下第一个可复用的 Tombstone/Vacant。
         // 绝不能一碰到 Tombstone 就写入, 否则探测链后方的同一 key 会变成重复条目。
-        while distance < cap {
-            let entry = unsafe(self.table.get_unchecked_mut(index));
-            if entry is Entry::Occupied(existing_key, existing_value, existing_distance) {
-                if existing_key.eq(&key) {
-                    *entry = Entry::Occupied(move key, move value, existing_distance);
-                    return Some(move existing_value);
-                }
-            } else {
-                if hole is None {
-                    hole = Some(index);
-                    hole_distance = distance;
+        //
+        // ref 模式只在 unsafe match 里被旧 seed 接受 (见第 3 项 3.1 的有意设计);
+        // 而且旧 seed 的 `match` 只能作语句、不能作产生值的表达式, 所以这里用
+        // “match + break/continue + 循环外判断”的写法, 而不是 `let x = match ...`。
+        unsafe {
+            while distance < cap {
+                let entry = self.table.get_unchecked_mut(index);
+                match entry {
+                    Entry::Occupied(ref kv, ref existing_distance) => {
+                        let existing_key: &K = &kv.0;
+                        let existing_value: &V = &kv.1;
+                        if existing_key.eq(&key) {
+                            let distance = *existing_distance;
+                            let old_value = *existing_value;
+                            *entry = Entry::Occupied((move key, move value), distance);
+                            return Some(move old_value);
+                        }
+                    }
+                    _ => {
+                        if hole is None {
+                            hole = Some(index);
+                            hole_distance = distance;
+                        }
+                    }
                 }
                 if entry is Entry::Vacant {
                     break;
                 }
-            }
 
-            distance += 1;
-            index = (index + 1) % cap;
+                distance += 1;
+                index = (index + 1) % cap;
+            }
         }
 
         if hole is Some(place) {
             // Robin Hood 从 hole 起继续向前排空槽; 简单起见直接写入第一个 hole。
             let entry = unsafe(self.table.get_unchecked_mut(place));
-            *entry = Entry::Occupied(move key, move value, hole_distance);
+            *entry = Entry::Occupied((move key, move value), hole_distance);
             self.size += 1;
             return None;
         }
@@ -237,12 +256,12 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
             while distance < self.table.len() {
                 let entry = self.table.get_unchecked(index);
                 match entry {
-                    Entry::Occupied(ref existing_key, ref value, existing_distance) => {
-                        if (existing_key.eq(key)) {
+                    Entry::Occupied(ref kv, _) => {
+                        if (kv.0.eq(key)) {
                             return Some({
                                 .ptr = self.table.ptr as *(),
                                 .size = self.table.len(),
-                                .item = value,
+                                .item = &kv.1,
                             } : HashMapItemRef<'a, K, V>);
                         }
                     }
@@ -269,12 +288,12 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         unsafe {
             while distance < self.table.len() {
                 match self.table.get_unchecked_mut(index) {
-                    Entry::Occupied(ref existing_key, ref mut value, existing_distance) => {
-                        if (existing_key.eq(key)) {
+                    Entry::Occupied(ref mut kv, _) => {
+                        if (kv.0.eq(key)) {
                             return Some({
                                 .ptr = self.table.ptr as *(),
                                 .size = self.table.len(),
-                                .item = value,
+                                .item = unsafe(&raw mut kv.1 as &mut V),
                             } : HashMapItemRefMut<'a, K, V>);
                         }
                     }
@@ -315,8 +334,8 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         unsafe {
             while distance < cap {
                 match self.table.get_unchecked_mut(index) {
-                    Entry::Occupied(ref existing_key, ref mut value, _) => {
-                        if (existing_key.eq(&key)) {
+                    Entry::Occupied(ref mut kv, _) => {
+                        if (kv.0.eq(&key)) {
                             // key 已存在: 本次传入的 key 与 default 都不会被使用。
                             // 它们只在下面的插入分支里被 move; 这条提前返回的路径上没有被
                             // move, 由编译器按 drop flag 在函数返回前自动析构 (形参的 drop
@@ -327,7 +346,7 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
                             return {
                                 .ptr = self.table.ptr as *(),
                                 .size = self.table.len(),
-                                .item = value,
+                                .item = unsafe(&raw mut kv.1 as &mut V),
                             }: HashMapItemRefMut<'a, K, V>;
                         }
                     }
@@ -355,14 +374,14 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
 
             let place = hole.get_or_panic();
             let place_distance = self.probe_distance(&key, place);
-            *self.table.get_unchecked_mut(place) = Entry::Occupied(move key, move default, place_distance);
+            *self.table.get_unchecked_mut(place) = Entry::Occupied((move key, move default), place_distance);
             self.size += 1;
             match self.table.get_unchecked_mut(place) {
-                Entry::Occupied(_, ref mut value, _) => {
+                Entry::Occupied(ref mut kv, _) => {
                     return {
                         .ptr = self.table.ptr as *(),
                         .size = self.table.len(),
-                        .item = value,
+                        .item = unsafe(&raw mut kv.1 as &mut V),
                     }: HashMapItemRefMut<'a, K, V>;
                 }
                 _ => {
@@ -384,8 +403,8 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         unsafe {
             while distance < self.table.len() {
                 match self.table.get_unchecked(index) {
-                    Entry::Occupied(existing_key, _, _) => {
-                        if (existing_key.eq(key)) {
+                    Entry::Occupied(ref kv, _) => {
+                        if (kv.0.eq(key)) {
                             return true;
                         }
                     }
@@ -411,21 +430,29 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         let mut distance: UInt = 0;
         let cap = self.table.len();
 
-        while distance < cap {
-            let entry = unsafe(self.table.get_unchecked_mut(index));
-            // 按值取出 payload; ref 模式在 stage1 编 std 时非法(除非包在 unsafe match 里)。
-            if entry is Entry::Occupied(existing_key, existing_value, _) {
-                if existing_key.eq(key) {
-                    *entry = Entry::Tombstone;
-                    self.size -= 1;
-                    return Some(move existing_value);
+        unsafe {
+            while distance < cap {
+                let entry = self.table.get_unchecked_mut(index);
+                // ref 模式只在 unsafe match 里被旧 seed 接受 (见第 3 项 3.1 的设计),
+                // 且旧 seed 的 match 只能作语句, 故在 arm 里直接完成删除并 return。
+                match entry {
+                    Entry::Occupied(ref kv, _) => {
+                        if kv.0.eq(key) {
+                            let value = kv.1;
+                            *entry = Entry::Tombstone;
+                            self.size -= 1;
+                            return Some(move value);
+                        }
+                    }
+                    Entry::Vacant => {
+                        return None;
+                    }
+                    _ => {}
                 }
-            } else if entry is Entry::Vacant {
-                return None;
-            }
 
-            distance += 1;
-            index = (index + 1) % cap;
+                distance += 1;
+                index = (index + 1) % cap;
+            }
         }
         return None;
     }
@@ -434,7 +461,8 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
         self.to_unique();
         for entry in other.table {
             match entry {
-                Entry::Occupied(k, v, _) => {
+                Entry::Occupied(kv, _) => {
+                    let (k, v) = kv;
                     self.insert(move k, move v);
                 }
                 _ => {}
@@ -451,8 +479,10 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
     pub fn keys(&self) -> Vec<K> {
         let mut res = (type Vec<K>)::with_capacity(self.size);
         for entry in self.table {
-            if entry is Entry::Occupied(k, _, _) {
-                res.push(move k);
+            // 这里只做字段读取 (不 move): 旧 seed 不允许对绑定变量做部分 move
+            // (`move kv.0` 会报"这个表达式不能被 move"), 而模板参数 K 本身可复制。
+            if entry is Entry::Occupied(kv, _) {
+                res.push(kv.0);
             }
         }
         return res;
@@ -461,8 +491,8 @@ impl<K, V> HashMap<K, V> where K: Eq + Hash {
     pub fn values(&self) -> Vec<V> {
         let mut res = (type Vec<V>)::with_capacity(self.size);
         for entry in self.table {
-            if entry is Entry::Occupied(_, v, _) {
-                res.push(move v);
+            if entry is Entry::Occupied(kv, _) {
+                res.push(kv.1);
             }
         }
         return res;
@@ -487,11 +517,15 @@ impl<'a, K, V> Iterator for HashMapIter<'a, K, V> {
             let r = self.vec_iter.next();
             if r is Some(entry) {
                 unsafe {
-                    if entry is Entry::Occupied(ref k, _, _) {
-                        let ptr = k as &K as *raw K as *raw (K, V) as &(K, V);
-                        return Some(ptr);
-                    } else {
-                        continue;
+                    // Entry::Occupied 的载荷就是真元组 (K, V): 直接借出这个对象,
+                    // 不再做 `k as &K as *raw (K, V)` 的布局重解释强转。
+                    match entry {
+                        Entry::Occupied(ref kv, _) => {
+                            return Some(&*kv);
+                        }
+                        _ => {
+                            continue;
+                        }
                     }
                 }
             } else {
@@ -506,8 +540,13 @@ impl<K, V> Iterable for HashMap<K, V> {
     type Iter<'i> = HashMapIter<'i, K, V>;
 
     fn iter<'a>(&'a self) -> HashMapIter<'a, K, V> {
-        return {
-            .vec_iter = self.table.iter(),
-        }: HashMapIter<K, V>;
+        // 注意: 必须先把 VecIter 放进局部变量, 再用 `move` 装进结构体字面量。
+        // 直接写 `.vec_iter = self.table.iter()` (或包一层括号) 时, codegen 会走
+        // "临时量 + VecIter.copyfn" 的路径, 而 VecIter 带 Drop: copyfn 里的 retain
+        // 没有配对的 release, 每构造一次迭代器就泄漏一个表强引用 —— ref_count 每次
+        // +1, 迭代后表再也回不到独占, 缓冲区元素不会被析构 (整张表泄漏)。
+        // 经局部变量 + move 是纯 move (实测不再调用 copyfn)。
+        let mut it = self.table.iter();
+        return { .vec_iter = move it }: HashMapIter<K, V>;
     }
 }

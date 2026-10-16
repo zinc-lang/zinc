@@ -945,10 +945,51 @@ llvm::Value * llds_extract_value(LLVMDataStructures *ds, llvm::Value * val, size
 void llds_set_insert_point(LLVMDataStructures *ds, llvm::BasicBlock* bb) {
     ds->builder->SetInsertPoint(bb);
 }
+// alloca 必须生成在函数入口块里, 原因:
+//
+// alloca 指令的栈内存在**函数返回**时才回收, 而不是所在的块退出时。
+// 如果 alloca 被生成在循环体 (或任何会被重复执行的块) 里 —— 例如调用返回大结构体
+// (sret) 时在调用点临时分配返回值槽位 —— 那么每执行一次循环就会多消耗一份栈,
+// 循环次数一多必然 stackoverflow。实测: `while (...) { acc += r4().a; }`
+// (r4 返回 32B 结构体) 每次迭代泄漏 32B 栈; HashMap::get 返回的
+// Option<HashMapItemRef> 也是 32B, 同样是每次调用泄漏 32B。
+//
+// 这里只提升**固定尺寸**的 alloca。动态尺寸 (alloca i8, i64 %n) 不能提升: 它的
+// 尺寸操作数不保证支配函数入口块 (实测 std 里有 `%n` 来自块内的 load), 强行提升会
+// 让模块验证失败 ("Instruction does not dominate all uses")。固定尺寸的 alloca
+// 没有任何操作数, 提升到入口块是纯栈指针调整, 语义完全等价, 这也是 rustc/clang
+// 等编译器的标准做法 (静态 alloca 全部集中在函数序言)。
+//
+// 入口块里可能有终结指令 (codegen 生成的第一条 br), 插在它前面即可保证仍在块内。
+static llvm::Value * llds_create_static_alloca_at_entry(LLVMDataStructures *ds, llvm::Type * ty) {
+    llvm::BasicBlock * bb = ds->builder->GetInsertBlock();
+    if (bb == nullptr) {
+        // 没有插入点 (理论上不会发生), 退回原行为以免崩溃
+        return ds->builder->CreateAlloca(ty);
+    }
+    llvm::Function * fn = bb->getParent();
+    if (fn == nullptr || fn->empty()) {
+        return ds->builder->CreateAlloca(ty);
+    }
+    if (bb == &fn->getEntryBlock()) {
+        return ds->builder->CreateAlloca(ty); // 已经在入口块, 不需要来回切插入点
+    }
+    auto saved = ds->builder->saveIP();
+    llvm::BasicBlock * entry = &fn->getEntryBlock();
+    if (auto * term = entry->getTerminatorOrNull()) {
+        ds->builder->SetInsertPoint(term);
+    } else {
+        ds->builder->SetInsertPoint(entry);
+    }
+    llvm::Value * alloca = ds->builder->CreateAlloca(ty);
+    ds->builder->restoreIP(saved);
+    return alloca;
+}
 llvm::Value * llds_create_alloca_sized(LLVMDataStructures *ds, llvm::Type * ty) {
-    return ds->builder->CreateAlloca(ty);
+    return llds_create_static_alloca_at_entry(ds, ty);
 }
 llvm::Value * llds_create_alloca_unsized(LLVMDataStructures *ds, llvm::Value* size) {
+    // 动态尺寸: 只能生成在当前插入点 (尺寸操作数就在附近求值)。
     auto * alloca = ds->builder->CreateAlloca(ds->builder->getInt8Ty(), size);
     llvm::Value * zero = llvm::ConstantInt::get(ds->builder->getInt8Ty(), 0);
     ds->builder->CreateMemSet(alloca, zero, size, llvm::MaybeAlign(8));

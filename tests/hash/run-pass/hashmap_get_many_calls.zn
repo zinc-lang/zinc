@@ -1,0 +1,30 @@
+// 回归: HashMap::get 在循环里调用几十万次不能增长栈。
+//
+// 背景: 曾经 `get` 返回的 Option<HashMapItemRef> 是 32 字节的聚合, 走 sret 返回;
+// 编译器把 sret 的返回值槽位 alloca 生成在**调用点所在的块**里, 而 alloca 的栈内存
+// 要到函数返回才回收 ⇒ 每调用一次 get 就泄漏 32 字节栈。8MB 栈下约 26 万次就
+// "stackoverflow detected"。修法见 native/llvm_wrapper/llvm_data_structures.cpp
+// 的 llds_create_static_alloca_at_entry (静态 alloca 一律生成在函数入口块)。
+//
+// 用例故意调用 50 万次 > 8MB/32B ≈ 26 万, 所以旧编译器必然栈溢出,
+// 修复后栈用量不随调用次数增长。
+use std::collections::hashmap::HashMap;
+use std::assert_eq;
+
+fn main() {
+    let mut m = (type HashMap<UInt, UInt>)::new();
+    m.insert(1_u, 1_u);
+
+    let mut i: UInt = 0;
+    let mut sum: UInt = 0;
+    while i < 500000_u {
+        let g = m.get(&1_u);
+        if g is Some(x) {
+            sum += *x.item;
+        } else {
+            panic "key 1 missing";
+        }
+        i += 1;
+    }
+    assert_eq(sum, 500000_u);
+}

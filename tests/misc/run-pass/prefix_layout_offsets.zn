@@ -1,0 +1,118 @@
+// 前缀布局规则 (docs/memory_layout.md) 的运行期断言。
+//
+// 规则: 元组/结构体字段按声明顺序放置、不重排、对齐算法一致 ⇒ 对任意 n,
+//       (F1..Fn) 里 Fi 的偏移与 (F1..Fn,Fn+1,...) 里 Fi 的偏移相同。
+// 明确不保证: 整体 sizeof/alignof 一致。
+//
+// 本用例用指针差计算字段偏移 (语言里没有 offsetof), 覆盖对抗性对齐组合
+// ((UInt64,UInt32,*), (UInt8,UInt32,*), 嵌套/泛型实例化), 并钉住那条限制:
+// 前缀元组的 sizeof 可能覆盖到后面的字段 —— 所以重解释出来的引用只能按字段访问,
+// 不能当整对象用。
+use std::{assert, assert_eq};
+use std::mem::size_of;
+use std::meta::Type;
+
+struct S64 {
+    a: UInt64,
+    b: UInt32,
+    c: UInt8,
+}
+
+struct S8 {
+    a: UInt8,
+    b: UInt32,
+    c: UInt64,
+}
+
+fn off_of<A, B, C>(t: &(A, B, C)) -> (UInt, UInt, UInt) {
+    let base: UInt = t as *raw (A, B, C) as *raw () as UInt;
+    let oa: UInt = &t.0 as *raw A as UInt - base;
+    let ob: UInt = &t.1 as *raw B as UInt - base;
+    let oc: UInt = &t.2 as *raw C as UInt - base;
+    return (oa, ob, oc);
+}
+
+fn off_prefix<A, B>(t: &(A, B)) -> (UInt, UInt) {
+    let base: UInt = t as *raw (A, B) as *raw () as UInt;
+    let oa: UInt = &t.0 as *raw A as UInt - base;
+    let ob: UInt = &t.1 as *raw B as UInt - base;
+    return (oa, ob);
+}
+
+fn main() {
+    // ---- 结构体: 声明顺序 + 对齐 ----
+    let s = ({ .a = 1_u64, .b = 2_u32, .c = 3_u8 }: S64);
+    let sb: UInt = &s as *raw S64 as *raw () as UInt;
+    let oa: UInt = &s.a as *raw UInt64 as UInt - sb;
+    let ob: UInt = &s.b as *raw UInt32 as UInt - sb;
+    let oc: UInt = &s.c as *raw UInt8 as UInt - sb;
+    assert_eq(oa, 0_u);
+    assert_eq(ob, 8_u);
+    assert_eq(oc, 12_u);
+
+    // ---- 前缀偏移保证 (对抗性对齐): (A,B,C) 与 (A,B) 的前两个字段偏移相同 ----
+    let t3a = (1_u64, 2_u32, 3_u8);
+    let t2a = (1_u64, 2_u32);
+    let (a0, a1, a2) = off_of(&t3a);
+    let (b0, b1) = off_prefix(&t2a);
+    assert_eq(a0, b0);
+    assert_eq(a1, b1);
+    assert_eq(a0, 0_u);
+    assert_eq(a1, 8_u);
+    assert_eq(a2, 12_u);
+
+    let t3b = (1_u8, 2_u32, 3_u64);
+    let t2b = (1_u8, 2_u32);
+    let (c0, c1, c2) = off_of(&t3b);
+    let (d0, d1) = off_prefix(&t2b);
+    assert_eq(c0, d0);
+    assert_eq(c1, d1);
+    assert_eq(c0, 0_u);
+    assert_eq(c1, 4_u);
+    assert_eq(c2, 8_u);
+
+    // 泛型实例化 (A/B/C 是函数类型参数, 布局在运行期由 typemeta 决定)
+    // 与具体类型组合共用同一条规则
+    let t3c = (1_u32, 2_u8, 3_u64);
+    let t2c = (1_u32, 2_u8);
+    let (e0, e1, e2) = off_of(&t3c);
+    let (f0, f1) = off_prefix(&t2c);
+    assert_eq(e0, f0);
+    assert_eq(e1, f1);
+    assert_eq(e2, 8_u);
+
+    // 结构体与元组同布局: S64 的 (a,b) 偏移 == (UInt64,UInt32) 的偏移
+    assert_eq(oa, b0);
+    assert_eq(ob, b1);
+
+    // ---- 限制: 前缀的 sizeof 可能覆盖到后面的字段 ----
+    // 第三个字段是 1 字节对齐时就会重叠: sizeof((UInt64,UInt32)) == 16 (尾部 padding),
+    // 而 u8 字段就在第 12 字节。
+    assert_eq(size_of(<(UInt64, UInt32)>), 16_u);
+    assert_eq(size_of(<(UInt8, UInt32)>), 8_u);
+    // oc(12) < sizeof(前缀) ⇒ 把重解释出来当整对象写/比较/析构会碰到 c
+    assert(oc < size_of(<(UInt64, UInt32)>));
+
+    // 本仓 Entry 的第三个字段是 UInt (8 字节对齐, 不是 UInt8):
+    //   offset(UInt) == round_up(end(K,V), 8) >= sizeof((K,V))
+    // 所以现状恰好**压线不重叠** —— 这是"第三个字段恰好 8 字节对齐"的巧合,
+    // 不是可以依赖的性质 (换成 UInt8/Bool 这类小对齐字段立刻重叠)。
+    let t3d = (1_u64, 2_u32, 3_u);
+    let (g0, g1, g2) = off_of(&t3d);
+    assert_eq(g0, 0_u);
+    assert_eq(g1, 8_u);
+    assert_eq(g2, 16_u);
+    assert_eq(size_of(<(UInt64, UInt32)>), g2);
+    let p3 = (1_u8, 2_u32, 3_u);
+    let (h0, h1, h2) = off_of(&p3);
+    assert_eq(h0, 0_u);
+    assert_eq(h1, 4_u);
+    assert_eq(h2, 8_u);
+
+    assert_eq(Type::of(<S64>).size(), 16_u);
+    assert_eq(Type::of(<(UInt64, UInt32, UInt8)>).size(), 16_u);
+    // 但整体 sizeof 不保证一致: (UInt8,UInt32,UInt64) 与 (UInt8,UInt32) 不同
+    assert(size_of(<(UInt8, UInt32, UInt64)>) != size_of(<(UInt8, UInt32)>));
+
+    println("prefix layout offsets ok");
+}
