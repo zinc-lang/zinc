@@ -22,6 +22,7 @@ extern fn llds_get_const_array_gv(ds: Ptr, elems: *raw CgConst, len: UInt, llty:
 extern fn llds_get_ext_fn_in_core(ds: Ptr, name: Ptr, len: UInt) -> Ptr;
 extern fn llds_get_const_string(ds: Ptr, name: Ptr, len: UInt) -> Ptr;
 extern fn llds_dump_module_llir(ds: Ptr);
+extern fn llds_finalize_module_stack_scopes(ds: Ptr);
 extern fn codegen_bounds_check_fn(ds: Ptr) -> Ptr;
 
 impl LLDataStructures {
@@ -203,5 +204,11 @@ impl LLDataStructures {
 
     fn dump_module_llir(&self) {
         unsafe(llds_dump_module_llir(self.ds));
+    }
+
+    // 给动态尺寸 alloca 补 llvm.stacksave / llvm.stackrestore。必须在所有函数体
+    // 都生成完之后、写 bitcode 之前调用一次 (幂等, 重复调用不会再插)。
+    fn finalize_stack_scopes(&self) {
+        unsafe(llds_finalize_module_stack_scopes(self.ds));
     }
 }

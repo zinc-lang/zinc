@@ -3,8 +3,14 @@ use ::self::hash::{Hash, Hasher};
 use ::self::primitives::clone::Clone;
 use ::self::primitives::default::Default;
 
-// 说明: 显式判别值 (Less = -1 之类) 编译器已经支持, 但 stage0 还是旧编译器 (会忽略判别值),
-// 用它编译出来的 std 产物与本编译器不一致。等 stage0 更新之后再改回带判别值的写法。
+// 说明: 显式判别值 (Less = -1 之类) 编译器已经支持。这里当初写成不带判别值, 是因为
+// 当时的 seed 还是更早一代的编译器 (会忽略判别值), 用它编出来的 std 产物与本编译器
+// 不一致。**该前提已经消失**: 当前 seed (`out/stage0/bin/zinc` = `fc3d993d…`,
+// `lib/libstd.a` = `0c5a0bd4…`, `lib/std.zno` = `fc958638…`, `out/stage0.zip` = `df4b80d4…`)
+// 正是由当前源码自举出来的同代产物, 实测 `enum E { A = -1, B = 2, C = 7 }` 经它编译后
+// 取值就是 -1/2/7。改回带判别值的写法只是一次独立的功能改动, 本轮不动代码。
+// 流程提醒: 改语言能力 / 公开 API / std 载荷时, 顺序必须是
+// **先改源码 → 用旧 seed 构建 → 最后才刷新 seed** (见 `docs/memory_layout.md` §4.2)。
 pub enum Ordering {
     Less,
     Equal,
@@ -31,7 +37,8 @@ impl Eq for Ordering {}
 
 impl Hash for Ordering {
     fn hash(&self, state: &mut Hasher) {
-        // 判别值 (0/1/2) 由编译器按声明顺序分配; stage0 不支持显式判别值, 这里用 match 取。
+        // 判别值 (0/1/2) 由编译器按声明顺序分配。当前 seed 已经支持显式判别值
+        // (见文件头说明), 这里保留 match 取值的写法只是为了不改行为。
         match self {
             Ordering::Less => { state.combine(0_u64); }
             Ordering::Equal => { state.combine(1_u64); }

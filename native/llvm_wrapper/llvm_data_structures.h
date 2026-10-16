@@ -118,6 +118,10 @@ llvm::Value * llds_extract_value(LLVMDataStructures *ds, llvm::Value * val, size
 void llds_set_insert_point(LLVMDataStructures *ds, llvm::BasicBlock* bb);
 llvm::Value * llds_create_alloca_sized(LLVMDataStructures *ds, llvm::Type * ty);
 llvm::Value * llds_create_alloca_unsized(LLVMDataStructures *ds, llvm::Value* size);
+// 给动态尺寸 alloca 补 llvm.stacksave / llvm.stackrestore, 让它所在的基本块
+// 每次执行后都把栈指针还回去 (循环里反复调用不再累积栈)。见 .cpp 里的长注释。
+void llds_finalize_stack_scopes(llvm::Function * f);
+void llds_finalize_module_stack_scopes(LLVMDataStructures * ds);
 void llds_create_store(LLVMDataStructures *ds, llvm::Value* val, llvm::Value* dst);
 llvm::Value * llds_create_load(LLVMDataStructures *ds, llvm::Type* ty, llvm::Value* ptr);
 void llds_create_memcpy(LLVMDataStructures *ds, llvm::Value* dst, llvm::Value* src, llvm::Value* size);

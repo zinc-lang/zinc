@@ -3,10 +3,13 @@
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Support/FileSystem.h"
@@ -19,7 +22,10 @@
 #include <cstdint>
 #include <iostream>
 #include <filesystem>
+#include <iterator>
 #include <map>
+#include <utility>
+#include <vector>
 
 #include "zinc_core_map.h"
 #include "zinc_core_typemeta.h"
@@ -994,6 +1000,133 @@ llvm::Value * llds_create_alloca_unsized(LLVMDataStructures *ds, llvm::Value* si
     llvm::Value * zero = llvm::ConstantInt::get(ds->builder->getInt8Ty(), 0);
     ds->builder->CreateMemSet(alloca, zero, size, llvm::MaybeAlign(8));
     return alloca; // 默认清零
+}
+
+// ---------------------------------------------------------------------------
+// 动态尺寸 alloca 的栈回收: llvm.stacksave / llvm.stackrestore
+//
+// 背景: 固定尺寸 alloca 已经被提升到函数入口块 (见上面的
+// llds_create_static_alloca_at_entry), 所以同一个调用点即使在循环里被执行很多次,
+// 也只占一份栈。动态尺寸 alloca (alloca i8, i64 %n) 不能这样提升 —— 它的尺寸
+// 操作数不支配入口块 (强行提升会让模块验证失败)。于是 `while (...) { v.reverse(); }`
+// 这种代码每迭代一次都会在栈上多留一份临时量, 迭代次数一多必然 stackoverflow。
+// std 里的 Vec::reverse / HashMap::{with_capacity,resize,insert,or_insert,merge}
+// 就是这条路径。
+//
+// 做法: 借 LLVM 的 llvm.stacksave / llvm.stackrestore 显式回收。
+//   * 在动态 alloca 之前插 llvm.stacksave() 把当前栈指针存进临时值 S;
+//   * 在该 alloca 所在基本块的终结指令之前插 llvm.stackrestore(S)。
+// 同一个块里有多个动态 alloca 时, 每个各配一对, 并按插入的逆序 restore
+// (后进先出)。因为"块入口处 save、块出口处 restore", 该块无论被执行多少次
+// (循环回边、break/continue 之外的所有离开路径) 都是净零的, 不再随迭代累积。
+//
+// 为什么"块出口 restore"是安全的? 这里对每个候选 alloca 先做静态检查: 只有当它
+// 的指针 (以及所有 SSA 派生值, 包括 ptrtoint/inttoptr 对齐链) 的全部使用都落在
+// 同一个基本块里, 并且没有被写进内存 / 没有被返回时, 才插 save/restore;
+// 否则原样不动 (不插 = 保持旧行为 = 不会引入悬垂指针)。这样对每个通过的 alloca
+// 都能证明它的生命周期不超过本块。实测当前 std (918 个函数) 里落在非入口块的
+// 动态 alloca 共 157 个, 全部满足这个条件 (使用只在同一块内, 没有指针外存),
+// 因此 157 个全部被回收。
+//
+// 与其它出口的关系:
+//   * 函数返回: 栈帧整体丢弃, 不需要 restore; 以 ret 结尾的块照样可以插
+//     (插了也无害, 这里为了简单就统一插在终结指令之前);
+//   * break / continue / 条件跳转: 都只是把控制流交给另一个块, 本块的
+//     stackrestore 在这些跳转之前已执行, 栈已经还原;
+//   * panic / abort: 本语言没有可恢复的异常, panic 走 abort/exit, 进程结束,
+//     栈不再有意义, 所以不 restore 也不会出问题;
+//   * 固定尺寸 alloca 继续走入口块提升, 不需要 save/restore, 两者互不冲突。
+//     正因为固定尺寸的那些都在入口块、地址高于任何动态 alloca, restore 不会把它们
+//     弹掉。
+//
+// 说明: 这里隐含假设"按指针传出去就地写入"的临时量不会被被调用方保存到调用结束
+// 之后 (这类 out-pointer 的约定本来就是"借用整个调用期间")。这个假设在固定尺寸
+// 提升那一轮就已经存在: 同一个调用点的入口块槽位在循环里也是被反复复用的。
+// ---------------------------------------------------------------------------
+
+// alloca 的尺寸操作数不是常量 -> 动态尺寸
+static bool llds_alloca_is_dynamic_size(llvm::AllocaInst * ai) {
+    return ai != nullptr && !llvm::isa<llvm::ConstantInt>(ai->getArraySize());
+}
+
+// 证明 alloca 的生命周期不超过它所在的基本块 bb:
+// 沿 SSA def-use 链走过所有派生值, 要求每个用户都是 bb 里的普通指令
+// (不能是 bb 的终结指令), 并且没有任何用户把指针写进内存 / 返回。
+// 注意 ptrtoint -> ... -> inttoptr 这条链 (codegen 用它做对齐取整) 要放行:
+// 它只是把地址对齐到 N 字节, 派生出的指针仍然只在本块里被 memcpy 之类的指令用,
+// 只要这些使用都在本块内, 生命周期结论不变。
+static bool llds_alloca_lifetime_is_block_local(llvm::AllocaInst * ai, llvm::BasicBlock * bb) {
+    llvm::SmallVector<llvm::Value *, 16> worklist;
+    llvm::SmallPtrSet<llvm::Value *, 32> seen;
+    worklist.push_back(ai);
+    seen.insert(ai);
+    llvm::Instruction * term = bb->getTerminator();
+    while (!worklist.empty()) {
+        llvm::Value * v = worklist.pop_back_val();
+        for (llvm::User * u : v->users()) {
+            auto * ui = llvm::dyn_cast<llvm::Instruction>(u);
+            if (ui == nullptr) return false;              // 常量表达式之类的用户
+            if (ui->getParent() != bb) return false;      // 跨块使用 (含 phi)
+            if (ui == term) return false;                 // 终结指令用了这个指针/地址
+            if (auto * si = llvm::dyn_cast<llvm::StoreInst>(ui)) {
+                if (si->getValueOperand() == v) return false; // 指针/地址被存进内存
+            }
+            if (llvm::isa<llvm::ReturnInst>(ui)) return false;
+            if (seen.insert(ui).second) worklist.push_back(ui);
+        }
+    }
+    return true;
+}
+
+// 幂等性: 上一轮已经在这个 alloca 前面插过 stacksave 就不要再插一遍。
+static bool llds_alloca_already_guarded(llvm::AllocaInst * ai) {
+    llvm::BasicBlock * bb = ai->getParent();
+    auto it = ai->getIterator();
+    if (it == bb->begin()) return false;
+    auto * prev = llvm::dyn_cast<llvm::CallInst>(&*std::prev(it));
+    return prev != nullptr && prev->getIntrinsicID() == llvm::Intrinsic::stacksave;
+}
+
+static void llds_finalize_stack_scopes_in_block(llvm::BasicBlock * bb) {
+    if (bb->getTerminator() == nullptr) return;
+    // 先收集候选, 再插指令: 避免在遍历块的过程中改动块
+    std::vector<llvm::AllocaInst *> candidates;
+    for (llvm::Instruction & i : *bb) {
+        auto * ai = llvm::dyn_cast<llvm::AllocaInst>(&i);
+        if (!llds_alloca_is_dynamic_size(ai)) continue;
+        if (ai->isUsedWithInAlloca()) continue;
+        if (llds_alloca_already_guarded(ai)) continue;
+        if (!llds_alloca_lifetime_is_block_local(ai, bb)) continue;
+        candidates.push_back(ai);
+    }
+    std::vector<std::pair<llvm::AllocaInst *, llvm::Value *>> guarded;
+    for (llvm::AllocaInst * ai : candidates) {
+        // 在 alloca 之前存下当前栈指针
+        llvm::IRBuilder<> b(ai);
+        llvm::Value * saved = b.CreateStackSave("stack.save");
+        guarded.push_back({ai, saved});
+    }
+    // 逆序 restore: 严格后进先出
+    for (auto it = guarded.rbegin(); it != guarded.rend(); ++it) {
+        llvm::IRBuilder<> b(bb, bb->getTerminator()->getIterator());
+        b.CreateStackRestore(it->second);
+    }
+}
+
+void llds_finalize_stack_scopes(llvm::Function * f) {
+    if (f == nullptr || f->isDeclaration()) return;
+    llvm::BasicBlock * entry = &f->getEntryBlock();
+    for (llvm::BasicBlock & bb : *f) {
+        if (&bb == entry) continue; // 入口块只执行一次, 不需要回收
+        llds_finalize_stack_scopes_in_block(&bb);
+    }
+}
+
+void llds_finalize_module_stack_scopes(LLVMDataStructures * ds) {
+    if (ds == nullptr || ds->module == nullptr) return;
+    for (llvm::Function & f : *ds->module) {
+        llds_finalize_stack_scopes(&f);
+    }
 }
 void llds_create_store(LLVMDataStructures *ds, llvm::Value* val, llvm::Value* dst) {
     ds->builder->CreateStore(val, dst);

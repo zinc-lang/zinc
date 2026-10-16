@@ -121,6 +121,10 @@ impl CodeGenerator {
             self.codegen_main_func(move main_func);
         }
 
+        // 所有函数体都已生成: 给动态尺寸 alloca 补 stacksave/stackrestore,
+        // 让循环里反复执行同一个动态 alloca 不再累积栈。
+        self.llds.finalize_stack_scopes();
+
         // dump
         if self.options.dump_llir {
             self.llds.dump_module_llir();

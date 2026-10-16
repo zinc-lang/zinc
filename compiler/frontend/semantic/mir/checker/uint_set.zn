@@ -2,12 +2,23 @@ use std::alloc::raw_alloc_n;
 use std::mem::size_of;
 
 // 注意: 这里暂时不能改成包一层 std::collections::HashSet<UInt>。
-// 编译器是自举的: stage1 由 stage0 编译, 链接的是 stage0 自带的旧 std。
-// 旧 HashMap 的 lookup 是 `while(true)`, 只有命中 key 或遇到 Vacant 才退出;
-// 而 remove 只留 Tombstone、resize 又只看 Occupied 数量, 所以表被 tombstone
-// 填满后, 查询不存在的 key 会死循环。liveness 这种大量 insert/remove 的负载
-// 正好会触发它, 导致 stage1 卡死、stage2 编不出来。
-// 等把链接了修复版 std 的编译器刷新成新的 stage0 之后, 再切回 HashSet。
+// 编译器是自举的: stage1 由 stage0 编译, 链接的是 stage0 自带的 std
+// (即 `out/stage0/lib/libstd.a`)。历史上那个 std 的 HashMap lookup 是 `while(true)`,
+// 只有命中 key 或遇到 Vacant 才退出; 而 remove 只留 Tombstone、resize 又只看
+// Occupied 数量, 所以表被 tombstone 填满后, 查询不存在的 key 会死循环。
+// liveness 这种大量 insert/remove 的负载正好会触发它, 导致 stage1 卡死、stage2 编不出来。
+//
+// 现状 (已复核): 该 tombstone 探测 bug 已经在当前 `library/zinc_std/collections/hashmap.zn`
+// 里修掉 (insert 的探测改成"穿过 Tombstone、只在 Vacant 才 break"), 而当前 seed
+// (`out/stage0`: bin/zinc `fc3d993d…` / libstd.a `0c5a0bd4…` / std.zno `fc958638…`,
+// zip `df4b80d4…`) 正是由当前源码自举出来的同代产物, 链接的就是这份修复版 std。
+// 实测: 用 `out/stage0/bin/zinc` 编一个 2000 insert / 1000 remove / 30000 次 miss 查询
+// 再触发 resize 的 HashSet<UInt> 程序, 全程不卡死、结果正确。
+//
+// 所以"切回 HashSet"现在只差一次独立的功能改动 (本轮不动代码, 只更正注释);
+// 保留手写 UIntSet 不再有正确性上的必要, 但也没有代价。
+// 流程提醒: 改语言能力 / 公开 API / std 载荷时, 顺序必须是
+// **先改源码 → 用旧 seed 构建 → 最后才刷新 seed** (见 `docs/memory_layout.md` §4.2)。
 struct UIntSet {
     data: *(),
     cap: UInt,

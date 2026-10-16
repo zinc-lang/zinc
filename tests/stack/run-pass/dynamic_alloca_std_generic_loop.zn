@@ -1,0 +1,49 @@
+// 回归: 在**泛型**函数里循环调用 std 的泛型方法 (Vec::reverse / HashMap::insert),
+// T 未定 ⇒ 只能走带 typemeta 的泛型版本 ⇒ std 内部那些动态尺寸 alloca 每迭代执行
+// 一次。旧编译器下 8MB 栈约 3000 多次迭代就溢出; 修复后不随迭代次数增长。
+//
+// 修法见 native/llvm_wrapper/llvm_data_structures.cpp 的
+// llds_finalize_stack_scopes (llvm.stacksave / llvm.stackrestore)。
+use std::collections::vec::Vec;
+use std::collections::hashmap::HashMap;
+use std::{assert, assert_eq};
+
+struct Big {
+    a: [Int; 128],   // 1024 字节
+}
+
+fn mkbig() -> Big {
+    return { .a = [1_i; 128] }: Big;
+}
+
+// T 未定: v.reverse() 只能走泛型版本 (运行期查 typemeta 拿元素尺寸)
+fn spin_reverse<T>(v: &mut Vec<T>, n: UInt) {
+    let mut i: UInt = 0;
+    while i < n {
+        v.reverse();
+        i += 1;
+    }
+}
+
+// T 未定: HashMap<UInt, T>::insert 内部会走 resize / Entry 的临时量
+fn spin_insert<T>(k: T, n: UInt) {
+    let mut m = (type HashMap<UInt, T>)::new();
+    let mut i: UInt = 0;
+    while i < n {
+        m.insert(i, k);
+        i += 1;
+    }
+    assert_eq(m.len(), n);
+}
+
+fn main() {
+    let mut v = (type Vec<Big>)::new();
+    v.push(mkbig());
+    let alias = v;              // 制造别名, 让 reverse 走"重新分配并逐个复制"分支
+    assert_eq(alias.len(), 1_u);
+    spin_reverse(&mut v, 40000_u);
+    assert_eq(v.len(), 1_u);
+
+    spin_insert(mkbig(), 40000_u);
+    println("dynamic_alloca_std_generic_loop ok");
+}

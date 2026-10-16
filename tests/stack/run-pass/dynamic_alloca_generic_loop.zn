@@ -1,0 +1,38 @@
+// 回归: 循环里的"运行期才知道尺寸"的 alloca 不能累积栈。
+//
+// 背景: 固定尺寸的 alloca 已经被提升到函数入口块 (见 native/llvm_wrapper
+// /llvm_data_structures.cpp 的 llds_create_static_alloca_at_entry), 所以循环里
+// 反复执行同一个调用点不会涨栈。但**动态尺寸** alloca (alloca i8, i64 %n) 不能
+// 提升 —— 它的尺寸操作数不支配入口块。于是泛型函数里的循环里每迭代一次都会多留
+// 一份临时量的栈, 迭代到 8MB/1KB ≈ 8000 次就 "stackoverflow detected"。
+//
+// 修法: 在 llds_finalize_stack_scopes 里给这种动态尺寸 alloca 补
+// llvm.stacksave / llvm.stackrestore, 让它所在基本块每次执行完都把栈指针还回去。
+//
+// 用例: spin<T> 里循环调用 idf<T>(item), 返回值临时量尺寸 = T 的尺寸 (Big = 1KB),
+// 迭代 300000 次 ⇒ 泄漏 300 万 * 1KB ≈ 300MB, 旧编译器必然栈溢出; 修复后为 0 增长。
+use std::{assert_eq};
+
+struct Big {
+    a: [Int; 128],   // 128 * 8 = 1024 字节
+}
+
+fn idf<T>(v: T) -> T {
+    return v;
+}
+
+fn spin<T>(item: T, n: UInt) {
+    let mut i: UInt = 0;
+    while i < n {
+        // 调用点的返回值临时量尺寸只有运行期 (查 T 的 typemeta) 才知道
+        let r = idf(item);
+        i += 1;
+    }
+}
+
+fn main() {
+    let big = { .a = [3_i; 128] }: Big;
+    spin(big, 300000_u);
+    assert_eq(1_u, 1_u);
+    println("dynamic_alloca_generic_loop ok");
+}

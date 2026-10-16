@@ -506,10 +506,17 @@ pub struct HashMapIter<'a, K, V> {
 }
 
 impl<'a, K, V> Iterator for HashMapIter<'a, K, V> {
-    // 注意: 这里的 `Item = (K, V)` 是**旧 seed (stage0) 认得**的公开 API。
+    // 注意: 这里的 `Item = (K, V)` 是**公开 API**, 编译器源码也按它写。
     // H14 曾把它改成 `(&'a K, &'a V)` (并给迭代器加一个 `cur` 真元组字段),
-    // 那需要 stage0 同步刷新, 否则编译器自身源码无法被旧 seed 编译。
-    // 当前用户手上的 `out/stage0` (md5 `cc08258f…`) 是老一代, 故此处按老 API 写。
+    // 那是一次公开 API 变更: 改完之后必须**最后**刷新 seed, 否则编译器自身源码
+    // 无法被旧 seed 编译。
+    //
+    // 当前 seed = `fc3d993d…`(bin/zinc) / `0c5a0bd4…`(lib/libstd.a) /
+    // `fc958638…`(lib/std.zno), `out/stage0.zip` = `df4b80d4…`; 它正是由当前源码
+    // 自举出来的同代产物, 所以上面那条约束不是"seed 太老"而是**流程**约束:
+    // 改语言能力 / 公开 API / std 载荷时, 顺序必须是
+    // **先改源码 → 用旧 seed 构建 → 最后才刷新 seed**
+    // (根因与完整链条见 `docs/memory_layout.md` §4.2)。
     type Item = (K, V);
 
     fn next<'n>(&'n mut self) -> Option<&'n (K, V)> {
