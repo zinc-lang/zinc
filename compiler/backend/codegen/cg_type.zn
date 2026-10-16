@@ -3,6 +3,7 @@ use super::data_structures::*;
 
 use ::self::frontend::semantic::hir::ir::*;
 use ::self::frontend::semantic::hir::checker::type_mapping::*;
+use ::self::frontend::semantic::hir::checker::type_utils::*;
 
 impl CodeGenerator {
 
@@ -256,6 +257,22 @@ impl CodeGenerator {
             ctx.cached_instantiated.insert(sty_int, result);
             self.llds.restore_ip(saved_insert_point);
             return result;
+        }
+
+        // (E3) 自引用短路: 若这个类型就是本函数的 Self 类型, 那么函数收到的
+        // `$typemeta` 隐式实参**就是**它的 TypeMeta, 不必再运行期 instantiate 一次。
+        // 这一步只复用已有实参: 不改 ABI、不改 .zno、不新增运行期状态。
+        //
+        // 守卫 (两层, 缺一不可):
+        //   1) 签名里必须真的有 TypeMeta 形参 (闭包的签名没有; 不能在这里 panic,
+        //      否则会把"闭包内 Self 查询"从原本的 BUG panic 提前成一个新 panic);
+        //   2) canonical 后结构相等, 实参按 TypeParamSymbol 身份区分 (T != U)。
+        if ctx.self_sty() is Some(self_sty) {
+            if ctx.signature.index_of_typemeta_opt() is Some(tm_idx) {
+                if stype_eq_regardless_lifetime(sty, self_sty) {
+                    return self.cg_typemeta_arg(ctx, tm_idx);
+                }
+            }
         }
 
         match sty.type_symbol {

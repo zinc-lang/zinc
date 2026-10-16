@@ -1,0 +1,116 @@
+// E2 (library/zinc_core): meta 驱动的显式 copy / destruct helper 正确性。
+//
+// zinc_core_meta_copy(dst, src, meta): 逐字节复制 + meta->copy_fn (ARC retain /
+//   嵌套结构递归 copy); zinc_core_meta_destruct(obj, meta): meta->dtor_fn 就地析构。
+// 目标槽用 zinc_core_alloc_meta 拿到的裸缓冲区 (0 初始化, 无引用计数头), 与将来
+// "元素搬运去泛型化" 的用法一致: 只靠 meta 指针完成 copy / destruct。
+// 覆盖: 无析构 / 有析构 (数次数) / 含 ARC 句柄的嵌套容器 (引用计数配对) / 零尺寸类型。
+use std::{assert, assert_eq};
+use std::meta::type_of;
+use std::mem::size_of;
+use std::collections::vec::Vec;
+use std::primitives::string::String;
+use std::ops::drop::Drop;
+
+extern fn zinc_core_meta_copy(dst: *raw mut (), src: *raw (), meta: *raw ());
+extern fn zinc_core_meta_destruct(obj: *raw mut (), meta: *raw ());
+extern fn zinc_core_alloc_meta(size: UInt) -> *raw mut ();
+extern fn zinc_core_free_meta(p: *raw mut ());
+
+fn meta_of_ptr<T>(p: *raw mut T) -> *raw () {
+    return unsafe(type_of(<T>).rt_typemeta) as *raw ();
+}
+
+unsafe fn meta_copy_to<T>(dst: *raw mut T, src: &T) {
+    unsafe {
+        zinc_core_meta_copy(dst as *raw mut (), src as *raw T as *raw (), meta_of_ptr(dst));
+    }
+}
+
+unsafe fn meta_destruct_slot<T>(dst: *raw mut T) {
+    unsafe {
+        zinc_core_meta_destruct(dst as *raw mut (), meta_of_ptr(dst));
+    }
+}
+
+fn alloc_slot(size: UInt) -> *raw mut () {
+    return unsafe(zinc_core_alloc_meta(size));
+}
+
+struct Plain { a: Int, b: Int }
+
+unsafe static mut G_DROPS: Int = 0_i;
+struct Droppy { x: Int }
+impl Drop for Droppy {
+    fn drop(&mut self) { unsafe { G_DROPS = G_DROPS + 1_i; } }
+}
+fn drops_now() -> Int { return unsafe(G_DROPS); }
+
+struct Holder { v: Vec<Vec<Int>> }
+struct WithStr { s: String }
+struct Z {}
+
+fn main() {
+    // 1) 无析构类型: copy 原样, destruct 是 no-op
+    let plain = { .a = 3_i, .b = 4_i }: Plain;
+    let pslot = alloc_slot(size_of(<Plain>)) as *raw mut Plain;
+    unsafe { meta_copy_to(pslot, &plain); }
+    assert_eq(unsafe((*pslot).a), 3_i);
+    assert_eq(unsafe((*pslot).b), 4_i);
+    unsafe { meta_destruct_slot(pslot); }
+    assert_eq(unsafe((*pslot).a), 3_i);
+    unsafe { zinc_core_free_meta(pslot as *raw mut ()); }
+
+    // 2) 有 Drop: helper 必须恰好触发一次析构 (另外一次来自 d 自己的作用域)
+    unsafe { G_DROPS = 0_i; }
+    {
+        let d = { .x = 9_i }: Droppy;
+        let dslot = alloc_slot(size_of(<Droppy>)) as *raw mut Droppy;
+        unsafe { meta_copy_to(dslot, &d); }
+        assert_eq(drops_now(), 0_i);
+        assert_eq(unsafe((*dslot).x), 9_i);
+        unsafe { meta_destruct_slot(dslot); }
+        assert_eq(drops_now(), 1_i);
+        unsafe { zinc_core_free_meta(dslot as *raw mut ()); }
+    }
+    assert_eq(drops_now(), 2_i);
+
+    // 3) 含 ARC 句柄的嵌套容器: copy 必须 retain, destruct 必须 release (配对)
+    let mut h = { .v = (type Vec<Vec<Int>>)::new() }: Holder;
+    let mut inner = (type Vec<Int>)::new();
+    inner.push(7_i);
+    h.v.push(inner);
+    assert_eq(h.v.len(), 1_u);
+    assert_eq(h.v.ref_count() as UInt, 1_u);
+
+    let hslot = alloc_slot(size_of(<Holder>)) as *raw mut Holder;
+    unsafe { meta_copy_to(hslot, &h); }
+    assert_eq(h.v.ref_count() as UInt, 2_u);
+    assert_eq(unsafe((*hslot).v.ref_count() as UInt), 2_u);
+    assert_eq(unsafe((*hslot).v.len()), 1_u);
+    unsafe { meta_destruct_slot(hslot); }
+    assert_eq(h.v.ref_count() as UInt, 1_u);
+    unsafe { zinc_core_free_meta(hslot as *raw mut ()); }
+
+    // 4) String 负载
+    let ws = { .s = String::from_str("hello") }: WithStr;
+    let sslot = alloc_slot(size_of(<WithStr>)) as *raw mut WithStr;
+    unsafe { meta_copy_to(sslot, &ws); }
+    assert_eq(unsafe((*sslot).s.len()), 5_u);
+    unsafe { meta_destruct_slot(sslot); }
+    unsafe { zinc_core_free_meta(sslot as *raw mut ()); }
+
+    // 5) 零尺寸类型
+    assert_eq(type_of(<Z>).size(), 0_u);
+    assert_eq(size_of(<Z>), 0_u);
+    let zsrc = alloc_slot(0_u) as *raw mut Z;
+    let zdst = alloc_slot(0_u) as *raw mut Z;
+    unsafe {
+        zinc_core_meta_copy(zdst as *raw mut (), zsrc as *raw (), meta_of_ptr(zdst));
+        zinc_core_meta_destruct(zdst as *raw mut (), meta_of_ptr(zdst));
+        zinc_core_free_meta(zsrc as *raw mut ());
+        zinc_core_free_meta(zdst as *raw mut ());
+    }
+
+    println("meta_copy_destruct_helpers: OK");
+}

@@ -875,13 +875,21 @@ impl CgSignature {
         }: CgSignature;
     }
 
-    fn index_of_typemeta(&self) -> UInt {
+    // 没有 TypeMeta 形参时返回 None (闭包的签名就没有 —— E3 的守卫靠这个)
+    fn index_of_typemeta_opt(&self) -> Option<UInt> {
         let mut i: UInt = 0;
         for ref p in self.params {
             if p is CgParam::TypeMeta {
-                return i;
+                return Some(i);
             }
             i += 1;
+        }
+        return None;
+    }
+
+    fn index_of_typemeta(&self) -> UInt {
+        if self.index_of_typemeta_opt() is Some(i) {
+            return i;
         }
         panic "BUG: there is no CgParam::TypeMeta in the signature";
     }

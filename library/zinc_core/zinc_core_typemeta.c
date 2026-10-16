@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 
 // 把 p align 到 a 的整数倍
 // 假设 a 是 2 的整数次幂
@@ -139,6 +140,47 @@ static void* do_instantiate(void* a) {
     return ty_meta;
 }
 
+// 空 Tuple / 空 Array 的语义是"进程内唯一的一个 ZnTypeMeta, 不进 map"。
+// 原实现用的是裸 static 指针的惰性初始化 (并发下是 data race), 这里用一把
+// 只在首次初始化时触碰的原子自旋锁串行化: 与单线程版语义逐字相同
+// (同一个 def 上永远只会有唯一一个空类型), 代价只在 argc==0 的极罕见路径上。
+// 不需要改 ZnGenericTypeMeta 的布局 (那会牵动 native/llvm_wrapper 的字段表)。
+static _Atomic int zn_singleton_lock = 0;
+
+// argc==0 的 Tuple/Array 是"进程内唯一、不进 map"的两个单例槽。
+static _Atomic(ZnTypeMeta*) zn_empty_tuple_ty = NULL;
+static _Atomic(ZnTypeMeta*) zn_empty_array_ty = NULL;
+
+static void zn_singleton_lock_acquire(void) {
+    int expected = 0;
+    while (!atomic_compare_exchange_weak_explicit(&zn_singleton_lock, &expected, 1,
+                                                  memory_order_acquire, memory_order_relaxed)) {
+        expected = 0;
+    }
+}
+
+static void zn_singleton_lock_release(void) {
+    atomic_store_explicit(&zn_singleton_lock, 0, memory_order_release);
+}
+
+// def->kind 必须是 TM_Tuple 或 TM_Array, 且 ty_argc == 0。
+static ZnTypeMeta* zn_empty_generic_meta(ZnGenericTypeMeta* def, struct InstantiateArg* arg,
+                                         _Atomic(ZnTypeMeta*)* slot) {
+    (void)def;
+    ZnTypeMeta* cached = atomic_load_explicit(slot, memory_order_acquire);
+    if (cached != NULL) {
+        return cached;
+    }
+    zn_singleton_lock_acquire();
+    cached = atomic_load_explicit(slot, memory_order_relaxed);
+    if (cached == NULL) {
+        cached = do_instantiate(arg); // 锁内只做一次, 分配失败会 panic
+        atomic_store_explicit(slot, cached, memory_order_release);
+    }
+    zn_singleton_lock_release();
+    return cached;
+}
+
 ZnTypeMeta * zinc_core_instantiated(ZnGenericTypeMeta* def, uint8_t ty_argc, ZnTypeMeta* ty_argv[]) {
 
     // 在 on_load 阶段要保证这个 hashmap 已经初始化
@@ -153,27 +195,16 @@ ZnTypeMeta * zinc_core_instantiated(ZnGenericTypeMeta* def, uint8_t ty_argc, ZnT
     };
     HashMap * map = &def->all_instantiated;
 
-    if (def->kind == TM_Tuple) {
+    // TM_Tuple/TM_Array 的 argc==0 特例: 进程内唯一、不进 map。原实现用裸
+    // static 指针惰性初始化 (多线程下是 data race), 这里走带自旋锁的同一份
+    // 语义 (见 zn_empty_generic_meta)。
+    if (def->kind == TM_Tuple || def->kind == TM_Array) {
         if (ty_argc == 0) {
-            static ZnTypeMeta * empty_tuple_ty = NULL;
-            if (empty_tuple_ty == NULL) {
-                empty_tuple_ty = do_instantiate(&arg);
-            }
-            return empty_tuple_ty;  // 无参情况单独保存, 不放到 map 里面
-        } else {
-            map = (HashMap*) zinc_core_map_get_or_insert(map, (void*)(size_t)ty_argc, create_new_hashmap, NULL); // 第一层 hashmap 的 key 是 ty_argc
+            _Atomic(ZnTypeMeta*)* slot = (def->kind == TM_Tuple) ? &zn_empty_tuple_ty : &zn_empty_array_ty;
+            return zn_empty_generic_meta(def, &arg, slot);
         }
-    }
-    if (def->kind == TM_Array) {
-        if (ty_argc == 0) {
-            static ZnTypeMeta * empty_array_ty = NULL;
-            if (empty_array_ty == NULL) {
-                empty_array_ty = do_instantiate(&arg);
-            }
-            return empty_array_ty;
-        } else {
-            map = (HashMap*) zinc_core_map_get_or_insert(map, (void*)(size_t)ty_argc, create_new_hashmap, NULL); // 第一层 hashmap 的 key 是 ty_argc
-        }
+        // 第一层 hashmap 的 key 是 ty_argc
+        map = (HashMap*) zinc_core_map_get_or_insert(map, (void*)(size_t)ty_argc, create_new_hashmap, NULL);
     }
 
     assert(ty_argc > 0);
@@ -193,6 +224,9 @@ ZnTypeMeta * zinc_core_instantiated(ZnGenericTypeMeta* def, uint8_t ty_argc, ZnT
 }
 
 ZnTypeMeta * zinc_core_instantiate_array(ZnGenericTypeMeta* def, uint8_t ty_argc, ZnTypeMeta* argv) {
+    if (ty_argc == 0) {
+        return zinc_core_instantiated(def, 0, NULL); // 避免零长度 VLA
+    }
     ZnTypeMeta * ty_argv[ty_argc];
     for(uint8_t i = 0; i < ty_argc; i++) {
         ty_argv[i] = argv;
@@ -666,5 +700,45 @@ void zinc_core_conditional_destruct(bool* should_drop, void* fn, void* obj, ZnTy
         DtorFn dtor_fn = (DtorFn)fn;
         dtor_fn(obj, ty_meta);
         *should_drop = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (E2) 显式的 meta 驱动 copy / destruct
+//
+// 给 std 用的两个入口: 泛型代码里的"元素搬运 / 元素析构"不再需要在源码里写出
+// 具体类型 (也就不会为它物化一个运行期 ZnTypeMeta), 只要手里有元素的 TypeMeta
+// 就能完成与编译器自动生成代码**语义相同**的动作:
+//   * copy:     先逐字节复制 (memcpy), 再按 meta->copy_fn 修正 —— ARC 句柄
+//               retain / 嵌套结构递归 copy。与 codegen 对 "T 类型的值做复制"
+//               发射的动作一致 (cg_value.zn 的 do_copy_xvalue, TypeParamSymbol 分支)。
+//   * destruct: 按 meta->dtor_fn 就地析构 (dtor_fn 为 NULL -> no-op), 与 codegen
+//               对 "T 类型的值做 drop" 发射的动作一致 (cg_value.zn 的 do_drop)。
+//
+// 只新增两个符号: 不改任何现有函数的 ABI / 行为, 不改 std 公开 API, 不动 Entry 载荷。
+// dst 与 src 不允许指向同一地址 (那没有"复制"语义); 零尺寸类型只调 copy_fn (若有)。
+// ---------------------------------------------------------------------------
+
+void zinc_core_meta_copy(void* dst, void* src, ZnTypeMeta* meta) {
+    if (dst == NULL || src == NULL || meta == NULL || dst == src) {
+        return;
+    }
+    size_t size = meta->size;
+    if (size != 0) {
+        memcpy(dst, src, size);
+    }
+    if (meta->copy_fn != NULL) {
+        CopyFn f = (CopyFn)(meta->copy_fn);
+        f(dst, meta);
+    }
+}
+
+void zinc_core_meta_destruct(void* obj, ZnTypeMeta* meta) {
+    if (obj == NULL || meta == NULL) {
+        return;
+    }
+    if (meta->dtor_fn != NULL) {
+        DtorFn f = (DtorFn)(meta->dtor_fn);
+        f(obj, meta);
     }
 }

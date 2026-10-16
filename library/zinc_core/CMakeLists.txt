@@ -43,11 +43,10 @@ set_source_files_properties(${LIBBACKTRACE_SOURCES} PROPERTIES COMPILE_OPTIONS "
 
 set(CMAKE_BUILD_TYPE Debug)
 
-## zinc_core_map.c 是整个运行时里最热的 TU: 实测中 workload 的 callgrind Ir 里
-## map 的读写路径占 ~60%, 而 Debug(-g, 无优化) 下每次查表都要多走好几层函数调用。
-## 只把这一个文件用 -O2 编译 (其余保持 -g, 便于 backtrace/调试), 实测大 workload
-## 的 user 时间再降 ~33%。语义/产物都不变: 见 docs/performance.md 第 12 节。
 set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/zinc_core_map.c"
+                            PROPERTIES COMPILE_OPTIONS "-O2")
+
+set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/zinc_core_typemeta.c"
                             PROPERTIES COMPILE_OPTIONS "-O2")
 
 add_library(zinc_core ${ALL_SOURCE_FILES} ${LIBBACKTRACE_SOURCES})

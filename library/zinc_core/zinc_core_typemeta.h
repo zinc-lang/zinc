@@ -169,6 +169,12 @@ void zinc_core_fill_in_repeat(void* elem, size_t s, void * array, ZnTypeMeta* el
 
 void zinc_core_conditional_destruct(bool* should_drop, void* fn, void* obj, ZnTypeMeta* ty_meta);
 
+// (E2) meta 驱动的显式 copy / destruct: 只按 meta 指针操作, 不改任何现有 ABI。
+// copy: 逐字节复制 + meta->copy_fn (ARC retain / 递归 copy)
+// destruct: meta->dtor_fn 就地析构 (NULL 即 no-op)
+void zinc_core_meta_copy(void* dst, void* src, ZnTypeMeta* meta);
+void zinc_core_meta_destruct(void* obj, ZnTypeMeta* meta);
+
 #ifdef __cplusplus
 } // 结束 extern "C" 块
 #endif

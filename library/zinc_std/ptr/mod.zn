@@ -41,6 +41,15 @@ pub fn is_unique<P>(p: &*P) -> Bool {
     return unsafe(zinc_core_is_unique(*p as *raw P as *raw ()));
 }
 
+// 非泛型的"引用计数是否唯一"判断: 与 is_unique<P> **完全同语义** (同一个 C 函数,
+// 同一个指针值), 但不需要 P 的 TypeMeta, 所以调用方不必为了传泛型实参而在运行期
+// instantiate 一次 —— Vec<T> 里的 `is_unique(&self.ptr)` 就是这样为 `Shared<T>`
+// 物化了一次 zinc_core_instantiated 查表。
+// 参数是 ARC 指针本身 (即 is_unique 里的 `*p`), 不带类型参数。
+pub fn is_unique_raw(p: *raw ()) -> Bool {
+    return unsafe(zinc_core_is_unique(p));
+}
+
 pub struct RefCountSep {
     pub strong_count: UShort,
     pub weak_count: UShort,

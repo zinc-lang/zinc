@@ -1,0 +1,82 @@
+// E3 (codegen): 泛型方法里"查自己类型"的 TypeMeta 必须与运行期查表结果一致。
+//
+// 方法内的 type_of(<Plain<T>>) 命中 E3 短路 (直接复用函数收到的 $typemeta 隐式
+// 实参), 自由泛型函数内的同一查询永远走运行期 instantiate —— 二者必须给出同一个
+// TypeMeta。覆盖: 无 Drop / 有 Drop 的类型、元素为 ARC 负载 (String) 的实例、
+// 以及嵌套容器查询 (Holder<Vec<T>>)。
+use std::{assert, assert_eq};
+use std::meta::type_of;
+use std::collections::vec::Vec;
+use std::primitives::string::String;
+use std::ops::drop::Drop;
+
+struct Plain<T> { v: T }
+
+impl<T> Plain<T> {
+    fn self_addr(&self) -> UInt { return unsafe(type_of(<Plain<T>>).rt_typemeta as UInt); }
+    fn self_name(&self) -> String { return type_of(<Plain<T>>).to_string(); }
+}
+
+fn plain_addr<T>(p: &Plain<T>) -> UInt {
+    return unsafe(type_of(<Plain<T>>).rt_typemeta as UInt);
+}
+fn plain_name<T>(p: &Plain<T>) -> String { return type_of(<Plain<T>>).to_string(); }
+
+unsafe static mut G_DROPS: Int = 0_i;
+
+struct Droppy<T> { v: T }
+impl<T> Drop for Droppy<T> {
+    fn drop(&mut self) { unsafe { G_DROPS = G_DROPS + 1_i; } }
+}
+impl<T> Droppy<T> {
+    fn self_addr(&self) -> UInt { return unsafe(type_of(<Droppy<T>>).rt_typemeta as UInt); }
+}
+fn droppy_addr<T>(d: &Droppy<T>) -> UInt {
+    return unsafe(type_of(<Droppy<T>>).rt_typemeta as UInt);
+}
+
+struct Holder<T> { items: Vec<T> }
+
+impl<T> Holder<T> {
+    fn self_addr(&self) -> UInt { return unsafe(type_of(<Holder<T>>).rt_typemeta as UInt); }
+    fn nested_addr(&self) -> UInt {
+        return unsafe(type_of(<Holder<Vec<T>>>).rt_typemeta as UInt);
+    }
+}
+fn holder_addr<T>(h: &Holder<T>) -> UInt {
+    return unsafe(type_of(<Holder<T>>).rt_typemeta as UInt);
+}
+fn holder_nested_addr<T>(h: &Holder<T>) -> UInt {
+    return unsafe(type_of(<Holder<Vec<T>>>).rt_typemeta as UInt);
+}
+
+fn main() {
+    let p1 = { .v = 1_i }: Plain<Int>;
+    assert_eq(p1.self_addr(), plain_addr(&p1));
+    assert_eq(p1.self_name(), plain_name(&p1));
+
+    let p2 = { .v = String::from_str("x") }: Plain<String>;
+    assert_eq(p2.self_addr(), plain_addr(&p2));
+    assert_eq(p2.self_name(), plain_name(&p2));
+
+    unsafe { G_DROPS = 0_i; }
+    {
+        let d1 = { .v = 3_i }: Droppy<Int>;
+        assert_eq(d1.self_addr(), droppy_addr(&d1));
+        let d2 = { .v = String::from_str("d") }: Droppy<String>;
+        assert_eq(d2.self_addr(), droppy_addr(&d2));
+    }
+    assert_eq(unsafe(G_DROPS), 2_i);
+
+    let mut h1 = { .items = (type Vec<Int>)::new() }: Holder<Int>;
+    h1.items.push(1_i);
+    assert_eq(h1.self_addr(), holder_addr(&h1));
+    assert_eq(h1.nested_addr(), holder_nested_addr(&h1));
+
+    let mut h2 = { .items = (type Vec<String>)::new() }: Holder<String>;
+    h2.items.push(String::from_str("a"));
+    assert_eq(h2.self_addr(), holder_addr(&h2));
+    assert_eq(h2.nested_addr(), holder_nested_addr(&h2));
+
+    println("meta_self_ty_reuse: OK");
+}

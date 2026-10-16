@@ -101,7 +101,7 @@ impl<T> Vec<T> {
         }
         let mut data = Self::alloc_n(min_cap);
         unsafe {
-            if (::self::ptr::is_unique(&self.ptr)) {
+            if (::self::ptr::is_unique_raw(self.ptr as *raw Shared<T> as *raw ())) {
                 // 独占: 旧缓冲区马上会被释放, 元素句柄直接搬运过去 (mem_move 不增减引用计数),
                 // 如果这里用 mem_copy 就会给每个元素多 retain 一次, 造成泄漏。
                 ::self::mem::mem_move(self.ptr as *raw Shared<T> as *raw T, data as *raw Shared<T> as *raw mut T, self.size);
@@ -202,7 +202,7 @@ impl<T> Vec<T> {
     }
 
     pub fn clear(&mut self) {
-        if (!::self::ptr::is_unique(&self.ptr)) {
+        if (!::self::ptr::is_unique_raw(self.ptr as *raw Shared<T> as *raw ())) {
             self.ptr = Self::alloc_n(4); // 这里不可能产生强引用数量降为0的场景，因为这块内存就没有弱引用指向它
             self.size = 0;
             self.cap = 4;
@@ -241,7 +241,7 @@ impl<T> Vec<T> {
 
     // copy on write
     pub fn push(&mut self, item: T) {
-        if (!::self::ptr::is_unique(&self.ptr)) {
+        if (!::self::ptr::is_unique_raw(self.ptr as *raw Shared<T> as *raw ())) {
             let old = self.ptr;
             let new_cap = self.expanded_cap();
             self.ptr = Self::alloc_n(new_cap);
@@ -268,7 +268,7 @@ impl<T> Vec<T> {
         }
         let new_size: UInt = self.size + other.length;
         let new_cap: UInt = if (new_size > self.cap) then (new_size) else (self.cap);
-        if (!::self::ptr::is_unique(&self.ptr)) {
+        if (!::self::ptr::is_unique_raw(self.ptr as *raw Shared<T> as *raw ())) {
             let old = self.ptr;
             self.ptr = Self::alloc_n(new_cap);
             self.cap = new_cap;
@@ -314,7 +314,7 @@ impl<T> Vec<T> {
             return None;
         }
         
-        if (!::self::ptr::is_unique(&self.ptr)) { // 复制一份, 最后一个元素不复制
+        if (!::self::ptr::is_unique_raw(self.ptr as *raw Shared<T> as *raw ())) { // 复制一份, 最后一个元素不复制
             let old = self.ptr;
             let new_size = self.size - 1; // 肯定没有溢出
             self.ptr = Self::alloc_n(self.cap);
@@ -346,7 +346,7 @@ impl<T> Vec<T> {
             return None;
         }
 
-        if (!::self::ptr::is_unique(&self.ptr)) { // 复制一份, 最前一个元素不复制
+        if (!::self::ptr::is_unique_raw(self.ptr as *raw Shared<T> as *raw ())) { // 复制一份, 最前一个元素不复制
             let old = self.ptr;
             let new_size = self.size - 1; // 肯定没有溢出
             self.ptr = Self::alloc_n(self.cap);
@@ -387,7 +387,7 @@ impl<T> Vec<T> {
         if (idx > self.size) {
             panic "the index is too big in Vec::insert method.";
         }
-        if (!::self::ptr::is_unique(&self.ptr)) {
+        if (!::self::ptr::is_unique_raw(self.ptr as *raw Shared<T> as *raw ())) {
             let old = self.ptr;
             let new_cap = self.expanded_cap();
 
@@ -428,7 +428,7 @@ impl<T> Vec<T> {
     }
 
     pub fn to_unique(&mut self) {
-        if (!::self::ptr::is_unique(&self.ptr)) {
+        if (!::self::ptr::is_unique_raw(self.ptr as *raw Shared<T> as *raw ())) {
             let mut data = Self::alloc_n(self.size);
             unsafe { ::self::mem::mem_copy(self.ptr as *raw Shared<T> as *raw T, data as *raw Shared<T> as *raw mut T, self.size); }
             self.ptr = unsafe(data as *Shared<T>);
@@ -441,7 +441,7 @@ impl<T> Vec<T> {
             return;
         }
 
-        if (!::self::ptr::is_unique(&self.ptr)) { // 复制一份, 反过来复制
+        if (!::self::ptr::is_unique_raw(self.ptr as *raw Shared<T> as *raw ())) { // 复制一份, 反过来复制
             let size = self.size;
             let mut data = Self::alloc_n(size);
             let mut x: UInt = 0;
@@ -481,7 +481,7 @@ impl<T> Vec<T> {
 
 impl<T> Drop for Vec<T> {
     fn drop(&mut self) {
-        if (::self::ptr::is_unique(&self.ptr)) {
+        if (::self::ptr::is_unique_raw(self.ptr as *raw Shared<T> as *raw ())) {
             unsafe {
                 let buf = self.ptr as *raw Shared<T> as *raw mut T;
                 let mut i: UInt = 0; // 暂时不支持 range
@@ -547,7 +547,7 @@ pub struct VecIter<'a, T> {
 
 impl<'a, T> Drop for VecIter<'a, T> {
     fn drop(&mut self) {
-        if (::self::ptr::is_unique(&self.ptr)) {
+        if (::self::ptr::is_unique_raw(self.ptr as *raw Shared<T> as *raw ())) {
             unsafe {
                 let mut i: UInt = 0;
                 while (i < self.size) {
