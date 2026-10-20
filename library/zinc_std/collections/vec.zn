@@ -299,7 +299,6 @@ impl<T> Vec<T> {
     pub fn as_slice<'s>(&'s self) -> VecSlice<'s, T> {
         return {
             .origin = self.ptr,
-            .total_size = self.size,
             .start = unsafe(self.ptr as *raw Shared<T> as *raw T as &T),
             .size = self.size,
         }: VecSlice<'s, T>;
@@ -561,6 +560,9 @@ impl<'a, T> Drop for VecIter<'a, T> {
     }
 }
 
+impl<'a, T> !Send for VecIter<'a, T> {}
+impl<'a, T> !Sync for VecIter<'a, T> {}
+
 impl<'a, T> Iterator for VecIter<'a, T> {
     type Item = T;
 
@@ -608,7 +610,6 @@ impl<T> Deref for Vec<T> {
 // 它是引用语义, non-Send non-Sync 的
 pub struct VecSlice<'s, T> {
     origin: *Shared<T>,
-    total_size: UInt,
     start: &'s T,
     size: UInt,
 }
