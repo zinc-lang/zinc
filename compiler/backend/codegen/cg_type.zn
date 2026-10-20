@@ -239,6 +239,43 @@ impl CodeGenerator {
         return self.llds.get_arg(ctx.ll_func, llvm_idx);
     }
 
+    // (E3a) 类型子树里是否含定长数组。
+    //
+    // 历史背景 (当初为什么需要这个守卫): 修复前的 stype_eq_regardless_lifetime
+    // 只按**较短**的一边递归比较 ty_args, 而 [T; N] 的长度体现在 ty_args 的
+    // **个数**上、不在 type_symbol 里 —— 于是
+    //     stype_eq(Foo<[Int; 2]>, Foo<[Int; 3]>) == true
+    // (较短的一边只有 2 个元素就比完了; 方向反过来才是 false, 这个比较本身还不对称)。
+    // 若此时把 Self 的 $typemeta 当成"请求类型"的 TypeMeta 返回, size/align/copy/
+    // dtor/name 就全错了 —— 静默误编译。
+    //
+    // 现在这两个前提都已被根治:
+    //   * stype_eq_regardless_lifetime 先比较 ty_args.len() (checker/type_utils.zn),
+    //     不同长度的 Array / 不同元数的 tuple 不会再被判等;
+    //   * 前端 check_impl_target_ty 已经拒绝 impl<T> Foo<[Int; 3], T> 这种复杂 target
+    //     (inherent impl 也不例外), 这类 Self 类型根本进不到 codegen。
+    // 本守卫仍然**保留**, 作为 defense-in-depth: Array 长度只有运行期的
+    // zinc_core_instantiate_array 能带进去, 所以规则保持保守:
+    //   只要请求类型或 Self 的类型子树里出现**任何** Array, 就不走短路,
+    //   退回 instantiated_typemeta / Array 分支, 由运行期按请求的实参树构造。
+    // 只读 type_symbol + args.ty_args, 不改 stype_eq 本身。
+    // 深度上限是保守方向: 超限按"含 Array"处理 (拒绝复用)。
+    fn sty_tree_contains_array(&self, sty: *SType, depth: UInt) -> Bool {
+        if depth > 32_u {
+            return true;
+        }
+        let c = sty.canonical();
+        if c.type_symbol is type *ArraySymbol {
+            return true;
+        }
+        for a in c.args.ty_args {
+            if self.sty_tree_contains_array(a, depth + 1_u) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     fn rt_typemeta_of(&mut self, sty: *SType, ctx: *CgContext) -> CgValue {
         // 编译侧的"全局 typemeta 缓存" (见本文件末尾 tmcache_* 的注释):
         // 上下文无关的实例化类型 (Option<Int> / Vec<String> / [Int; 4] ...) 的 TypeMeta
@@ -263,14 +300,22 @@ impl CodeGenerator {
         // `$typemeta` 隐式实参**就是**它的 TypeMeta, 不必再运行期 instantiate 一次。
         // 这一步只复用已有实参: 不改 ABI、不改 .zno、不新增运行期状态。
         //
-        // 守卫 (两层, 缺一不可):
+        // 守卫 (三层; 第 3 层是 defense-in-depth, 前两层是正确性所必需):
         //   1) 签名里必须真的有 TypeMeta 形参 (闭包的签名没有; 不能在这里 panic,
         //      否则会把"闭包内 Self 查询"从原本的 BUG panic 提前成一个新 panic);
-        //   2) canonical 后结构相等, 实参按 TypeParamSymbol 身份区分 (T != U)。
+        //   2) canonical 后结构相等, 实参按 TypeParamSymbol 身份区分 (T != U);
+        //   3) (E3a) 请求类型与 Self 的类型子树都**不含 Array**。stype_eq 现在会先比
+        //      ty_args 长度, 理论上 [Int;2] 与 [Int;3] 不会再被判等; 这一层保留是为了
+        //      在将来再出现任何 Array 长度编码差异时仍然保守地放弃短路, 走下面的
+        //      instantiated_typemeta / Array 分支 (运行期按实参树构造)。
+        //      详见 sty_tree_contains_array 的注释。
         if ctx.self_sty() is Some(self_sty) {
             if ctx.signature.index_of_typemeta_opt() is Some(tm_idx) {
-                if stype_eq_regardless_lifetime(sty, self_sty) {
-                    return self.cg_typemeta_arg(ctx, tm_idx);
+                if !self.sty_tree_contains_array(sty, 0_u) &&
+                    !self.sty_tree_contains_array(self_sty, 0_u) {
+                    if stype_eq_regardless_lifetime(sty, self_sty) {
+                        return self.cg_typemeta_arg(ctx, tm_idx);
+                    }
                 }
             }
         }

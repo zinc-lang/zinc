@@ -65,6 +65,15 @@ impl DiagnosticEngine {
         }: DiagItem);
     }
 
+    fn emit_inherent_impl_complex_target_arg(&mut self, arg: String, span: SourceSpan) {
+        self.emit({
+            .span = span,
+            .severity = Severity::Error,
+            .msg_zn = f"inherent impl 的目标类型实参必须是简单类型 (如 Int、MyStruct) 或裸类型参数 (如 T), 不能是 tuple、array 或带泛型实参的复合类型: $(arg)",
+            .msg_en = f"inherent impl target type argument must be a simple type (e.g. Int, MyStruct) or a bare type parameter (e.g. T); tuple, array, and compound types with generic arguments are not allowed: $(arg)",
+        }: DiagItem);
+    }
+
     fn emit_type_cannot_be_none(&mut self, span: SourceSpan) {
         self.emit({
             .span = span,

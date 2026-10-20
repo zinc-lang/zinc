@@ -349,7 +349,16 @@ fn stype_eq_regardless_lifetime(ty1: *SType, ty2: *SType) -> Bool {
         return false;
     }
 
+    // 实参个数是类型的一部分, 先比长度再逐个递归。少比/多比都不行:
+    //   * [T; N] 的长度就体现在 ty_args 的个数上, 不同长度必须是不同类型;
+    //   * tuple 的元数同理;
+    //   * 旧实现只按 t1 的长度循环, t1 短时会静默忽略 t2 多出来的实参,
+    //     t1 长时靠 ty_arg 越界返回 Invalid 兜底 —— 既漏比又不对称。
+    // 生命周期实参 lt_args 仍然完全忽略 (函数名语义不变)。
     let len = t1.args.ty_args.len();
+    if len != t2.args.ty_args.len() {
+        return false;
+    }
     let mut i: UInt = 0;
     while i < len {
         let arg1 = t1.args.ty_arg(i);

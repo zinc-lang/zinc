@@ -1,0 +1,16 @@
+// inherent impl 的目标类型实参不能是 tuple: (Int, Int) 是复合类型,
+// 只允许叶子类型 (Int / MyStruct) 或裸类型参数 (T)。
+// 期望诊断: inherent impl 的目标类型实参必须是简单类型 ... 不能是 tuple、array ...
+//           ...: (Int, Int, )
+struct Foo<A, B> {
+    a: A,
+    b: B,
+}
+
+impl<T> Foo<(Int, Int), T> {
+    fn tag() -> Int {
+        return 1_i;
+    }
+}
+
+fn main() {}

@@ -1,0 +1,33 @@
+// (E3a -> compile-fail) 复杂 target 实参的 inherent impl 现在在语义阶段就被拒绝。
+//
+// 历史背景: E3a 在 codegen 侧 (compiler/backend/codegen/cg_type.zn 的
+// sty_tree_contains_array + 三层守卫) 挡住了下面这种误编译 —— 旧 E3 会把
+// impl<T> Foo<[Int; 3], T> 方法里 `type_of(<Foo<[Int; 2], T>>)` 的查询
+// 当成 Self 类型, 直接复用 Self 的 $typemeta, 于是 requested_size() 返回 32
+// 而不是 24 (stype_eq_regardless_lifetime 当时不比较 Array 长度)。
+// E3a 守卫作为 defense-in-depth 继续保留; 但产生这种 Self 类型的 impl 形态
+// 本身现在就不合法了, 所以本用例从 run-pass 改成 compile-fail。
+//
+// 期望诊断 (inherent impl 的目标类型实参必须是简单类型/裸类型参数):
+//   [错误]: inherent impl 的目标类型实参必须是简单类型 (如 Int、MyStruct) 或裸类型参数
+//           (如 T), 不能是 tuple、array 或带泛型实参的复合类型: [Int;3]
+//   位置: 文件里 `impl<T> Foo<[Int; 3], T> {` 这一行, 列指向类型名 Foo。
+//
+// 合法的形态 (impl Foo<Int> / impl<T> Foo<T>) 仍由 run-pass 用例覆盖:
+// tests/std/misc/run-pass/meta_self_ty_reuse.zn 与
+// tests/std/misc/run-pass/inherent_impl_simple_target.zn。
+use std::meta::type_of;
+
+struct Foo<A, B> {
+    a: A,
+    b: B,
+}
+
+impl<T> Foo<[Int; 3], T> {
+    fn requested_size() -> UInt {
+        // [Int; 2] + Int = 24 字节, [Int; 3] + Int = 32 字节
+        return type_of(<Foo<[Int; 2], T>>).size();
+    }
+}
+
+fn main() {}

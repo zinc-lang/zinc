@@ -1,0 +1,7 @@
+// (stype_eq 长度修复) 三元表达式两个分支的类型必须一致。
+// 旧实现比较 [Int; 2] 与 [Int; 3] 时只看较短一边, 会接受这个表达式;
+// 新实现先比 ty_args.len(), 必须报类型不匹配。
+fn main() {
+    let x = if true then [1_i, 2_i] else [3_i, 4_i, 5_i];
+    println(x[0]);
+}

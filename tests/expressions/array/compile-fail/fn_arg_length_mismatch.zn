@@ -1,0 +1,12 @@
+// (stype_eq 长度修复) 函数实参方向: 实际 [Int; 2] -> 形参 [Int; 3]。
+// 旧 stype_eq_regardless_lifetime 只按 t1 (这里是 src, 较短) 的长度比较 ty_args,
+// t2 多出来的元素被静默忽略; 旧编译器会接受这个调用。
+// 新实现先比 ty_args.len(), 必须报错。
+fn take(a: [Int; 3]) -> Int {
+    return a[0];
+}
+
+fn main() {
+    let a: [Int; 2] = [1_i, 2_i];
+    println(take(a));
+}

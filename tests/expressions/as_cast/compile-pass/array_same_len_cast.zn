@@ -1,0 +1,7 @@
+// (stype_eq 长度修复的正向用例) 长度相同的数组 as 转换仍然合法 (LifetimeCast 语义,
+// 布局不变)。删除 type_cast.zn 的局部 workaround 后行为保持不变。
+fn main() {
+    let a: [Int; 2] = [1_i, 2_i];
+    let b = a as [Int; 2];
+    println(b[0] + b[1]);
+}

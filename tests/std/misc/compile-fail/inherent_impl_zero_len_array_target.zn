@@ -1,0 +1,16 @@
+// [T; N] 的长度体现在 ty_args 的个数上, 但 [Int; 0] 的 ty_args 是空的。
+// 所以判定必须按 ArraySymbol 本身, 不能只看 ty_args.len(): [Int; 0] 仍然是 array,
+// inherent impl 的目标类型实参依旧要被拒绝。
+// 期望诊断: inherent impl 的目标类型实参必须是简单类型 ... 不能是 tuple、array ...
+struct Foo<A, B> {
+    a: A,
+    b: B,
+}
+
+impl Foo<[Int; 0], Int> {
+    fn tag() -> Int {
+        return 1_i;
+    }
+}
+
+fn main() {}

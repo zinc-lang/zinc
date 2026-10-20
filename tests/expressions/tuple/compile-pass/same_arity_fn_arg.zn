@@ -1,0 +1,9 @@
+// (stype_eq 长度修复的正向用例) 元数相同的 tuple 实参照旧可以传递。
+fn take(t: (Int, Int)) -> Int {
+    return t.0 + t.1;
+}
+
+fn main() {
+    let t = (1_i, 2_i);
+    println(take(t));
+}

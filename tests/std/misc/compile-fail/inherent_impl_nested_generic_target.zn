@@ -1,0 +1,17 @@
+// inherent impl 的目标类型实参不能是带泛型实参的复合类型: Option<T> 被拒绝。
+// 允许的两种形态只有: 裸类型参数 T (impl<T> Foo<T>) 和无 ty_args 的叶子类型
+// (impl Foo<Int> / impl Foo<MyStruct>)。
+// 期望诊断: inherent impl 的目标类型实参必须是简单类型 ... 带泛型实参的复合类型:
+//           ::std::primitives::option::Option<T>
+struct Foo<A, B> {
+    a: A,
+    b: B,
+}
+
+impl<T> Foo<Option<T>, T> {
+    fn tag() -> Int {
+        return 1_i;
+    }
+}
+
+fn main() {}

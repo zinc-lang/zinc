@@ -1,0 +1,9 @@
+// (stype_eq 长度修复) 定长数组长度不同的 as 转换必须被拒绝。
+// 这个用例同时验证: type_cast.zn 里原来的局部 Array 长度 workaround 删除后,
+// 行为保持不变 (仍然报 "非法的类型转换") —— 因为 stype_eq_regardless_lifetime
+// 现在自己先比 ty_args.len()。
+fn main() {
+    let a: [Int; 2] = [1_i, 2_i];
+    let b = a as [Int; 3];
+    println(b[0]);
+}

@@ -20,6 +20,27 @@ use type_utils::*;
 
 use std::collections::hashset::HashSet;
 
+// impl 目标类型的实参只允许两种形态:
+//   1) 裸类型参数 T: impl<T> Foo<T> / impl<T> Foo<Int, T>;
+//   2) 无类型实参的叶子类型: impl Foo<Int> / impl Foo<MyStruct>.
+// tuple / array / 任何带 ty_args 的复合类型 (Option<T>, Foo<Int>, &T, *const T ...) 都算复杂。
+// 编译器对 impl 目标类型的登记 (Self 类型的实参替换) 只支持上面两种形态: 复杂实参会让
+// Self 替换不完整, 进而在 codegen 阶段误编译 (典型例子: Foo<[Int;2], T> 被当成
+// Foo<[Int;3], T> 复用 $typemeta)。trait impl 沿用更严格的旧规则 (只允许裸类型参数),
+// 这里只给 inherent impl 放宽到"叶子类型"。
+// 注意 tuple / array 必须按 type_symbol 判断: () 与 [Int; 0] 的 ty_args 为空,
+// 但语义上仍然是复合类型。
+fn impl_target_arg_is_complex(arg: *SType) -> Bool {
+    let c = arg.canonical();
+    if c.type_symbol is type *TypeParamSymbol {
+        return false;
+    }
+    if c.type_symbol is type *TupleSymbol || c.type_symbol is type *ArraySymbol {
+        return true;
+    }
+    return c.args.ty_args.len() != 0;
+}
+
 pub struct TypeCheckContext {
     visited: HashSet<UInt>,
     fsym: Option<*FuncSymbol>,
@@ -1370,6 +1391,12 @@ impl TypeCheckContext {
             }
         }
 
+        // impl 目标类型的实参必须是简单形态 (trait impl 与 inherent impl 共用一套判定,
+        // 规则差异见 check_impl_target_ty)。这一步对 inherent impl 尤其重要: 它保证了
+        // impl<T> Foo<[Int; 3], T> 这种复杂 target 在语义阶段就被拒绝, 而不是留到
+        // codegen 阶段靠 E3a 的 Array 守卫兜底。
+        self.check_impl_target_ty(i);
+
         // 检查 impl 是否实现了 trait 里面所有的 assoc type & methods
         if i.trait_sty is Some(trait_sty) {
             self.check_impl_trait_completeness(i);
@@ -1389,6 +1416,37 @@ impl TypeCheckContext {
             }
         }
 
+    }
+
+    // impl 目标类型的实参检查。
+    //   * trait impl 沿用原有规则: 每个 ty_arg 都必须是裸类型参数 T
+    //     (impl<T> Trait for Foo<T>); 其它形态一律按"复杂泛型实参"报未实现。
+    //   * inherent impl 允许裸类型参数 T, 也允许无类型实参的叶子类型
+    //     (impl Foo<Int> / impl Foo<MyStruct>), 但 tuple / array / 带 ty_args 的复合类型
+    //     (impl<T> Foo<[Int; 3], T>、impl<T> Foo<Option<T>> ...) 报清晰的错误。
+    // inherent impl 的复杂判定复用 impl_target_arg_is_complex; trait impl 保留更严格的
+    // 裸类型参数判定 (不因这次放宽而改变, 免得让原本被拒绝的 trait impl 被静默接受)。
+    fn check_impl_target_ty(&mut self, impl_sym: *ImplSymbol) {
+        let is_trait_impl = impl_sym.trait_sty is Some(_);
+        for arg in impl_sym.target_sty.args.ty_args {
+            if is_trait_impl {
+                if !(arg.type_symbol is type *TypeParamSymbol) {
+                    DiagnosticEngine::get().emit_unimplemented(
+                        impl_sym.impl_node.target_ty.span(),
+                        "impl target type with complex generic args",
+                    );
+                }
+            } else if impl_target_arg_is_complex(arg) {
+                DiagnosticEngine::get().emit_inherent_impl_complex_target_arg(
+                    arg.to_string(), impl_sym.impl_node.target_ty.span()
+                );
+            }
+        }
+        if impl_sym.target_sty.type_symbol is type *TypeParamSymbol {
+            DiagnosticEngine::get().emit_unimplemented(
+                impl_sym.impl_node.target_ty.span(), "impl target type is type parameter"
+            );
+        }
     }
 
     // 检查 impl 是否实现了 trait 里面所有的 assoc type & methods,
@@ -1445,16 +1503,8 @@ impl TypeCheckContext {
                     }
                 }
 
-                // 未实现功能: 被实现的类型不允许带有复杂泛型参数 impl<T> MyType<Option<T>> {}
-                // 后续可以实现, zinc_core 中已经对此功能做了预留
-                for arg in impl_sym.target_sty.args.ty_args {
-                    if !(arg.type_symbol is type *TypeParamSymbol) {
-                        DiagnosticEngine::get().emit_unimplemented(impl_sym.impl_node.target_ty.span(), "impl target type with complex generic args");
-                    }
-                }
-                if impl_sym.target_sty.type_symbol is type *TypeParamSymbol {
-                    DiagnosticEngine::get().emit_unimplemented(impl_sym.impl_node.target_ty.span(), "impl target type is type parameter");
-                }
+                // 目标类型实参的检查已上移到 check_impl_target_ty (trait / inherent 共用),
+                // 这里不再重复。
             }
         }
     }

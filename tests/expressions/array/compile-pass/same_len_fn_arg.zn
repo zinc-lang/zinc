@@ -1,0 +1,10 @@
+// (stype_eq 长度修复的正向用例) 长度相同的数组实参照旧可以传递。
+// 先比 ty_args.len() 只应拒绝长度不同的情况, 不能误伤长度相同的数组。
+fn take(a: [Int; 2]) -> Int {
+    return a[0] + a[1];
+}
+
+fn main() {
+    let a: [Int; 2] = [1_i, 2_i];
+    println(take(a));
+}

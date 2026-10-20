@@ -1,0 +1,54 @@
+// 合法的 inherent impl target 实参形态 (第 1 项的正向验证):
+//   * 无 ty_args 的叶子类型: impl Foo<Int>
+//   * 裸类型参数:          impl<T> Bar<T>
+//   * 两者混合:            impl<T> Baz<Int, T>
+//   * 用户 struct 作为叶子: impl Qux<Leaf>
+// 这些都不应触发"复杂 target 实参"诊断, 且方法要能在运行期按实例化类型派发。
+use std::{assert_eq};
+
+struct Foo<T> {
+    v: T,
+}
+struct Bar<T> {
+    v: T,
+}
+struct Baz<A, B> {
+    a: A,
+    b: B,
+}
+struct Leaf {
+    n: Int,
+}
+struct Qux<T> {
+    v: T,
+}
+
+impl Foo<Int> {
+    fn get(&self) -> Int {
+        return self.v;
+    }
+}
+impl<T> Bar<T> {
+    fn tag() -> Int {
+        return 1_i;
+    }
+}
+impl<T> Baz<Int, T> {
+    fn tag() -> Int {
+        return 2_i;
+    }
+}
+impl Qux<Leaf> {
+    fn tag() -> Int {
+        return 3_i;
+    }
+}
+
+fn main() {
+    let f = { .v = 7_i }: Foo<Int>;
+    assert_eq(f.get(), 7_i);
+    assert_eq((type Bar<Int>)::tag(), 1_i);
+    assert_eq((type Baz<Int, UInt>)::tag(), 2_i);
+    assert_eq((type Qux<Leaf>)::tag(), 3_i);
+    println("inherent_impl_simple_target: OK");
+}

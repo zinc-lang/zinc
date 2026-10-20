@@ -1,0 +1,16 @@
+// (stype_eq 长度修复) trait 方法签名比较: impl 里的 [Int; 3] 与 trait 声明的
+// [Int; 2] 不是同一个类型。旧实现按 t1 (trait 声明, 较短) 的长度比较,
+// 忽略 impl 侧多出来的元素, 于是错误地认为签名一致; 新实现必须报签名不一致。
+trait T {
+    fn f(a: [Int; 2]) -> Int;
+}
+
+struct S {}
+
+impl T for S {
+    fn f(a: [Int; 3]) -> Int {
+        return a[0];
+    }
+}
+
+fn main() {}
