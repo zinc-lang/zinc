@@ -1,0 +1,7 @@
+// 按值捕获自有 Int 的 lambda 满足 `'static` 上界。
+fn run<T>(l: T) where T: Fn(Int) -> Int + 'static { }
+
+fn main() {
+    let n = 1_i;
+    run((.{ [move n] (x: Int) -> Int => return x + n; }));
+}

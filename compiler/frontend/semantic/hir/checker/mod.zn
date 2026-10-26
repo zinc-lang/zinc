@@ -1949,24 +1949,44 @@ impl TypeCheckContext {
         }
     }
 
+    // 检查一个泛型实参 `ty` 是否满足一条上界 `upper` (where 约束 / 内联 bound)。
+    // 多上界是合取: 调用方对上界列表里的每一条都调用一次, 失败诊断会指明是哪一条。
     fn check_requires_constraint(&self, ty: *SType, upper: *SType, span: SourceSpan) {
+        // 当前作用域 (函数 + 它所在的 impl + 闭包) 的类型参数约束。
+        // 实参里出现自由类型参数 (如 T) 时, trait 成员关系 / 'static / Fn 只能靠它推导:
+        //   fn f<T>(v: Vec<T>)            要求 Vec<T>: Eq  => 需要 T: Eq, ctx 没有 => 报错
+        //   fn g<T: Eq>(v: Vec<T>)        要求 Vec<T>: Eq  => 需要 T: Eq, ctx 有   => 通过
+        let mut ctx = GenericConstraints::new();
+        if self.fsym is Some(cur_fsym) {
+            ctx.merge(&cur_fsym.generics.constraints);
+            if cur_fsym.parent_sym is Some(cur_isym: *ImplSymbol) {
+                ctx.merge(&cur_isym.generics.constraints);
+            }
+        }
+        if self.lambda_sym is Some(cur_lsym) {
+            ctx.merge(&cur_lsym.generics.constraints);
+        }
+
+        // 生命周期上界: 目前只实现 `'static` —— 实参类型内部不能含非 'static 生命周期。
+        // 具名生命周期之间的上界关系 (`'a: 'b`) 还没实现, 不在这里误报。
+        if upper.type_symbol is upper_lt: *LifetimeSymbol {
+            if upper_lt.is_static() && !conform_static_bound(ty, &ctx) {
+                DiagnosticEngine::get().emit_typeparam_not_conform_constraint(ty.to_string(), upper.to_string(), span);
+            }
+            return;
+        }
+
+        // Fn / FnMut 上界: 闭包按"签名 + 捕获方式"匹配, fn 指针按签名匹配。
+        // 判定复用 is_subtype_ctx 里已有的 lambda/fn 分支, 不引入闭包 ABI 变更。
+        if is_fn_upper(upper) {
+            if !is_subtype_ctx(ty, upper, &ctx) {
+                DiagnosticEngine::get().emit_typeparam_not_conform_constraint(ty.to_string(), upper.to_string(), span);
+            }
+            return;
+        }
+
         if upper.type_symbol is upper_trait: *TraitSymbol {
             let upper_sym_int = upper_trait as *raw TraitSymbol as UInt;
-
-            // 当前作用域 (函数 + 它所在的 impl + 闭包) 的类型参数约束。
-            // 实参里出现自由类型参数 (如 T) 时, trait 成员关系只能靠它推导:
-            //   fn f<T>(v: Vec<T>)            要求 Vec<T>: Eq  => 需要 T: Eq, ctx 没有 => 报错
-            //   fn g<T: Eq>(v: Vec<T>)        要求 Vec<T>: Eq  => 需要 T: Eq, ctx 有   => 通过
-            let mut ctx = GenericConstraints::new();
-            if self.fsym is Some(cur_fsym) {
-                ctx.merge(&cur_fsym.generics.constraints);
-                if cur_fsym.parent_sym is Some(cur_isym: *ImplSymbol) {
-                    ctx.merge(&cur_isym.generics.constraints);
-                }
-            }
-            if self.lambda_sym is Some(cur_lsym) {
-                ctx.merge(&cur_lsym.generics.constraints);
-            }
 
             if ty.type_symbol is tp: *TypeParamSymbol {
                 let tp_int = tp as *raw TypeParamSymbol as UInt;

@@ -1,0 +1,7 @@
+// 自由类型参数只要自己也有同样的上界, 就能原样传给要求该上界的函数。
+fn inner<T>(l: T) where T: Fn(Int) -> Int + 'static { }
+fn outer<U>(l: U) where U: Fn(Int) -> Int + 'static { inner(l); }
+
+fn main() {
+    outer((x: Int) -> Int => x + 1);
+}

@@ -1,0 +1,7 @@
+// 泛型实参里写 'static 的借用算满足 `'static` 上界。
+fn take<T: 'static>(x: T) { }
+
+fn main() {
+    let v: Vec<&'static Int> = (type Vec<&'static Int>)::new();
+    take(v);
+}

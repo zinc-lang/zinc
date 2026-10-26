@@ -1,0 +1,6 @@
+// 无捕获 lambda 也满足 `Fn(Int) -> Int + 'static`。
+fn run<T>(l: T) where T: Fn(Int) -> Int + 'static { }
+
+fn main() {
+    run((x: Int) -> Int => x + 1);
+}

@@ -1244,6 +1244,15 @@ fn mentions_lifetime_at(sty: *SType, depth: UInt) -> Bool {
         return true;
     }
     let ts = c.type_symbol;
+    // 函数类型签名里的生命周期是"每次调用"的, 不会作为值的一部分存下来
+    // (同 member_field_elided_at 的说明)。所以 fn / Fn / FnMut 类型本身不携带
+    // 生命周期信息 —— 否则 `T: 'static` 会把 fn(&Int) / *Fn(&Int) 这类本身是
+    // 'static 的类型误判成"含非 static 生命周期"。
+    if ts is type *FnLowerTypeSymbol ||
+        ts is type *FnUpperTypeSymbol ||
+        ts is type *FnUpperMutTypeSymbol {
+        return false;
+    }
     if ts is lt_sym: *LifetimeSymbol {
         // 生命周期本身作为类型出现时同理: 只有非 'static 的才算信息
         return !lt_sym.is_static();
@@ -1389,6 +1398,61 @@ fn fn_sig_matches(a: *SType, b: *SType) -> Bool {
     return stype_eq_regardless_lifetime(a.fn_return_sty(), b.fn_return_sty());
 }
 
+// ---------------------------------------------------------------------------
+// 泛型上界: `'static` 与 Fn / FnMut
+// ---------------------------------------------------------------------------
+
+// 类型整体 (而不只是一组泛型实参) 是否含非 'static 生命周期。
+// has_non_static_lifetime 只看顶层的 GenericArgs; 要递归到 struct/enum/union 的字段、
+// tuple/array 的元素、泛型实参和 lambda 的捕获, 复用已有的 mentions_lifetime ——
+// 它本身就是 has_non_static_lifetime 的递归包装, 这里不另写一套。
+fn type_has_non_static_lifetime(sty: *SType) -> Bool {
+    return mentions_lifetime(sty);
+}
+
+// 类型参数 tp 在 ctx 里有没有显式的 `'static` 上界
+fn type_param_has_static_bound(tp: *TypeParamSymbol, ctx: &GenericConstraints) -> Bool {
+    let key = tp as *raw TypeParamSymbol as UInt;
+    for b in ctx.upper_bounds(&key) {
+        if b.type_symbol is lt: *LifetimeSymbol {
+            if lt.is_static() {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// `'static` 上界的一致性判断 (ctx = 当前作用域的类型参数约束):
+//   - 自由类型参数: 只有 ctx 里也有 `'static` 上界时才算满足 (不隐式假定);
+//   - 其它类型: 不能含非 'static 生命周期。显式写成 'static 的引用 / S<'static> 算满足。
+fn conform_static_bound(sty: *SType, ctx: &GenericConstraints) -> Bool {
+    let c = sty.canonical();
+    if c.type_symbol is tp: *TypeParamSymbol {
+        return type_param_has_static_bound(tp, ctx);
+    }
+    return !type_has_non_static_lifetime(c);
+}
+
+// 类型参数 tp 能不能满足 Fn / FnMut 上界: 在 ctx 里找签名相同的上界。
+// 强弱规则和 is_subtype_ctx 的闭包分支一致: Fn 可以当 FnMut 用, 反过来不行。
+fn type_param_conforms_fn_upper(tp: *TypeParamSymbol, upper: *SType, ctx: &GenericConstraints) -> Bool {
+    let key = tp as *raw TypeParamSymbol as UInt;
+    let upper_is_mut = is_fn_upper_mut(upper);
+    for b in ctx.upper_bounds(&key) {
+        if !is_fn_upper(b) {
+            continue;
+        }
+        if !upper_is_mut && is_fn_upper_mut(b) {
+            continue;
+        }
+        if fn_sig_matches(b, upper) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // 把 Fn / FnMut 类型换成签名相同的 fn 指针类型 (fn 指针是 Fn/FnMut 的"薄"版本)
 fn to_fn_lower_sty(fn_sty: *SType) -> *SType {
     if !fn_sty.is_fn_type() || fn_sty.type_symbol is type *FnLowerTypeSymbol {
@@ -1485,6 +1549,15 @@ fn is_subtype_ctx(sub: *SType, base: *SType, ctx: &GenericConstraints) -> Bool {
     let c_sub = sub.canonical();
     let c_base = base.canonical();
 
+    // 生命周期上界: 目前只检查 `'static` —— "实参类型内部不能含非 'static 生命周期"。
+    // 具名生命周期之间的子类型关系还没实现, 非 'static 上界一律放行 (保持原来的宽松行为)。
+    if c_base.type_symbol is base_lt: *LifetimeSymbol {
+        if !base_lt.is_static() {
+            return true;
+        }
+        return conform_static_bound(c_sub, ctx);
+    }
+
     if c_sub.type_symbol is type *PointerLikeSymbol &&
         c_base.type_symbol is type *PointerLikeSymbol {
 
@@ -1504,6 +1577,10 @@ fn is_subtype_ctx(sub: *SType, base: *SType, ctx: &GenericConstraints) -> Bool {
         // FnMut 不能当 Fn 用 (FnMut 少了"共享借用也能调用"的保证); 反过来可以
         if !is_fn_upper_mut(c_base) && is_fn_upper_mut(c_sub) {
             return false;
+        }
+        // 自由类型参数 T: 靠 ctx 里的 Fn / FnMut 上界推导 (T: Fn(Int) 传给需要 Fn(Int) 的地方)
+        if c_sub.type_symbol is tp: *TypeParamSymbol {
+            return type_param_conforms_fn_upper(tp, move c_base, ctx);
         }
         if c_sub.type_symbol is lsym: *LambdaSymbol {
             return lambda_impls_fn_upper(move lsym, move c_base);

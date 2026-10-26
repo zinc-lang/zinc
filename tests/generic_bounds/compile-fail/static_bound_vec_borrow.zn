@@ -1,0 +1,7 @@
+// 泛型实参里含省略/非 static 的借用 => 不满足 `'static` 上界。
+fn take<T: 'static>(x: T) { }
+
+fn main() {
+    let v: Vec<&Int> = (type Vec<&Int>)::new();
+    take(v);
+}

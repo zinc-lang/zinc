@@ -1,0 +1,12 @@
+// 字段里带非 static 生命周期的结构体也不满足 `'static` (递归到字段)。
+struct Holder<'a> {
+    r: &'a Int,
+}
+
+fn run<T: 'static>(x: T) { }
+
+fn main() {
+    let n = 1_i;
+    let h = { .r = &n }: Holder;
+    run(h);
+}

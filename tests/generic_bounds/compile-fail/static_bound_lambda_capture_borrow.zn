@@ -1,0 +1,7 @@
+// lambda 捕获了对局部变量的借用 => 环境里含非 static 生命周期 => 不满足 `'static`。
+fn run<T>(l: T) where T: Fn(Int) -> Int + 'static { }
+
+fn main() {
+    let n = 1_i;
+    run((.{ [ref n] (x: Int) -> Int => return *n + x; }));
+}

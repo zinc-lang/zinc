@@ -1,0 +1,9 @@
+// 端到端: 泛型函数接受 lambda 实参, 程序正常编译、链接、运行。
+fn run<T>(l: T) where T: Fn(Int) -> Int + 'static { }
+
+fn main() {
+    let base = 10_i;
+    run((.{ [move base] (x: Int) -> Int => return x + base; }));
+    run((x: Int) -> Int => x * 2_i);
+    println(1_i);
+}

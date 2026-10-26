@@ -1,0 +1,6 @@
+// `Fn(Int)` 上界 (返回 () ) 可以接受无捕获的 lambda。
+fn run<T>(l: T) where T: Fn(Int) { }
+
+fn main() {
+    run((.{ (x: Int) => { let y = x + 1; } }));
+}

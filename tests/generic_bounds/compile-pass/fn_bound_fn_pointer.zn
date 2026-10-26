@@ -1,0 +1,9 @@
+// 签名一致的 fn 指针也满足 Fn 上界。
+fn inc(x: Int) -> Int { return x + 1; }
+
+fn run<T>(l: T) where T: Fn(Int) -> Int { }
+
+fn main() {
+    let p: fn(Int) -> Int = inc;
+    run(p);
+}

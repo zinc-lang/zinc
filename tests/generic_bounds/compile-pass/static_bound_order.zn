@@ -1,0 +1,8 @@
+// 生命周期上界和 trait/Fn 上界可以按任意顺序混用。
+fn run<T>(l: T) where T: 'static + Fn(Int) -> Int { }
+fn run_inline<T: Fn(Int) -> Int + 'static>(l: T) { }
+
+fn main() {
+    run((x: Int) -> Int => x + 1);
+    run_inline((x: Int) -> Int => x + 1);
+}

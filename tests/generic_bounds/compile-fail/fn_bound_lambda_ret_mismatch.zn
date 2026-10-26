@@ -1,0 +1,6 @@
+// lambda 的返回类型不是 Int => 不满足 `Fn(Int) -> Int`。
+fn run<T>(l: T) where T: Fn(Int) -> Int { }
+
+fn main() {
+    run((x: Int) -> Bool => x == 1_i);
+}

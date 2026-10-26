@@ -1,0 +1,13 @@
+// 函数类型签名里的生命周期是"每次调用"的, 不会存进值里, 所以
+// fn(&Int) / *Fn(&Int) 本身满足 `'static` 上界。
+fn take<T: 'static>(x: T) { }
+
+fn callback(x: &Int) { }
+
+fn main() {
+    let p: fn(&Int) = callback;
+    take(p);
+
+    let q: *Fn(&Int) = box .{ (x: &Int) => { let y = x; } };
+    take(q);
+}

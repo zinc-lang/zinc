@@ -1,0 +1,9 @@
+// 显式写成 &'static 的引用算满足 `'static` 上界 (不悬垂)。
+static G: Int = 1_i;
+
+fn run<T: 'static>(x: T) { }
+
+fn main() {
+    let r: &'static Int = &G;
+    run(r);
+}

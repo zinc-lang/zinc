@@ -1,0 +1,20 @@
+// 多上界是合取: 第二个 B 不满足时也必须报错 (不能只检查第一个)。
+trait A {
+    fn a(&self) -> Int;
+}
+trait B {
+    fn b(&self) -> Int;
+}
+
+struct S { n: Int }
+
+impl A for S {
+    fn a(&self) -> Int { return self.n; }
+}
+
+fn f<T: A + B>(x: T) { }
+
+fn main() {
+    let s = { .n = 1 }: S;
+    f(s);
+}

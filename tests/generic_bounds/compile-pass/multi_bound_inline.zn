@@ -1,0 +1,25 @@
+// 泛型上界可以用 `+` 连接, 写成内联 bound; 两个上界都必须满足, 并且都能解析到方法。
+trait A {
+    fn a(&self) -> Int;
+}
+trait B {
+    fn b(&self) -> Int;
+}
+
+struct S { n: Int }
+
+impl A for S {
+    fn a(&self) -> Int { return self.n; }
+}
+impl B for S {
+    fn b(&self) -> Int { return self.n + 1; }
+}
+
+fn f<T: A + B>(x: T) -> Int {
+    return x.a() + x.b();
+}
+
+fn main() {
+    let s = { .n = 1 }: S;
+    println(f(s));
+}

@@ -1,0 +1,8 @@
+// 非 static 的借用不满足 `T: 'static`。
+fn run<T: 'static>(x: T) { }
+
+fn borrow_only<'a>(x: &'a Int) {
+    run(x);
+}
+
+fn main() { }

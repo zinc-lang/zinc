@@ -1,0 +1,10 @@
+// `T: 'static` 对不含生命周期的具体类型 (Int / String) 成立。
+use std::primitives::string::String;
+
+fn run<T: 'static>(x: T) { }
+
+fn main() {
+    let n = 1_i;
+    run(n);
+    run(String::new());
+}

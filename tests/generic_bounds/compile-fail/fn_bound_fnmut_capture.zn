@@ -1,0 +1,7 @@
+// 有可变借用捕获的 lambda 只能当 FnMut, 不能当 Fn。
+fn run<T>(l: T) where T: Fn(Int) -> Int { }
+
+fn main() {
+    let mut n = 1_i;
+    run((.{ [ref mut n] (x: Int) -> Int => return x; }));
+}

@@ -1,0 +1,6 @@
+// lambda 的参数类型不是 Int => 不满足 `Fn(Int) -> Int`。
+fn run<T>(l: T) where T: Fn(Int) -> Int { }
+
+fn main() {
+    run((x: Bool) -> Int => x as Int);
+}

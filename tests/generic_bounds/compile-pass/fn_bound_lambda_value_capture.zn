@@ -1,0 +1,9 @@
+// `Fn(Int) -> Int` 上界可以接受按值捕获自有 String 的 lambda (Fn 允许值捕获)。
+use std::primitives::string::String;
+
+fn run<T>(l: T) where T: Fn(Int) -> Int + 'static { }
+
+fn main() {
+    let s = String::new();
+    run((.{ [move s] (x: Int) -> Int => return x + 1; }));
+}

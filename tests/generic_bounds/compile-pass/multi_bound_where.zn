@@ -1,0 +1,25 @@
+// 多上界写在 where 子句里也要全部保留 (不是只取第一个)。
+trait A {
+    fn a(&self) -> Int;
+}
+trait B {
+    fn b(&self) -> Int;
+}
+
+struct S { n: Int }
+
+impl A for S {
+    fn a(&self) -> Int { return self.n; }
+}
+impl B for S {
+    fn b(&self) -> Int { return self.n + 1; }
+}
+
+fn f<T>(x: T) -> Int where T: A + B {
+    return x.a() + x.b();
+}
+
+fn main() {
+    let s = { .n = 1 }: S;
+    println(f(s));
+}
