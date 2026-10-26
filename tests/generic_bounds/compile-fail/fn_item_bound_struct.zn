@@ -1,0 +1,9 @@
+// 普通结构体仍然不可调用: 不满足 Fn 上界 (本次放宽只针对函数项)。
+struct S { n: Int }
+
+fn run<T>(f: T) where T: Fn(Int) { }
+
+fn main() {
+    let s = { .n = 1 }: S;
+    run(s);
+}

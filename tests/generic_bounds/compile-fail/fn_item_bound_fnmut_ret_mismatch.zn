@@ -1,0 +1,8 @@
+// FnMut 上界下同样要比较签名: 返回类型不同就不满足。
+fn ret_bool(x: Int) -> Bool { return true; }
+
+fn run<T>(f: T) where T: FnMut(Int) -> Int { }
+
+fn main() {
+    run(ret_bool);
+}

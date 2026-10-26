@@ -1,0 +1,12 @@
+// 函数项 (没有强转成 fn 指针) 签名匹配时满足 Fn 上界:
+// 返回 unit 的 Fn(Int) 和带返回值的 Fn(Int) -> Int 都算满足。
+fn no_ret(x: Int) { }
+fn inc(x: Int) -> Int { return x + 1_i; }
+
+fn run_unit<T>(f: T) where T: Fn(Int) { }
+fn run_ret<T>(f: T) where T: Fn(Int) -> Int { }
+
+fn main() {
+    run_unit(no_ret);
+    run_ret(inc);
+}

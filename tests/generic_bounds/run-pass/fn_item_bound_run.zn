@@ -1,0 +1,21 @@
+// 端到端: 函数项传给 Fn / FnMut / + 'static 上界的泛型函数, 编译、链接并运行。
+use std::assert;
+
+fn no_ret(x: Int) { }
+fn inc(x: Int) -> Int { return x + 1_i; }
+
+fn run_fn<T>(f: T) where T: Fn(Int) -> Int { }
+fn run_fn_unit<T>(f: T) where T: Fn(Int) { }
+fn run_fnmut<T>(f: T) where T: FnMut(Int) -> Int { }
+fn run_static<T>(f: T) where T: Fn(Int) -> Int + 'static { }
+
+fn main() {
+    run_fn(inc);
+    run_fn_unit(no_ret);
+    run_fnmut(inc);
+    run_static(inc);
+
+    assert(inc(41_i) == 42_i);
+    no_ret(1_i);
+    println(7_i);
+}

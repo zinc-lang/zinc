@@ -1,0 +1,10 @@
+// 重载: 裸函数项解析到先声明的那个重载。这里先声明的是 2 参数版本,
+// 所以下面这个值不满足 Fn(Int) (要传 1 参数的重载得先显式转成 fn 指针)。
+fn ov(x: Int, y: Int) { }
+fn ov(x: Int) { }
+
+fn run<T>(f: T) where T: Fn(Int) { }
+
+fn main() {
+    run(ov);
+}

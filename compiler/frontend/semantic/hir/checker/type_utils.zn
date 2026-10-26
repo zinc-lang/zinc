@@ -1399,6 +1399,77 @@ fn fn_sig_matches(a: *SType, b: *SType) -> Bool {
 }
 
 // ---------------------------------------------------------------------------
+// 函数项 (含方法) 的签名工具
+//
+// 这些函数原来在 type_cast.zn (函数项 -> fn 指针的隐式转换用), 现在也用于
+// Fn / FnMut 上界的匹配: 未强转成 fn 指针的函数项要按同一套签名规则判上界。
+// 放在 type_utils 是为了避免 type_cast <-> type_utils 的循环依赖。
+// ---------------------------------------------------------------------------
+
+// impl 里的方法签名里会出现 impl 的 Self, 比较前先换成 impl 的目标类型
+fn fn_item_normalize(sty: *SType, fsym: *FuncSymbol) -> *SType {
+    if fsym.parent_sym is Some(isym: *ImplSymbol) {
+        return subst_self_ty(sty, isym.self_ty, isym.self_ty.target_sty);
+    }
+    return sty;
+}
+
+fn fn_item_param_sty(fsym: *FuncSymbol, i: UInt) -> *SType {
+    let p = *fsym.params.index(i).deref();
+    return fn_item_normalize(p.stype, fsym);
+}
+
+fn fn_item_ret_sty(fsym: *FuncSymbol) -> *SType {
+    let mut ret_sty: *SType = SType::sty_unit();
+    if fsym.return_sty is Some(r) {
+        ret_sty = fn_item_normalize(r, fsym);
+    }
+    return ret_sty;
+}
+
+// 函数/方法是否是"泛型"的: 它自己的类型参数、trait 方法 (Self 抽象)、
+// 泛型 impl 里的方法、或者签名里还残留类型参数/关联类型, 都不能变成 fn 类型
+fn fn_item_is_generic(fsym: *FuncSymbol) -> Bool {
+    if !fsym.generics.ty_params.is_empty() {
+        return true;
+    }
+    if fsym.parent_sym is Some(type *TraitSymbol) {
+        return true;
+    }
+    if fsym.parent_sym is Some(isym: *ImplSymbol) {
+        if !isym.generics.ty_params.is_empty() {
+            return true;
+        }
+    }
+
+    let mut i: UInt = 0;
+    while i < fsym.params.len() {
+        let p = fn_item_param_sty(fsym, i);
+        if contains_type_param(p) || contains_associated_type(p) {
+            return true;
+        }
+        i += 1;
+    }
+    let ret_sty = fn_item_ret_sty(fsym);
+    return contains_type_param(ret_sty) || contains_associated_type(ret_sty);
+}
+
+// 函数项的签名是否和 fn 类型一致 (接收者就是第一个参数, 见 has_receiver)
+fn fn_item_sig_matches(fsym: *FuncSymbol, dst: *SType) -> Bool {
+    if fsym.params.len() != dst.fn_param_count() {
+        return false;
+    }
+    let mut i: UInt = 0;
+    while i < fsym.params.len() {
+        if !stype_eq_regardless_lifetime(fn_item_param_sty(fsym, i), dst.fn_param_sty(i)) {
+            return false;
+        }
+        i += 1;
+    }
+    return stype_eq_regardless_lifetime(fn_item_ret_sty(fsym), dst.fn_return_sty());
+}
+
+// ---------------------------------------------------------------------------
 // 泛型上界: `'static` 与 Fn / FnMut
 // ---------------------------------------------------------------------------
 
@@ -1572,7 +1643,7 @@ fn is_subtype_ctx(sub: *SType, base: *SType, ctx: &GenericConstraints) -> Bool {
         return is_subtype_ctx(move sub_arg, move base_arg, ctx);
     }
 
-    // Fn / FnMut 也有 trait 语义: 闭包类型和 fn 指针都相当于给它们做 impl
+    // Fn / FnMut 也有 trait 语义: 闭包类型、函数项和 fn 指针都相当于给它们做 impl
     if is_fn_upper(c_base) {
         // FnMut 不能当 Fn 用 (FnMut 少了"共享借用也能调用"的保证); 反过来可以
         if !is_fn_upper_mut(c_base) && is_fn_upper_mut(c_sub) {
@@ -1584,6 +1655,20 @@ fn is_subtype_ctx(sub: *SType, base: *SType, ctx: &GenericConstraints) -> Bool {
         }
         if c_sub.type_symbol is lsym: *LambdaSymbol {
             return lambda_impls_fn_upper(move lsym, move c_base);
+        }
+        // 函数项 (没有强转成 fn 指针, 类型是 FuncSymbol 自己): 签名一致就满足 Fn / FnMut。
+        // 函数项不捕获任何环境, 也没有内部可变状态, 所以:
+        //   - 既满足 Fn 也满足 FnMut (Fn 只要求"共享借用也能调用", 函数项显然可以);
+        //   - 天然是 'static (见 conform_static_bound: 它不含任何生命周期)。
+        // 这里只比较签名, 不给函数项/闭包加隐藏参数, 也不改 ABI: 函数项仍然是零大小值,
+        // 需要 fn 指针时照旧走原来 FunctionToFnLower 的隐式转换。
+        // 泛型函数项不存在单个可调用地址 (check_value / resolve_type_cast_kind 已经拒绝),
+        // 这里防御性地判不满足。
+        if c_sub.type_symbol is fsym: *FuncSymbol {
+            if fn_item_is_generic(fsym) {
+                return false;
+            }
+            return fn_item_sig_matches(fsym, move c_base);
         }
         // fn 指针 (FnLower) 的签名一致时也能当 Fn/FnMut 用
         // (调用入口会额外包一个 thunk: fn 的调用不带环境指针)

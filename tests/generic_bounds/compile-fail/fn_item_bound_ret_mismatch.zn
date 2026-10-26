@@ -1,0 +1,8 @@
+// 返回类型不匹配: Bool 不满足 Fn(Int) -> Int。
+fn ret_bool(x: Int) -> Bool { return true; }
+
+fn run<T>(f: T) where T: Fn(Int) -> Int { }
+
+fn main() {
+    run(ret_bool);
+}

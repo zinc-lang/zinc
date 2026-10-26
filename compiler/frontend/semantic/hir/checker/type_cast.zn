@@ -595,70 +595,7 @@ fn resolve_type_test_kind(expr_ty: *SType, pat_ty: *SType) -> TypeTestKind {
         }
     }
 }
-// 函数项 (含方法) 的签名工具 ---------------------------------------------------
-
-// impl 里的方法签名里会出现 impl 的 Self, 比较前先换成 impl 的目标类型
-fn fn_item_normalize(sty: *SType, fsym: *FuncSymbol) -> *SType {
-    if fsym.parent_sym is Some(isym: *ImplSymbol) {
-        return subst_self_ty(sty, isym.self_ty, isym.self_ty.target_sty);
-    }
-    return sty;
-}
-
-fn fn_item_param_sty(fsym: *FuncSymbol, i: UInt) -> *SType {
-    let p = *fsym.params.index(i).deref();
-    return fn_item_normalize(p.stype, fsym);
-}
-
-fn fn_item_ret_sty(fsym: *FuncSymbol) -> *SType {
-    let mut ret_sty: *SType = SType::sty_unit();
-    if fsym.return_sty is Some(r) {
-        ret_sty = fn_item_normalize(r, fsym);
-    }
-    return ret_sty;
-}
-
-// 函数/方法是否是"泛型"的: 它自己的类型参数、trait 方法 (Self 抽象)、
-// 泛型 impl 里的方法、或者签名里还残留类型参数/关联类型, 都不能变成 fn 类型
-fn fn_item_is_generic(fsym: *FuncSymbol) -> Bool {
-    if !fsym.generics.ty_params.is_empty() {
-        return true;
-    }
-    if fsym.parent_sym is Some(type *TraitSymbol) {
-        return true;
-    }
-    if fsym.parent_sym is Some(isym: *ImplSymbol) {
-        if !isym.generics.ty_params.is_empty() {
-            return true;
-        }
-    }
-
-    let mut i: UInt = 0;
-    while i < fsym.params.len() {
-        let p = fn_item_param_sty(fsym, i);
-        if contains_type_param(p) || contains_associated_type(p) {
-            return true;
-        }
-        i += 1;
-    }
-    let ret_sty = fn_item_ret_sty(fsym);
-    return contains_type_param(ret_sty) || contains_associated_type(ret_sty);
-}
-
-// 函数项的签名是否和 fn 类型一致
-fn fn_item_sig_matches(fsym: *FuncSymbol, dst: *SType) -> Bool {
-    if fsym.params.len() != dst.fn_param_count() {
-        return false;
-    }
-    let mut i: UInt = 0;
-    while i < fsym.params.len() {
-        if !stype_eq_regardless_lifetime(fn_item_param_sty(fsym, i), dst.fn_param_sty(i)) {
-            return false;
-        }
-        i += 1;
-    }
-    return stype_eq_regardless_lifetime(fn_item_ret_sty(fsym), dst.fn_return_sty());
-}
+// 函数项 (含方法) 的签名工具已移到 type_utils.zn (Fn/FnMut 上界匹配也要用同一套规则)。
 
 // enum variant 构造函数: fn(字段类型...) -> Enum 类型; 泛型 enum 先不支持
 fn enum_ctor_sig_matches(evsym: *EnumVariantSymbol, dst: *SType) -> Bool {

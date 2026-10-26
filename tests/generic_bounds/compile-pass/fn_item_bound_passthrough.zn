@@ -1,0 +1,9 @@
+// 函数项先传给 Fn 上界的泛型函数, 再原样透传给另一层 Fn 上界。
+fn inc(x: Int) -> Int { return x + 1_i; }
+
+fn inner<T>(f: T) where T: Fn(Int) -> Int { }
+fn outer<U>(f: U) where U: Fn(Int) -> Int { inner(f); }
+
+fn main() {
+    outer(inc);
+}

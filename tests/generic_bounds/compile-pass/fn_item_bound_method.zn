@@ -1,0 +1,22 @@
+// 方法项 / 关联函数项也能满足 Fn 上界: 和已有的"方法项 -> fn 指针"转换用同一套
+// 签名规则 —— receiver 就是第一个参数 (&self -> &T, self -> T)。
+struct Point { x: Int, y: Int }
+struct Calc { base: Int }
+
+impl Point {
+    fn get_x(&self) -> Int { return self.x; }
+    fn make(x: Int) -> Point { return { .x = x, .y = 0_i }: Point; }
+}
+impl Calc {
+    fn mul(self, k: Int) -> Calc { return { .base = self.base * k }: Calc; }
+}
+
+fn run_get_x<T>(f: T) where T: Fn(&Point) -> Int { }
+fn run_make<T>(f: T) where T: Fn(Int) -> Point { }
+fn run_mul<T>(f: T) where T: Fn(Calc, Int) -> Calc { }
+
+fn main() {
+    run_get_x(Point::get_x);
+    run_make(Point::make);
+    run_mul(Calc::mul);
+}

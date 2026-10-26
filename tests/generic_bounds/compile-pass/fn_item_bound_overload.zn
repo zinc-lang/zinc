@@ -1,0 +1,10 @@
+// 重载: 裸函数项 (不带调用实参) 解析到先声明的那个重载 —— 和调用点"按实参个数
+// 选重载"的规则不同。这里先声明的是 1 参数版本, 所以匹配 Fn(Int)。
+fn ov(x: Int) { }
+fn ov(x: Int, y: Int) { }
+
+fn run<T>(f: T) where T: Fn(Int) { }
+
+fn main() {
+    run(ov);
+}

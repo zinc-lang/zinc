@@ -1,0 +1,12 @@
+// 函数项没有捕获, 天然是 'static: 和 Fn / FnMut 上界组合时也满足 (两种书写顺序)。
+fn inc(x: Int) -> Int { return x + 1_i; }
+
+fn run_fn_static<T>(f: T) where T: Fn(Int) -> Int + 'static { }
+fn run_static_fn<T: 'static + Fn(Int) -> Int>(f: T) { }
+fn run_fnmut_static<T>(f: T) where T: FnMut(Int) -> Int + 'static { }
+
+fn main() {
+    run_fn_static(inc);
+    run_static_fn(inc);
+    run_fnmut_static(inc);
+}

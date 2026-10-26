@@ -1,0 +1,8 @@
+// 参数个数不匹配: 2 参数函数项不满足 Fn(Int)。
+fn two(x: Int, y: Int) { }
+
+fn run<T>(f: T) where T: Fn(Int) { }
+
+fn main() {
+    run(two);
+}

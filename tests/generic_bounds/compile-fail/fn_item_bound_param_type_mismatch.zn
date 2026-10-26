@@ -1,0 +1,8 @@
+// 参数类型不匹配: Int 参数不满足 Fn(Bool)。
+fn takes_int(x: Int) { }
+
+fn run<T>(f: T) where T: Fn(Bool) { }
+
+fn main() {
+    run(takes_int);
+}
