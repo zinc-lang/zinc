@@ -52,19 +52,24 @@ impl SourceLoc {
     }
 }
 
-// todo 这个结构体中存在重复的两个 file_id，可以优化成只存储一个 file_id
+// span 的 start / end 一定属于同一个文件，所以只保存一个 file_id
 pub struct SourceSpan {
-    pub start: SourceLoc,
-    pub end: SourceLoc,
+    pub file_id: UInt,
+    pub start_offset: UInt,
+    pub end_offset: UInt,
 }
 
 impl PartialEq for SourceSpan {
     fn eq(&self, other: &Self) -> Bool {
-        return self.start.eq(&other.start) && self.end.eq(&other.end);
+        return self.file_id == other.file_id
+            && self.start_offset == other.start_offset
+            && self.end_offset == other.end_offset;
     }
 
     fn ne(&self, other: &Self) -> Bool {
-        return self.start.ne(&other.start) || self.end.ne(&other.end);
+        return self.file_id != other.file_id
+            || self.start_offset != other.start_offset
+            || self.end_offset != other.end_offset;
     }
 }
 
@@ -73,23 +78,50 @@ impl Eq for SourceSpan {}
 impl SourceSpan {
     pub fn empty() -> SourceSpan {
         return {
-            .start = SourceLoc::empty(),
-            .end = SourceLoc::empty(),
+            .file_id = (-1_i) as UInt,
+            .start_offset = 0,
+            .end_offset = 0,
         }: SourceSpan;
     }
 
-    pub fn len(&self) -> UInt {
-        if self.start.file_id != self.end.file_id {
-            return 1;
+    pub fn new(start: SourceLoc, end: SourceLoc) -> SourceSpan {
+        if start.file_id != end.file_id {
+            panic "start and end must be in the same file";
         }
-        if self.start.offset < self.end.offset {
-            return self.end.offset - self.start.offset;
+        if start.is_empty() || end.is_empty() {
+            return SourceSpan::empty();
+        }
+        return {
+            .file_id = start.file_id,
+            .start_offset = start.offset,
+            .end_offset = end.offset,
+        }: SourceSpan;
+    }
+
+    pub fn start(&self) -> SourceLoc {
+        return {
+            .file_id = self.file_id,
+            .offset = self.start_offset,
+        }: SourceLoc;
+    }
+
+    pub fn end(&self) -> SourceLoc {
+        return {
+            .file_id = self.file_id,
+            .offset = self.end_offset,
+        }: SourceLoc;
+    }
+
+    pub fn len(&self) -> UInt {
+        if self.start_offset < self.end_offset {
+            return self.end_offset - self.start_offset;
         }
         return 1;
     }
 
     pub fn is_empty(&self) -> Bool {
-        return self.start.is_empty() || self.end.is_empty();
+        let max = (-1_i) as UInt;
+        return self.file_id == max;
     }
 }
 
@@ -368,20 +400,15 @@ impl SourceManager {
     }
 
     pub fn source_piece_of(&self, span: SourceSpan) -> String {
-        let start_loc = span.start;
-        let end_loc = span.end;
-        if start_loc.file_id != end_loc.file_id {
-            return String::new();
-        }
-        let fid = start_loc.file_id;
+        let fid = span.file_id;
         if fid >= self.files.len() {
             return String::new();
         }
         let file_item: &FileItem = self.files.index(fid as UInt).deref();
-        if (start_loc.offset > file_item.content.len() as UInt) || (end_loc.offset > file_item.content.len() as UInt) {
+        if (span.start_offset > file_item.content.len() as UInt) || (span.end_offset > file_item.content.len() as UInt) {
             return String::new();
         }
-        return file_item.content.as_str().deref().sub_str(start_loc.offset as UInt, (end_loc.offset - start_loc.offset) as UInt).to_string();
+        return file_item.content.as_str().deref().sub_str(span.start_offset as UInt, (span.end_offset - span.start_offset) as UInt).to_string();
     }
 
 }

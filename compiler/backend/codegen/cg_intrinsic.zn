@@ -114,7 +114,7 @@ impl CodeGenerator {
                 } else {
                     let ty_meta = self.rt_typemeta_of(arg0_sty, ctx);
                     let dtorfn = self.cg_typemeta_dtorfn(arg0_sty.type_symbol);
-                    let di_loc = self.debug_loc(ctx.ll_func, arg0.expr_node().span().start);
+                    let di_loc = self.debug_loc(ctx.ll_func, arg0.expr_node().span().start());
                     self.llds.set_di_loc(di_loc);
                     self.llds.create_call(dtorfn, &[cgval, ty_meta] as Slice<CgValue>);
                     self.llds.reset_di_loc();

@@ -1992,7 +1992,7 @@ impl CodeGenerator {
         if value is local: *LocalVar && local.sym_var.drop_flag is Some(_) { // 只有 local var 才有 drop flag 这种情况
             self.do_drop_with_flag(move local, move ctx);
         } else {
-            let di_loc = self.debug_loc(ctx.ll_func, value.expr_node().span().start);
+            let di_loc = self.debug_loc(ctx.ll_func, value.expr_node().span().start());
 
             let sty = value.get_stype().canonical();
             let cgval = self.cg_xvalue(value as *XValue, ctx);
@@ -2139,7 +2139,7 @@ impl CodeGenerator {
             );
         }
         else {
-            let di_loc = self.debug_loc(ctx.ll_func, xvalue.expr_node().span().start);
+            let di_loc = self.debug_loc(ctx.ll_func, xvalue.expr_node().span().start());
 
             let ty_meta = self.rt_typemeta_of(sty, ctx);
             let obj = self.load_to_single_ptr_level(sty, value);
@@ -2174,7 +2174,7 @@ impl CodeGenerator {
                         0_u,
                         &fn_call.generic_args,
                         fn_call.sty,
-                        fn_call.expr.span().start,
+                        fn_call.expr.span().start(),
                         ctx,
                     );
                 }
@@ -2197,7 +2197,7 @@ impl CodeGenerator {
                             0_u,
                             &fn_call.generic_args,
                             fn_call.sty,
-                            fn_call.expr.span().start,
+                            fn_call.expr.span().start(),
                             ctx,
                         );
                     }
@@ -2238,7 +2238,7 @@ impl CodeGenerator {
                             0_u,
                             &fn_call.generic_args,
                             fn_call.sty,
-                            fn_call.expr.span().start,
+                            fn_call.expr.span().start(),
                             ctx,
                         );
                     }
@@ -2517,7 +2517,7 @@ impl CodeGenerator {
             }
         }
 
-        let di_loc = self.debug_loc(ctx.ll_func, fn_call.expr.span().start);
+        let di_loc = self.debug_loc(ctx.ll_func, fn_call.expr.span().start());
 
         self.llds.set_di_loc(di_loc);
         let call = self.llds.create_call(callee, args.as_slice().deref());
@@ -2622,7 +2622,7 @@ impl CodeGenerator {
                 }
             }
         }
-        let di_loc = self.debug_loc(ctx.ll_func, fn_call.expr.span().start);
+        let di_loc = self.debug_loc(ctx.ll_func, fn_call.expr.span().start());
         self.llds.set_di_loc(di_loc);
         let call = self.llds.create_call(callee, args.as_slice().deref());
         self.llds.reset_di_loc();
@@ -3259,7 +3259,7 @@ impl CodeGenerator {
             1_u,
             &method_call.generic_args,
             method_call.sty,
-            method_call.expr.span().start,
+            method_call.expr.span().start(),
             ctx,
         );
     }
@@ -3489,7 +3489,7 @@ impl CodeGenerator {
     ) -> CgValue {
         let signature = self.signature_of_fsym(fsym);
         let fnty = self.functype_of_sig(signature);
-        let di_loc = self.debug_loc(ctx.ll_func, fn_call.expr.span().start);
+        let di_loc = self.debug_loc(ctx.ll_func, fn_call.expr.span().start());
 
         let obj_typemeta = self.rt_typemeta_of(base_sty, ctx);
         let trait_ty = self.rt_typemeta_of(trait_sym.to_sty(), ctx);
@@ -3722,7 +3722,7 @@ impl CodeGenerator {
     // 比较和 panic 分支都在 helper 的 IR 里 (internal + alwaysinline), 由 LLVM 负责内联和优化。
     fn emit_index_bounds_check(&mut self, ctx: *CgContext, idx: CgValue, len: UInt, span: SourceSpan) {
         let len_val = self.llds.get_const_int64(len as UInt64).as_value();
-        let flc = SourceManager::get().file_line_column_of(span.end);
+        let flc = SourceManager::get().file_line_column_of(span.end());
         let file_cv = self.llds.get_const_string(flc.file.as_str().deref()).as_value();
         let line_cv = self.llds.get_const_int64(flc.line as UInt64 + 1).as_value();
         let msg = f"index out of bounds: the len is $(len)";

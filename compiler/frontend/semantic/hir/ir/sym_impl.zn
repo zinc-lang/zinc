@@ -134,7 +134,7 @@ fn impl_sig_rank(node: *ImplDecl, parent_node: *SyntaxNode) -> UInt {
     for ch in parent_node.children() {
         if ch is other: *ImplDecl {
             if other as *raw ImplDecl as UInt != node as *raw ImplDecl as UInt &&
-                other.span().start.offset < span.start.offset &&
+                other.span().start().offset < span.start().offset &&
                 impl_sig_text(other).eq(&sig) {
                 n += 1;
             }
@@ -162,7 +162,7 @@ impl Symbol for ImplSymbol {
     //     建符号时 target_sty/trait_sty 还是 Invalid, 用它们会让所有 impl 撞成同一个 key.
     fn short_name(&self) -> String {
         let span = self.impl_node.span();
-        let mut res = SourceManager::get().file_path_of(span.start.file_id);
+        let mut res = SourceManager::get().file_path_of(span.start().file_id);
         res.push_str("@");
         res.push_str(impl_sig_text(self.impl_node).as_str().deref());
         res.push_str("#");

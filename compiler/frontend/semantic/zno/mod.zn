@@ -336,7 +336,7 @@ impl Exporter {
 
         // 要看这个类型是否定义在当前组件内部
         if !is_builtin_type_symbol(sym) &&
-            !SourceManager::get().is_imported(sym.syntax_node().span().start) {
+            !SourceManager::get().is_imported(sym.syntax_node().span().start()) {
             self.visit_sym(sym as *Symbol, writer);
         }
 

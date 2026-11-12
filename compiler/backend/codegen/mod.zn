@@ -153,10 +153,10 @@ impl CodeGenerator {
         }
 
         let span = sym.syntax_node().span();
-        if span.start.is_empty()  {
+        if span.start().is_empty()  {
             return !is_std;
         }
-        return SourceManager::get().is_imported(span.start);
+        return SourceManager::get().is_imported(span.start());
     }
 
     fn write_files(&self) {

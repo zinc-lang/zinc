@@ -78,10 +78,7 @@ impl FileParser {
     fn dummy(&self) -> *DummySyntaxNode {
         let loc = self.lexer.cur_loc();
         let node: *DummySyntaxNode = box {
-            .source_span = {
-                .start = loc,
-                .end = loc,
-            }: SourceSpan
+            .source_span = SourceSpan::new(loc, loc)
         }: DummySyntaxNode;
         return node;
     }

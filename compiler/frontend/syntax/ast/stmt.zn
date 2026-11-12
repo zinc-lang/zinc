@@ -124,7 +124,7 @@ pub struct LabelStmt {
 
 impl SyntaxNode for BlockStmt {
     fn span(&self) -> SourceSpan {
-        return { .start = self.lbrace.span().start, .end = self.rbrace.span().end }: SourceSpan;
+        return SourceSpan::new(self.lbrace.span().start(), self.rbrace.span().end());
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_block(self);
@@ -173,9 +173,9 @@ impl StatementNode for EmptyStmt {}
 
 impl SyntaxNode for LetStmt {
     fn span(&self) -> SourceSpan {
-        let start = self.kw_let.span().start;
-        let end = self.semicolon.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.kw_let.span().start();
+        let end = self.semicolon.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_let_stmt(self);
@@ -199,9 +199,9 @@ impl StatementNode for LetStmt {}
 
 impl SyntaxNode for ExprStmt {
     fn span(&self) -> SourceSpan {
-        let start = self.expr.span().start;
-        let end = self.semicolon.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.expr.span().start();
+        let end = self.semicolon.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_expr_stmt(self);
@@ -224,12 +224,12 @@ impl StatementNode for ExprStmt {}
 
 impl SyntaxNode for IfStmt {
     fn span(&self) -> SourceSpan {
-        let start = self.kw_if.span().start;
+        let start = self.kw_if.span().start();
         if self.else_branch is Some(e) {
             let p = e as *SyntaxNode;
-            return { .start = start, .end = p.span().end }: SourceSpan;
+            return SourceSpan::new(start, p.span().end());
         } else {
-            return { .start = start, .end = self.then_branch.span().end }: SourceSpan;
+            return SourceSpan::new(start, self.then_branch.span().end());
         }
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
@@ -257,9 +257,9 @@ impl StatementNode for IfStmt {}
 
 impl SyntaxNode for WhileStmt {
     fn span(&self) -> SourceSpan {
-        let start = self.kw_while.span().start;
-        let end = self.body.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.kw_while.span().start();
+        let end = self.body.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_while_stmt(self);
@@ -283,9 +283,9 @@ impl StatementNode for WhileStmt {}
 
 impl SyntaxNode for DoWhileStmt {
     fn span(&self) -> SourceSpan {
-        let start = self.kw_do.span().start;
-        let end = self.semicolon.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.kw_do.span().start();
+        let end = self.semicolon.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_do_while_stmt(self);
@@ -309,9 +309,9 @@ impl StatementNode for DoWhileStmt {}
 
 impl SyntaxNode for ForStmt {
     fn span(&self) -> SourceSpan {
-        let start = self.kw_for.span().start;
-        let end = self.body.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.kw_for.span().start();
+        let end = self.body.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_for_stmt(self);
@@ -336,9 +336,9 @@ impl StatementNode for ForStmt {}
 
 impl SyntaxNode for MatchArm {
     fn span(&self) -> SourceSpan {
-        let start = self.pattern.span().start;
-        let end = self.action.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.pattern.span().start();
+        let end = self.action.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_match_arm(self);
@@ -364,9 +364,9 @@ impl StatementNode for MatchArm {}
 
 impl SyntaxNode for MatchStmt {
     fn span(&self) -> SourceSpan {
-        let start = self.kw_match.span().start;
-        let end = self.rbrace.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.kw_match.span().start();
+        let end = self.rbrace.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_match_stmt(self);
@@ -392,9 +392,9 @@ impl StatementNode for MatchStmt {}
 
 impl SyntaxNode for ReturnStmt {
     fn span(&self) -> SourceSpan {
-        let start = self.kw_return.span().start;
-        let end = self.semicolon.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.kw_return.span().start();
+        let end = self.semicolon.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_return_stmt(self);
@@ -419,9 +419,9 @@ impl StatementNode for ReturnStmt {}
 
 impl SyntaxNode for BreakStmt {
     fn span(&self) -> SourceSpan {
-        let start = self.kw_break.span().start;
-        let end = self.semicolon.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.kw_break.span().start();
+        let end = self.semicolon.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_break_stmt(self);
@@ -442,9 +442,9 @@ impl StatementNode for BreakStmt {}
 
 impl SyntaxNode for ContinueStmt {
     fn span(&self) -> SourceSpan {
-        let start = self.kw_continue.span().start;
-        let end = self.semicolon.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.kw_continue.span().start();
+        let end = self.semicolon.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_continue_stmt(self);
@@ -465,9 +465,9 @@ impl StatementNode for ContinueStmt {}
 
 impl SyntaxNode for GotoStmt {
     fn span(&self) -> SourceSpan {
-        let start = self.kw_goto.span().start;
-        let end = self.semicolon.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.kw_goto.span().start();
+        let end = self.semicolon.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_goto_stmt(self);
@@ -488,9 +488,9 @@ impl StatementNode for GotoStmt {}
 
 impl SyntaxNode for LabelStmt {
     fn span(&self) -> SourceSpan {
-        let start = self.label.span().start;
-        let end = self.colon.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.label.span().start();
+        let end = self.colon.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_label_stmt(self);
@@ -511,9 +511,9 @@ impl StatementNode for LabelStmt {}
 
 impl SyntaxNode for PanicStmt {
     fn span(&self) -> SourceSpan {
-        let start = self.kw_panic.span().start;
-        let end = self.semicolon.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.kw_panic.span().start();
+        let end = self.semicolon.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_panic_stmt(self);

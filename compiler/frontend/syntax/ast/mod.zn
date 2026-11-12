@@ -216,11 +216,13 @@ impl SegmentedName {
             let mut span = SourceSpan::empty();
             for n in self.names {
                 let nspan = n.span();
-                if span.start.is_empty() && !nspan.start.is_empty() {
-                    span.start = nspan.start;
+                if nspan.is_empty() {
+                    continue;
                 }
-                if !nspan.end.is_empty() {
-                    span.end = nspan.end;
+                if span.is_empty() {
+                    span = nspan;
+                } else {
+                    span.end_offset = nspan.end_offset;
                 }
             }
             return span;
@@ -381,7 +383,7 @@ impl SyntaxTree {
             print(f"$(name) ");
         }
         print(" at ");
-        let flc = SourceManager::get().file_line_column_of(node.span().start);
+        let flc = SourceManager::get().file_line_column_of(node.span().start());
         println(flc);
 
         let children = node.children();

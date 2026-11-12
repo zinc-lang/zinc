@@ -852,10 +852,7 @@ impl Lexer {
             .file_id = self.file_id,
             .offset = end,
         };
-        return {
-            .start = start_loc,
-            .end = end_loc,
-        }: SourceSpan;
+        return SourceSpan::new(start_loc, end_loc);
     }
 
     fn cur_loc(&self) -> SourceLoc {

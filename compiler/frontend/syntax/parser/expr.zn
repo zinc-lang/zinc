@@ -571,13 +571,13 @@ impl FileParser {
     fn parse_interpolation_expr(&mut self, lit: Token) -> *ExpressionNode {
         let parts = (type Vec<InterpolationPartExpr>)::new();
         let span = lit.span();
-        let fid = span.start.file_id;
+        let fid = span.start().file_id;
         let content = SourceManager::get().source_code_of(fid);
         // token 的 span 覆盖 `"..."` (不含前面的 f), 所以内容从 start+1 开始,
         // 长度 = span 长度 - 2 (去掉首尾两个引号)
-        let base = span.start.offset + 1;
+        let base = span.start().offset + 1;
         // span 长度减去首尾两个引号; 括号只是让分组更直观 ('-' 现在是左结合的)
-        let len = (span.end.offset - span.start.offset) - 2;
+        let len = (span.end().offset - span.start().offset) - 2;
 
         let mut i: UInt = 0;
         while i < len {
@@ -599,10 +599,9 @@ impl FileParser {
                     else if next == b'$' { text.push(b'$'); i += 2; }
                     else if next == b'\n' { i += 2; }
                     else {
-                        let escape_span: SourceSpan = {
-                            .start = { .file_id = fid, .offset = base + i }: SourceLoc,
-                            .end = { .file_id = fid, .offset = base + i + 2 }: SourceLoc,
-                        };
+                        let escape_span: SourceSpan = SourceSpan::new(
+                            { .file_id = fid, .offset = base + i }: SourceLoc,
+                            { .file_id = fid, .offset = base + i + 2 }: SourceLoc);
                         DiagnosticEngine::get().emit_invalid_escape(escape_span);
                         i += 1;
                     }
@@ -627,17 +626,16 @@ impl FileParser {
             if !(close.token_kind is TokenKind::Punctuation(PunctuationKind::RParen)) {
                 // 有实际词元就指向它; 到结尾了(缺 `)`)就指向 `$(`
                 if close.token_kind is TokenKind::EndOfFile {
-                    let dollar_span: SourceSpan = {
-                        .start = { .file_id = fid, .offset = base + i }: SourceLoc,
-                        .end = { .file_id = fid, .offset = base + i + 2 }: SourceLoc,
-                    };
+                    let dollar_span: SourceSpan = SourceSpan::new(
+                        { .file_id = fid, .offset = base + i }: SourceLoc,
+                        { .file_id = fid, .offset = base + i + 2 }: SourceLoc);
                     DiagnosticEngine::get().emit_illegal_string_interpolation(dollar_span);
                 } else {
                     DiagnosticEngine::get().emit_illegal_string_interpolation(close.span());
                 }
                 break;
             }
-            let close_end = close.span().end.offset;
+            let close_end = close.span().end().offset;
             parts.push(InterpolationPartExpr::Expr(move sub_expr));
             i = close_end - base;
         }

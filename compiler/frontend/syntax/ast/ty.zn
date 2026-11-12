@@ -108,10 +108,7 @@ impl TypeNode for NamedType {
 
 impl SyntaxNode for ArcType {
     fn span(&self) -> SourceSpan {
-        return {
-            .start = self.star.span().start,
-            .end = self.ty_arg.span().end,
-        }: SourceSpan;
+        return SourceSpan::new(self.star.span().start(), self.ty_arg.span().end());
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_arc_type(self);
@@ -148,10 +145,7 @@ impl TypeNode for ArcType {
 
 impl SyntaxNode for WeakType {
     fn span(&self) -> SourceSpan {
-        return {
-            .start = self.star.span().start,
-            .end = self.ty_arg.span().end,
-        }: SourceSpan;
+        return SourceSpan::new(self.star.span().start(), self.ty_arg.span().end());
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_weak_type(self);
@@ -188,10 +182,7 @@ impl TypeNode for WeakType {
 
 impl SyntaxNode for BorrowType {
     fn span(&self) -> SourceSpan {
-        return {
-            .start = self.amp.span().start,
-            .end = self.ty_arg.span().end,
-        }: SourceSpan;
+        return SourceSpan::new(self.amp.span().start(), self.ty_arg.span().end());
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_borrow_type(self);
@@ -258,10 +249,7 @@ impl TypeNode for LifetimeType {
 
 impl SyntaxNode for RawPointerType {
     fn span(&self) -> SourceSpan {
-        return {
-            .start = self.star.span().start,
-            .end = self.ty_arg.span().end,
-        }: SourceSpan;
+        return SourceSpan::new(self.star.span().start(), self.ty_arg.span().end());
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_raw_ptr_type(self);
@@ -301,10 +289,7 @@ impl TypeNode for RawPointerType {
 
 impl SyntaxNode for ArrayType {
     fn span(&self) -> SourceSpan {
-        return {
-            .start = self.lbracket.span().start,
-            .end = self.rbracket.span().end,
-        }: SourceSpan;
+        return SourceSpan::new(self.lbracket.span().start(), self.rbracket.span().end());
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_array_type(self);
@@ -336,10 +321,7 @@ impl TypeNode for ArrayType {
 
 impl SyntaxNode for TupleType {
     fn span(&self) -> SourceSpan {
-        return {
-            .start = self.lparen.span().start,
-            .end = self.rparen.span().end,
-        }: SourceSpan;
+        return SourceSpan::new(self.lparen.span().start(), self.rparen.span().end());
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_tuple_type(self);
@@ -377,15 +359,9 @@ impl TypeNode for TupleType {
 impl SyntaxNode for FnType {
     fn span(&self) -> SourceSpan {
         if self.return_type is Some(return_type) {
-            return {
-                .start = self.kw_fn.span().start,
-                .end = return_type.span().end,
-            }: SourceSpan;
+            return SourceSpan::new(self.kw_fn.span().start(), return_type.span().end());
         } else {
-            return {
-                .start = self.kw_fn.span().start,
-                .end = self.rparen.span().end,
-            }: SourceSpan;
+            return SourceSpan::new(self.kw_fn.span().start(), self.rparen.span().end());
         }
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
@@ -418,10 +394,7 @@ impl TypeNode for FnType {
 
 impl SyntaxNode for ExistentialType {
     fn span(&self) -> SourceSpan {
-        return {
-            .start = self.kw_impl.span().start,
-            .end = self.trait_ty.span().end,
-        }: SourceSpan;
+        return SourceSpan::new(self.kw_impl.span().start(), self.trait_ty.span().end());
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_existential_type(self);

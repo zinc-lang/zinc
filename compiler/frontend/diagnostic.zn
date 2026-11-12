@@ -52,7 +52,7 @@ impl DiagnosticEngine {
     // todo 增加 json/ASCII ART 等其它输出格式
     pub fn report(&self, speak_en: Bool) {
         for ref diag in self.all_diags {
-            let flc = SourceManager::get().file_line_column_of(diag.span.start);
+            let flc = SourceManager::get().file_line_column_of(diag.span.start());
             if speak_en {
                 match diag.severity {
                     Severity::ICE => print("[ICE]: ");
@@ -81,7 +81,7 @@ impl DiagnosticEngine {
             display_line.to_string_inplace(&mut line_mark);
             line_mark.push_str(" | ");
             print(line_mark);
-            let source_line = SourceManager::get().source_line_of(diag.span.start);
+            let source_line = SourceManager::get().source_line_of(diag.span.start());
             println(source_line);
             
             // 打印箭头
@@ -93,7 +93,7 @@ impl DiagnosticEngine {
                     i += 1;
                 }
             }
-            let mut len = diag.span.end.offset - diag.span.start.offset;
+            let mut len = diag.span.end().offset - diag.span.start().offset;
             {
                 if (len == 0) { len = 1; }
                 if (len + space_count > 100 && space_count < 100) { len = 100 - space_count; }

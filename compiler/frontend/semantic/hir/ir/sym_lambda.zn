@@ -112,9 +112,9 @@ impl LambdaSymbol {
         let span = self.lambda_node.span();
         let mut res = String::new();
         res.push_str("<lambda>@");
-        res.push_str(span.start.file_id.to_string().as_str().deref());
+        res.push_str(span.start().file_id.to_string().as_str().deref());
         res.push_str(":");
-        res.push_str(span.start.offset.to_string().as_str().deref());
+        res.push_str(span.start().offset.to_string().as_str().deref());
         return res;
     }
 

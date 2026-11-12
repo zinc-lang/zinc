@@ -978,7 +978,7 @@ impl CodeGenerator {
             return func;
         }
 
-        self.add_debuginfo(func, struct_sym.struct_node.span().start, name);
+        self.add_debuginfo(func, struct_sym.struct_node.span().start(), name);
 
         let llbb = self.llds.create_bb("entry", func);
         let saved_insert_point = self.llds.save_ip();
@@ -986,7 +986,7 @@ impl CodeGenerator {
 
         let mut field_head = self.llds.get_arg(func, 0_u);
         let struct_typemeta = self.llds.get_arg(func, 1_u);
-        let di_loc = self.debug_loc(func, struct_sym.struct_node.span().start);
+        let di_loc = self.debug_loc(func, struct_sym.struct_node.span().start());
 
         if self.cgtype_of(struct_sym.to_sty()) is Some(struct_cgty) {
             let mut field_idx: UInt = 0;
@@ -1057,7 +1057,7 @@ impl CodeGenerator {
             return func;
         }
 
-        self.add_debuginfo(func, enum_sym.enum_node.span().start, name);
+        self.add_debuginfo(func, enum_sym.enum_node.span().start(), name);
 
         let mut llbbs = (type Vec<CgBasicBlock>)::new();
         let mut j: UInt = 0;
@@ -1182,12 +1182,12 @@ impl CodeGenerator {
             return func;
         }
 
-        self.add_debuginfo(func, struct_sym.struct_node.span().start, name);
+        self.add_debuginfo(func, struct_sym.struct_node.span().start(), name);
 
         let llbb = self.llds.create_bb("entry", func);
         let saved_insert_point = self.llds.save_ip();
         self.llds.set_insert_point(llbb);
-        let di_loc = self.debug_loc(func, struct_sym.struct_node.span().start);
+        let di_loc = self.debug_loc(func, struct_sym.struct_node.span().start());
 
         // 先执行本类型的 drop 函数，然后调用每个成员的析构函数
         if drop_fn_of(struct_sym as *TypeSymbol) is Some(drop_fn) {
@@ -1272,7 +1272,7 @@ impl CodeGenerator {
             return func;
         }
 
-        self.add_debuginfo(func, enum_sym.enum_node.span().start, name);
+        self.add_debuginfo(func, enum_sym.enum_node.span().start(), name);
 
         let mut llbbs = (type Vec<CgBasicBlock>)::new();
         let mut j: UInt = 0;
@@ -1289,7 +1289,7 @@ impl CodeGenerator {
 
         // 先执行本类型的 drop 函数，然后调用 variant 的析构函数
         if drop_fn_of(enum_sym as *TypeSymbol) is Some(drop_fn) {
-            let di_loc = self.debug_loc(func, enum_sym.enum_node.span().start);
+            let di_loc = self.debug_loc(func, enum_sym.enum_node.span().start());
             self.llds.set_di_loc(di_loc);
 
             let ll_drop_fn = self.cg_func_decl(drop_fn);
@@ -1402,7 +1402,7 @@ impl CodeGenerator {
             return func;
         }
 
-        self.add_debuginfo(func, struct_sym.struct_node.span().start, name);
+        self.add_debuginfo(func, struct_sym.struct_node.span().start(), name);
 
         let llbb = self.llds.create_bb("entry", func);
         let saved_insert_point = self.llds.save_ip();
@@ -1453,7 +1453,7 @@ impl CodeGenerator {
             return func;
         }
 
-        self.add_debuginfo(func, enum_sym.enum_node.span().start, name);
+        self.add_debuginfo(func, enum_sym.enum_node.span().start(), name);
 
         let llbb = self.llds.create_bb("entry", func);
         let saved_insert_point = self.llds.save_ip();
@@ -1554,7 +1554,7 @@ impl CodeGenerator {
                 return func;
             }
 
-            self.add_debuginfo(func, struct_sym.struct_node.span().start, name);
+            self.add_debuginfo(func, struct_sym.struct_node.span().start(), name);
 
             let llbb = self.llds.create_bb("entry", func);
             let saved_insert_point = self.llds.save_ip();

@@ -123,9 +123,9 @@ impl FnArg {
     }
     pub fn span(&self) -> SourceSpan {
         if self.is_named() {
-            let start = self.named.span().start;
-            let end = self.value.span().end;
-            return { .start = start, .end = end }: SourceSpan;
+            let start = self.named.span().start();
+            let end = self.value.span().end();
+            return SourceSpan::new(start, end);
         } else {
             return self.value.span();
         }
@@ -278,9 +278,9 @@ pub struct QualifiedPathExpr {
 
 impl SyntaxNode for TernaryExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.kw_if.span().start;
-        let end = self.else_branch.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.kw_if.span().start();
+        let end = self.else_branch.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_ternary_expr(self);
@@ -306,9 +306,9 @@ impl ExpressionNode for TernaryExpr {
 
 impl SyntaxNode for ContextExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.kw_context.span().start;
-        let end = self.rparen.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.kw_context.span().start();
+        let end = self.rparen.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_context_expr(self);
@@ -332,9 +332,9 @@ impl ExpressionNode for ContextExpr {
 
 impl SyntaxNode for AssignExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.lhs.span().start;
-        let end = self.rhs.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.lhs.span().start();
+        let end = self.rhs.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_assign_expr(self);
@@ -359,9 +359,9 @@ impl ExpressionNode for AssignExpr {
 
 impl SyntaxNode for BinaryExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.lhs.span().start;
-        let end = self.rhs.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.lhs.span().start();
+        let end = self.rhs.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_binary_expr(self);
@@ -386,9 +386,9 @@ impl ExpressionNode for BinaryExpr {
 
 impl SyntaxNode for IsExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.lhs.span().start;
-        let end = self.rhs.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.lhs.span().start();
+        let end = self.rhs.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_is_expr(self);
@@ -413,9 +413,9 @@ impl ExpressionNode for IsExpr {
 
 impl SyntaxNode for AsExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.lhs.span().start;
-        let end = self.rhs.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.lhs.span().start();
+        let end = self.rhs.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_as_expr(self);
@@ -440,9 +440,9 @@ impl ExpressionNode for AsExpr {
 
 impl SyntaxNode for UnaryExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.op1.span().start;
-        let end = self.operand.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.op1.span().start();
+        let end = self.operand.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_unary_expr(self);
@@ -466,9 +466,9 @@ impl ExpressionNode for UnaryExpr {
 
 impl SyntaxNode for QuestionExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.expr.span().start;
-        let end = self.question.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.expr.span().start();
+        let end = self.question.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_question_expr(self);
@@ -492,9 +492,9 @@ impl ExpressionNode for QuestionExpr {
 
 impl SyntaxNode for IndexExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.base.span().start;
-        let end = self.rbracket.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.base.span().start();
+        let end = self.rbracket.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_index_expr(self);
@@ -519,9 +519,9 @@ impl ExpressionNode for IndexExpr {
 
 impl SyntaxNode for ParenExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.lparen.span().start;
-        let end = self.rparen.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.lparen.span().start();
+        let end = self.rparen.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_paren_expr(self);
@@ -545,9 +545,9 @@ impl ExpressionNode for ParenExpr {
 
 impl SyntaxNode for MemberAccessExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.base.span().start;
-        let end = self.member.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.base.span().start();
+        let end = self.member.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_member_expr(self);
@@ -571,9 +571,9 @@ impl ExpressionNode for MemberAccessExpr {
 
 impl SyntaxNode for FnCallExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.callee.span().start;
-        let end = self.rparen.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.callee.span().start();
+        let end = self.rparen.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_call_expr(self);
@@ -600,13 +600,13 @@ impl ExpressionNode for FnCallExpr {
 
 impl SyntaxNode for LambdaExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.lambda_start.span().start;
+        let start = self.lambda_start.span().start();
         let end = if self.body_expr is Some(e) 
-                    then (e as *SyntaxNode).span().end
+                    then (e as *SyntaxNode).span().end()
                     else if self.body_block is Some(b)
-                        then (b as *SyntaxNode).span().end
+                        then (b as *SyntaxNode).span().end()
                         else start;
-        return { .start = start, .end = end }: SourceSpan;
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_lambda_expr(self);
@@ -641,9 +641,9 @@ impl ExpressionNode for LambdaExpr {
 
 impl SyntaxNode for StructInitExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.lbrace.span().start;
-        let end = self.rbrace.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.lbrace.span().start();
+        let end = self.rbrace.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_struct_init_expr(self);
@@ -676,9 +676,9 @@ impl ExpressionNode for StructInitExpr {
 
 impl SyntaxNode for TupleLiteralExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.lparen.span().start;
-        let end = self.rparen.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.lparen.span().start();
+        let end = self.rparen.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_tuple_expr(self);
@@ -704,9 +704,9 @@ impl ExpressionNode for TupleLiteralExpr {
 
 impl SyntaxNode for ArrayLiteralExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.lbracket.span().start;
-        let end = self.rbracket.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.lbracket.span().start();
+        let end = self.rbracket.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_array_expr(self);
@@ -732,9 +732,9 @@ impl ExpressionNode for ArrayLiteralExpr {
 
 impl SyntaxNode for ArrayRepeatLiteralExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.lbracket.span().start;
-        let end = self.rbracket.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.lbracket.span().start();
+        let end = self.rbracket.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_array_repeat_expr(self);
@@ -811,7 +811,7 @@ impl SyntaxNode for TypeAscriptionExpr {
     fn span(&self) -> SourceSpan {
         let start = self.expr.span();
         let end = self.ty.span();
-        return { .start = start.start, .end = end.end }: SourceSpan;
+        return SourceSpan::new(start.start(), end.end());
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_type_ascription_expr(self);
@@ -858,9 +858,9 @@ impl ExpressionNode for SegmentedNameExpr {
 
 impl SyntaxNode for QualifiedPathExpr {
     fn span(&self) -> SourceSpan {
-        let start = self.lparen.span().start;
-        let end = self.rest_parts.span().end;
-        return { .start = start, .end = end }: SourceSpan;
+        let start = self.lparen.span().start();
+        let end = self.rest_parts.span().end();
+        return SourceSpan::new(start, end);
     }
     fn visit(*self, visitor: &mut SyntaxVisitor) -> VisitResult  {
         return visitor.visit_path_expr(self);
